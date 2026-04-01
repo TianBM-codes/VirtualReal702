@@ -1,0 +1,277 @@
+"""
+Color-code service: per-face attribute coloring for the viewer.
+
+Supports four schemes:
+  etype        — color by element type string (always available)
+  material     — color by material name (requires INP-exported material_name attr)
+  section_type — color by section type (SOLID/SHELL/...) (requires INP export)
+  elset        — highlight a named element set; set_name query param required
+
+Response: per-vertex float32 RGB [Rf*3, 3] ready for direct vertex color update,
+plus a legend list [{id, name, r, g, b}, ...].
+"""
+from __future__ import annotations
+
+import json
+import os
+from typing import Dict, List, Optional, Tuple
+
+import h5py
+import numpy as np
+
+from ..core.errors import NotFoundError, NotReadyError, ValidationError
+from ..core.state import ModelIndex
+
+# ---------------------------------------------------------------------------
+# Colour palette  (qualitative, 16 entries)
+# ---------------------------------------------------------------------------
+
+_PALETTE: List[Tuple[float, float, float]] = [
+    (0.27, 0.52, 0.95),  # blue
+    (0.95, 0.39, 0.27),  # coral
+    (0.27, 0.78, 0.44),  # green
+    (0.95, 0.78, 0.18),  # yellow
+    (0.63, 0.27, 0.95),  # purple
+    (0.18, 0.82, 0.90),  # cyan
+    (0.95, 0.55, 0.18),  # orange
+    (0.95, 0.27, 0.62),  # pink
+    (0.47, 0.78, 0.18),  # lime
+    (0.18, 0.47, 0.78),  # steel blue
+    (0.78, 0.27, 0.27),  # dark red
+    (0.18, 0.63, 0.63),  # teal
+    (0.78, 0.63, 0.18),  # gold
+    (0.55, 0.18, 0.47),  # mauve
+    (0.39, 0.63, 0.18),  # olive
+    (0.18, 0.27, 0.63),  # navy
+]
+_GREY      = (0.35, 0.35, 0.35)
+_HIGHLIGHT = (0.95, 0.55, 0.10)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def get_schemes(idx: ModelIndex, instance: str) -> dict:
+    """
+    Return the available coloring schemes and elset names for *instance*.
+    """
+    schemes: List[str] = ["etype"]
+
+    geom_h5 = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    if os.path.exists(geom_h5):
+        with h5py.File(geom_h5, "r") as f:
+            for etype in f.get("elements", {}):
+                grp = f[f"elements/{etype}"]
+                has_mat = "material_name" in grp
+                has_sec = "section_type" in grp
+                break
+            else:
+                has_mat = has_sec = False
+        if has_mat:
+            schemes.append("material")
+        if has_sec:
+            schemes.append("section_type")
+
+    elsets: List[str] = []
+    sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
+    if os.path.exists(sets_h5):
+        with h5py.File(sets_h5, "r") as f:
+            inst_grp = f.get(f"element_sets/{instance}")
+            if inst_grp is not None:
+                elsets = sorted(inst_grp.keys())
+    if elsets:
+        schemes.append("elset")
+
+    return {"schemes": schemes, "elsets": elsets}
+
+
+def get_color_code(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]] = None,
+) -> Tuple[np.ndarray, List[dict]]:
+    """
+    Build per-vertex color array and legend for the requested scheme.
+
+    For scheme='elset', set_names is a list of set names to highlight
+    (each gets its own palette color, unlisted elements stay grey).
+
+    Returns:
+        colors   [Rf*3, 3] float32   — ready for Three.js colorAttr
+        legend   list[{id, name, r, g, b}]
+    """
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
+
+    etype_arr    = idx.source_elem_etype.get(instance)       # [Rf] S8 bytes
+    elem_row_arr = idx.render_source_elem_row.get(instance)  # [Rf] int32
+
+    if etype_arr is None or elem_row_arr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' not found in ODB '{idx.odb_id}'",
+            {"instance": instance},
+        )
+
+    if scheme == "etype":
+        labels = _labels_from_etype(etype_arr)
+    elif scheme in ("material", "section_type"):
+        # Map scheme name → actual HDF5 dataset name
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
+    elif scheme == "elset":
+        if not set_names:
+            raise ValidationError("set_names required for elset scheme", {})
+        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
+    else:
+        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
+
+    # Build legend
+    # For elset: named sets get palette colors (in selection order), "other" gets grey
+    # For other schemes: first-occurrence order
+    if scheme == "elset" and set_names:
+        # Fixed order: selected sets first (palette colors), then "other" (grey)
+        ordered = list(set_names) + ["other"]
+        present = set(labels)
+        ordered = [v for v in ordered if v in present]
+        unique_vals = ordered
+    else:
+        unique_vals = list(dict.fromkeys(labels))
+
+    val_to_id = {v: i for i, v in enumerate(unique_vals)}
+
+    legend = []
+    palette_idx = 0   # counts only "real" categories to keep palette consistent
+    for i, val in enumerate(unique_vals):
+        if scheme == "elset":
+            rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+        elif not val or val in ("(none)", "(unknown)"):
+            rgb = _GREY   # unassigned elements always grey
+        else:
+            rgb = _PALETTE[palette_idx % len(_PALETTE)]
+        if rgb != _GREY:
+            palette_idx += 1
+        legend.append({
+            "id": i, "name": val or "(none)",
+            "r": rgb[0], "g": rgb[1], "b": rgb[2],
+        })
+
+    pal_arr     = np.array([(e["r"], e["g"], e["b"]) for e in legend], dtype=np.float32)
+    face_codes  = np.array([val_to_id[v] for v in labels], dtype=np.int32)
+    face_colors = pal_arr[face_codes]
+    colors      = np.repeat(face_colors, 3, axis=0)
+    return colors, legend
+
+
+# ---------------------------------------------------------------------------
+# Label extraction helpers
+# ---------------------------------------------------------------------------
+
+def _labels_from_etype(etype_arr: np.ndarray) -> List[str]:
+    """Decode the S8 bytes array into clean etype strings."""
+    return [
+        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+        for b in etype_arr
+    ]
+
+
+def _labels_from_elem_attr(
+    idx: ModelIndex,
+    instance: str,
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+    attr_name: str,
+) -> List[str]:
+    """
+    Look up per-element string attributes (material_name / section_type)
+    from L1 geometry H5, grouped by etype for efficiency.
+    """
+    geom_h5 = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    if not os.path.exists(geom_h5):
+        raise NotFoundError(f"Geometry H5 not found for '{instance}'", {})
+
+    Rf     = len(etype_arr)
+    result = np.full(Rf, b"", dtype="S64")
+
+    # Decode all etype strings upfront — numpy S8 byte comparison can silently
+    # fail to match when bytes scalars have different lengths/padding, so we
+    # compare plain Python strings instead.
+    etype_strs = np.array([
+        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+        for b in etype_arr
+    ])
+
+    with h5py.File(geom_h5, "r") as f:
+        for etype_str in np.unique(etype_strs):
+            mask      = (etype_strs == etype_str)
+            grp       = f.get(f"elements/{etype_str}")
+            if grp is None or attr_name not in grp:
+                continue
+            attr_data          = grp[attr_name][:]     # [M] S64/S16
+            result[mask]       = attr_data[elem_row_arr[mask]]
+
+    return [
+        s.tobytes().rstrip(b"\x00").decode("ascii", errors="replace") or "(none)"
+        for s in result
+    ]
+
+
+def _labels_from_elsets(
+    idx: ModelIndex,
+    instance: str,
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+    set_names: List[str],
+) -> List[str]:
+    """
+    Return per-face label: the first matching set name if the element belongs
+    to any of *set_names*, else "other".  Priority = order of set_names.
+    """
+    sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
+    geom_h5 = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+
+    if not os.path.exists(sets_h5):
+        raise NotFoundError("No sets data found for this workspace", {})
+
+    # Load all requested sets' label arrays
+    set_label_arrays: List[Tuple[str, np.ndarray]] = []
+    with h5py.File(sets_h5, "r") as f:
+        for sn in set_names:
+            key = f"element_sets/{instance}/{sn}"
+            if key not in f:
+                raise ValidationError(f"Set '{sn}' not found", {"set_name": sn})
+            set_label_arrays.append((sn, f[key][:]))
+
+    Rf         = len(etype_arr)
+    # face_set[i] = index into set_names + 1 (0 = "other")
+    face_set   = np.zeros(Rf, dtype=np.int32)
+
+    etype_strs = np.array([
+        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+        for b in etype_arr
+    ])
+
+    with h5py.File(geom_h5, "r") as f:
+        for etype_str in np.unique(etype_strs):
+            mask      = (etype_strs == etype_str)
+            grp       = f.get(f"elements/{etype_str}")
+            if grp is None or "labels" not in grp:
+                continue
+            elem_labels      = grp["labels"][:]
+            face_elem_labels = elem_labels[elem_row_arr[mask]]
+
+            # Assign in reverse priority order so set_names[0] wins (overwrites later)
+            for si in range(len(set_label_arrays) - 1, -1, -1):
+                sn, slabels = set_label_arrays[si]
+                hit = np.isin(face_elem_labels, slabels)
+                face_set_mask         = face_set[mask]
+                face_set_mask[hit]    = si + 1
+                face_set[mask]        = face_set_mask
+
+    # Convert code → label string
+    code_to_name = {0: "other"}
+    for si, (sn, _) in enumerate(set_label_arrays):
+        code_to_name[si + 1] = sn
+
+    return [code_to_name[c] for c in face_set]

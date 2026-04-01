@@ -1,0 +1,48 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build, packaging, and test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Editor and local tooling
+.vscode/
+.idea/
+.codex
+.codex/
+
+# Logs and temporary files
+logs/
+tmp/
+temp/
+tmp.zip
+*.log
+*.zip
+*.7z
+ecosystem.config.js
+
+# FEM/runtime data artifacts
+/data/
+*.inp
+model/
+runtime_bundle/
+*.odb
+*.h5
+*.hdf5
+AGENTS.md

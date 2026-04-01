@@ -1,0 +1,1934 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>ODB Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Consolas', 'Menlo', monospace;
+      font-size: 13px;
+    }
+
+    /* ── Left panel ─────────────────────────────────────────── */
+    #panel {
+      width: 260px;
+      min-width: 260px;
+      background: #161b22;
+      border-right: 1px solid #30363d;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 12px 10px;
+      gap: 10px;
+    }
+
+    #panel h1 {
+      font-size: 14px;
+      color: #58a6ff;
+      letter-spacing: 1px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #30363d;
+    }
+
+    #panel .subtitle {
+      font-size: 10px;
+      color: #8b949e;
+      margin-top: -8px;
+      margin-bottom: 4px;
+    }
+
+    .card {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .card h2 {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #8b949e;
+      letter-spacing: 0.5px;
+    }
+
+    label {
+      font-size: 11px;
+      color: #8b949e;
+      margin-bottom: 1px;
+    }
+
+    input[type="text"], select {
+      width: 100%;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #c9d1d9;
+      padding: 4px 6px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    input[type="text"]:focus, select:focus {
+      border-color: #58a6ff;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #58a6ff;
+    }
+
+    button {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #c9d1d9;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button:hover { background: #30363d; }
+    button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+    button.primary:hover { background: #388bfd; }
+    button.toggle.active { background: #238636; border-color: #2ea043; color: #fff; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .row { display: flex; gap: 6px; }
+    .row button { flex: 1; }
+
+    #status {
+      font-size: 11px;
+      color: #8b949e;
+      border-top: 1px solid #30363d;
+      padding-top: 6px;
+      min-height: 24px;
+      word-break: break-all;
+    }
+    #status.err { color: #f85149; }
+    #status.ok  { color: #3fb950; }
+
+    /* Pick info */
+    #pickCard { display: none; }
+    #pickCard table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    #pickCard td { padding: 2px 0; }
+    #pickCard td:first-child { color: #8b949e; width: 90px; }
+    #pickCard .val { color: #e6edf3; word-break: break-all; }
+
+    /* Legend */
+    #legendCard { display: none; }
+    #legendBar {
+      width: 100%;
+      height: 14px;
+      border-radius: 3px;
+      border: 1px solid #30363d;
+    }
+    .legend-labels { display: flex; justify-content: space-between; font-size: 10px; color: #8b949e; }
+
+    /* Highlight face info */
+    #highlightInfo {
+      font-size: 11px;
+      color: #e3b341;
+      min-height: 14px;
+    }
+
+    /* BBox selection overlay (rubber-band rect) */
+    #bboxOverlay {
+      position: absolute;
+      border: 2px dashed #58a6ff;
+      background: rgba(88, 166, 255, 0.08);
+      pointer-events: none;
+      display: none;
+    }
+
+    /* BBox result card */
+    #bboxCard { display: none; }
+    #bboxCard p { font-size: 11px; color: #e6edf3; }
+    #bboxLabelList {
+      max-height: 140px;
+      overflow-y: auto;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 10px;
+      color: #8b949e;
+      line-height: 1.6;
+      word-break: break-all;
+      display: none;
+    }
+
+    /* Hover Tooltip */
+    #hoverTooltip {
+      position: absolute;
+      background: rgba(13, 17, 23, 0.92);
+      border: 1px solid #58a6ff;
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: #e6edf3;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+      z-index: 10;
+    }
+
+    /* Probe Table */
+    #probeTableCard { display: none; }
+    .probe-table-wrap {
+      max-height: 180px;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+    .probe-table-wrap table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+    }
+    .probe-table-wrap th {
+      color: #8b949e;
+      font-weight: normal;
+      text-align: left;
+      padding: 2px 4px;
+      border-bottom: 1px solid #30363d;
+      white-space: nowrap;
+    }
+    .probe-table-wrap td {
+      color: #e6edf3;
+      padding: 2px 4px;
+      border-bottom: 1px solid #21262d;
+      white-space: nowrap;
+      max-width: 80px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .probe-table-wrap tr:last-child td { border-bottom: none; }
+
+    /* ── Right viewport ─────────────────────────────────────── */
+    #viewport {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #hint {
+      position: absolute;
+      bottom: 10px;
+      right: 12px;
+      font-size: 10px;
+      color: #484f58;
+      pointer-events: none;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+<!-- ── Left panel ─────────────────────────────────────────────────────── -->
+<div id="panel">
+  <h1>⬡ ODB Viewer</h1>
+  <div class="subtitle">FastAPI + Three.js Backend</div>
+
+  <!-- Connection -->
+  <div class="card">
+    <h2>Connection</h2>
+    <label>API Base URL</label>
+    <input type="text" id="baseUrl" value="http://127.0.0.1:8000" />
+    <label>ODB ID</label>
+    <input type="text" id="odbId" value="mock_odb" />
+    <button class="primary" id="btnConnect">Connect</button>
+  </div>
+
+  <!-- Instance -->
+  <div class="card" id="instanceCard" style="display:none">
+    <h2>Instance</h2>
+    <select id="instanceSelect"></select>
+    <button id="btnLoadGeom">Load Geometry</button>
+    <div class="row">
+      <button id="btnLoadMeshEdges">Mesh Grid</button>
+      <button id="btnLoadFeatures">Features</button>
+    </div>
+    <div style="font-size: 9px; color: #8b949e;">* Grid: 单元全网格 | Features: 轮廓线</div>
+  </div>
+
+  <!-- Colors -->
+  <div class="card" id="colorsCard" style="display:none">
+    <h2>Frame Colors</h2>
+    <label>Field</label>
+    <select id="fieldSelect"></select>
+    <label>Component</label>
+    <select id="componentSelect"></select>
+    <label>Render Mode</label>
+    <select id="renderMode">
+      <option value="smooth">Smooth（节点插值）</option>
+      <option value="flat">Flat（单元均色）</option>
+    </select>
+    <label>Step</label>
+    <select id="stepSelect"></select>
+    <label>Frame: <span id="frameVal">0</span></label>
+    <input type="range" id="frameSlider" min="0" max="0" value="0" />
+    <button class="primary" id="btnColors">Apply Colors</button>
+    <div id="highlightInfo"></div>
+  </div>
+
+  <!-- Color Code -->
+  <div class="card" id="colorCodeCard" style="display:none">
+    <h2>Color Code</h2>
+    <label>Scheme</label>
+    <select id="colorScheme">
+      <option value="">— None —</option>
+    </select>
+    <div id="elsetRow" style="display:none; margin-top:4px">
+      <div class="row" style="margin-bottom:3px">
+        <label>Sets <span style="font-size:9px;color:#8b949e">（多选）</span></label>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          <button id="btnElsetAll"  style="font-size:10px;padding:1px 6px">全选</button>
+          <button id="btnElsetNone" style="font-size:10px;padding:1px 6px">全不选</button>
+        </span>
+      </div>
+      <div id="elsetCheckboxes" style="max-height:120px;overflow-y:auto;border:1px solid #30363d;border-radius:4px;padding:4px 6px;font-size:11px;"></div>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="primary" id="btnColorCode">Apply</button>
+      <button id="btnColorCodeClear">Clear</button>
+    </div>
+    <div id="colorCodeLegend" style="margin-top:6px"></div>
+  </div>
+
+  <!-- Mouse mode -->
+  <div class="card" id="mouseModeCard" style="display:none">
+    <h2>Mouse Mode</h2>
+    <div class="row">
+      <button id="btnModeNav" class="primary">Navigate</button>
+      <button id="btnModePick">Pick</button>
+    </div>
+    <div id="pickSubMode" style="display:none; margin-top: 4px;">
+      <label>Pick Mode</label>
+      <div class="row">
+        <button id="btnPickElem" class="toggle active">Element</button>
+        <button id="btnPickNode" class="toggle">Node</button>
+      </div>
+      <div style="margin-top:4px">
+        <label>Deform Scale: <span id="deformScaleVal">1.0</span></label>
+        <input type="range" id="deformScaleSlider" min="0" max="100" step="0.1" value="1">
+      </div>
+    </div>
+    <div style="margin-top:4px">
+      <label>Projection</label>
+      <button id="btnCamMode" class="toggle" style="width:100%">Persp</button>
+    </div>
+  </div>
+
+  <!-- View Cut -->
+  <div class="card" id="viewCutCard" style="display:none">
+    <h2>View Cut</h2>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#c9d1d9">
+      <input type="checkbox" id="viewCutActive"> Activate
+    </label>
+    <label>Axis</label>
+    <div class="row">
+      <button id="btnAxisX" class="toggle active">X</button>
+      <button id="btnAxisY" class="toggle">Y</button>
+      <button id="btnAxisZ" class="toggle">Z</button>
+    </div>
+    <label>Position: <span id="viewCutPosVal">—</span></label>
+    <input type="range" id="viewCutSlider" min="0" max="1" step="0.001" value="0.5" disabled>
+    <div class="row">
+      <button id="btnViewCutFlip">Flip Direction</button>
+      <button id="btnSectionFill" class="toggle active">补面</button>
+    </div>
+  </div>
+
+  <!-- Probe Table -->
+  <div class="card" id="probeTableCard">
+    <div class="row" style="align-items:center">
+      <h2 style="flex:1">Probe Table</h2>
+      <button id="btnClearProbe" style="font-size:10px;padding:1px 6px">Clear</button>
+    </div>
+    <div class="probe-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Mode</th><th>Instance</th><th>ID</th><th>Type</th>
+            <th>Orig Coords</th><th>Def Coords</th><th>S,Mises</th><th>Attached Elems</th><th>Field</th><th>Value</th>
+          </tr>
+        </thead>
+        <tbody id="probeTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- BBox result -->
+  <div class="card" id="bboxCard">
+    <h2>Box Select</h2>
+    <p id="bboxInfo">—</p>
+    <div id="bboxLabelList"></div>
+    <button id="btnClearBbox">Clear</button>
+  </div>
+
+  <!-- Pick result -->
+  <div class="card" id="pickCard">
+    <h2>Pick Result</h2>
+    <table id="pickTable">
+      <tr><td>Instance</td><td class="val" id="pInst">—</td></tr>
+      <tr><td>Triangle idx</td><td class="val" id="pFaceIdx">—</td></tr>
+      <tr class="elem-only"><td>Elem label</td><td class="val" id="pElem">—</td></tr>
+      <tr class="elem-only"><td>Elem nodes</td><td class="val" id="pElemNodes">—</td></tr>
+      <tr class="node-only"><td>Node label</td><td class="val" id="pNode">—</td></tr>
+      <tr class="node-only"><td>Face nodes</td><td class="val" id="pFaceNodes">—</td></tr>
+      <tr><td>Source</td><td class="val" id="pSource">—</td></tr>
+      <tr><td>Value</td><td class="val" id="pVal">—</td></tr>
+    </table>
+  </div>
+
+  <!-- Legend -->
+  <div class="card" id="legendCard">
+    <h2>Colormap Legend</h2>
+    <canvas id="legendBar" width="230" height="14"></canvas>
+    <div class="legend-labels">
+      <span id="legendMin">—</span>
+      <span id="legendMid">—</span>
+      <span id="legendMax">—</span>
+    </div>
+  </div>
+
+  <div id="status">Ready — enter API URL and click Connect.</div>
+</div>
+
+<!-- ── 3D Viewport ─────────────────────────────────────────────────────── -->
+<div id="viewport">
+  <canvas id="canvas"></canvas>
+  <div id="bboxOverlay"></div>
+  <div id="hoverTooltip"></div>
+  <div id="hint">Left-drag: rotate &nbsp;|&nbsp; Mid-drag: pan &nbsp;|&nbsp; Right-drag / Scroll: zoom &nbsp;|&nbsp; Click: pick &nbsp;|&nbsp; Shift+drag: box select</div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── State ─────────────────────────────────────────────────────────────────
+let BASE = 'http://127.0.0.1:8000';
+let ODB  = 'mock_odb';
+let meta = null;         // {instances, steps, fields}
+let currentInstance = null;
+let numFaces = 0;        // Rf — number of surface triangles
+
+// Three.js
+let renderer, scene, camera, controls;
+let perspCam, orthoCam, isOrtho = false;
+let mesh = null;
+let meshEdgesLine = null;
+let featureEdgesLine = null;
+let colorAttr = null;         // THREE.BufferAttribute ref for fast color updates
+let pickMarker = null;        // Sphere to mark selected node
+let pickHighlightLine = null; // LineSegments wireframe for selected element (single pick)
+let bboxHighlight = null;     // LineSegments or Points for bbox selection result
+let suppressNextClick = false; // set true after bbox drag to block the spurious click event
+
+// Hover state
+let hoverFaceIdx = -1;
+let savedHoverColors = null;    // Float32Array(9) — saved RGB for 3 vertices of hovered face
+let hoverHighlightLine = null;  // LineSegments element outline drawn after debounce
+let hoverNodeMarker = null;     // Small sphere shown at nearest vertex in node mode
+let hoverDebounceTimer = null;  // setTimeout handle for element outline fetch
+
+// View Cut state
+let clipPlane = null;
+let viewCutAxis = 'x';
+let viewCutFlipped = false;
+let modelBbox = null;         // { min: THREE.Vector3, max: THREE.Vector3 }
+let sectionMesh = null;       // Phase 2: filled cross-section mesh
+let sectionEdges = null;      // Phase 2: element outline edges on cut face
+let sectionAbortCtrl = null;  // AbortController for in-flight section-mesh request
+
+// Probe table rows
+let probeRows = [];
+let deformScale = 1.0;
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function setStatus(msg, type = '') {
+  const el = $('status');
+  el.textContent = msg;
+  el.className = type;
+}
+
+function fmtNum(x) {
+  if (x == null) return '—';
+  return typeof x === 'number' ? x.toExponential(4) : String(x);
+}
+
+// ── L3BE Parser ───────────────────────────────────────────────────────────
+function parseL3BE(ab) {
+  const dv = new DataView(ab);
+  const magic = String.fromCharCode(
+    dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)
+  );
+  if (magic !== 'L3BE') throw new Error('Invalid L3BE magic: ' + magic);
+
+  const sectionCount      = dv.getUint32(12, true);
+  const sectionTableStart = dv.getUint32(16, true);
+  const ENTRY_SIZE        = 80;
+  const decoder           = new TextDecoder('ascii');
+
+  const sections = {};
+  for (let i = 0; i < sectionCount; i++) {
+    const base = sectionTableStart + i * ENTRY_SIZE;
+    const nameArr = new Uint8Array(ab, base, 32);
+    const name = decoder.decode(nameArr).replace(/\0+$/, '');
+
+    const dtypeCode = dv.getUint16(base + 32, true);
+    const ndim      = dv.getUint16(base + 34, true);
+    const shape     = [];
+    for (let d = 0; d < ndim; d++) {
+      shape.push(dv.getUint32(base + 36 + d * 4, true));
+    }
+    const dataOffset = dv.getUint32(base + 52, true);
+    const dataNBytes = dv.getUint32(base + 60, true);
+
+    let data;
+    switch (dtypeCode) {
+      case 2:  data = new Uint8Array(ab,   dataOffset, dataNBytes);         break;
+      case 5:  data = new Int32Array(ab,   dataOffset, dataNBytes / 4);     break;
+      case 9:  data = new Float32Array(ab, dataOffset, dataNBytes / 4);     break;
+      default: data = new Uint8Array(ab,   dataOffset, dataNBytes);
+    }
+    sections[name] = { data, shape, dtype: dtypeCode };
+  }
+  return sections;
+}
+
+// ── Three.js Setup ────────────────────────────────────────────────────────
+function initThree() {
+  const canvas = $('canvas');
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0d1117);
+
+  // ── Lights ──────────────────────────────────────────────────────────────
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambientLight);
+
+  const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  directionalLight.position.set(1, 1, 1).normalize();
+  scene.add(directionalLight);
+
+  // ── Pick Marker (confirmed node selection, red) ──────────────────────────
+  const markerGeo = new THREE.SphereGeometry(0.02, 16, 16);
+  const markerMat = new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false, transparent: true, opacity: 0.8 });
+  pickMarker = new THREE.Mesh(markerGeo, markerMat);
+  pickMarker.visible = false;
+  pickMarker.renderOrder = 999;
+  scene.add(pickMarker);
+
+  // ── Hover Node Marker (node hover preview, cyan) ──────────────────────────
+  const hoverMarkerGeo = new THREE.SphereGeometry(0.02, 8, 8);
+  const hoverMarkerMat = new THREE.MeshBasicMaterial({ color: 0x00aaff, depthTest: false, transparent: true, opacity: 0.8 });
+  hoverNodeMarker = new THREE.Mesh(hoverMarkerGeo, hoverMarkerMat);
+  hoverNodeMarker.visible = false;
+  hoverNodeMarker.renderOrder = 998;
+  scene.add(hoverNodeMarker);
+
+  const vp = $('viewport');
+  const initAspect = vp.clientWidth / vp.clientHeight;
+  perspCam = new THREE.PerspectiveCamera(45, initAspect, 0.001, 100000);
+  perspCam.position.set(0, 0, 10);
+  orthoCam = new THREE.OrthographicCamera(-5, 5, 5 / initAspect, -5 / initAspect, -100000, 100000);
+  orthoCam.position.set(0, 0, 10);
+  camera = perspCam;
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  // Abaqus-style: left=rotate, middle=pan, right=zoom
+  controls.mouseButtons = {
+    LEFT:   THREE.MOUSE.ROTATE,
+    MIDDLE: THREE.MOUSE.PAN,
+    RIGHT:  THREE.MOUSE.DOLLY,
+  };
+  controls.screenSpacePanning = true; // pan moves in camera XY plane, not world XZ
+
+  const ro = new ResizeObserver(() => {
+    renderer.setSize(vp.clientWidth, vp.clientHeight);
+    const aspect = vp.clientWidth / vp.clientHeight;
+    perspCam.aspect = aspect;
+    perspCam.updateProjectionMatrix();
+    if (isOrtho) {
+      const h = orthoCam.top - orthoCam.bottom;
+      orthoCam.left = -h * aspect / 2;
+      orthoCam.right =  h * aspect / 2;
+      orthoCam.updateProjectionMatrix();
+    }
+  });
+  ro.observe(vp);
+  renderer.setSize(vp.clientWidth, vp.clientHeight);
+
+  // ── Mouse & BBox Events ───────────────────────────────────────────────────
+  renderer.domElement.addEventListener('click', onCanvasClick);
+
+  let bboxStart = null;
+  let isBboxDrag = false;
+  renderer.domElement.addEventListener('mousedown', e => {
+    if (!e.shiftKey || !mesh) return;
+    isBboxDrag = true; bboxStart = { x: e.clientX, y: e.clientY };
+    controls.enabled = false;
+    const vRect = renderer.domElement.getBoundingClientRect();
+    const ov = $('bboxOverlay');
+    ov.style.left = (bboxStart.x - vRect.left) + 'px'; ov.style.top = (bboxStart.y - vRect.top)  + 'px';
+    ov.style.width = '0px'; ov.style.height = '0px'; ov.style.display = 'block';
+    e.preventDefault();
+  });
+  renderer.domElement.addEventListener('mousemove', e => {
+    // ── Hover probe tooltip (only when not bbox-dragging) ──────────────────
+    if (!isBboxDrag && mouseMode === 'pick' && mesh) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const nx = ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+      const ny = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(nx, ny), camera);
+      const hits = ray.intersectObject(mesh, false).filter(h => {
+        if (!$('viewCutActive').checked) return true;
+        return clipPlane.distanceToPoint(h.point) >= 0;
+      });
+      const tip = $('hoverTooltip');
+      if (hits.length === 0) {
+        clearHoverHighlight();
+        tip.style.display = 'none';
+      } else {
+        let fi = hits[0].faceIndex;
+        if (fi == null && hits[0].face) fi = Math.floor(hits[0].face.a / 3);
+        if (fi != null) {
+          // Phase 1: show face index as placeholder; real label shown after click
+          tip.textContent = pickMode === 'node' ? `Node (face #${fi})` : `Element (face #${fi})`;
+          tip.style.left = (e.clientX - rect.left + 14) + 'px';
+          tip.style.top  = (e.clientY - rect.top  - 28) + 'px';
+          tip.style.display = 'block';
+          if (fi !== hoverFaceIdx) { clearHoverHighlight(); applyHoverHighlight(fi, hits[0].point); }
+        }
+      }
+    } else if (isBboxDrag || mouseMode !== 'pick') {
+      clearHoverHighlight();
+      $('hoverTooltip').style.display = 'none';
+    }
+
+    // ── BBox drag overlay update ───────────────────────────────────────────
+    if (!isBboxDrag || !bboxStart) return;
+    const vRect = renderer.domElement.getBoundingClientRect();
+    const x0 = Math.min(bboxStart.x, e.clientX) - vRect.left;
+    const y0 = Math.min(bboxStart.y, e.clientY) - vRect.top;
+    const ov = $('bboxOverlay');
+    ov.style.left = x0 + 'px'; ov.style.top = y0 + 'px';
+    ov.style.width = Math.abs(e.clientX - bboxStart.x) + 'px'; ov.style.height = Math.abs(e.clientY - bboxStart.y) + 'px';
+  });
+  renderer.domElement.addEventListener('mouseup', async e => {
+    if (!isBboxDrag) return;
+    isBboxDrag = false; controls.enabled = true; $('bboxOverlay').style.display = 'none';
+    const vRect = renderer.domElement.getBoundingClientRect();
+    const sx1 = Math.min(bboxStart.x, e.clientX), sx2 = Math.max(bboxStart.x, e.clientX);
+    const sy1 = Math.min(bboxStart.y, e.clientY), sy2 = Math.max(bboxStart.y, e.clientY);
+    if (sx2 - sx1 < 5 || sy2 - sy1 < 5) return;
+    suppressNextClick = true; // prevent the mouseup from also firing onCanvasClick
+    setTimeout(() => { suppressNextClick = false; }, 300); // reset in case click event was prevented
+    console.log('[bbox] drag done, suppressNextClick=true');
+
+    // Screen-space face collection — correct penetrating selection like Abaqus
+    if (!mesh || !currentInstance) return;
+    const selectedFaces = collectBboxFaces(sx1, sy1, sx2, sy2);
+    if (selectedFaces.length === 0) return;
+
+    clearBboxHighlight();
+    setStatus(`框选中 ${selectedFaces.length} 个三角面，查询中…`);
+
+    try {
+      const res = await fetch(`${BASE}/api/odb/${ODB}/query/render-faces`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instance: currentInstance,
+          render_face_indices: selectedFaces,
+          mode: pickMode,
+        })
+      });
+      const d = await res.json();
+      console.log('[bbox] response ok=', res.ok, 'pickMode=', pickMode,
+        'elem_face_indices len=', d.elem_face_indices?.length ?? 'null',
+        'node_positions len=', d.node_positions?.length ?? 'null',
+        'elem_count=', d.elem_count, 'node_count=', d.node_count);
+
+      // ── Node mode: filter to only nodes whose screen projection is in the bbox ──
+      if (pickMode === 'node' && d.node_positions && d.node_positions.length > 0) {
+        const vRect2 = renderer.domElement.getBoundingClientRect();
+        const tv = new THREE.Vector3();
+        const filteredPos = [], filteredLabels = [];
+        for (let i = 0; i < d.node_positions.length; i++) {
+          const [nx, ny, nz] = d.node_positions[i];
+          tv.set(nx, ny, nz).project(camera);
+          if (tv.z < -1 || tv.z > 1) continue;
+          const px = ((tv.x + 1) / 2) * vRect2.width  + vRect2.left;
+          const py = ((-tv.y + 1) / 2) * vRect2.height + vRect2.top;
+          if (px >= sx1 && px <= sx2 && py >= sy1 && py <= sy2) {
+            filteredPos.push(d.node_positions[i]);
+            if (d.node_labels) filteredLabels.push(d.node_labels[i]);
+          }
+        }
+        console.log(`[bbox] node filter: ${d.node_positions.length} → ${filteredPos.length}`);
+        d.node_positions = filteredPos;
+        d.node_labels    = filteredLabels;
+        d.node_count     = filteredPos.length;
+      }
+
+      // ── Draw highlight overlay ─────────────────────────────────────────
+      if (pickMode === 'element' && d.elem_face_indices && d.elem_face_indices.length > 0) {
+        // Wireframe outline for selected elements.
+        // Pass ALL faces so diagonal detection works correctly.
+        // Clip plane on the material lets Three.js trim lines at the cut boundary.
+        const FACE_LIMIT = 20000; // cap to avoid freezing on huge selections
+        const facesToDraw = d.elem_face_indices.length <= FACE_LIMIT
+          ? d.elem_face_indices
+          : d.elem_face_indices.slice(0, FACE_LIMIT);
+        const eidSlice = d.elem_ids_per_face
+          ? (d.elem_face_indices.length <= FACE_LIMIT
+              ? d.elem_ids_per_face
+              : d.elem_ids_per_face.slice(0, FACE_LIMIT))
+          : null;
+        const edgePts = buildElementEdges(facesToDraw, eidSlice);
+        if (edgePts.length > 0) {
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.BufferAttribute(edgePts, 3));
+          bboxHighlight = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+            color: 0xffaa00, depthTest: false, transparent: true, opacity: 0.75,
+            clippingPlanes: $('viewCutActive').checked ? [clipPlane] : [],
+          }));
+          bboxHighlight.renderOrder = 998;
+          scene.add(bboxHighlight);
+        }
+      } else if (pickMode === 'node' && d.node_positions && d.node_positions.length > 0) {
+        // Point cloud for selected nodes
+        const pts = new Float32Array(d.node_positions.flat());
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+        bboxHighlight = new THREE.Points(geo, new THREE.PointsMaterial({
+          color: 0xff3333, size: 4, sizeAttenuation: false,
+          depthTest: false, transparent: true, opacity: 0.9,
+        }));
+        bboxHighlight.renderOrder = 998;
+        scene.add(bboxHighlight);
+      }
+
+      // ── Info text ─────────────────────────────────────────────────────
+      const countStr = pickMode === 'element'
+        ? `${d.elem_count} 个单元`
+        : `${d.node_count} 个节点`;
+      $('bboxInfo').textContent = countStr;
+
+      // ── Label list ────────────────────────────────────────────────────
+      const labels = pickMode === 'element' ? d.elem_labels : d.node_labels;
+      const totalCount = pickMode === 'element' ? d.elem_count : d.node_count;
+      const listEl = $('bboxLabelList');
+      if (labels && labels.length > 0) {
+        const LIMIT = 500;
+        const show = labels.slice(0, LIMIT);
+        let html = show.map(l =>
+          `<span style="display:inline-block;background:#21262d;border-radius:3px;padding:0 4px;margin:1px;color:#c9d1d9">${l}</span>`
+        ).join('');
+        if (labels.length > LIMIT) html += `<span style="color:#8b949e"> …还有 ${labels.length - LIMIT} 个</span>`;
+        listEl.innerHTML = html;
+        listEl.style.display = 'block';
+      } else if (totalCount > 2000) {
+        listEl.textContent = `${pickMode === 'element' ? '单元' : '节点'}数 ${totalCount} 超过 2000，标签不展开`;
+        listEl.style.display = 'block';
+      } else {
+        listEl.style.display = 'none';
+      }
+      $('bboxCard').style.display = 'flex';
+      setStatus(`框选完成：${countStr}`, 'ok');
+    } catch (e) { setStatus('框选查询失败: ' + e.message, 'err'); }
+  });
+
+  animate();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+function fitCameraToMesh(geo) {
+  geo.computeBoundingBox();
+  const box = geo.boundingBox;
+  const center = new THREE.Vector3();
+  const size   = new THREE.Vector3();
+  box.getCenter(center);
+  box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  modelBbox = { min: box.min.clone(), max: box.max.clone() };
+  updateViewCutSliderRange();
+
+  // Scale node markers to 0.4% of model size so they're always visible
+  const markerScale = (maxDim * 0.0015) / 0.02;
+  if (pickMarker)      pickMarker.scale.setScalar(markerScale);
+  if (hoverNodeMarker) hoverNodeMarker.scale.setScalar(markerScale);
+
+  // Set up perspective camera
+  const d = maxDim * 2.5;
+  perspCam.position.copy(center).add(new THREE.Vector3(0, 0, d));
+  perspCam.near = maxDim * 0.0001;
+  perspCam.far  = maxDim * 100;
+  perspCam.zoom = 1;
+  perspCam.updateProjectionMatrix();
+
+  // Sync orthographic camera to match same view
+  const vp = $('viewport');
+  const aspect = vp.clientWidth / vp.clientHeight;
+  const fovRad = perspCam.fov * Math.PI / 180;
+  const h = 2 * d * Math.tan(fovRad / 2);
+  orthoCam.left   = -h * aspect / 2;
+  orthoCam.right  =  h * aspect / 2;
+  orthoCam.top    =  h / 2;
+  orthoCam.bottom = -h / 2;
+  orthoCam.near   = -maxDim * 10;
+  orthoCam.far    =  maxDim * 100;
+  orthoCam.position.copy(perspCam.position);
+  orthoCam.quaternion.copy(perspCam.quaternion);
+  orthoCam.zoom = 1;
+  orthoCam.updateProjectionMatrix();
+
+  // Apply to active camera
+  camera.position.copy(perspCam.position);
+  camera.quaternion.copy(perspCam.quaternion);
+  controls.target.copy(center);
+  controls.update();
+  if (pickMarker) pickMarker.scale.setScalar(maxDim * 0.012);
+}
+
+function toggleCameraMode() {
+  const target   = controls.target.clone();
+  const vp       = $('viewport');
+  const aspect   = vp.clientWidth / vp.clientHeight;
+
+  if (!isOrtho) {
+    // Perspective → Orthographic
+    // Compute frustum size from current distance and fov
+    const d      = perspCam.position.distanceTo(target);
+    const fovRad = perspCam.fov * Math.PI / 180;
+    const h      = 2 * d * Math.tan(fovRad / 2);
+    orthoCam.left   = -h * aspect / 2;
+    orthoCam.right  =  h * aspect / 2;
+    orthoCam.top    =  h / 2;
+    orthoCam.bottom = -h / 2;
+    orthoCam.position.copy(perspCam.position);
+    orthoCam.quaternion.copy(perspCam.quaternion);
+    orthoCam.zoom = 1;
+    orthoCam.updateProjectionMatrix();
+    camera = orthoCam;
+    isOrtho = true;
+  } else {
+    // Orthographic → Perspective
+    // Back-compute camera distance so the same height is visible
+    const visH   = (orthoCam.top - orthoCam.bottom) / orthoCam.zoom;
+    const fovRad = perspCam.fov * Math.PI / 180;
+    const d      = visH / (2 * Math.tan(fovRad / 2));
+    const dir    = orthoCam.position.clone().sub(target);
+    if (dir.length() < 1e-6) dir.set(0, 0, 1);
+    perspCam.position.copy(target).addScaledVector(dir.normalize(), d);
+    perspCam.quaternion.copy(orthoCam.quaternion);
+    perspCam.zoom = 1;
+    perspCam.updateProjectionMatrix();
+    camera = perspCam;
+    isOrtho = false;
+  }
+
+  controls.object = camera;
+  controls.target.copy(target);
+  controls.update();
+
+  $('btnCamMode').textContent = isOrtho ? 'Ortho' : 'Persp';
+  $('btnCamMode').classList.toggle('active', isOrtho);
+}
+
+// ── Hover Highlight Helpers ───────────────────────────────────────────────────
+async function fetchHoverElementOutline(fi) {
+  hoverDebounceTimer = null;
+  if (fi !== hoverFaceIdx || !currentInstance) return;
+  const step  = $('stepSelect').value;
+  const field = $('fieldSelect').value;
+  const frame = $('frameSlider').value;
+  if (!step || !field) return; // results not loaded yet — skip outline
+  const compEl = $('componentSelect');
+  let compParam = `component=${encodeURIComponent(compEl.value)}`;
+  const opt = compEl.options[compEl.selectedIndex];
+  if (opt && opt.dataset.idx !== undefined) compParam = `component_idx=${opt.dataset.idx}`;
+  try {
+    const url = `${BASE}/api/odb/${ODB}/query/pick?instance=${encodeURIComponent(currentInstance)}`
+              + `&render_face_idx=${fi}&pick_mode=element&node_idx=0`
+              + `&step=${encodeURIComponent(step)}&field=${encodeURIComponent(field)}`
+              + `&frame_idx=${frame}&${compParam}&include_coords=false&deform_scale=${deformScale}`;
+    const res = await fetch(url);
+    if (!res.ok || fi !== hoverFaceIdx) return;
+    const d = await res.json();
+    if (fi !== hoverFaceIdx) return; // stale response
+    const faceIndices = d.render_face_indices || [fi];
+    const edgePts = buildElementEdges(faceIndices, new Array(faceIndices.length).fill(0));
+    if (hoverHighlightLine) {
+      scene.remove(hoverHighlightLine);
+      hoverHighlightLine.geometry.dispose();
+      hoverHighlightLine.material.dispose();
+      hoverHighlightLine = null;
+    }
+    if (edgePts.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(edgePts, 3));
+      hoverHighlightLine = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+        color: 0x00ccff, depthTest: false, transparent: true, opacity: 0.85,
+        clippingPlanes: $('viewCutActive').checked ? [clipPlane] : [],
+      }));
+      hoverHighlightLine.renderOrder = 997;
+      scene.add(hoverHighlightLine);
+    }
+    // Outline is ready — restore the temporary triangle tint so only the outline shows
+    if (fi === hoverFaceIdx && colorAttr && savedHoverColors) {
+      const cf = colorAttr.array;
+      const base = fi * 9;
+      for (let i = 0; i < 9; i++) cf[base + i] = savedHoverColors[i];
+      colorAttr.needsUpdate = true;
+      savedHoverColors = null;
+    }
+    // Update tooltip with real element label
+    if (d.odb?.elem_label != null) {
+      const tip = $('hoverTooltip');
+      if (tip.style.display !== 'none') tip.textContent = `Element ${d.odb.elem_label}`;
+    }
+  } catch (_) { /* hover fetch failed — silently ignore */ }
+}
+
+function clearHoverHighlight() {
+  // Restore vertex colors for the hovered triangle (element mode)
+  if (hoverFaceIdx >= 0 && colorAttr && savedHoverColors) {
+    const cf = colorAttr.array;
+    const base = hoverFaceIdx * 9;
+    for (let i = 0; i < 9; i++) cf[base + i] = savedHoverColors[i];
+    colorAttr.needsUpdate = true;
+  }
+  hoverFaceIdx = -1; savedHoverColors = null;
+  // Remove element outline line
+  if (hoverHighlightLine) {
+    scene.remove(hoverHighlightLine);
+    hoverHighlightLine.geometry.dispose();
+    hoverHighlightLine.material.dispose();
+    hoverHighlightLine = null;
+  }
+  // Hide node hover marker
+  if (hoverNodeMarker) hoverNodeMarker.visible = false;
+  // Cancel pending element outline fetch
+  if (hoverDebounceTimer) { clearTimeout(hoverDebounceTimer); hoverDebounceTimer = null; }
+}
+
+function applyHoverHighlight(fi, hitPoint) {
+  hoverFaceIdx = fi;
+
+  if (pickMode === 'node') {
+    // Show cyan sphere at the nearest vertex — no triangle coloring
+    if (hoverNodeMarker) {
+      const pos = mesh.geometry.attributes.position;
+      const v0 = new THREE.Vector3().fromBufferAttribute(pos, fi * 3);
+      const v1 = new THREE.Vector3().fromBufferAttribute(pos, fi * 3 + 1);
+      const v2 = new THREE.Vector3().fromBufferAttribute(pos, fi * 3 + 2);
+      let nearest = v0;
+      if (hitPoint) {
+        const d0 = hitPoint.distanceTo(v0), d1 = hitPoint.distanceTo(v1), d2 = hitPoint.distanceTo(v2);
+        if (d1 < d0 && d1 < d2) nearest = v1;
+        else if (d2 < d0 && d2 < d1) nearest = v2;
+      }
+      hoverNodeMarker.position.copy(nearest);
+      hoverNodeMarker.visible = true;
+    }
+  } else {
+    // Element mode: color triangle immediately for fast feedback
+    if (colorAttr) {
+      const cf = colorAttr.array;
+      const base = fi * 9;
+      savedHoverColors = cf.slice(base, base + 9);
+      for (let v = 0; v < 3; v++) { cf[base+v*3]=0.2; cf[base+v*3+1]=0.8; cf[base+v*3+2]=1.0; }
+      colorAttr.needsUpdate = true;
+    }
+    // Debounce: fetch full element outline after 120 ms of no movement
+    if (hoverDebounceTimer) clearTimeout(hoverDebounceTimer);
+    hoverDebounceTimer = setTimeout(() => fetchHoverElementOutline(fi), 120);
+  }
+}
+
+// ── Pick Highlight Helpers ────────────────────────────────────────────────────
+function clearPickHighlight() {
+  if (pickHighlightLine) {
+    scene.remove(pickHighlightLine);
+    pickHighlightLine.geometry.dispose();
+    pickHighlightLine = null;
+  }
+  if (pickMarker) pickMarker.visible = false;
+}
+
+function clearBboxHighlight() {
+  if (bboxHighlight) {
+    scene.remove(bboxHighlight);
+    bboxHighlight.geometry.dispose();
+    bboxHighlight = null;
+  }
+}
+
+/**
+ * Compute unit normal of triangle face fi from posArr (Triangle Soup).
+ */
+function faceNormal(posArr, fi) {
+  const base = fi * 9;
+  const ax = posArr[base],     ay = posArr[base + 1], az = posArr[base + 2];
+  const bx = posArr[base + 3], by = posArr[base + 4], bz = posArr[base + 5];
+  const cx = posArr[base + 6], cy = posArr[base + 7], cz = posArr[base + 8];
+  const ex = bx - ax, ey = by - ay, ez = bz - az;
+  const fx = cx - ax, fy = cy - ay, fz = cz - az;
+  const nx = ey * fz - ez * fy;
+  const ny = ez * fx - ex * fz;
+  const nz = ex * fy - ey * fx;
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  return len > 0 ? [nx / len, ny / len, nz / len] : [0, 0, 0];
+}
+
+/**
+ * Returns true when two faces are co-planar (same quad triangulation).
+ * |dot(n1, n2)| > 0.9998 means < ~1.3° between normals.
+ */
+function facesCoplanar(posArr, fi1, fi2) {
+  const n1 = faceNormal(posArr, fi1);
+  const n2 = faceNormal(posArr, fi2);
+  return Math.abs(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]) > 0.9998;
+}
+
+/**
+ * Extract unique element boundary edges from a set of triangle face indices.
+ *
+ * Triangle Soup: each face has its own vertex slots (fi*3+0/1/2) that are
+ * NEVER shared with another face, even if two faces share the same 3D position.
+ * So edges must be keyed by COORDINATE, not by vertex index.
+ *
+ * Diagonal detection rule: an edge is a quad diagonal if and only if:
+ *   - it is shared by exactly 2 triangles, AND
+ *   - both triangles belong to the SAME element (elemIdPerFace), AND
+ *   - those two triangles are co-planar (|dot(n1,n2)| > 0.9998)
+ *
+ * Cross-element edges (even on a flat surface) are ALWAYS kept.
+ *
+ * @param {number[]} faceIndices   render face indices
+ * @param {number[]|null} elemIdPerFace  element group index per face (parallel array);
+ *                                       pass null for single-element picks
+ * @returns {Float32Array}  interleaved [x0,y0,z0, x1,y1,z1, ...] pairs
+ */
+function buildElementEdges(faceIndices, elemIdPerFace) {
+  const posArr = mesh.geometry.attributes.position.array;
+
+  // Snap float coords to integer grid (1e4 precision) to build stable string keys.
+  function vkey(vi) {
+    const x = Math.round(posArr[vi * 3]     * 1e4);
+    const y = Math.round(posArr[vi * 3 + 1] * 1e4);
+    const z = Math.round(posArr[vi * 3 + 2] * 1e4);
+    return `${x},${y},${z}`;
+  }
+
+  // edgeMap: coordKey -> { count, a, b, fi1, fi2, eid1, eid2 }
+  const edgeMap = new Map();
+  for (let j = 0; j < faceIndices.length; j++) {
+    const fi  = faceIndices[j];
+    const eid = elemIdPerFace ? elemIdPerFace[j] : j; // unique per face if no info
+    const v = [fi * 3, fi * 3 + 1, fi * 3 + 2];
+    const pairs = [[v[0], v[1]], [v[1], v[2]], [v[2], v[0]]];
+    for (const [a, b] of pairs) {
+      const ka = vkey(a), kb = vkey(b);
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      if (edgeMap.has(key)) {
+        const e = edgeMap.get(key);
+        e.count++;
+        e.fi2 = fi;
+        e.eid2 = eid;
+      } else {
+        edgeMap.set(key, { count: 1, a, b, fi1: fi, fi2: -1, eid1: eid, eid2: -1 });
+      }
+    }
+  }
+
+  let total = 0, skipped = 0;
+  const pts = [];
+  for (const [, e] of edgeMap) {
+    total++;
+    // Only skip if: shared by 2 triangles of the SAME element AND co-planar
+    if (e.count === 2 && e.fi2 >= 0 && e.eid1 === e.eid2 && facesCoplanar(posArr, e.fi1, e.fi2)) {
+      skipped++;
+      continue;
+    }
+    pts.push(
+      posArr[e.a * 3], posArr[e.a * 3 + 1], posArr[e.a * 3 + 2],
+      posArr[e.b * 3], posArr[e.b * 3 + 1], posArr[e.b * 3 + 2]
+    );
+  }
+  console.log(`[buildElementEdges] faces=${faceIndices.length} edges=${total} skipped(diag)=${skipped} kept=${total - skipped}`);
+  return new Float32Array(pts);
+}
+
+// ── Connect & Load Meta ───────────────────────────────────────────────────
+$('btnConnect').addEventListener('click', async () => {
+  BASE = $('baseUrl').value.replace(/\/$/, '');
+  ODB  = $('odbId').value.trim();
+  setStatus('Connecting…');
+
+  try {
+    const res = await fetch(`${BASE}/api/odb/${ODB}/meta/overview`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error?.message || 'unknown error');
+    meta = body.data;
+
+    // Parse JSON-encoded strings from backend
+    meta.fields.forEach(f => {
+      if (typeof f.components === 'string') {
+        try { f.components = JSON.parse(f.components); } catch(e) { f.components = []; }
+      }
+      if (typeof f.positions === 'string') {
+        try { f.positions = JSON.parse(f.positions); } catch(e) { f.positions = []; }
+      }
+    });
+  } catch (e) {
+    setStatus('Connect failed: ' + e.message, 'err');
+    return;
+  }
+
+  const instSel = $('instanceSelect');
+  instSel.innerHTML = '';
+  for (const inst of meta.instances) {
+    const opt = document.createElement('option');
+    opt.value = inst.instance_name;
+    opt.textContent = inst.instance_name;
+    instSel.appendChild(opt);
+  }
+
+  const stepSel = $('stepSelect');
+  stepSel.innerHTML = '';
+  for (const step of meta.steps) {
+    const opt = document.createElement('option');
+    opt.value = step.step_name;
+    opt.textContent = `${step.step_name} (${step.num_frames} frames)`;
+    stepSel.appendChild(opt);
+  }
+
+  const fieldSel = $('fieldSelect');
+  fieldSel.innerHTML = '';
+  for (const f of meta.fields) {
+    const opt = document.createElement('option');
+    opt.value = f.field_name;
+    opt.textContent = f.field_name;
+    fieldSel.appendChild(opt);
+  }
+
+  // Initial populate of components for the default field
+  updateComponentList();
+  updateFrameSlider();
+
+  $('instanceCard').style.display   = 'flex';
+  $('colorsCard').style.display     = 'flex';
+  $('mouseModeCard').style.display  = 'flex';
+  setStatus(`Connected — ${meta.instances.length} instances`, 'ok');
+});
+
+$('fieldSelect').addEventListener('change', updateComponentList);
+
+function updateComponentList() {
+  if (!meta) return;
+  const fieldName = $('fieldSelect').value;
+  const fieldInfo = meta.fields.find(f => f.field_name === fieldName);
+  const compSel = $('componentSelect');
+  compSel.innerHTML = '';
+  if (!fieldInfo) return;
+
+  // Add USUM if not already there and it's a vector field (components.length > 1)
+  if (fieldInfo.components.length > 1 && !fieldInfo.components.includes('USUM')) {
+    const opt = document.createElement('option');
+    opt.value = 'USUM';
+    opt.textContent = 'USUM (Magnitude)';
+    compSel.appendChild(opt);
+  }
+
+  fieldInfo.components.forEach((c, idx) => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.dataset.idx = idx; // Store original index
+    opt.textContent = c;
+    compSel.appendChild(opt);
+  });
+}
+
+$('stepSelect').addEventListener('change', updateFrameSlider);
+function updateFrameSlider() {
+  if (!meta) return;
+  const stepName = $('stepSelect').value;
+  const stepInfo = meta.steps.find(s => s.step_name === stepName);
+  if (!stepInfo) return;
+  const maxFrame = (stepInfo.num_frames || 1) - 1;
+  const slider = $('frameSlider');
+  slider.max = maxFrame;
+  if (parseInt(slider.value) > maxFrame) slider.value = maxFrame;
+  $('frameVal').textContent = slider.value;
+}
+$('frameSlider').addEventListener('input', () => { $('frameVal').textContent = $('frameSlider').value; });
+
+// ── Load Geometry ─────────────────────────────────────────────────────────
+$('btnLoadGeom').addEventListener('click', async () => {
+  const instance = $('instanceSelect').value;
+  currentInstance = instance;
+  setStatus(`Loading geometry: ${instance}…`);
+
+  try {
+    const res = await fetch(`${BASE}/api/odb/${ODB}/geometry/${instance}/render-buffers`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const ab = await res.arrayBuffer();
+    const sections = parseL3BE(ab);
+
+    if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); }
+    // Clean up edges too
+    if (meshEdgesLine) { scene.remove(meshEdgesLine); meshEdgesLine.geometry.dispose(); meshEdgesLine.material.dispose(); meshEdgesLine = null; }
+    if (featureEdgesLine) { scene.remove(featureEdgesLine); featureEdgesLine.geometry.dispose(); featureEdgesLine.material.dispose(); featureEdgesLine = null; }
+
+    const geo = new THREE.BufferGeometry();
+    const posRaw = sections.positions.data;
+    const posCopy = new Float32Array(posRaw);
+    numFaces = posCopy.length / 9;
+    geo.setAttribute('position', new THREE.BufferAttribute(posCopy, 3));
+
+    const count = posCopy.length / 3;
+    const initColors = new Float32Array(count * 3);
+    for (let i = 0; i < count * 3; i += 3) { initColors[i]=0.22; initColors[i+1]=0.72; initColors[i+2]=0.22; }
+    colorAttr = new THREE.BufferAttribute(initColors, 3);
+    geo.setAttribute('color', colorAttr);
+
+    if (sections.normals) {
+      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(sections.normals.data), 3));
+    } else {
+      geo.computeVertexNormals();
+    }
+
+    const mat = new THREE.MeshPhongMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      flatShading: false,
+      shininess: 30,
+    });
+    if ($('viewCutActive').checked) mat.clippingPlanes = [clipPlane];
+
+    mesh = new THREE.Mesh(geo, mat);
+    scene.add(mesh);
+
+    fitCameraToMesh(geo);
+    $('viewCutCard').style.display = 'flex';
+    setStatus(`Geometry loaded — ${numFaces} triangles`, 'ok');
+
+    // Populate color-code schemes (non-blocking, best-effort)
+    loadColorSchemes(instance);
+  } catch (e) {
+    setStatus('Geometry load failed: ' + e.message, 'err');
+  }
+});
+
+// ── Load Mesh Edges (All Grid) ────────────────────────────────────────────
+$('btnLoadMeshEdges').addEventListener('click', async () => {
+  if (!currentInstance) return;
+  setStatus(`Loading full mesh grid: ${currentInstance}…`);
+  try {
+    const res = await fetch(`${BASE}/api/odb/${ODB}/geometry/${currentInstance}/element-mesh-edges`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const ab = await res.arrayBuffer();
+    const sections = parseL3BE(ab);
+
+    if (meshEdgesLine) { scene.remove(meshEdgesLine); meshEdgesLine.geometry.dispose(); }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sections.edge_positions.data), 3));
+    
+    const meshEdgeMat = new THREE.LineBasicMaterial({ color: 0x111111, linewidth: 1 });
+    if ($('viewCutActive').checked) meshEdgeMat.clippingPlanes = [clipPlane];
+    meshEdgesLine = new THREE.LineSegments(geo, meshEdgeMat);
+    scene.add(meshEdgesLine);
+    setStatus(`Mesh grid loaded: ${res.headers.get('X-Edge-Count')} edges`, 'ok');
+  } catch (e) {
+    setStatus('Mesh grid load failed: ' + e.message, 'err');
+  }
+});
+
+// ── Load Feature Edges (Outlines) ─────────────────────────────────────────
+$('btnLoadFeatures').addEventListener('click', async () => {
+  if (!currentInstance) return;
+  setStatus(`Loading feature edges: ${currentInstance}…`);
+  try {
+    const res = await fetch(`${BASE}/api/odb/${ODB}/geometry/${currentInstance}/feature-edges`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const ab = await res.arrayBuffer();
+    const sections = parseL3BE(ab);
+
+    if (featureEdgesLine) { scene.remove(featureEdgesLine); featureEdgesLine.geometry.dispose(); }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sections.edge_positions.data), 3));
+    
+    const featureEdgeMat = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 1 });
+    if ($('viewCutActive').checked) featureEdgeMat.clippingPlanes = [clipPlane];
+    featureEdgesLine = new THREE.LineSegments(geo, featureEdgeMat);
+    scene.add(featureEdgesLine);
+    setStatus(`Feature edges loaded: ${res.headers.get('X-Edge-Count')} edges`, 'ok');
+  } catch (e) {
+    setStatus('Feature edges load failed: ' + e.message, 'err');
+  }
+});
+
+// ── Apply Frame Colors ────────────────────────────────────────────────────
+$('btnColors').addEventListener('click', async () => {
+  if (!mesh || !currentInstance) { setStatus('Load geometry first', 'err'); return; }
+  const instance  = $('instanceSelect').value;
+  const field     = $('fieldSelect').value;
+  const compEl    = $('componentSelect');
+  const component = compEl.value;
+  const step      = $('stepSelect').value;
+  const frame     = $('frameSlider').value;
+
+  // Resolve component_idx for non-displacement fields
+  let compParam = `component=${component}`;
+  if (field !== 'U' && component !== 'USUM') {
+    const opt = compEl.options[compEl.selectedIndex];
+    if (opt && opt.dataset.idx !== undefined) {
+      compParam = `component_idx=${opt.dataset.idx}`;
+    }
+  }
+
+  setStatus(`Fetching colors: ${field}/${component} frame ${frame}…`);
+  try {
+    const url = `${BASE}/api/odb/${ODB}/results/frame-colors?instance=${instance}&step=${encodeURIComponent(step)}&frame=${frame}&field=${field}&${compParam}&mode=${$('renderMode').value}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const j = await res.json(); msg = j?.error?.message || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    const vMin = parseFloat(res.headers.get('X-Val-Min') || '0');
+    const vMax = parseFloat(res.headers.get('X-Val-Max') || '1');
+    const ab = await res.arrayBuffer();
+    const sections = parseL3BE(ab);
+
+    const colorsU8 = sections.color_per_vertex.data;
+    const cf = colorAttr.array;
+    for (let i = 0; i < cf.length / 3; i++) {
+      cf[i*3] = colorsU8[i*4]/255; cf[i*3+1] = colorsU8[i*4+1]/255; cf[i*3+2] = colorsU8[i*4+2]/255;
+    }
+    colorAttr.needsUpdate = true;
+    drawLegend(vMin, vMax);
+    $('legendCard').style.display = 'flex';
+    setStatus(`Colors applied — [${fmtNum(vMin)}, ${fmtNum(vMax)}]`, 'ok');
+  } catch (e) {
+    setStatus('Color fetch failed: ' + e.message, 'err');
+  }
+});
+
+function drawLegend(vMin, vMax) {
+  const canvas = $('legendBar');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  for (let x = 0; x < W; x++) {
+    const t = x / (W - 1);
+    const r = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 3)));
+    const g = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 2)));
+    const b = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 1)));
+    ctx.fillStyle = `rgb(${(r*255)|0},${(g*255)|0},${(b*255)|0})`;
+    ctx.fillRect(x, 0, 1, H);
+  }
+  $('legendMin').textContent = fmtNum(vMin);
+  $('legendMid').textContent = fmtNum((vMin + vMax) / 2);
+  $('legendMax').textContent = fmtNum(vMax);
+}
+
+// ── Mouse Mode & Pick Logic ───────────────────────────────────────────────
+let mouseMode = 'nav'; 
+let pickMode = 'element'; 
+
+$('btnModeNav').addEventListener('click', () => { mouseMode = 'nav'; $('btnModeNav').className='primary'; $('btnModePick').className=''; $('pickSubMode').style.display='none'; });
+$('btnModePick').addEventListener('click', () => { mouseMode = 'pick'; $('btnModePick').className='primary'; $('btnModeNav').className=''; $('pickSubMode').style.display='block'; });
+$('btnPickElem').addEventListener('click', () => { pickMode = 'element'; $('btnPickElem').className='toggle active'; $('btnPickNode').className='toggle'; });
+$('btnPickNode').addEventListener('click', () => { pickMode = 'node'; $('btnPickNode').className='toggle active'; $('btnPickElem').className='toggle'; });
+$('btnCamMode').addEventListener('click', toggleCameraMode);
+
+function onCanvasClick(event) {
+  if (suppressNextClick) { suppressNextClick = false; console.log('[click] suppressed'); return; }
+  if (mouseMode !== 'pick' || !mesh) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const x =  ((event.clientX - rect.left) / rect.width)  * 2 - 1;
+  const y = -((event.clientY - rect.top)  / rect.height) * 2 + 1;
+
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+  const hits = raycaster.intersectObject(mesh, false).filter(h => {
+    if (!$('viewCutActive').checked) return true;
+    return clipPlane.distanceToPoint(h.point) >= 0;
+  });
+  if (hits.length === 0) return;
+
+  const hit = hits[0];
+  let faceIdx = hit.faceIndex;
+  if (faceIdx == null) {
+    if (hit.face && hit.face.a != null) faceIdx = Math.floor(hit.face.a / 3);
+    else if (hit.index != null) faceIdx = Math.floor(hit.index / 3);
+    else return;
+  }
+
+  let nodeIdx = 0;
+  if (pickMode === 'node') {
+    const pos = mesh.geometry.attributes.position;
+    const v0 = new THREE.Vector3().fromBufferAttribute(pos, faceIdx * 3);
+    const v1 = new THREE.Vector3().fromBufferAttribute(pos, faceIdx * 3 + 1);
+    const v2 = new THREE.Vector3().fromBufferAttribute(pos, faceIdx * 3 + 2);
+    const d0 = hit.point.distanceTo(v0);
+    const d1 = hit.point.distanceTo(v1);
+    const d2 = hit.point.distanceTo(v2);
+    if (d1 < d0 && d1 < d2) nodeIdx = 1;
+    else if (d2 < d0 && d2 < d1) nodeIdx = 2;
+  }
+
+  fetchPick(faceIdx, nodeIdx);
+}
+
+async function fetchPick(faceIdx, nodeIdx) {
+  const instance = currentInstance;
+  const field     = $('fieldSelect').value;
+  const compEl    = $('componentSelect');
+  const component = compEl.value;
+  const step      = $('stepSelect').value;
+  const frame     = $('frameSlider').value;
+
+  // Resolve component_idx for pick too
+  let compParam = `component=${component}`;
+  if (field !== 'U' && component !== 'USUM') {
+    const opt = compEl.options[compEl.selectedIndex];
+    if (opt && opt.dataset.idx !== undefined) {
+      compParam = `component_idx=${opt.dataset.idx}`;
+    }
+  }
+
+  try {
+    const url = `${BASE}/api/odb/${ODB}/query/pick?instance=${instance}&render_face_idx=${faceIdx}&pick_mode=${pickMode}&node_idx=${nodeIdx}&step=${encodeURIComponent(step)}&field=${field}&frame_idx=${frame}&${compParam}&include_coords=true&deform_scale=${deformScale}`;
+    const res = await fetch(url);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error?.message || `HTTP ${res.status}`);
+
+    clearPickHighlight();
+
+    if (pickMode === 'node') {
+      // Node pick: show sphere at the selected vertex only, no face coloring
+      const pos = mesh.geometry.attributes.position;
+      const v = new THREE.Vector3().fromBufferAttribute(pos, faceIdx * 3 + nodeIdx);
+      pickMarker.position.copy(v);
+      pickMarker.visible = true;
+    } else {
+      // Element pick: draw wireframe outline over the element's triangles.
+      // Pass ALL faces so diagonal detection works (filtering before breaks paired quads).
+      // Clip plane applied to the material so Three.js clips the lines at the cut boundary.
+      const faceIndices = d.render_face_indices || [faceIdx];
+      const sameElemIds = new Array(faceIndices.length).fill(0); // all same element
+      const edgePts = buildElementEdges(faceIndices, sameElemIds);
+      if (edgePts.length > 0) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(edgePts, 3));
+        pickHighlightLine = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+          color: 0xffdd00,
+          depthTest: false,
+          transparent: true,
+          opacity: 0.9,
+          clippingPlanes: $('viewCutActive').checked ? [clipPlane] : [],
+        }));
+        pickHighlightLine.renderOrder = 999;
+        scene.add(pickHighlightLine);
+      }
+    }
+
+    $('pInst').textContent    = instance;
+    $('pFaceIdx').textContent = faceIdx;
+    
+    const pc = $('pickCard');
+    pc.className = 'card ' + (pickMode === 'element' ? 'show-elem' : 'show-node');
+    
+    if (pickMode === 'element') {
+      $('pElem').textContent = d.odb.elem_label;
+      $('pElemNodes').textContent = d.odb.elem_node_labels?.join(', ') || '—';
+      document.querySelectorAll('.elem-only').forEach(el => el.style.display = '');
+      document.querySelectorAll('.node-only').forEach(el => el.style.display = 'none');
+    } else {
+      $('pNode').textContent = d.odb.node_label;
+      $('pFaceNodes').textContent = d.odb.candidate_node_labels?.join(', ') || '—';
+      document.querySelectorAll('.node-only').forEach(el => el.style.display = '');
+      document.querySelectorAll('.elem-only').forEach(el => el.style.display = 'none');
+    }
+    
+    let valStr = '—';
+    let sourceStr = '—';
+    if (d.result) {
+      sourceStr = d.result.position;
+      if (pickMode === 'element') {
+        valStr = d.result.display_value != null ? fmtNum(d.result.display_value) + ' (avg)' : d.result.raw_values?.map(fmtNum).join(', ');
+      } else {
+        valStr = fmtNum(d.result.raw_value);
+      }
+    }
+    $('pSource').textContent = sourceStr;
+    $('pVal').textContent = valStr;
+    $('pickCard').style.display = 'flex';
+
+    // ── Append to probe table ──────────────────────────────────────────────
+    const idLabel = pickMode === 'element' ? d.odb.elem_label : d.odb.node_label;
+    const fmtCoords = arr => arr ? `(${arr.map(v => v.toFixed(4)).join(', ')})` : '—';
+    // Format attached element labels (node mode only)
+    let attachedElems = '—';
+    if (pickMode === 'node') {
+      const labels = d.odb.attached_elem_labels;
+      if (labels === null || labels === undefined) {
+        attachedElems = '—（需重跑 L1）';
+      } else if (labels.length === 0) {
+        attachedElems = '(0)';
+      } else if (labels.length <= 6) {
+        attachedElems = labels.join(', ');
+      } else {
+        attachedElems = `${labels[0]}, ${labels[1]}, … (${labels.length} 个)`;
+      }
+    }
+
+    probeRows.push({
+      mode:      pickMode === 'element' ? 'Elem' : 'Node',
+      instance,
+      id:        idLabel,
+      elemType:  d.odb.elem_type || '—',
+      origCoords: fmtCoords(d.odb.orig_coords),
+      defCoords:  fmtCoords(d.odb.def_coords),
+      mises:     d.mises != null ? fmtNum(d.mises) : '—',
+      attachedElems,
+      field:     d.result ? `${d.result.field || field}` : field,
+      value:     valStr,
+    });
+    renderProbeTable();
+
+    setStatus(`Picked ${pickMode}: ${idLabel}`, 'ok');
+  } catch (e) {
+    setStatus('Pick failed: ' + e.message, 'err');
+  }
+}
+
+function renderProbeTable() {
+  if (probeRows.length === 0) { $('probeTableCard').style.display = 'none'; return; }
+  $('probeTableCard').style.display = 'flex';
+  const tbody = $('probeTableBody');
+  tbody.innerHTML = '';
+  probeRows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = [
+      `<td>${i+1}</td>`,
+      `<td>${r.mode}</td>`,
+      `<td title="${r.instance}">${r.instance}</td>`,
+      `<td>${r.id}</td>`,
+      `<td>${r.elemType}</td>`,
+      `<td title="${r.origCoords}">${r.origCoords}</td>`,
+      `<td title="${r.defCoords}">${r.defCoords}</td>`,
+      `<td>${r.mises}</td>`,
+      `<td title="${r.attachedElems}">${r.attachedElems}</td>`,
+      `<td>${r.field}</td>`,
+      `<td>${r.value}</td>`,
+    ].join('');
+    tbody.appendChild(tr);
+  });
+  tbody.lastElementChild?.scrollIntoView({ block: 'nearest' });
+}
+
+function highlightFaces(faceIndices) {
+  const cf = colorAttr.array;
+  const color = [1, 0.85, 0.1];
+  for (const fi of faceIndices) {
+    for (let v = 0; v < 3; v++) {
+      const b = (fi * 3 + v) * 3;
+      cf[b] = color[0]; cf[b+1] = color[1]; cf[b+2] = color[2];
+    }
+  }
+  colorAttr.needsUpdate = true;
+}
+
+// ── BBox Screen-Space Face Collection ────────────────────────────────────────
+// Returns render face indices whose screen-projected vertices fall in the 2D rect.
+// Depth-independent: penetrates the model just like Abaqus box select.
+function collectBboxFaces(sx1, sy1, sx2, sy2) {
+  if (!mesh) return [];
+  const vRect = renderer.domElement.getBoundingClientRect();
+  const posArr = mesh.geometry.attributes.position.array;
+  const Rf = posArr.length / 9;
+  const result = [];
+  const v = new THREE.Vector3();
+
+  let zClipped = 0;
+  for (let fi = 0; fi < Rf; fi++) {
+    if (!facePassesClip(fi)) continue; // skip fully-clipped faces
+    for (let i = 0; i < 3; i++) {
+      v.fromArray(posArr, (fi * 3 + i) * 3);
+      v.project(camera);
+      if (v.z < -1 || v.z > 1) { zClipped++; continue; } // behind camera or past far plane
+      const px = ((v.x + 1) / 2) * vRect.width + vRect.left;
+      const py = ((-v.y + 1) / 2) * vRect.height + vRect.top;
+      if (px >= sx1 && px <= sx2 && py >= sy1 && py <= sy2) {
+        result.push(fi);
+        break;
+      }
+    }
+  }
+  console.log(`[collectBboxFaces] rect=(${sx1.toFixed(0)},${sy1.toFixed(0)})-(${sx2.toFixed(0)},${sy2.toFixed(0)}) Rf=${Rf} zClipped=${zClipped} selected=${result.length}`);
+  return result;
+}
+
+$('btnClearBbox').addEventListener('click', () => {
+  clearBboxHighlight();
+  $('bboxLabelList').style.display = 'none';
+  $('bboxLabelList').innerHTML = '';
+  $('bboxCard').style.display = 'none';
+  setStatus('框选已清除', 'ok');
+});
+
+$('btnClearProbe').addEventListener('click', () => {
+  probeRows = [];
+  $('probeTableBody').innerHTML = '';
+  $('probeTableCard').style.display = 'none';
+});
+
+$('deformScaleSlider').addEventListener('input', e => {
+  deformScale = parseFloat(e.target.value);
+  $('deformScaleVal').textContent = deformScale.toFixed(1);
+});
+
+initThree();
+
+// ── View Cut ──────────────────────────────────────────────────────────────────
+clipPlane = new THREE.Plane();
+renderer.localClippingEnabled = true;
+
+// Returns true if face fi has at least one vertex on the visible (non-clipped) side.
+// Used to filter picks, bbox collection, and element edge highlights.
+const _cpTmpV = new THREE.Vector3();
+function facePassesClip(fi) {
+  if (!$('viewCutActive').checked) return true;
+  const posArr = mesh.geometry.attributes.position.array;
+  for (let i = 0; i < 3; i++) {
+    const b = (fi * 3 + i) * 3;
+    if (clipPlane.distanceToPoint(_cpTmpV.set(posArr[b], posArr[b+1], posArr[b+2])) >= 0) return true;
+  }
+  return false; // all three vertices are on the clipped side
+}
+
+// Apply / remove the clip plane on materials that should be clipped.
+// Section mesh / edges are intentionally excluded — they live exactly on the
+// cut boundary and would be eaten by global clipping.
+function applyClipping(planes) {
+  if (mesh && mesh.material)                         mesh.material.clippingPlanes = planes;
+  if (meshEdgesLine && meshEdgesLine.material)       meshEdgesLine.material.clippingPlanes = planes;
+  if (featureEdgesLine && featureEdgesLine.material) featureEdgesLine.material.clippingPlanes = planes;
+}
+
+function updateClipPlane() {
+  if (!modelBbox) return;
+  const ax = viewCutAxis;
+  const sign = viewCutFlipped ? -1 : 1;
+  clipPlane.normal.set(
+    ax === 'x' ? sign : 0,
+    ax === 'y' ? sign : 0,
+    ax === 'z' ? sign : 0,
+  );
+  const pos = parseFloat($('viewCutSlider').value);
+  // THREE.Plane clips where n·x + constant < 0; we keep n·x >= pos → constant = -sign*pos
+  clipPlane.constant = -sign * pos;
+}
+
+function updateViewCutSliderRange() {
+  if (!modelBbox) return;
+  const sl = $('viewCutSlider');
+  const ax = viewCutAxis;
+  const mn = modelBbox.min[ax], mx = modelBbox.max[ax];
+  const mid = (mn + mx) / 2;
+  sl.min = mn; sl.max = mx;
+  sl.step = (mx - mn) / 1000 || 0.001;
+  sl.value = mid;
+  sl.disabled = false;
+  $('viewCutPosVal').textContent = mid.toFixed(3);
+  updateClipPlane();
+}
+
+$('viewCutActive').addEventListener('change', e => {
+  if (e.target.checked) { updateClipPlane(); applyClipping([clipPlane]); fetchSectionMesh(); }
+  else { applyClipping([]); clearSectionMesh(); }
+});
+
+['X', 'Y', 'Z'].forEach(ax => {
+  $(`btnAxis${ax}`).addEventListener('click', () => {
+    viewCutAxis = ax.toLowerCase();
+    ['X', 'Y', 'Z'].forEach(a => $(`btnAxis${a}`).classList.toggle('active', a === ax));
+    updateViewCutSliderRange();
+    if ($('viewCutActive').checked) { updateClipPlane(); fetchSectionMesh(); }
+  });
+});
+
+$('viewCutSlider').addEventListener('input', e => {
+  $('viewCutPosVal').textContent = parseFloat(e.target.value).toFixed(3);
+  if ($('viewCutActive').checked) updateClipPlane();
+});
+$('viewCutSlider').addEventListener('mouseup', () => {
+  if ($('viewCutActive').checked) fetchSectionMesh();
+});
+$('viewCutSlider').addEventListener('touchend', () => {
+  if ($('viewCutActive').checked) fetchSectionMesh();
+});
+
+$('btnViewCutFlip').addEventListener('click', () => {
+  viewCutFlipped = !viewCutFlipped;
+  $('btnViewCutFlip').classList.toggle('active', viewCutFlipped);
+  if ($('viewCutActive').checked) updateClipPlane();
+});
+
+$('btnSectionFill').addEventListener('click', () => {
+  const on = $('btnSectionFill').classList.toggle('active');
+  if (sectionMesh) sectionMesh.visible = on;
+});
+
+// ── View Cut Phase 2: section-mesh fetch ──────────────────────────────────────
+async function fetchSectionMesh() {
+  if (!$('viewCutActive').checked || !currentInstance) return;
+
+  if (sectionAbortCtrl) sectionAbortCtrl.abort();
+  sectionAbortCtrl = new AbortController();
+
+  const axis     = viewCutAxis.toUpperCase();
+  const position = parseFloat($('viewCutSlider').value);
+  const url = `${BASE}/api/odb/${ODB}/results/section-mesh` +
+              `?instance=${encodeURIComponent(currentInstance)}&axis=${axis}&position=${position}`;
+
+  try {
+    const res = await fetch(url, { signal: sectionAbortCtrl.signal });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const j = await res.json(); msg = j?.error?.message || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+
+    const triCount  = parseInt(res.headers.get('X-Tri-Count')  || '0');
+
+    // Dispose previous 3D objects without aborting the current in-flight request.
+    // (clearSectionMesh() would abort sectionAbortCtrl, which IS this request,
+    //  causing res.arrayBuffer() to throw AbortError and silently bail.)
+    disposeSectionObjects();
+
+    if (triCount === 0) return;
+
+    const ab = await res.arrayBuffer();
+    const sec = parseL3BE(ab);
+
+    // ── Filled cross-section ──────────────────────────────────────────────
+    const fillVerts = new Float32Array(sec.vertices.data);
+    const fillGeo   = new THREE.BufferGeometry();
+    fillGeo.setAttribute('position', new THREE.BufferAttribute(fillVerts, 3));
+    fillGeo.computeVertexNormals();
+
+    const fillMat = new THREE.MeshBasicMaterial({
+      color: 0x6080a0,            // medium slate blue-gray (Abaqus-style fill)
+      side: THREE.DoubleSide,
+      polygonOffset: true,        // push fill slightly behind so edge lines win on top
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 4,
+    });
+
+    sectionMesh = new THREE.Mesh(fillGeo, fillMat);
+    sectionMesh.visible = $('btnSectionFill').classList.contains('active');
+    scene.add(sectionMesh);
+
+    // ── Element outline edges on cut face ─────────────────────────────────
+    if (sec.edge_verts && sec.edge_verts.data.length > 0) {
+      const edgeVerts = new Float32Array(sec.edge_verts.data);
+      const edgeGeo   = new THREE.BufferGeometry();
+      edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgeVerts, 3));
+
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0x222222 });
+
+      sectionEdges = new THREE.LineSegments(edgeGeo, edgeMat);
+      sectionEdges.renderOrder = 1; // render after fill so lines are always on top
+      scene.add(sectionEdges);
+    }
+
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    setStatus('Section mesh: ' + e.message, 'err');
+  }
+}
+
+function disposeSectionObjects() {
+  if (sectionMesh) {
+    scene.remove(sectionMesh);
+    sectionMesh.geometry.dispose();
+    sectionMesh.material.dispose();
+    sectionMesh = null;
+  }
+  if (sectionEdges) {
+    scene.remove(sectionEdges);
+    sectionEdges.geometry.dispose();
+    sectionEdges.material.dispose();
+    sectionEdges = null;
+  }
+}
+
+function clearSectionMesh() {
+  if (sectionAbortCtrl) { sectionAbortCtrl.abort(); sectionAbortCtrl = null; }
+  disposeSectionObjects();
+}
+
+// ── Color Code ────────────────────────────────────────────────────────────
+
+const SCHEME_LABELS = {
+  etype:        'Element Type',
+  material:     'Material',
+  section_type: 'Section Type',
+  elset:        'Elset Highlight',
+};
+
+async function loadColorSchemes(instance) {
+  try {
+    const res = await fetch(`${BASE}/api/odb/${ODB}/color-code/${encodeURIComponent(instance)}/schemes`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const sel = $('colorScheme');
+    sel.innerHTML = '<option value="">— None —</option>';
+    for (const s of data.schemes) {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = SCHEME_LABELS[s] || s;
+      sel.appendChild(opt);
+    }
+
+    const box = $('elsetCheckboxes');
+    box.innerHTML = '';
+    for (const s of (data.elsets || [])) {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'display:flex;align-items:center;gap:5px;cursor:pointer;padding:2px 0;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = s; cb.className = 'elset-cb';
+      const span = document.createElement('span');
+      span.textContent = s;
+      lbl.appendChild(cb); lbl.appendChild(span);
+      box.appendChild(lbl);
+    }
+
+    $('colorCodeCard').style.display = 'flex';
+    $('colorCodeLegend').innerHTML = '';
+  } catch (_) {}
+}
+
+$('colorScheme').addEventListener('change', () => {
+  $('elsetRow').style.display = $('colorScheme').value === 'elset' ? '' : 'none';
+});
+
+$('btnElsetAll').addEventListener('click', () => {
+  document.querySelectorAll('.elset-cb').forEach(cb => cb.checked = true);
+});
+$('btnElsetNone').addEventListener('click', () => {
+  document.querySelectorAll('.elset-cb').forEach(cb => cb.checked = false);
+});
+
+$('btnColorCode').addEventListener('click', async () => {
+  if (!mesh || !currentInstance) { setStatus('Load geometry first', 'err'); return; }
+  const scheme = $('colorScheme').value;
+  if (!scheme) { setStatus('Select a color scheme', 'err'); return; }
+
+  let url = `${BASE}/api/odb/${ODB}/color-code/${encodeURIComponent(currentInstance)}?scheme=${scheme}`;
+  if (scheme === 'elset') {
+    const checked = [...document.querySelectorAll('.elset-cb:checked')].map(cb => cb.value);
+    if (!checked.length) { setStatus('Select at least one element set', 'err'); return; }
+    url += `&set_names=${encodeURIComponent(checked.join(','))}`;
+  }
+
+  setStatus(`Applying color code: ${SCHEME_LABELS[scheme] || scheme}…`);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const legendJson = res.headers.get('X-Color-Legend');
+    const legend = legendJson ? JSON.parse(legendJson) : [];
+    const ab = await res.arrayBuffer();
+    const sections = parseL3BE(ab);
+
+    const colorsF32 = new Float32Array(sections.color_per_vertex.data);
+    colorAttr.array.set(colorsF32);
+    colorAttr.needsUpdate = true;
+
+    renderColorLegend(legend);
+    setStatus(`Color code applied — ${legend.length} categories`, 'ok');
+  } catch (e) {
+    setStatus('Color code failed: ' + e.message, 'err');
+  }
+});
+
+$('btnColorCodeClear').addEventListener('click', () => {
+  if (!colorAttr) return;
+  const cf = colorAttr.array;
+  for (let i = 0; i < cf.length; i += 3) { cf[i] = 0.25; cf[i+1] = 0.35; cf[i+2] = 0.55; }
+  colorAttr.needsUpdate = true;
+  $('colorCodeLegend').innerHTML = '';
+  setStatus('Color code cleared', 'ok');
+});
+
+function renderColorLegend(legend) {
+  const div = $('colorCodeLegend');
+  div.innerHTML = '';
+  for (const item of legend) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:5px;margin:2px 0;font-size:11px;color:#c9d1d9;';
+    const sw = document.createElement('div');
+    const r = Math.round(item.r * 255), g = Math.round(item.g * 255), b = Math.round(item.b * 255);
+    sw.style.cssText = `width:13px;height:13px;border-radius:2px;flex-shrink:0;background:rgb(${r},${g},${b})`;
+    const lbl = document.createElement('span');
+    lbl.textContent = item.name;
+    lbl.style.overflow = 'hidden';
+    lbl.style.textOverflow = 'ellipsis';
+    lbl.style.whiteSpace = 'nowrap';
+    row.appendChild(sw); row.appendChild(lbl);
+    div.appendChild(row);
+  }
+}
+
+</script>
+</body>
+</html>
