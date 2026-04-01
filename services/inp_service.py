@@ -2,20 +2,11 @@ import heapq
 import json
 import math
 import os
+from src.inp import parse_inp
+from db import get_connection, ensure_tables_exist, clear_fem_tables
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
-
-try:
-    from VirtualReal702.db import get_connection, ensure_tables_exist, clear_fem_tables
-except ImportError:  # pragma: no cover - local direct run fallback
-    from db import get_connection, ensure_tables_exist, clear_fem_tables
-
-try:
-    from src.inp import parse_inp
-except ImportError:  # pragma: no cover - package import fallback
-    from VirtualReal702.src.inp import parse_inp
-
 
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_SIZE = 256
@@ -495,6 +486,171 @@ def _cache_part_lookup(cache: dict) -> Dict[Tuple[str, int], str]:
     return lookup
 
 
+def _safe_float_zero(value, default: float = 0.0) -> float:
+    value = _safe_float(value)
+    return default if value is None else value
+
+
+def _extract_legacy_material_rows(model):
+    overview_rows = []
+    isotropic_rows = []
+    material_id_map = {}
+
+    for idx, (mat_name, material) in enumerate(sorted(model.materials.items()), start=1):
+        material_id_map[mat_name] = idx
+        mat_type = "MATERIAL"
+        if material.elastic and material.elastic.elastic_type:
+            mat_type = str(material.elastic.elastic_type).upper()
+
+        overview_rows.append({
+            "id": idx,
+            "type": mat_type,
+            "name": mat_name,
+        })
+
+        elastic = material.elastic
+        if elastic and str(elastic.elastic_type).upper() == "ISOTROPIC" and elastic.data:
+            row0 = list(elastic.data[0])
+            isotropic_rows.append({
+                "id": idx,
+                "rho": _safe_float_zero(material.density_data[0][0] if material.density_data else 0.0),
+                "e": _safe_float_zero(row0[0] if len(row0) >= 1 else 0.0),
+                "nu": _safe_float_zero(row0[1] if len(row0) >= 2 else 0.0),
+                "ge": _safe_float_zero(row0[2] if len(row0) >= 3 else 0.0),
+            })
+
+    return {
+        "overview_rows": overview_rows,
+        "isotropic_rows": isotropic_rows,
+        "material_id_map": material_id_map,
+    }
+
+
+def _extract_legacy_property_rows(model):
+    overview_rows = []
+    shell_rows = []
+    beam_rows = []
+    property_seq = 1
+
+    for part_name, part in sorted(model.parts.items()):
+        for section in part.sections:
+            row = {
+                "id": property_seq,
+                "type": str(section.section_type).upper(),
+                "part_name": part_name,
+                "elset_name": section.elset_name,
+                "material_name": section.material_name,
+            }
+            overview_rows.append(row)
+
+            if row["type"] in ("SHELL", "MEMBRANE"):
+                shell_rows.append({
+                    "id": property_seq,
+                    "thickness": _safe_float_zero(section.thickness),
+                    "nsm": _safe_float_zero(section.extra.get("nsm", 0.0)),
+                    "theta": _safe_float_zero(section.extra.get("theta", 0.0)),
+                })
+            elif row["type"] == "BEAM":
+                dims = list(section.extra.get("dims", []) or [])
+                beam_rows.append({
+                    "id": property_seq,
+                    "ax": _safe_float_zero(dims[0] if len(dims) >= 1 else 0.0),
+                    "ay": _safe_float_zero(dims[1] if len(dims) >= 2 else 0.0),
+                    "az": _safe_float_zero(dims[2] if len(dims) >= 3 else 0.0),
+                    "ix": _safe_float_zero(dims[3] if len(dims) >= 4 else 0.0),
+                    "iy": _safe_float_zero(dims[4] if len(dims) >= 5 else 0.0),
+                    "iz": _safe_float_zero(dims[5] if len(dims) >= 6 else 0.0),
+                    "cw": _safe_float_zero(dims[6] if len(dims) >= 7 else 0.0),
+                    "yn": _safe_float_zero(dims[7] if len(dims) >= 8 else 0.0),
+                    "zn": _safe_float_zero(dims[8] if len(dims) >= 9 else 0.0),
+                    "nsm": _safe_float_zero(section.extra.get("nsm", dims[9] if len(dims) >= 10 else 0.0)),
+                })
+
+            property_seq += 1
+
+    return {
+        "overview_rows": overview_rows,
+        "shell_rows": shell_rows,
+        "beam_rows": beam_rows,
+    }
+
+
+def _lookup_bc_node_labels(model, target_name: str) -> List[int]:
+    labels = []
+    seen = set()
+
+    if target_name is None:
+        return labels
+
+    text = str(target_name).strip()
+    if not text:
+        return labels
+
+    if text.lstrip("+-").isdigit():
+        return [int(text)]
+
+    if model.assembly and text in model.assembly.nsets:
+        for node_label in model.assembly.nsets[text].node_labels:
+            node_int = int(node_label)
+            if node_int not in seen:
+                seen.add(node_int)
+                labels.append(node_int)
+
+    for _, part in sorted(model.parts.items()):
+        nset = part.nsets.get(text)
+        if not nset:
+            continue
+        for node_label in nset.node_labels:
+            node_int = int(node_label)
+            if node_int not in seen:
+                seen.add(node_int)
+                labels.append(node_int)
+
+    return labels
+
+
+def _extract_legacy_boundary_rows(model):
+    dof_fields = {
+        1: "ux",
+        2: "uy",
+        3: "uz",
+        4: "rx",
+        5: "ry",
+        6: "rz",
+    }
+    node_map = {}
+
+    for step in model.steps:
+        for bc in step.boundary_conditions:
+            node_labels = _lookup_bc_node_labels(model, bc.nset_name)
+            if not node_labels:
+                continue
+            value = _safe_float_zero(bc.value)
+            dof_start = int(min(bc.dof_start, bc.dof_end))
+            dof_end = int(max(bc.dof_start, bc.dof_end))
+            for node_label in node_labels:
+                node_row = node_map.setdefault(int(node_label), {
+                    "node": int(node_label),
+                    "ux": None,
+                    "uy": None,
+                    "uz": None,
+                    "rx": None,
+                    "ry": None,
+                    "rz": None,
+                })
+                for dof in range(dof_start, dof_end + 1):
+                    field = dof_fields.get(dof)
+                    if field:
+                        node_row[field] = value
+
+    rows = []
+    for idx, node_label in enumerate(sorted(node_map), start=1):
+        row = dict(node_map[node_label])
+        row["id"] = idx
+        rows.append(row)
+    return rows
+
+
 def _extract_candidates(model):
     candidates = []
 
@@ -652,6 +808,9 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                        build_octree=True, force_rebuild_octree=False):
     ensure_tables_exist()
     model = parse_inp(file_path, resolve_refs=True)
+    legacy_materials = _extract_legacy_material_rows(model)
+    legacy_properties = _extract_legacy_property_rows(model)
+    legacy_boundaries = _extract_legacy_boundary_rows(model)
     candidates = _extract_candidates(model)
     sets = _extract_sets(model)
     node_data = _collect_global_nodes(model)
@@ -667,6 +826,126 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
     try:
         if clear_before_insert:
             clear_fem_tables(cursor, project_id)
+
+        material_overview_sql = """
+        INSERT INTO t_mt_py_fem_material_overview (Id, pid, Type)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            Type = VALUES(Type)
+        """
+        for item in legacy_materials["overview_rows"]:
+            cursor.execute(material_overview_sql, (
+                item["id"],
+                project_id,
+                item["type"],
+            ))
+
+        isotropic_sql = """
+        INSERT INTO t_mt_py_fem_isotropic (Id, pid, RHO, E, NU, GE)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            RHO = VALUES(RHO),
+            E = VALUES(E),
+            NU = VALUES(NU),
+            GE = VALUES(GE)
+        """
+        for item in legacy_materials["isotropic_rows"]:
+            cursor.execute(isotropic_sql, (
+                item["id"],
+                project_id,
+                item["rho"],
+                item["e"],
+                item["nu"],
+                item["ge"],
+            ))
+
+        property_overview_sql = """
+        INSERT INTO t_mt_py_fem_property (Id, pid, Type)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            Type = VALUES(Type)
+        """
+        for item in legacy_properties["overview_rows"]:
+            cursor.execute(property_overview_sql, (
+                item["id"],
+                project_id,
+                item["type"],
+            ))
+
+        shell_property_sql = """
+        INSERT INTO t_mt_py_fem_shell_property (Id, pid, Thickness, NSM, THETA)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            Thickness = VALUES(Thickness),
+            NSM = VALUES(NSM),
+            THETA = VALUES(THETA)
+        """
+        for item in legacy_properties["shell_rows"]:
+            cursor.execute(shell_property_sql, (
+                item["id"],
+                project_id,
+                item["thickness"],
+                item["nsm"],
+                item["theta"],
+            ))
+
+        beam_property_sql = """
+        INSERT INTO t_mt_py_fem_beam_property
+        (Id, pid, AX, AY, AZ, IX, IY, IZ, CW, YN, ZN, NSM)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            AX = VALUES(AX),
+            AY = VALUES(AY),
+            AZ = VALUES(AZ),
+            IX = VALUES(IX),
+            IY = VALUES(IY),
+            IZ = VALUES(IZ),
+            CW = VALUES(CW),
+            YN = VALUES(YN),
+            ZN = VALUES(ZN),
+            NSM = VALUES(NSM)
+        """
+        for item in legacy_properties["beam_rows"]:
+            cursor.execute(beam_property_sql, (
+                item["id"],
+                project_id,
+                item["ax"],
+                item["ay"],
+                item["az"],
+                item["ix"],
+                item["iy"],
+                item["iz"],
+                item["cw"],
+                item["yn"],
+                item["zn"],
+                item["nsm"],
+            ))
+
+        boundary_sql = """
+        INSERT INTO t_mt_py_fem_boundary
+        (Id, pid, Node, UX, UY, UZ, RX, RY, RZ)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            Node = VALUES(Node),
+            UX = VALUES(UX),
+            UY = VALUES(UY),
+            UZ = VALUES(UZ),
+            RX = VALUES(RX),
+            RY = VALUES(RY),
+            RZ = VALUES(RZ)
+        """
+        for item in legacy_boundaries:
+            cursor.execute(boundary_sql, (
+                item["id"],
+                project_id,
+                item["node"],
+                item["ux"],
+                item["uy"],
+                item["uz"],
+                item["rx"],
+                item["ry"],
+                item["rz"],
+            ))
 
         candidate_sql = """
         INSERT INTO t_mt_py_fem_parameter_candidate
@@ -749,6 +1028,12 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
         return {
             "file_path": os.path.abspath(file_path),
             "project_id": project_id,
+            "material_count": len(legacy_materials["overview_rows"]),
+            "isotropic_material_count": len(legacy_materials["isotropic_rows"]),
+            "property_count": len(legacy_properties["overview_rows"]),
+            "shell_property_count": len(legacy_properties["shell_rows"]),
+            "beam_property_count": len(legacy_properties["beam_rows"]),
+            "boundary_count": len(legacy_boundaries),
             "candidate_count": len(candidates),
             "set_count": len(sets),
             "instance_count": len(node_data["entries"]),
@@ -815,9 +1100,27 @@ def get_inp_catalog(project_id):
         fem_mode_count = int(cursor.fetchone()["cnt"])
         cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
         correlation_count = int(cursor.fetchone()["cnt"])
+        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_material_overview WHERE pid = %s", (project_id,))
+        material_count = int(cursor.fetchone()["cnt"])
+        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_isotropic WHERE pid = %s", (project_id,))
+        isotropic_material_count = int(cursor.fetchone()["cnt"])
+        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_property WHERE pid = %s", (project_id,))
+        property_count = int(cursor.fetchone()["cnt"])
+        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_shell_property WHERE pid = %s", (project_id,))
+        shell_property_count = int(cursor.fetchone()["cnt"])
+        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_beam_property WHERE pid = %s", (project_id,))
+        beam_property_count = int(cursor.fetchone()["cnt"])
+        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_boundary WHERE pid = %s", (project_id,))
+        boundary_count = int(cursor.fetchone()["cnt"])
 
         return {
             "project_id": project_id,
+            "material_count": material_count,
+            "isotropic_material_count": isotropic_material_count,
+            "property_count": property_count,
+            "shell_property_count": shell_property_count,
+            "beam_property_count": beam_property_count,
+            "boundary_count": boundary_count,
             "candidates": candidates,
             "sets": sets,
             "optimization_parameters": opt_params,

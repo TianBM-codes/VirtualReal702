@@ -1,4 +1,4 @@
-from VirtualReal702.db import get_connection, ensure_tables_exist, clear_fem_tables
+from db import get_connection, ensure_tables_exist, clear_fem_tables
 from BDFParserPyNastran import BDFParser
 
 

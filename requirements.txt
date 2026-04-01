@@ -4,3 +4,11 @@ gunicorn>=22.0.0
 h5py>=3.11.0
 numpy>=1.26.0
 pytest>=8.0.0
+
+pydantic~=2.12.5
+meshio~=5.3.5
+mysql-connector-python~=8.1.0
+matplotlib~=3.8.0
+scipy~=1.11.3
+Flask~=3.0.0
+pyNastran~=1.4.1
