@@ -41,6 +41,238 @@ def _labels_summary(labels, max_n: int) -> str:
     return s
 
 
+def _labels_payload(labels, show_labels: bool, max_labels: int) -> dict:
+    items = [int(x) for x in labels]
+    payload = {
+        "count": len(items),
+    }
+    if items:
+        payload["range"] = [items[0], items[-1]]
+    else:
+        payload["range"] = None
+    if show_labels:
+        payload["preview"] = items[:max_labels]
+        payload["truncated"] = max(0, len(items) - max_labels)
+    return payload
+
+
+def build_tree_payload(model: InpModel, show_labels: bool = True, max_labels: int = 8) -> dict:
+    parts = []
+    for pname, part in model.parts.items():
+        elem_groups = {}
+        for elem in part.elements.values():
+            key = f"{elem.abaqus_type} -> {elem.factory_type}"
+            elem_groups.setdefault(key, []).append(int(elem.label))
+
+        part_payload = {
+            "name": pname,
+            "node_count": len(part.nodes),
+            "element_count": len(part.elements),
+            "nodes": _labels_payload(sorted(part.nodes.keys()), show_labels, max_labels),
+            "element_groups": [],
+            "nsets": [],
+            "elsets": [],
+            "surfaces": [],
+            "sections": [],
+        }
+
+        for etype, labels in elem_groups.items():
+            part_payload["element_groups"].append({
+                "type": etype,
+                "labels": _labels_payload(sorted(labels), show_labels, max_labels),
+            })
+
+        for nname, nset in part.nsets.items():
+            part_payload["nsets"].append({
+                "name": nname,
+                "labels": _labels_payload(list(nset.node_labels), show_labels, max_labels),
+            })
+
+        for ename, elset in part.elsets.items():
+            part_payload["elsets"].append({
+                "name": ename,
+                "labels": _labels_payload(list(elset.elem_labels), show_labels, max_labels),
+            })
+
+        for sname, surf in part.surfaces.items():
+            part_payload["surfaces"].append({
+                "name": sname,
+                "surface_type": surf.surface_type,
+                "entries_preview": [
+                    {"ref_name": e.ref_name, "face_id": e.face_id}
+                    for e in surf.entries[:max_labels]
+                ],
+                "entry_count": len(surf.entries),
+            })
+
+        for sec in part.sections:
+            part_payload["sections"].append({
+                "section_type": sec.section_type,
+                "elset_name": sec.elset_name,
+                "material_name": sec.material_name,
+                "orientation_name": sec.orientation_name,
+                "thickness": sec.thickness,
+                "extra": sec.extra,
+            })
+
+        parts.append(part_payload)
+
+    assembly_payload = None
+    if model.assembly:
+        asm = model.assembly
+        assembly_payload = {
+            "name": asm.name,
+            "instances": [],
+            "nsets": [],
+            "elsets": [],
+            "surfaces": [],
+        }
+        for iname, inst in asm.instances.items():
+            entry = {
+                "name": iname,
+                "part_name": inst.part_name,
+                "translation": list(inst.translation),
+                "rotation": None,
+            }
+            if inst.rotation:
+                entry["rotation"] = {
+                    "center": list(inst.rotation.center),
+                    "axis": list(inst.rotation.axis),
+                    "angle_deg": inst.rotation.angle_deg,
+                }
+            assembly_payload["instances"].append(entry)
+
+        for nname, nset in asm.nsets.items():
+            assembly_payload["nsets"].append({
+                "name": nname,
+                "instance_name": nset.instance_name,
+                "labels": _labels_payload(list(nset.node_labels), show_labels, max_labels),
+            })
+
+        for ename, elset in asm.elsets.items():
+            assembly_payload["elsets"].append({
+                "name": ename,
+                "instance_name": elset.instance_name,
+                "labels": _labels_payload(list(elset.elem_labels), show_labels, max_labels),
+            })
+
+        for sname, surf in asm.surfaces.items():
+            assembly_payload["surfaces"].append({
+                "name": sname,
+                "surface_type": surf.surface_type,
+                "entries_preview": [
+                    {"ref_name": e.ref_name, "face_id": e.face_id}
+                    for e in surf.entries[:max_labels]
+                ],
+                "entry_count": len(surf.entries),
+            })
+
+    materials = []
+    for mname, mat in model.materials.items():
+        props = []
+        if mat.density_data:
+            props.append({"type": "Density", "value": mat.density_data[0][0]})
+        if mat.elastic:
+            props.append({
+                "type": "Elastic",
+                "elastic_type": mat.elastic.elastic_type,
+                "data_preview": [list(row) for row in mat.elastic.data[:max_labels]],
+            })
+        if mat.plastic:
+            props.append({"type": "Plastic", "hardening": mat.plastic.hardening, "point_count": len(mat.plastic.data)})
+        if mat.hyperelastic:
+            props.append({"type": "Hyperelastic", "model": mat.hyperelastic.model})
+        if mat.damage_initiation:
+            props.append({"type": "DamageInitiation", "criterion": mat.damage_initiation.criterion})
+        if mat.damage_evolution:
+            props.append({"type": "DamageEvolution", "criterion": mat.damage_evolution.criterion})
+        if mat.creep:
+            props.append({"type": "Creep", "law": mat.creep.law})
+        if mat.conductivity_data:
+            props.append({"type": "Conductivity"})
+        if mat.expansion_data:
+            props.append({"type": "Expansion"})
+        materials.append({"name": mname, "properties": props})
+
+    amplitudes = []
+    for aname, amp in model.amplitudes.items():
+        amplitudes.append({
+            "name": aname,
+            "point_count": len(amp.times),
+            "time_range": [amp.times[0], amp.times[-1]] if amp.times else None,
+        })
+
+    steps = []
+    for step in model.steps:
+        step_payload = {
+            "name": step.name,
+            "step_type": step.step_type,
+            "nlgeom": bool(step.nlgeom),
+            "boundary_conditions": [],
+            "cloads": [],
+            "dloads": [],
+        }
+        for item in step.boundary_conditions[:max_labels]:
+            step_payload["boundary_conditions"].append({
+                "nset_name": item.nset_name,
+                "dof_start": item.dof_start,
+                "dof_end": item.dof_end,
+                "value": item.value,
+                "amplitude_name": item.amplitude_name,
+            })
+        for item in step.cloads[:max_labels]:
+            step_payload["cloads"].append({
+                "nset_name": item.nset_name,
+                "dof": item.dof,
+                "value": item.value,
+                "amplitude_name": item.amplitude_name,
+            })
+        for item in step.dloads[:max_labels]:
+            step_payload["dloads"].append({
+                "elset_name": item.elset_name,
+                "load_type": item.load_type,
+                "magnitude": item.magnitude,
+                "amplitude_name": item.amplitude_name,
+            })
+        steps.append(step_payload)
+
+    diagnostics = [{
+        "severity": d.severity,
+        "code": d.code,
+        "message": d.message,
+        "file": d.file,
+        "line": d.line,
+        "context": d.context,
+    } for d in model.diagnostics]
+
+    return {
+        "summary": {
+            "part_count": len(parts),
+            "material_count": len(materials),
+            "step_count": len(steps),
+            "amplitude_count": len(amplitudes),
+            "has_assembly": assembly_payload is not None,
+            "diagnostic_count": len(diagnostics),
+        },
+        "parts": parts,
+        "assembly": assembly_payload,
+        "materials": materials,
+        "amplitudes": amplitudes,
+        "steps": steps,
+        "diagnostics": diagnostics,
+    }
+
+
+def parse_inp_tree(inp_path: str, show_labels: bool = True, max_labels: int = 8) -> dict:
+    model = parse_inp(inp_path)
+    return {
+        "file_path": os.path.abspath(inp_path),
+        "show_labels": bool(show_labels),
+        "max_labels": int(max_labels),
+        "tree": build_tree_payload(model, show_labels=show_labels, max_labels=max_labels),
+    }
+
+
 def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
     T = "├── "
     L = "└── "
@@ -270,19 +502,28 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Print Abaqus INP model tree")
-    parser.add_argument("inp", help="Input .inp file")
-    parser.add_argument("--no-labels", action="store_true",
-                        help="Don't print individual label lists")
-    parser.add_argument("--max-labels", type=int, default=8,
-                        help="Max labels to show per set (default: 8)")
-    args = parser.parse_args()
+    use_arg = False
+    if use_arg:
+        parser = argparse.ArgumentParser(description="Print Abaqus INP model tree")
+        parser.add_argument("inp", help="Input .inp file")
+        parser.add_argument("--no-labels", action="store_true",
+                            help="Don't print individual label lists")
+        parser.add_argument("--max-labels", type=int, default=8,
+                            help="Max labels to show per set (default: 8)")
+        args = parser.parse_args()
 
-    print(f"Parsing {args.inp} ...\n")
-    model = parse_inp(args.inp)
-    print_tree(model,
-               show_labels=not args.no_labels,
-               max_labels=args.max_labels)
+        print(f"Parsing {args.inp} ...\n")
+
+        model = parse_inp(args.inp)
+        print_tree(model,
+                   show_labels=not args.no_labels,
+                   max_labels=args.max_labels)
+    else:
+        inp = r"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\inp\door.inp"
+        model = parse_inp(inp)
+        print_tree(model,
+                   show_labels=True,
+                   max_labels=8)
 
 
 if __name__ == "__main__":

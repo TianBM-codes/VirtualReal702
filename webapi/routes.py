@@ -5,6 +5,7 @@ from .routers import (
     matching_router,
     optimization_router,
     sensitivity_router,
+    solver_router,
     system_router,
     test_data_router,
 )
@@ -16,3 +17,4 @@ router.include_router(fem_router)
 router.include_router(optimization_router)
 router.include_router(matching_router)
 router.include_router(sensitivity_router)
+router.include_router(solver_router)

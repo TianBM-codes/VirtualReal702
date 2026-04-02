@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from services.inp_service import create_optimization_parameter
+from services.model_update.analysis.inp_service import create_optimization_parameter
 from src.l3.core.errors import AppError, ValidationError
 
 from ..common import server_error

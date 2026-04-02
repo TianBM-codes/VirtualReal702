@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from services.unv_service import (
+from services.model_update.importers.unv_service import (
     dump_unv_modal_shapes_to_vtk,
     dump_unv_modal_to_json,
     get_modal_shape,

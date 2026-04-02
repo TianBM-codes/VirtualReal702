@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from services.inp_service import match_test_nodes
+from services.model_update.analysis.inp_service import match_test_nodes
 
 from ..common import server_error
 from ..models import MatchNodesRequest

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,12 @@ class ImportInpCatalogRequest(BaseModel):
 
 class InpCatalogRequest(BaseModel):
     project_id: int
+
+
+class InpTreeRequest(BaseModel):
+    file_path: str
+    show_labels: bool = True
+    max_labels: int = 8
 
 
 class CreateOptimizationParameterRequest(BaseModel):
@@ -91,3 +97,43 @@ class SensitivityTableRequest(BaseModel):
     frame_indices: Optional[List[int]] = None
     entity_labels: Optional[List[int]] = None
     aggregation: str = "max_abs"
+
+
+class AbaqusSensitivityRunRequest(BaseModel):
+    input_inp: str
+    output_dir: Optional[str] = None
+    response_elset: Optional[str] = None
+    response_nset: Optional[str] = None
+    response_frequency: int = 1
+    node_vars: Optional[List[str]] = None
+    element_vars: Optional[List[str]] = None
+    abaqus: str = "abaqus"
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    run_solver: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+
+
+class AbaqusAdjointRunRequest(BaseModel):
+    input_inp: str
+    output_inp: Optional[str] = None
+    response_nset: Optional[str] = None
+    abaqus: str = "abaqus"
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    run_solver: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+
+
+class NastranSol103RunRequest(BaseModel):
+    input_bdf: str
+    output_bdf: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    nastran: str = "nastran"
+    run_solver: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)

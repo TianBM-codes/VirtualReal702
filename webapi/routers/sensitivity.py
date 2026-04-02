@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from services.sensitivity_service import (
+from services.model_update.analysis.sensitivity_service import (
     build_sensitivity_table,
     build_workspace_from_odb,
     get_sensitivity_overview,

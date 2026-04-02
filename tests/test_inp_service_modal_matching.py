@@ -1,6 +1,6 @@
 import numpy as np
 
-from services.inp_service import (
+from services.model_update.analysis.inp_service import (
     _apply_transform,
     _best_fit_rigid_transform,
     _compute_dac_dsf,

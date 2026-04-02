@@ -1,0 +1,395 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "VirtualReal702 Model Update Solver API",
+    "version": "1.0.0",
+    "description": "模型修正主线新增的本地求解器调用接口，可直接导入 Apifox。"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:5000",
+      "description": "Local FastAPI server"
+    }
+  ],
+  "paths": {
+    "/tools/inp/tree": {
+      "post": {
+        "tags": [
+          "model-update"
+        ],
+        "summary": "解析 INP 模型树并返回结构化结果",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InpTreeRequest"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "file_path": "D:/models/door.inp",
+                    "show_labels": true,
+                    "max_labels": 8
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/solver/abaqus/sensitivity": {
+      "post": {
+        "tags": [
+          "solver"
+        ],
+        "summary": "运行 Abaqus 材料参数灵敏度流程",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbaqusSensitivityRunRequest"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "input_inp": "D:/models/door.inp",
+                    "output_dir": "D:/runs/door_sensitivity",
+                    "response_elset": "EALL",
+                    "response_nset": "NRESP",
+                    "response_frequency": 1,
+                    "node_vars": [
+                      "U",
+                      "RF"
+                    ],
+                    "element_vars": [
+                      "S"
+                    ],
+                    "abaqus": "abaqus",
+                    "job_name": "door_sensitivity",
+                    "cpus": 4,
+                    "interactive": true,
+                    "run_solver": true,
+                    "timeout_sec": 7200,
+                    "extra_args": [
+                      "memory=8gb"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/solver/abaqus/adjoint": {
+      "post": {
+        "tags": [
+          "solver"
+        ],
+        "summary": "运行 Abaqus 壳厚度 Adjoint 灵敏度流程",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbaqusAdjointRunRequest"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "input_inp": "D:/models/shell_panel.inp",
+                    "output_inp": "D:/runs/shell_panel_adjoint.inp",
+                    "response_nset": "NRESP",
+                    "abaqus": "abaqus",
+                    "job_name": "shell_panel_adjoint",
+                    "cpus": 4,
+                    "interactive": true,
+                    "run_solver": true,
+                    "timeout_sec": 7200,
+                    "extra_args": [
+                      "memory=8gb"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/solver/nastran/sol103": {
+      "post": {
+        "tags": [
+          "solver"
+        ],
+        "summary": "转换并运行 Nastran SOL103 模态流程",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NastranSol103RunRequest"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "input_bdf": "D:/models/engine.bdf",
+                    "output_bdf": "D:/runs/engine_sol103.bdf",
+                    "settings": {
+                      "dynamic.fmin": 0.0,
+                      "dynamic.fmax": 1000.0,
+                      "dynamic.vectors": 20,
+                      "dynamic.norm": 2,
+                      "compute.lumped": true
+                    },
+                    "nastran": "nastran",
+                    "run_solver": true,
+                    "timeout_sec": 7200,
+                    "extra_args": [
+                      "scr=yes"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "InpTreeRequest": {
+        "type": "object",
+        "required": [
+          "file_path"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "show_labels": {
+            "type": "boolean",
+            "default": true
+          },
+          "max_labels": {
+            "type": "integer",
+            "default": 8
+          }
+        }
+      },
+      "AbaqusSensitivityRunRequest": {
+        "type": "object",
+        "required": [
+          "input_inp"
+        ],
+        "properties": {
+          "input_inp": {
+            "type": "string"
+          },
+          "output_dir": {
+            "type": "string"
+          },
+          "response_elset": {
+            "type": "string"
+          },
+          "response_nset": {
+            "type": "string"
+          },
+          "response_frequency": {
+            "type": "integer",
+            "default": 1
+          },
+          "node_vars": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "element_vars": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "abaqus": {
+            "type": "string",
+            "default": "abaqus"
+          },
+          "job_name": {
+            "type": "string"
+          },
+          "cpus": {
+            "type": "integer"
+          },
+          "interactive": {
+            "type": "boolean",
+            "default": true
+          },
+          "run_solver": {
+            "type": "boolean",
+            "default": true
+          },
+          "timeout_sec": {
+            "type": "integer"
+          },
+          "extra_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        }
+      },
+      "AbaqusAdjointRunRequest": {
+        "type": "object",
+        "required": [
+          "input_inp"
+        ],
+        "properties": {
+          "input_inp": {
+            "type": "string"
+          },
+          "output_inp": {
+            "type": "string"
+          },
+          "response_nset": {
+            "type": "string"
+          },
+          "abaqus": {
+            "type": "string",
+            "default": "abaqus"
+          },
+          "job_name": {
+            "type": "string"
+          },
+          "cpus": {
+            "type": "integer"
+          },
+          "interactive": {
+            "type": "boolean",
+            "default": true
+          },
+          "run_solver": {
+            "type": "boolean",
+            "default": true
+          },
+          "timeout_sec": {
+            "type": "integer"
+          },
+          "extra_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        }
+      },
+      "NastranSol103RunRequest": {
+        "type": "object",
+        "required": [
+          "input_bdf"
+        ],
+        "properties": {
+          "input_bdf": {
+            "type": "string"
+          },
+          "output_bdf": {
+            "type": "string"
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": true,
+            "default": {}
+          },
+          "nastran": {
+            "type": "string",
+            "default": "nastran"
+          },
+          "run_solver": {
+            "type": "boolean",
+            "default": true
+          },
+          "timeout_sec": {
+            "type": "integer"
+          },
+          "extra_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        }
+      },
+      "GenericApiResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}
