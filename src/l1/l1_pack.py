@@ -24,7 +24,6 @@ import json
 import os
 import sqlite3
 import sys
-import time
 
 import h5py
 import numpy as np
@@ -65,13 +64,6 @@ def str_ds(f, path, strings):
 
 def safe(name):
     return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
-
-
-def _fmt_t(secs):
-    """Format elapsed seconds as '1m 23.4s' or '5.2s'."""
-    if secs >= 60:
-        return f"{int(secs) // 60}m {secs % 60:.1f}s"
-    return f"{secs:.1f}s"
 
 
 # ─── manifest.db ──────────────────────────────────────────────────────────────
@@ -165,7 +157,6 @@ def pack_assembly(raw_dir, workspace, meta):
     h5_path = os.path.join(workspace, 'l1', 'assembly.h5')
     asm_raw = os.path.join(raw_dir, 'assembly')
 
-    t0 = time.time()
     print("  assembly.h5 ...")
     with h5py.File(h5_path, 'w') as f:
         # Instances
@@ -194,7 +185,7 @@ def pack_assembly(raw_dir, workspace, meta):
                         if os.path.exists(p):
                             grp.create_dataset(dsname, data=nload(p))
 
-    print(f"    done. ({_fmt_t(time.time() - t0)})")
+    print("    done.")
 
 
 # ─── Pack geometry ────────────────────────────────────────────────────────────
@@ -203,7 +194,6 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
     geom_raw = os.path.join(raw_dir, 'geom')
     geom_dir = os.path.join(workspace, 'l1', 'geometry')
 
-    t_geom = time.time()
     print("  geometry/ ...")
     for inst_name, gm in (meta.get('geom') or {}).items():
         s   = gm['safe_name']
@@ -212,7 +202,6 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
         h5_rel = os.path.join('l1', 'geometry', s + '.h5')
         h5_abs = os.path.join(workspace, h5_rel)
 
-        t_inst = time.time()
         print("    {} ...".format(inst_name))
         with h5py.File(h5_abs, 'w') as f:
             # Nodes
@@ -272,48 +261,6 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                     arr   = nload(os.path.join(isets_elem_dir, fname))
                     f.create_dataset('instance_sets/element_sets/{}'.format(sname), data=arr)
 
-            # node_to_elements CSR: node_row → attached elem labels
-            # Used by L3 pick query (Attached Elements column in Probe table).
-            # Layout:
-            #   /node_to_elements/offsets        [N+1] int32  — CSR row-pointer
-            #   /node_to_elements/elem_label_data [M]   int32  — flattened elem labels
-            if 'elements' in f and 'nodes/labels' in f:
-                n_nodes = f['nodes/labels'].shape[0]
-                # Collect (node_row, elem_label) pairs across all etype groups
-                pairs_nr = []   # node rows
-                pairs_el = []   # elem labels
-                for etype_safe in f['elements']:
-                    grp = f['elements/{}'.format(etype_safe)]
-                    if 'labels' not in grp or 'conn' not in grp:
-                        continue
-                    elem_labels = grp['labels'][:]          # [num_elems]
-                    conn        = grp['conn'][:]             # [num_elems, n_corner_nodes]
-                    for j in range(len(elem_labels)):
-                        for nr in conn[j]:
-                            if nr >= 0:
-                                pairs_nr.append(int(nr))
-                                pairs_el.append(int(elem_labels[j]))
-
-                if pairs_nr:
-                    pairs_nr = np.array(pairs_nr, dtype=np.int32)
-                    pairs_el = np.array(pairs_el, dtype=np.int32)
-                    # Sort by node_row for CSR ordering
-                    order    = np.argsort(pairs_nr, kind='stable')
-                    pairs_nr = pairs_nr[order]
-                    pairs_el = pairs_el[order]
-                    # Build CSR offsets
-                    offsets = np.zeros(n_nodes + 1, dtype=np.int32)
-                    np.add.at(offsets[1:], pairs_nr, 1)
-                    np.cumsum(offsets, out=offsets)
-                    g = f.require_group('node_to_elements')
-                    g.create_dataset('offsets',         data=offsets,   compression='gzip')
-                    g.create_dataset('elem_label_data', data=pairs_el,  compression='gzip')
-                else:
-                    # No elements — write empty CSR so readers don't have to handle missing group
-                    g = f.require_group('node_to_elements')
-                    g.create_dataset('offsets',         data=np.zeros(n_nodes + 1, dtype=np.int32))
-                    g.create_dataset('elem_label_data', data=np.array([], dtype=np.int32))
-
         # High-order file
         ho_rel = None
         ho_raw = os.path.join(d, 'highorder')
@@ -361,9 +308,8 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
             )
 
         db_conn.commit()
-        print(f"      done. ({_fmt_t(time.time() - t_inst)})")
 
-    print(f"  Geometry done. ({_fmt_t(time.time() - t_geom)} total)")
+    print("  Geometry done.")
 
 
 # ─── Pack sets ────────────────────────────────────────────────────────────────
@@ -373,7 +319,6 @@ def pack_sets(raw_dir, workspace, meta, db_conn):
     h5_rel   = os.path.join('l1', 'sets', 'sets.h5')
     h5_abs   = os.path.join(workspace, h5_rel)
 
-    t0 = time.time()
     print("  sets.h5 ...")
     with h5py.File(h5_abs, 'w') as f:
         # Assembly sets
@@ -445,7 +390,7 @@ def pack_sets(raw_dir, workspace, meta, db_conn):
                             )
 
     db_conn.commit()
-    print(f"    done. ({_fmt_t(time.time() - t0)})")
+    print("    done.")
 
 
 # ─── Pack results ─────────────────────────────────────────────────────────────
@@ -454,7 +399,6 @@ def pack_results(raw_dir, workspace, meta, db_conn):
     results_raw = os.path.join(raw_dir, 'results')
     results_dir = os.path.join(workspace, 'l1', 'results')
 
-    t_results = time.time()
     print("  results/ ...")
 
     steps_meta = meta.get('steps', {})
@@ -489,7 +433,6 @@ def pack_results(raw_dir, workspace, meta, db_conn):
         invariants = fm['invariants']
         has_section = fm.get('has_section', 0)
 
-        t_field = time.time()
         print("    {}/{} ...".format(step_name, field_name))
 
         sm = steps_meta.get(step_name, {})
@@ -614,16 +557,11 @@ def pack_results(raw_dir, workspace, meta, db_conn):
                     )
 
                 # Write per-frame data
-                expected_shape = ds.shape[1:]
                 for fi in range(num_frames):
                     fr_path = os.path.join(bd, 'f{:04d}.npy'.format(fi))
                     if not os.path.exists(fr_path):
                         continue
                     frame_data = nload(fr_path)
-                    if frame_data.shape != expected_shape:
-                        print("    WARNING: frame {} shape {} != expected {}, skipped".format(
-                            fi, frame_data.shape, expected_shape))
-                        continue
                     ds[fi] = frame_data
 
                     finite = frame_data[np.isfinite(frame_data)]
@@ -656,9 +594,9 @@ def pack_results(raw_dir, workspace, meta, db_conn):
              has_section, global_min, global_max)
         )
         db_conn.commit()
-        print(f"      done. ({_fmt_t(time.time() - t_field)})")
+        print("      done.")
 
-    print(f"  Results done. ({_fmt_t(time.time() - t_results)} total)")
+    print("  Results done.")
 
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
@@ -686,7 +624,6 @@ def main():
         print("ERROR: dump_meta.json not found in l1_raw/.")
         sys.exit(1)
 
-    t_total = time.time()
     print("=== Layer 1 Phase 2: npy → HDF5 ===")
     print("  Workspace: {}".format(workspace))
 
@@ -715,7 +652,7 @@ def main():
         print("Cleaning up l1_raw/ ...")
         cleanup_raw(raw_dir)
 
-    print(f"=== Layer 1 Phase 2 complete in {_fmt_t(time.time() - t_total)} ===")
+    print("=== Layer 1 complete ===")
     print("    workspace: {}".format(workspace))
 
 

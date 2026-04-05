@@ -1,38 +1,57 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ingest.py — Layer 2: Preprocessing (Pure Python / NumPy)
+ingest.py — Layer 2: Preprocessing (Pure Python)
 
-Reads L1 HDF5 output and generates L2 rendering-ready buffers.
+This script reads Layer 1 (L1) faithful dumps and generates Layer 2 (L2) 
+processing data necessary for Layer 3 (L3) rendering. 
 
 Key operations:
-  1. Global coordinates  : local_coords × instance transform matrix
-  2. Surface extraction  : faces owned by exactly one element (vectorized)
-  3. Triangulation       : tri/quad fully vectorized; higher polygons via loop
-  4. Smooth normals      : area-weighted, vectorized
-  5. Feature edges       : boundary (count=1) + fold (angle ≥ 30°), vectorized
-  6. Triangle Soup       : [Rf, 3, 3] float32 render buffer
-  7. Octree              : max_depth=8, leaf ≤ 1000 faces, stored as flat arrays
+1. Global coordinates computation (local coords * instance transform).
+2. Surface extraction (removing shared internal faces).
+3. Triangulation (polygons to triangles).
+4. Smooth normals computation (area-weighted).
+5. Flattening into [R, 3, 3] Triangle Soup.
+6. (Placeholder) Octree generation for bounding box coarse filtering.
 
 Usage:
-    python src/l2/ingest.py --workspace /path/to/workspace
+    python src/ingest.py --workspace /path/to/workspace
 """
 
 import argparse
-import logging
 import os
 import sqlite3
-import time
-
 import h5py
 import numpy as np
+from collections import defaultdict
+import time
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
+def parse_args():
+    parser = argparse.ArgumentParser(description="L2 Preprocessing")
+    parser.add_argument("--workspace", required=True, help="Path to the ODB workspace")
+    return parser.parse_args()
 
-FOLD_ANGLE_DEG = 30.0
-OCTREE_MAX_DEPTH = 8
-OCTREE_LEAF_THRESHOLD = 1000
+def mkdirs(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+def get_instance_transform(asm_h5, inst_name):
+    """Retrieves the 4x4 transform matrix for an instance."""
+    path = f"instances/{inst_name}/transform"
+    if path in asm_h5:
+        return asm_h5[path][:]
+    return np.eye(4, dtype=np.float64)
+
+def compute_global_coords(local_coords, transform):
+    """Applies the 4x4 homogenous transform to [N, 3] local coordinates."""
+    N = local_coords.shape[0]
+    # Convert to homogenous coords [N, 4]
+    homogenous = np.ones((N, 4), dtype=np.float64)
+    homogenous[:, :3] = local_coords
+    
+    # Apply transform: (T @ coords.T).T
+    global_coords = (transform @ homogenous.T).T
+    return global_coords[:, :3].astype(np.float32)
 
 ELEM_TYPE_CODE = {
     'S3': 0, 'S3R': 0, 'S6': 0,
@@ -45,594 +64,301 @@ ELEM_TYPE_CODE = {
     'C3D20': 7, 'C3D20R': 7, 'C3D20H': 7, 'C3D20RH': 7,
 }
 
-
-def parse_args():
-    p = argparse.ArgumentParser(description="L2 Preprocessing")
-    p.add_argument("--workspace", required=True)
-    return p.parse_args()
-
-
-def mkdirs(path):
-    os.makedirs(path, exist_ok=True)
-
-
-# ─── Coordinates ──────────────────────────────────────────────────────────────
-
-def get_instance_transform(asm_h5, inst_name):
-    path = "instances/{}/transform".format(inst_name)
-    return asm_h5[path][:] if path in asm_h5 else np.eye(4, dtype=np.float64)
-
-
-def compute_global_coords(local_coords, transform):
-    """[N, 3] local → [N, 3] float32 global via 4×4 homogeneous matrix."""
-    N = local_coords.shape[0]
-    hom = np.ones((N, 4), dtype=np.float64)
-    hom[:, :3] = local_coords
-    return (transform @ hom.T).T[:, :3].astype(np.float32)
-
-
-# ─── Face collection + surface detection (vectorized) ─────────────────────────
-
-def collect_faces(geom_h5):
+def extract_surface_and_triangulate(geom_h5):
     """
-    Collect all faces from all element types in one pass.
+    Extracts surface faces by finding faces that belong to only one element.
+    Triangulates polygons (quads) using a fan pattern.
+    
     Returns:
-        fnc        [Tf, max_fn] int32   face node rows (-1 = unused slot)
-        elem_rows  [Tf]         int32   which element (row in labels array)
-        face_seqs  [Tf]         uint8   face number within element (1-based)
-        etype_codes[Tf]         uint8   element type code
-        etype_strs [Tf]         S8      element type string
-        is_surface [Tf]         bool    True if face owned by exactly one element
+    - all_tri_node_rows: [Tf, 3]
+    - all_tri_elem_row: [Tf]
+    - all_tri_elem_type: [Tf]
+    - all_tri_face_idx: [Tf]
+    - surface_face_rows: [Sf] indices pointing into Tf
     """
-    keys_list  = []   # sorted node rows → canonical face key
-    fnc_list   = []   # original face_node_conn rows
-    er_list    = []   # elem_row per face
-    fs_list    = []   # face_seq per face
-    ec_list    = []   # etype_code per face
-    es_list    = []   # etype_str per face
-    max_fn     = 0
+    if "elements" not in geom_h5:
+        return [], [], [], [], []
+        
+    face_owners = defaultdict(list)
 
-    for etype_str in geom_h5.get("elements", {}):
-        grp = geom_h5["elements/{}".format(etype_str)]
-        if "face_node_conn" not in grp:
-            continue
-        etype_code = ELEM_TYPE_CODE.get(etype_str, -1)
-        if etype_code < 0:
+    for etype_str in geom_h5["elements"]:
+        etype_grp = geom_h5[f"elements/{etype_str}"]
+        if "face_node_conn" not in etype_grp:
             continue
 
-        fnc = grp["face_node_conn"][:]   # [Mf, w]
-        fei = grp["face_elem_idx"][:]    # [Mf]
-        fsq = grp["face_seq"][:]         # [Mf]
-        Mf, w = fnc.shape
+        face_node_conn = etype_grp["face_node_conn"][:]
+        face_elem_idx = etype_grp["face_elem_idx"][:]
+        face_seq = etype_grp["face_seq"][:]
 
-        # Sort rows (replace -1 with INT32_MAX so they sort to the end)
-        SENT = np.iinfo(np.int32).max
-        k = fnc.copy()
-        k[k == -1] = SENT
-        k.sort(axis=1)
+        etype_code = ELEM_TYPE_CODE.get(etype_str, 0)
 
-        keys_list.append(k)
-        fnc_list.append(fnc)
-        er_list.append(fei)
-        fs_list.append(fsq)
-        ec_list.append(np.full(Mf, etype_code, dtype=np.uint8))
-        es_list.append(np.array([etype_str.encode("ascii")] * Mf, dtype="S8"))
-        max_fn = max(max_fn, w)
+        Mf = face_node_conn.shape[0]
+        for i in range(Mf):
+            nodes = [n for n in face_node_conn[i] if n != -1]
+            if len(nodes) < 3:
+                continue
 
-    if not keys_list:
-        empty = np.zeros(0, dtype=np.int32)
-        return (np.zeros((0, 1), dtype=np.int32), empty, empty,
-                np.zeros(0, dtype=np.uint8), np.zeros(0, dtype="S8"),
-                np.zeros(0, dtype=bool))
+            key = frozenset(nodes)
+            face_owners[key].append({
+                "elem_row": int(face_elem_idx[i]),
+                "type_code": etype_code,
+                "etype_str": etype_str,
+                "face_seq": int(face_seq[i]),
+                "nodes": nodes
+            })
+            
+    all_tri_node_rows = []
+    all_tri_elem_row = []
+    all_tri_elem_type = []
+    all_tri_etype_str = []
+    all_tri_face_idx = []
+    surface_face_rows = []
 
-    SENT = np.iinfo(np.int32).max
+    current_tri_idx = 0
+    for key, owners in face_owners.items():
+        is_surface = len(owners) == 1
+        owner = owners[0]
+        nodes = owner["nodes"]
+        n = len(nodes)
 
-    def pad(arr, width, fill):
-        if arr.shape[1] < width:
-            p = np.full((arr.shape[0], width - arr.shape[1]), fill, dtype=arr.dtype)
-            return np.concatenate([arr, p], axis=1)
-        return arr
-
-    keys  = np.vstack([pad(k, max_fn, SENT) for k in keys_list])
-    fnc   = np.vstack([pad(f, max_fn, -1)   for f in fnc_list])
-    er    = np.concatenate(er_list)
-    fs    = np.concatenate(fs_list)
-    ec    = np.concatenate(ec_list)
-    es    = np.concatenate(es_list)
-
-    # Each face's canonical key = its sorted node row vector
-    # Encode as bytes for np.unique
-    keys_bytes = np.ascontiguousarray(keys).view(
-        np.dtype((np.void, keys.dtype.itemsize * max_fn))
-    ).ravel()
-    _, inv, counts = np.unique(keys_bytes, return_inverse=True, return_counts=True)
-    is_surface = counts[inv] == 1
-
-    return fnc, er, fs, ec, es, is_surface
-
-
-# ─── Triangulation (vectorized for tri + quad, loop for higher) ───────────────
-
-def triangulate(fnc, elem_rows, face_seqs, etype_codes, etype_strs, is_surface):
-    """
-    Returns:
-        tri_nodes   [T, 3] int32
-        tri_er      [T]    int32
-        tri_fs      [T]    int32
-        tri_ec      [T]    uint8
-        tri_es      [T]    S8
-        tri_is_surf [T]    bool
-    """
-    valid = fnc != -1
-    n_nodes = valid.sum(axis=1)   # [Tf]
-
-    groups = []   # each entry: (nodes_3col, er, fs, ec, es, is_s)
-
-    # --- Triangular faces: 1 tri each ---
-    m3 = n_nodes == 3
-    if m3.any():
-        groups.append((fnc[m3][:, :3], elem_rows[m3], face_seqs[m3],
-                        etype_codes[m3], etype_strs[m3], is_surface[m3]))
-
-    # --- Quad faces: 2 tris each (vectorized) ---
-    m4 = n_nodes == 4
-    if m4.any():
-        q   = fnc[m4][:, :4]
-        n1  = np.column_stack([q[:, 0], q[:, 1], q[:, 2]])
-        n2  = np.column_stack([q[:, 0], q[:, 2], q[:, 3]])
-        nds = np.vstack([n1, n2])
-        rep = np.tile
-        groups.append((nds,
-                        rep(elem_rows[m4], 2), rep(face_seqs[m4], 2),
-                        rep(etype_codes[m4], 2), rep(etype_strs[m4], 2),
-                        rep(is_surface[m4], 2)))
-
-    # --- Higher polygons: fan triangulation (rare, small loop) ---
-    for n in range(5, fnc.shape[1] + 1):
-        mn = n_nodes == n
-        if not mn.any():
-            continue
-        poly = fnc[mn][:, :n]
-        fan_nodes = np.vstack([
-            np.column_stack([poly[:, 0], poly[:, i], poly[:, i + 1]])
-            for i in range(1, n - 1)
-        ])
-        reps = n - 2
-        groups.append((fan_nodes,
-                        np.tile(elem_rows[mn], reps),
-                        np.tile(face_seqs[mn], reps),
-                        np.tile(etype_codes[mn], reps),
-                        np.tile(etype_strs[mn], reps),
-                        np.tile(is_surface[mn], reps)))
-
-    if not groups:
-        return (np.zeros((0, 3), dtype=np.int32),
-                *[np.zeros(0, dtype=t) for t in
-                  [np.int32, np.int32, np.uint8, "S8", bool]])
+        for i in range(1, n - 1):
+            all_tri_node_rows.append([nodes[0], nodes[i], nodes[i+1]])
+            all_tri_elem_row.append(owner["elem_row"])
+            all_tri_elem_type.append(owner["type_code"])
+            all_tri_etype_str.append(owner["etype_str"].encode("ascii"))
+            all_tri_face_idx.append(owner["face_seq"])
+            if is_surface:
+                surface_face_rows.append(current_tri_idx)
+            current_tri_idx += 1
 
     return (
-        np.vstack([g[0] for g in groups]),
-        np.concatenate([g[1] for g in groups]),
-        np.concatenate([g[2] for g in groups]),
-        np.concatenate([g[3] for g in groups]),
-        np.concatenate([g[4] for g in groups]),
-        np.concatenate([g[5] for g in groups]),
+        np.array(all_tri_node_rows, dtype=np.int32),
+        np.array(all_tri_elem_row, dtype=np.int32),
+        np.array(all_tri_elem_type, dtype=np.uint8),
+        np.array(all_tri_etype_str, dtype="S8"),
+        np.array(all_tri_face_idx, dtype=np.int32),
+        np.array(surface_face_rows, dtype=np.int32)
     )
 
-
-# ─── Smooth normals (vectorized) ──────────────────────────────────────────────
-
-def compute_smooth_normals(coords_global, tri_nodes):
-    """Area-weighted smooth normals → [N, 3] float32."""
+def compute_smooth_normals(coords_global, tri_node_rows):
+    """
+    Computes area-weighted smooth normals for all nodes.
+    Returns: [N, 3] float32
+    """
     N = coords_global.shape[0]
     node_normals = np.zeros((N, 3), dtype=np.float32)
-    if len(tri_nodes) == 0:
+    
+    if len(tri_node_rows) == 0:
         return node_normals
-    p0 = coords_global[tri_nodes[:, 0]]
-    p1 = coords_global[tri_nodes[:, 1]]
-    p2 = coords_global[tri_nodes[:, 2]]
-    face_n = np.cross(p1 - p0, p2 - p0)   # unnormalized → encodes area
-    np.add.at(node_normals, tri_nodes[:, 0], face_n)
-    np.add.at(node_normals, tri_nodes[:, 1], face_n)
-    np.add.at(node_normals, tri_nodes[:, 2], face_n)
+        
+    p0 = coords_global[tri_node_rows[:, 0]]
+    p1 = coords_global[tri_node_rows[:, 1]]
+    p2 = coords_global[tri_node_rows[:, 2]]
+    
+    # Cross product gives 2x the area of the triangle and the orthogonal vector
+    face_normals_unnormalized = np.cross(p1 - p0, p2 - p0)
+    
+    # Add face normal to each of its vertices (this accomplishes area weighting)
+    # Using np.add.at to handle duplicate indices safely
+    np.add.at(node_normals, tri_node_rows[:, 0], face_normals_unnormalized)
+    np.add.at(node_normals, tri_node_rows[:, 1], face_normals_unnormalized)
+    np.add.at(node_normals, tri_node_rows[:, 2], face_normals_unnormalized)
+    
+    # Normalize
     norms = np.linalg.norm(node_normals, axis=1, keepdims=True)
-    return (node_normals / np.where(norms > 1e-12, norms, 1.0)).astype(np.float32)
-
-
-# ─── Feature edges (vectorized) ───────────────────────────────────────────────
-
-def compute_feature_edges(surf_tri_nodes, coords_global,
-                           fold_angle_deg=FOLD_ANGLE_DEG):
-    """
-    Returns:
-        edge_nodes [E, 2] int32    sorted node row pairs
-        edge_types [E]    uint8    1=boundary, 2=fold
-    """
-    Sf = len(surf_tri_nodes)
-    if Sf == 0:
-        return np.zeros((0, 2), dtype=np.int32), np.zeros(0, dtype=np.uint8)
-
-    # All 3 edges per triangle, sorted node pairs
-    e01 = np.sort(surf_tri_nodes[:, [0, 1]], axis=1)
-    e12 = np.sort(surf_tri_nodes[:, [1, 2]], axis=1)
-    e20 = np.sort(surf_tri_nodes[:, [2, 0]], axis=1)
-    all_edges      = np.vstack([e01, e12, e20])          # [3*Sf, 2]
-    face_of_edge   = np.tile(np.arange(Sf, dtype=np.int32), 3)
-
-    edges_bytes = np.ascontiguousarray(all_edges).view(
-        np.dtype((np.void, all_edges.dtype.itemsize * 2))
-    ).ravel()
-    _, inv, counts = np.unique(edges_bytes, return_inverse=True, return_counts=True)
-
-    n_uniq = len(counts)
-    # Recover unique edge node pairs
-    first_occ = np.empty(n_uniq, dtype=np.int64)
-    # Use argmax on one-hot: faster than loop
-    order = np.argsort(inv, kind="stable")
-    sorted_inv = inv[order]
-    starts = np.searchsorted(sorted_inv, np.arange(n_uniq))
-    first_occ = order[starts]
-    unique_edge_nodes = all_edges[first_occ]             # [n_uniq, 2]
-
-    edge_types = np.zeros(n_uniq, dtype=np.uint8)
-
-    # Boundary edges
-    is_boundary = counts == 1
-    edge_types[is_boundary] = 1
-
-    # Fold edges (shared by exactly 2 triangles)
-    is_shared = counts == 2
-    if is_shared.any():
-        p0 = coords_global[surf_tri_nodes[:, 0]]
-        p1 = coords_global[surf_tri_nodes[:, 1]]
-        p2 = coords_global[surf_tri_nodes[:, 2]]
-        face_normals = np.cross(p1 - p0, p2 - p0).astype(np.float32)
-        nrm = np.linalg.norm(face_normals, axis=1, keepdims=True)
-        face_normals /= np.where(nrm > 1e-12, nrm, 1.0)
-
-        cos_thresh = np.cos(np.radians(fold_angle_deg))
-        shared_idx = np.where(is_shared)[0]             # unique edge indices
-
-        # For each shared edge, find its two triangle indices
-        # Sorted order → consecutive entries with same inv value
-        sorted_faces = face_of_edge[order]
-        face_a = sorted_faces[starts[shared_idx]]
-        face_b = sorted_faces[starts[shared_idx] + 1]
-
-        # Vectorized angle check
-        na = face_normals[face_a]
-        nb = face_normals[face_b]
-        cos_angle = (na * nb).sum(axis=1)
-        edge_types[shared_idx[cos_angle < cos_thresh]] = 2
-
-    # Return only boundary + fold edges (skip interior smooth edges)
-    keep = edge_types > 0
-    return unique_edge_nodes[keep], edge_types[keep]
-
-
-# ─── Element mesh edges (vectorized) ─────────────────────────────────────────
-
-def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
-    """
-    Compute element_mesh_edges: every real surface unit boundary edge.
-
-    Unlike feature_edges, no angle filter is applied — all shared edges between
-    different element faces are retained, including co-planar ones.
-
-    A shared edge (count == 2) is a triangulation diagonal if both its triangles
-    belong to the SAME original element face: same (tri_er, tri_fs) pair.
-    Quads are split into 2 triangles sharing one diagonal — that diagonal must be
-    excluded, or the wireframe would show phantom lines cutting through quad faces.
-
-    Returns:
-        edge_nodes [E, 2] int32   sorted node row pairs
-    """
-    Sf = len(surf_tri_nodes)
-    if Sf == 0:
-        return np.zeros((0, 2), dtype=np.int32)
-
-    e01 = np.sort(surf_tri_nodes[:, [0, 1]], axis=1)
-    e12 = np.sort(surf_tri_nodes[:, [1, 2]], axis=1)
-    e20 = np.sort(surf_tri_nodes[:, [2, 0]], axis=1)
-    all_edges    = np.vstack([e01, e12, e20])              # [3*Sf, 2]
-    face_of_edge = np.tile(np.arange(Sf, dtype=np.int32), 3)
-
-    edges_bytes = np.ascontiguousarray(all_edges).view(
-        np.dtype((np.void, all_edges.dtype.itemsize * 2))
-    ).ravel()
-    _, inv, counts = np.unique(edges_bytes, return_inverse=True, return_counts=True)
-
-    n_uniq = len(counts)
-    order       = np.argsort(inv, kind="stable")
-    sorted_inv  = inv[order]
-    starts      = np.searchsorted(sorted_inv, np.arange(n_uniq))
-    first_occ   = order[starts]
-    unique_edge_nodes = all_edges[first_occ]               # [n_uniq, 2]
-
-    # Boundary edges are always real
-    keep = counts == 1
-
-    # Shared edges: keep unless they are a triangulation diagonal.
-    # Diagonal = shared by 2 triangles from the same (elem_row, face_seq).
-    is_shared = counts == 2
-    if is_shared.any():
-        sorted_faces = face_of_edge[order]
-        shared_idx   = np.where(is_shared)[0]
-        face_a = sorted_faces[starts[shared_idx]]
-        face_b = sorted_faces[starts[shared_idx] + 1]
-
-        is_diagonal = (
-            (surf_tri_er[face_a] == surf_tri_er[face_b]) &
-            (surf_tri_fs[face_a] == surf_tri_fs[face_b])
-        )
-        keep[shared_idx[~is_diagonal]] = True
-
-    return unique_edge_nodes[keep]
-
-
-# ─── Octree ───────────────────────────────────────────────────────────────────
-
-def build_octree(tri_positions, max_depth=OCTREE_MAX_DEPTH,
-                  leaf_threshold=OCTREE_LEAF_THRESHOLD):
-    """
-    Build octree over [Rf, 3, 3] triangle positions.
-    Stores as flat arrays for HDF5:
-        node_bbox     [num_nodes, 6]  float32  xmin,ymin,zmin,xmax,ymax,zmax
-        node_children [num_nodes, 8]  int32    child node indices (-1=none)
-        node_is_leaf  [num_nodes]     uint8
-        face_indices  [total]         int32    face rows (leaves only, concatenated)
-        leaf_offsets  [num_nodes+1]   int32    start index into face_indices per node
-    """
-    Rf = len(tri_positions)
-    if Rf == 0:
-        return {
-            "node_bbox":     np.zeros((1, 6), dtype=np.float32),
-            "node_children": np.full((1, 8), -1, dtype=np.int32),
-            "node_is_leaf":  np.ones(1, dtype=np.uint8),
-            "face_indices":  np.zeros(0, dtype=np.int32),
-            "leaf_offsets":  np.array([0, 0], dtype=np.int32),
-        }
-
-    centroids = tri_positions.mean(axis=1)   # [Rf, 3]
-
-    node_bboxes    = []
-    node_children  = []
-    node_is_leaf   = []
-    leaf_faces_all = []
-    leaf_offsets   = [0]
-
-    def _bbox(face_idx):
-        pts = tri_positions[face_idx].reshape(-1, 3)
-        return np.concatenate([pts.min(axis=0), pts.max(axis=0)])
-
-    def _build(face_idx, depth):
-        nid = len(node_bboxes)
-        bbox = _bbox(face_idx).astype(np.float32)
-        node_bboxes.append(bbox)
-        node_children.append(np.full(8, -1, dtype=np.int32))
-
-        if len(face_idx) <= leaf_threshold or depth >= max_depth:
-            node_is_leaf.append(np.uint8(1))
-            leaf_faces_all.append(face_idx.astype(np.int32))
-            leaf_offsets.append(leaf_offsets[-1] + len(face_idx))
-        else:
-            node_is_leaf.append(np.uint8(0))
-            leaf_offsets.append(leaf_offsets[-1])   # internal: no faces
-            mid = (bbox[:3] + bbox[3:]) / 2.0
-            ctr = centroids[face_idx]
-            for ci in range(8):
-                xbit = (ci >> 0) & 1
-                ybit = (ci >> 1) & 1
-                zbit = (ci >> 2) & 1
-                mask = (
-                    ((ctr[:, 0] >= mid[0]) == bool(xbit)) &
-                    ((ctr[:, 1] >= mid[1]) == bool(ybit)) &
-                    ((ctr[:, 2] >= mid[2]) == bool(zbit))
-                )
-                child_faces = face_idx[mask]
-                if len(child_faces) > 0:
-                    child_id = _build(child_faces, depth + 1)
-                    node_children[nid][ci] = child_id
-
-        return nid
-
-    _build(np.arange(Rf, dtype=np.int32), 0)
-
-    return {
-        "node_bbox":     np.vstack(node_bboxes),
-        "node_children": np.vstack(node_children),
-        "node_is_leaf":  np.array(node_is_leaf, dtype=np.uint8),
-        "face_indices":  np.concatenate(leaf_faces_all) if leaf_faces_all
-                         else np.zeros(0, dtype=np.int32),
-        "leaf_offsets":  np.array(leaf_offsets, dtype=np.int32),
-    }
-
-
-# ─── Per-instance processing ──────────────────────────────────────────────────
+    # Avoid division by zero
+    norms = np.where(norms > 1e-12, norms, 1.0)
+    
+    return node_normals / norms
 
 def process_instance(workspace, db_conn, asm_h5, inst_name):
-    logger.info("Processing instance: {} ...".format(inst_name))
+    logger.info(f"Processing instance: {inst_name} ...")
     t0 = time.time()
-
-    geom_path = os.path.join(workspace, "l1", "geometry", "{}.h5".format(inst_name))
+    
+    geom_path = os.path.join(workspace, "l1", "geometry", f"{inst_name}.h5")
     if not os.path.exists(geom_path):
-        logger.warning("  Not found: {}".format(geom_path))
+        logger.warning(f"  WARNING: {geom_path} not found.")
         return
-
-    l2_geom_dir   = os.path.join(workspace, "l2", "geometry")
+        
+    l2_geom_dir = os.path.join(workspace, "l2", "geometry")
     l2_render_dir = os.path.join(workspace, "l2", "render")
     mkdirs(l2_geom_dir)
     mkdirs(l2_render_dir)
-
-    surface_h5_path = os.path.join(l2_geom_dir, "{}_surface.h5".format(inst_name))
-    render_h5_path  = os.path.join(l2_render_dir, "{}_render.h5".format(inst_name))
-
+    
+    surface_h5_path = os.path.join(l2_geom_dir, f"{inst_name}_surface.h5")
+    render_h5_path = os.path.join(l2_render_dir, f"{inst_name}_render.h5")
+    
     with h5py.File(geom_path, "r") as f_in:
         local_coords = f_in["nodes/coords"][:]
-        labels       = f_in["nodes/labels"][:]
-
-        # 1. Global coordinates
-        transform    = get_instance_transform(asm_h5, inst_name)
+        labels = f_in["nodes/labels"][:]
+        
+        # 1. Global Coordinates
+        transform = get_instance_transform(asm_h5, inst_name)
         coords_global = compute_global_coords(local_coords, transform)
-
-        # 2. Face collection + surface detection (vectorized)
-        fnc, elem_rows, face_seqs, etype_codes, etype_strs, is_surface = collect_faces(f_in)
-
-    # 3. Triangulation (vectorized for tri+quad)
-    (tri_nodes, tri_er, tri_fs, tri_ec, tri_es,
-     tri_is_surf) = triangulate(fnc, elem_rows, face_seqs,
-                                 etype_codes, etype_strs, is_surface)
-
-    Tf = len(tri_nodes)
-    surf_mask = tri_is_surf
-    surf_rows = np.where(surf_mask)[0].astype(np.int32)
-    Sf = len(surf_rows)
-    logger.info("  {} total tris, {} surface tris".format(Tf, Sf))
-
-    surf_tri_nodes = tri_nodes[surf_rows]
-
-    # 4. Smooth normals (only over surface triangles, for rendering)
-    normals_global = compute_smooth_normals(coords_global, surf_tri_nodes)
-
-    # 5. Feature edges
-    edge_nodes, edge_types = compute_feature_edges(surf_tri_nodes, coords_global)
-    logger.info("  {} feature edges".format(len(edge_nodes)))
-
-    # 6. Triangle Soup render buffers
+        
+        # 2 & 3. Surface Extraction & Triangulation
+        tri_node_rows, tri_elem_row, tri_elem_type, tri_etype_str, tri_face_idx, surface_face_rows = extract_surface_and_triangulate(f_in)
+        
+        # 4. Smooth Normals (Computed using surface faces only, or all faces? Usually surface faces are enough for rendering)
+        # But to have node_normals for all nodes, we could use all faces. Let's use all faces to match area weighting over the whole geometry, or just surface faces.
+        # Actually, smooth normals for rendering only need surface triangles.
+        if len(surface_face_rows) > 0:
+            surf_tri_node_rows = tri_node_rows[surface_face_rows]
+        else:
+            surf_tri_node_rows = np.array([], dtype=np.int32)
+            
+        normals_global = compute_smooth_normals(coords_global, surf_tri_node_rows)
+        
+    Tf = len(tri_node_rows)
+    Sf = len(surface_face_rows)
+    logger.info(f"  Extracted {Tf} total triangles, {Sf} surface triangles.")
+    
+    # 5. Build Triangle Soup [Rf, 3, 3] from surface faces
     if Sf > 0:
-        render_positions = coords_global[surf_tri_nodes]       # [Sf, 3, 3]
-        render_normals   = normals_global[surf_tri_nodes]      # [Sf, 3, 3]
-        render_face_idx  = np.arange(Sf, dtype=np.int32)
-        surf_er   = tri_er[surf_rows]
-        surf_fs   = tri_fs[surf_rows]
-        surf_ec   = tri_ec[surf_rows]
-        surf_es   = tri_es[surf_rows]
+        render_positions = coords_global[surf_tri_node_rows] # [Sf, 3, 3]
+        render_normals = normals_global[surf_tri_node_rows]  # [Sf, 3, 3]
+        render_face_idx = np.arange(Sf, dtype=np.int32)
+        
+        surf_tri_elem_row = tri_elem_row[surface_face_rows]
+        surf_tri_elem_type = tri_elem_type[surface_face_rows]
+        surf_tri_etype_str = tri_etype_str[surface_face_rows]
     else:
         render_positions = np.zeros((0, 3, 3), dtype=np.float32)
-        render_normals   = np.zeros((0, 3, 3), dtype=np.float32)
-        render_face_idx  = np.zeros(0, dtype=np.int32)
-        surf_er = surf_fs = surf_ec = surf_es = np.zeros(0, dtype=np.int32)
-
-    # 5b. Element mesh edges
-    mesh_edge_nodes = compute_all_surface_edges(surf_tri_nodes, surf_er, surf_fs)
-    logger.info("  {} element mesh edges".format(len(mesh_edge_nodes)))
-
-    # 7. Octree
-    octree = build_octree(render_positions)
-    logger.info("  Octree: {} nodes".format(len(octree["node_bbox"])))
-
-    # ── Write l2/geometry/<inst>_surface.h5 ──
-    with h5py.File(surface_h5_path, "w") as f:
-        ng = f.create_group("nodes")
-        ng.create_dataset("labels",        data=labels)
-        ng.create_dataset("coords_global", data=coords_global)
-        ng.create_dataset("normals",       data=normals_global)
-
-        fg = f.create_group("faces")
+        render_normals = np.zeros((0, 3, 3), dtype=np.float32)
+        render_face_idx = np.zeros(0, dtype=np.int32)
+        surf_tri_etype_str = np.zeros(0, dtype="S8")
+        
+    # --- Write l2/geometry/<inst>_surface.h5 ---
+    with h5py.File(surface_h5_path, "w") as f_surf:
+        nodes_grp = f_surf.create_group("nodes")
+        nodes_grp.create_dataset("labels", data=labels)
+        nodes_grp.create_dataset("coords_global", data=coords_global)
+        nodes_grp.create_dataset("normals", data=normals_global)
+        
+        # Write topology maps (all faces)
+        faces_grp = f_surf.create_group("faces")
         if Tf > 0:
-            fg.create_dataset("tri_node_rows", data=tri_nodes)
-            fg.create_dataset("tri_elem_row",  data=tri_er)
-            fg.create_dataset("tri_face_seq",  data=tri_fs)
-            fg.create_dataset("tri_etype_code",data=tri_ec)
-
-        sfg = f.create_group("surface_faces")
+            faces_grp.create_dataset("tri_node_rows", data=tri_node_rows)
+            faces_grp.create_dataset("tri_elem_row", data=tri_elem_row)
+            faces_grp.create_dataset("tri_face_idx", data=tri_face_idx)
+            faces_grp.create_dataset("tri_elem_type", data=tri_elem_type)
+            
+        surf_faces_grp = f_surf.create_group("surface_faces")
         if Sf > 0:
-            sfg.create_dataset("face_rows", data=surf_rows)
-
-        eg = f.create_group("feature_edges")
-        if len(edge_nodes) > 0:
-            eg.create_dataset("edge_nodes", data=edge_nodes)
-            eg.create_dataset("edge_types", data=edge_types)
-
-        meg = f.create_group("element_mesh_edges")
-        if len(mesh_edge_nodes) > 0:
-            meg.create_dataset("edge_nodes", data=mesh_edge_nodes)
-
-    # ── Write l2/render/<inst>_render.h5 ──
-    with h5py.File(render_h5_path, "w") as f:
-        rg = f.create_group("render")
-        rg.create_dataset("positions",      data=render_positions,
-                          chunks=(min(Sf, 4096), 3, 3) if Sf > 0 else True,
-                          compression="lzf")
-        rg.create_dataset("normals",        data=render_normals,
-                          chunks=(min(Sf, 4096), 3, 3) if Sf > 0 else True,
-                          compression="lzf")
-        rg.create_dataset("render_face_idx",data=render_face_idx)
+            surf_faces_grp.create_dataset("face_rows", data=surface_face_rows)
+            
+    # --- Write l2/render/<inst>_render.h5 ---
+    with h5py.File(render_h5_path, "w") as f_rend:
+        render_grp = f_rend.create_group("render")
+        # Direct mmap-friendly arrays
+        render_grp.create_dataset("positions", data=render_positions)
+        render_grp.create_dataset("normals", data=render_normals)
+        render_grp.create_dataset("render_face_idx", data=render_face_idx)
+        
         if Sf > 0:
-            rg.create_dataset("source_elem_row",  data=surf_er)
-            rg.create_dataset("source_node_rows", data=surf_tri_nodes)
-            rg.create_dataset("source_etype_code",data=surf_ec)
-            rg.create_dataset("source_etype_str", data=surf_es)
-
-        og = f.create_group("octree")
-        og.create_dataset("node_bbox",     data=octree["node_bbox"])
-        og.create_dataset("node_children", data=octree["node_children"])
-        og.create_dataset("node_is_leaf",  data=octree["node_is_leaf"])
-        og.create_dataset("face_indices",  data=octree["face_indices"])
-        og.create_dataset("leaf_offsets",  data=octree["leaf_offsets"])
-
-    # ── Update manifest.db ──
+            render_grp.create_dataset("source_elem_row", data=surf_tri_elem_row)
+            render_grp.create_dataset("source_node_rows", data=surf_tri_node_rows)
+            render_grp.create_dataset("source_elem_type", data=surf_tri_elem_type)
+            render_grp.create_dataset("source_elem_etype", data=surf_tri_etype_str)
+            
+        # TODO: 6. Octree Generation (Placeholder)
+        # octree_grp = f_rend.create_group("octree")
+        # ... logic to build Octree bounds ...
+        
+    # Update manifest.db
     db_conn.execute("""
         CREATE TABLE IF NOT EXISTS l2_instances (
-            instance_name   TEXT PRIMARY KEY,
-            surface_path    TEXT,
-            render_path     TEXT,
-            surface_face_count  INTEGER,
-            render_face_count   INTEGER,
-            edge_count          INTEGER,
-            partition_count     INTEGER
+            instance_name TEXT PRIMARY KEY,
+            surface_path TEXT,
+            render_path TEXT,
+            surface_face_count INTEGER,
+            render_face_count INTEGER,
+            edge_count INTEGER,
+            partition_count INTEGER
         )
     """)
     db_conn.execute("""
-        INSERT OR REPLACE INTO l2_instances
-        (instance_name, surface_path, render_path,
-         surface_face_count, render_face_count, edge_count, partition_count)
+        INSERT OR REPLACE INTO l2_instances 
+        (instance_name, surface_path, render_path, surface_face_count, render_face_count, edge_count, partition_count)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (inst_name,
-          "l2/geometry/{}_surface.h5".format(inst_name),
-          "l2/render/{}_render.h5".format(inst_name),
-          Sf, Sf, len(edge_nodes), 1))
+    """, (
+        inst_name, 
+        f"l2/geometry/{inst_name}_surface.h5", 
+        f"l2/render/{inst_name}_render.h5", 
+        Sf, Sf, 0, 1 # Placeholders for edge/partition counts
+    ))
     db_conn.commit()
+    
+    t1 = time.time()
+    logger.info(f"  Done in {t1-t0:.2f}s.")
 
-    logger.info("  Done in {:.2f}s".format(time.time() - t0))
+import logging
 
-
-# ─── Main ─────────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 def main():
-    args      = parse_args()
+    args = parse_args()
     workspace = args.workspace
-
+    
     if not os.path.exists(workspace):
-        logger.error("Workspace not found: {}".format(workspace))
+        logger.error(f"Workspace {workspace} does not exist.")
         return
-
-    db_path  = os.path.join(workspace, "manifest.db")
+        
+    db_path = os.path.join(workspace, "manifest.db")
     asm_path = os.path.join(workspace, "l1", "assembly.h5")
-
+    
     if not os.path.exists(db_path) or not os.path.exists(asm_path):
-        logger.error("L1 outputs not found — run L1 first.")
+        logger.error("L1 outputs (manifest.db or assembly.h5) not found. Run L1 extraction first.")
         return
 
-    logger.info("=== Layer 2 Preprocessing ===")
-    logger.info("  Workspace: {}".format(workspace))
-
+    logger.info(f"=== Layer 2 Preprocessing ===")
+    logger.info(f"  Workspace: {workspace}")
+    
+    odb_id = os.path.basename(os.path.normpath(workspace))
+    # Note: L3 registry.db is global, usually outside the workspace.
+    # Assuming standard structure: /data/registry.db and /data/<odb_id>/
+    registry_db_path = os.path.join(os.path.dirname(os.path.normpath(workspace)), "registry.db")
+    
+    # Update status to l2_running
+    if os.path.exists(registry_db_path):
+        try:
+            with sqlite3.connect(registry_db_path, timeout=5.0) as reg_conn:
+                reg_conn.execute("PRAGMA journal_mode=WAL;")
+                reg_conn.execute("UPDATE odb_jobs SET status='l2_running', l2_started_at=datetime('now') WHERE odb_id=?", (odb_id,))
+                reg_conn.commit()
+        except Exception as e:
+            logger.warning(f"Could not update registry.db to l2_running: {e}")
+    
+    # Must use WAL mode if L3 might be running
     conn = sqlite3.connect(db_path, timeout=5.0)
     conn.execute("PRAGMA journal_mode=WAL;")
-
+    
+    # Get all instances from L1
     instances = conn.execute("SELECT instance_name FROM instances").fetchall()
-
+    
+    success = True
     try:
         with h5py.File(asm_path, "r") as asm_h5:
-            for (inst_name,) in instances:
-                process_instance(workspace, conn, asm_h5, inst_name)
+            for row in instances:
+                process_instance(workspace, conn, asm_h5, row[0])
     except Exception as e:
-        logger.error("Layer 2 failed: {}".format(e), exc_info=True)
+        logger.error(f"Layer 2 failed: {e}", exc_info=True)
+        success = False
     finally:
         conn.close()
+        
+    if os.path.exists(registry_db_path):
+        try:
+            with sqlite3.connect(registry_db_path, timeout=5.0) as reg_conn:
+                reg_conn.execute("PRAGMA journal_mode=WAL;")
+                new_status = 'ready' if success else 'l1_done'
+                reg_conn.execute(f"UPDATE odb_jobs SET status=?, l2_done_at=datetime('now') WHERE odb_id=?", (new_status, odb_id))
+                reg_conn.commit()
+        except Exception as e:
+            logger.warning(f"Could not update registry.db final status: {e}")
 
     logger.info("=== Layer 2 Complete ===")
-
 
 if __name__ == "__main__":
     main()

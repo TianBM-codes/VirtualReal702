@@ -238,10 +238,12 @@ class AssemblyElset:
 @dataclass
 class Assembly:
     name: str = "Assembly"
-    instances: Dict[str, Instance]      = field(default_factory=dict)
-    nsets:     Dict[str, AssemblyNset]  = field(default_factory=dict)
-    elsets:    Dict[str, AssemblyElset] = field(default_factory=dict)
-    surfaces:  Dict[str, Surface]       = field(default_factory=dict)
+    instances: Dict[str, Instance]          = field(default_factory=dict)
+    nsets:     Dict[str, AssemblyNset]      = field(default_factory=dict)
+    elsets:    Dict[str, AssemblyElset]     = field(default_factory=dict)
+    surfaces:  Dict[str, Surface]           = field(default_factory=dict)
+    ties:      List[TieConstraint]          = field(default_factory=list)
+    couplings: List[CouplingConstraint]     = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +299,58 @@ class Material:
     conductivity_data: List[Tuple] = field(default_factory=list)
     expansion_data:    List[Tuple] = field(default_factory=list)
     specific_heat_data: List[Tuple] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Loads — Distributed Surface Load
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DsloadDeclaration:
+    """分布面载荷（*Dsload）——基于 Surface 的分布力。"""
+    surface_name: str
+    load_type: str          # "P", "TRSHR", "TRSHRNU", "VP" 等
+    magnitude: float
+    amplitude_name: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Constraints
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TieConstraint:
+    """绑定约束（*Tie）——主面与从面完全绑定。"""
+    name: str
+    master_surface: str = ""
+    slave_surface:  str = ""
+    adjust:   bool = True
+    tie_type: str  = "SURFACE TO SURFACE"   # 或 "NODE TO SURFACE"
+
+
+@dataclass
+class CouplingConstraint:
+    """
+    耦合约束（*Coupling + *Kinematic / *Distributing）。
+    coupling_type 由紧随其后的子关键字决定，Parser 阶段填入。
+    dof_ranges 仅 KINEMATIC 使用；空列表表示约束所有 6 个 DOF。
+    """
+    name: str
+    ref_node: str           # 参考节点所在 nset 名
+    surface:  str           # 耦合面名
+    coupling_type: str = ""              # "KINEMATIC" 或 "DISTRIBUTING"
+    dof_ranges: List[Tuple[int, int]] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Time Points
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TimePoints:
+    """时间点列表（*Time Points）——历程输出或增量步控制用。"""
+    name: str
+    times: List[float] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +413,7 @@ class StepDeclaration:
     boundary_conditions: List[BCDeclaration]  = field(default_factory=list)
     cloads:  List[CLoadDeclaration]           = field(default_factory=list)
     dloads:  List[DLoadDeclaration]           = field(default_factory=list)
+    dsloads: List[DsloadDeclaration]          = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -378,4 +433,5 @@ class InpModel:
     amplitudes:   Dict[str, Amplitude]     = field(default_factory=dict)
     orientations: Dict[str, Orientation]   = field(default_factory=dict)
     steps:        List[StepDeclaration]    = field(default_factory=list)
+    time_points:  Dict[str, TimePoints]    = field(default_factory=dict)
     diagnostics:  List                     = field(default_factory=list)

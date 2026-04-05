@@ -26,11 +26,12 @@ from .diagnostics import (
 from .lexer import KeywordBlock, tokenize
 from .model import (
     Assembly, AssemblyElset, AssemblyNset, Amplitude,
-    BCDeclaration, CLoadDeclaration, DLoadDeclaration,
+    BCDeclaration, CLoadDeclaration, DLoadDeclaration, DsloadDeclaration,
     ElasticData, Element, Elset, InpModel,
     Material, Node, Nset, Orientation, Part,
     PlasticData, HyperelasticData, DamageData, CreepData,
     Rotation, Section, StepDeclaration, Surface, SurfaceEntry,
+    TieConstraint, CouplingConstraint, TimePoints,
     Instance, map_element_type,
 )
 
@@ -85,6 +86,8 @@ class InpParser:
         self._current_material: Optional[Material] = None
         # Pending instance transform lines (raw data lines inside *Instance block)
         self._instance_data:    List[str] = []
+        # Pending coupling constraint (waiting for *Kinematic / *Distributing sub-block)
+        self._current_coupling: Optional[CouplingConstraint] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,6 +161,10 @@ class InpParser:
         if self._ctx == CTX_MATERIAL and kw not in _MATERIAL_SUB_KEYWORDS:
             self._pop_ctx()
             self._current_material = None
+
+        # If a *Coupling is pending and this is not its sub-keyword, clear the pointer.
+        if self._current_coupling is not None and kw not in _COUPLING_SUB_KEYWORDS:
+            self._current_coupling = None
 
         handler = _KEYWORD_HANDLERS.get(kw)
         if handler is None:
@@ -778,6 +785,139 @@ class InpParser:
                                  magnitude=magnitude, amplitude_name=amp)
             )
 
+    def _handle_dsload(self, block: KeywordBlock) -> None:
+        if self._current_step is None:
+            return
+        amp = block.params.get("amplitude")
+        for line in block.data_lines:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            try:
+                surface_name = parts[0]
+                load_type    = parts[1].upper()
+                magnitude    = float(parts[2])
+            except (ValueError, IndexError):
+                self._diag.warning(MALFORMED_DATA, f"Bad *Dsload line: {line!r}",
+                                   file=block.source_file, line=block.source_line)
+                continue
+            self._current_step.dsloads.append(
+                DsloadDeclaration(surface_name=surface_name, load_type=load_type,
+                                  magnitude=magnitude, amplitude_name=amp)
+            )
+
+    # ------------------------------------------------------------------
+    # Constraints
+    # ------------------------------------------------------------------
+
+    def _handle_tie(self, block: KeywordBlock) -> None:
+        name = block.params.get("name", "").strip()
+        if not name:
+            self._diag.warning(MALFORMED_DATA, "*Tie missing name parameter",
+                               file=block.source_file, line=block.source_line)
+            return
+        adjust_str = block.params.get("adjust", "YES").upper()
+        tie_type   = block.params.get("type", "SURFACE TO SURFACE").upper()
+        adjust     = (adjust_str != "NO")
+
+        master, slave = "", ""
+        if block.data_lines:
+            cols = [c.strip() for c in block.data_lines[0].split(",")]
+            if len(cols) >= 2:
+                master, slave = cols[0], cols[1]
+            elif len(cols) == 1:
+                master = cols[0]
+                self._diag.warning(MALFORMED_DATA,
+                                   f"*Tie '{name}' missing slave surface",
+                                   file=block.source_file, line=block.source_line)
+
+        tie = TieConstraint(name=name, master_surface=master, slave_surface=slave,
+                            adjust=adjust, tie_type=tie_type)
+
+        target_asm = self._current_assembly or self._model.assembly
+        if target_asm is not None:
+            target_asm.ties.append(tie)
+        else:
+            self._diag.warning(UNSUPPORTED_PARAM,
+                               f"*Tie '{name}' defined outside Assembly — skipped",
+                               file=block.source_file, line=block.source_line)
+
+    def _handle_coupling(self, block: KeywordBlock) -> None:
+        # Abaqus CAE exports "constraint name=", hand-written INPs often use "name="
+        name = (block.params.get("constraint name")
+                or block.params.get("name", "")).strip()
+        ref_node = block.params.get("ref node", block.params.get("ref_node", "")).strip()
+        surface  = block.params.get("surface", "").strip()
+        if not name:
+            self._diag.warning(MALFORMED_DATA, "*Coupling missing name parameter",
+                               file=block.source_file, line=block.source_line)
+            return
+
+        target_asm = self._current_assembly or self._model.assembly
+        if target_asm is None:
+            self._diag.warning(UNSUPPORTED_PARAM,
+                               f"*Coupling '{name}' defined outside Assembly — skipped",
+                               file=block.source_file, line=block.source_line)
+            return
+
+        coupling = CouplingConstraint(name=name, ref_node=ref_node, surface=surface)
+        target_asm.couplings.append(coupling)
+        self._current_coupling = coupling
+
+    def _handle_kinematic(self, block: KeywordBlock) -> None:
+        if self._current_coupling is None:
+            return
+        self._current_coupling.coupling_type = "KINEMATIC"
+        for line in block.data_lines:
+            cols = [c.strip() for c in line.split(",") if c.strip()]
+            try:
+                if len(cols) >= 2:
+                    self._current_coupling.dof_ranges.append((int(cols[0]), int(cols[1])))
+                elif len(cols) == 1:
+                    d = int(cols[0])
+                    self._current_coupling.dof_ranges.append((d, d))
+            except ValueError:
+                self._diag.warning(MALFORMED_DATA, f"Bad *Kinematic DOF line: {line!r}",
+                                   file=block.source_file, line=block.source_line)
+
+    def _handle_distributing(self, block: KeywordBlock) -> None:
+        if self._current_coupling is None:
+            return
+        self._current_coupling.coupling_type = "DISTRIBUTING"
+
+    # ------------------------------------------------------------------
+    # Time Points
+    # ------------------------------------------------------------------
+
+    def _handle_time_points(self, block: KeywordBlock) -> None:
+        name = block.params.get("name", "").strip()
+        if not name:
+            self._diag.warning(MALFORMED_DATA, "*Time Points missing name parameter",
+                               file=block.source_file, line=block.source_line)
+            return
+        if name in self._model.time_points:
+            self._diag.warning(DUPLICATE_NAME,
+                               f"*Time Points '{name}' redefined — overwriting previous definition",
+                               file=block.source_file, line=block.source_line)
+        tp = TimePoints(name=name)
+        for line in block.data_lines:
+            for tok in line.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    tp.times.append(float(tok))
+                except ValueError:
+                    self._diag.warning(MALFORMED_DATA,
+                                       f"Bad *Time Points value: {tok!r}",
+                                       file=block.source_file, line=block.source_line)
+        self._model.time_points[name] = tp
+
+
+# ---------------------------------------------------------------------------
+# Coupling sub-keywords (used to detect implicit Coupling context end in _dispatch)
+# ---------------------------------------------------------------------------
+_COUPLING_SUB_KEYWORDS = {"KINEMATIC", "DISTRIBUTING"}
 
 # ---------------------------------------------------------------------------
 # Known-harmless keywords that produce no useful data — skip silently
@@ -796,16 +936,15 @@ _SILENT_SKIP_KEYWORDS = {
     "CONTACT PROPERTY ASSIGNMENT", "CONTACT FORMULATION",
     "GENERAL CONTACT",
     # Constraints (Phase 2+)
-    "COUPLING", "KINEMATIC", "DISTRIBUTING",
     "CONNECTOR SECTION", "CONNECTOR BEHAVIOR",
     "CONNECTOR ELASTICITY", "CONNECTOR DAMPING",
-    "MPC", "EQUATION", "TIE",
+    "MPC", "EQUATION",
     "RIGID BODY", "PRE-TENSION SECTION",
     "EMBEDDED ELEMENT",
     # Initial / predefined fields
     "INITIAL CONDITIONS", "PREDEFINED FIELD", "TEMPERATURE",
     # Controls / solver settings
-    "CONTROLS", "SOLUTION TECHNIQUE", "TIME POINTS",
+    "CONTROLS", "SOLUTION TECHNIQUE",
     "SELECT EIGENMODES", "AMS",
     # Misc Abaqus/CAE generated
     "SYSTEM", "TRANSFORM", "NORMAL", "NODAL THICKNESS",
@@ -895,6 +1034,14 @@ _KEYWORD_HANDLERS: Dict[str, HandlerFn] = {
     "BOUNDARY":         _p._handle_boundary,
     "CLOAD":            _p._handle_cload,
     "DLOAD":            _p._handle_dload,
+    "DSLOAD":           _p._handle_dsload,
+    # Constraints
+    "TIE":              _p._handle_tie,
+    "COUPLING":         _p._handle_coupling,
+    "KINEMATIC":        _p._handle_kinematic,
+    "DISTRIBUTING":     _p._handle_distributing,
+    # Time control
+    "TIME POINTS":      _p._handle_time_points,
 }
 
 
