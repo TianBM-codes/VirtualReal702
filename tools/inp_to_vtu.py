@@ -144,15 +144,28 @@ def build_mesh(model: InpModel, apply_transforms: bool = True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Abaqus INP to VTU via meshio")
-    parser.add_argument("inp", help="Input .inp file")
-    parser.add_argument("vtu", help="Output .vtu file")
-    parser.add_argument("--no-transform", action="store_true",
-                        help="Write in Part local coordinates (ignore instance transforms)")
-    args = parser.parse_args()
+    arg_use = False
+    if arg_use:
+        parser = argparse.ArgumentParser(description="Convert Abaqus INP to VTU via meshio")
+        parser.add_argument("inp", help="Input .inp file")
+        parser.add_argument("vtu", help="Output .vtu file")
+        parser.add_argument("--no-transform", action="store_true",
+                            help="Write in Part local coordinates (ignore instance transforms)")
+        args = parser.parse_args()
 
-    print(f"Parsing {args.inp} ...")
-    model = parse_inp(args.inp)
+        print(f"Parsing {args.inp} ...")
+        model = parse_inp(args.inp)
+    else:
+        # For quick dev testing without CLI args
+        # inp_path = "data/abaqus/assembly_example.inp"
+        # inp_path = r"D:\WorkSpace\WebThreeJS\PyModel2JsonDataFolder\model\inp\door.inp"
+        inp_path = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\ReactorHead_reference.inp"
+        print(f"Parsing {inp_path} ...")
+        model = parse_inp(inp_path)
+        args = argparse.Namespace(
+            vtu="output.vtu",
+            no_transform=False,
+        )
 
     # Print diagnostics
     errors   = [d for d in model.diagnostics if d.severity == "ERROR"]

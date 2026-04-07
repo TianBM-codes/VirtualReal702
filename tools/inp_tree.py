@@ -41,6 +41,13 @@ def _labels_summary(labels, max_n: int) -> str:
     return s
 
 
+def _first_scalar_summary(name: str, rows, key: str = "") -> str:
+    if not rows or not rows[0]:
+        return name
+    label = f"{key}=" if key else ""
+    return f"{name}({label}{rows[0][0]:.3g})"
+
+
 def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
     T = "├── "
     L = "└── "
@@ -53,6 +60,14 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
             connector = L if i == len(items) - 1 else T
             child_prefix = prefix + (S if i == len(items) - 1 else I)
             item_fn(prefix + connector, child_prefix, item)
+
+    def _print_bc_entry(prefix: str, entry) -> None:
+        suffix = ""
+        if entry.op and entry.op != "MOD":
+            suffix += f"  op={entry.op}"
+        if entry.amplitude_name:
+            suffix += f"  amp={entry.amplitude_name}"
+        print(f"{prefix}{entry.nset_name}  DOF {entry.dof_start}-{entry.dof_end} = {entry.value}{suffix}")
 
     # ------------------------------------------------------------------ #
     print(BOLD(f"Model"))
@@ -206,8 +221,8 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
         if mat.damage_initiation: props.append(f"DamageInitiation/{mat.damage_initiation.criterion}")
         if mat.damage_evolution:  props.append(f"DamageEvolution")
         if mat.creep:             props.append(f"Creep/{mat.creep.law}")
-        if mat.conductivity_data: props.append("Conductivity")
-        if mat.expansion_data:    props.append("Expansion")
+        if mat.conductivity_data: props.append(_first_scalar_summary("Conductivity", mat.conductivity_data, "k"))
+        if mat.expansion_data:    props.append(_first_scalar_summary("Expansion", mat.expansion_data, "alpha"))
 
         print(f"{I}{m0}{BOLD(mname)}")
         for pi2, prop in enumerate(props):
@@ -237,6 +252,15 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
             if tp.times:
                 t_range = f"  ({len(tp.times)} pts)  t=[{tp.times[0]:.3g} … {tp.times[-1]:.3g}]"
             print(f"{I}{c}{tname}{t_range}")
+
+    # ---- Initial Boundary Conditions -------------------------------- #
+    if model.initial_boundary_conditions:
+        print(f"{T}{BOLD(CYAN('Initial Boundary Conditions'))}  ({len(model.initial_boundary_conditions)})")
+        for bi, entry in enumerate(model.initial_boundary_conditions[:max_labels]):
+            c = L if (bi == len(model.initial_boundary_conditions) - 1 or bi == max_labels - 1) else T
+            _print_bc_entry(f"{I}{c}", entry)
+        if len(model.initial_boundary_conditions) > max_labels:
+            print(f"{I}{L}{DIM(f'... and {len(model.initial_boundary_conditions)-max_labels} more')}")
 
     # ---- Steps ------------------------------------------------------- #
     print(f"{L}{BOLD(CYAN('Steps'))}  ({len(model.steps)})")
@@ -326,7 +350,8 @@ def main():
     else:
         # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\2d_cpe8p_gc_smallsliding.inp"
         # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\backhoe_deform_scoopdump_xpl.inp"
-        inp = r"D:\WorkSpace\WebThreeJS\PyModel2JsonDataFolder\model\inp\door.inp"
+        # inp = r"D:\WorkSpace\WebThreeJS\PyModel2JsonDataFolder\model\inp\door.inp"
+        inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\ReactorHead_reference.inp"
         model = parse_inp(inp)
         print_tree(model,
                    show_labels=True,

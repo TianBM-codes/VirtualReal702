@@ -203,7 +203,13 @@ class Part:
 
 @dataclass
 class Rotation:
-    """Rotation from Abaqus Instance transform: rotate around axis through center."""
+    """
+    Rotation from Abaqus Instance transform.
+
+    Abaqus stores the rotation axis as two points on the axis line:
+    - center: first point
+    - axis:   second point on the same axis line
+    """
     center: Tuple[float, float, float]
     axis:   Tuple[float, float, float]
     angle_deg: float
@@ -432,6 +438,7 @@ class InpModel:
     materials:    Dict[str, Material]      = field(default_factory=dict)
     amplitudes:   Dict[str, Amplitude]     = field(default_factory=dict)
     orientations: Dict[str, Orientation]   = field(default_factory=dict)
+    initial_boundary_conditions: List[BCDeclaration] = field(default_factory=list)
     steps:        List[StepDeclaration]    = field(default_factory=list)
     time_points:  Dict[str, TimePoints]    = field(default_factory=dict)
     diagnostics:  List                     = field(default_factory=list)

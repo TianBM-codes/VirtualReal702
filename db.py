@@ -457,7 +457,7 @@ CREATE_TABLE_SQL_LIST = [
         response_type BIGINT NOT NULL COMMENT '响应类型',
         scatter FLOAT NOT NULL COMMENT '离散度',
         value FLOAT NOT NULL COMMENT '当前值',
-        PRIMARY KEY (id),
+        PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='响应总览表';
     """,
     """
@@ -466,7 +466,7 @@ CREATE_TABLE_SQL_LIST = [
         pid BIGINT NOT NULL COMMENT '工程ID',
         response_type VARCHAR(32) NOT NULL COMMENT '响应类型',
         sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
-        PRIMARY KEY (id),
+        PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='可选响应表';
     """,
     """
@@ -480,7 +480,7 @@ CREATE_TABLE_SQL_LIST = [
         scatter FLOAT NOT NULL COMMENT '离散度',
         value FLOAT NOT NULL COMMENT '当前值',
         sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
-        PRIMARY KEY (id),
+        PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='位移响应表';
     """,
     """
@@ -497,7 +497,7 @@ CREATE_TABLE_SQL_LIST = [
         scatter FLOAT NOT NULL COMMENT '离散度',
         value FLOAT NOT NULL COMMENT '当前值',
         sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
-        PRIMARY KEY (id),
+        PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应变响应表';
     """,
     """
@@ -514,7 +514,7 @@ CREATE_TABLE_SQL_LIST = [
         scatter FLOAT NOT NULL COMMENT '离散度',
         value FLOAT NOT NULL COMMENT '当前值',
         sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
-        PRIMARY KEY (id),
+        PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应力响应表';
     """
 ]

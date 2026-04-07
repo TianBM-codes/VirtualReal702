@@ -46,4 +46,5 @@ runtime_bundle/
 *.odb
 *.h5
 *.hdf5
+*.vtu
 AGENTS.md

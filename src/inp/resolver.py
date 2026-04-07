@@ -216,8 +216,11 @@ def _build_transform(inst: Instance) -> np.ndarray:
     Build a 4×4 homogeneous transformation matrix for an Instance.
 
     Abaqus applies transforms as: first translate, then rotate.
-    The rotation is defined as: rotate `angle_deg` degrees around `axis`
-    passing through `center`.
+    The rotation is defined by two points on the axis line:
+    - `center`: first point on the axis
+    - `axis`: second point on the axis
+
+    So the axis direction is (`axis` - `center`), not `axis` itself.
 
     Matrix convention: column-vector  p' = M @ p  (same as L1 ODB convention).
     """
@@ -232,7 +235,10 @@ def _build_transform(inst: Instance) -> np.ndarray:
 
     rot = inst.rotation
     cx, cy, cz = rot.center
-    ax, ay, az = rot.axis
+    ax2, ay2, az2 = rot.axis
+    ax = ax2 - cx
+    ay = ay2 - cy
+    az = az2 - cz
     theta = math.radians(rot.angle_deg)
 
     # Normalise axis
