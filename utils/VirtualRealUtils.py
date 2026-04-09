@@ -1,26 +1,40 @@
-from flask import request
 import json
+from typing import Any
 
-def log_request():
-    """最简版本"""
-    if request.method != "POST":
-        return  # 如果不是 POST 请求，直接返回
 
-    try:
-        request_data = request.get_json()  # 自动解析 JSON
-    except Exception as e:
-        request_data = {"error": "Invalid JSON", "raw_data": request.data.decode('utf-8')}
+def _read_attr(obj: Any, name: str, default=None):
+    return getattr(obj, name, default)
 
-    # 结构化日志输出
+
+def _resolve_path(request: Any) -> Any:
+    url = _read_attr(request, "url")
+    if url is not None:
+        path = _read_attr(url, "path")
+        if path is not None:
+            return path
+    return _read_attr(request, "path")
+
+
+def _resolve_client_ip(request: Any) -> Any:
+    client = _read_attr(request, "client")
+    if client is not None:
+        host = _read_attr(client, "host")
+        if host is not None:
+            return host
+    return _read_attr(request, "remote_addr")
+
+
+def log_request(request: Any, body: Any = None) -> None:
+    method = _read_attr(request, "method")
+    if method != "POST":
+        return
+
     log_info = {
-        "method": request.method,
-        "path": request.path,
-        "body": request_data,
-        "client_ip": request.remote_addr,  # 可选：记录客户端 IP
+        "method": method,
+        "path": _resolve_path(request),
+        "body": body,
+        "client_ip": _resolve_client_ip(request),
     }
 
-    # 美化输出（indent=2 让 JSON 更易读）
     print("\n[Request Log]")
-    print(json.dumps(log_info, indent=2, ensure_ascii=False))
-    # print(f"\n[{request.method}] {request.path} - Body: {request.data.decode('utf-8')}")
-
+    print(json.dumps(log_info, indent=2, ensure_ascii=False, default=str))

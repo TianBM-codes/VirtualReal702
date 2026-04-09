@@ -31,6 +31,177 @@ def _safe_int(value):
     return int(_to_builtin(value))
 
 
+def _classify_unv_result(message, test_modes):
+    static_types = {1}
+    dynamic_types = {2, 3}
+    mode_types = {
+        int(mode["analysis_type"])
+        for mode in test_modes
+        if mode.get("analysis_type") is not None
+    }
+
+    has_static = bool(mode_types & static_types)
+    has_dynamic = bool(mode_types & dynamic_types)
+    if has_static and has_dynamic:
+        raise ValueError("mixed static and dynamic dataset 55 results are not supported in one UNV import")
+
+    if "is_static" in message:
+        message_is_static = bool(message["is_static"])
+        if message_is_static and has_dynamic:
+            raise ValueError("parser message indicates static data but mode content is dynamic")
+        if (not message_is_static) and has_static:
+            raise ValueError("parser message indicates dynamic data but mode content is static")
+        return "static" if message_is_static else "dynamic"
+
+    if has_static:
+        return "static"
+    return "dynamic"
+
+
+def _update_project_test_state(cursor, project_id, data_type):
+    cursor.execute("""
+        UPDATE t_mt_work_condition_project
+        SET test_modal_data_type = %s
+        WHERE project_id = %s
+    """, (data_type, project_id))
+
+    cursor.execute("""
+        UPDATE t_mt_work_condition_project
+        SET test_data_status = %s
+        WHERE project_id = %s
+    """, (1, project_id))
+
+
+def _insert_dynamic_modal_data(cursor, project_id, file_id, test_modes, message):
+    freq_sql = """
+    INSERT INTO t_mt_py_test_modal_frequency (mode_no, pid, fid, frequency, damping, eigenvalue_Re, eigenvalue_Im)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+
+    for mode in test_modes:
+        cursor.execute(freq_sql, (
+            _safe_int(mode["modal_number"]),
+            project_id,
+            file_id,
+            _safe_float(mode["frequency"]),
+            _safe_float(mode["damping"]),
+            _safe_float(mode.get("eigenvalue_Re")),
+            _safe_float(mode.get("eigenvalue_Im"))
+        ))
+
+    modal_sql = """
+    INSERT INTO t_mt_py_test_modal_shape (mode_no, pid, modal_shape)
+    VALUES (%s, %s, %s)
+    """
+
+    for mode in test_modes:
+        mode_num = _safe_int(mode["modal_number"])
+        mode_shape = json.dumps(_to_builtin(mode["displacements"]), ensure_ascii=False)
+        cursor.execute(modal_sql, (
+            mode_num,
+            project_id,
+            mode_shape
+        ))
+
+    if "is_real" not in message:
+        _update_project_test_state(cursor, project_id, None)
+        return
+
+    if message["is_real"]:
+        modal_real_sql = """
+                        INSERT INTO t_mt_py_test_modal_shape_real (mode_no, pid, point, ux, uy, uz)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """
+        for mode in test_modes:
+            mode_num = _safe_int(mode["modal_number"])
+            for node, dis in mode["displacements"].items():
+                real_part = _to_builtin(dis['real'])
+                cursor.execute(modal_real_sql, (
+                    mode_num,
+                    project_id,
+                    _safe_int(node),
+                    _safe_float(real_part[0]), _safe_float(real_part[1]), _safe_float(real_part[2])
+                ))
+        data_type = "REAL"
+    else:
+        modal_imag_sql = """
+                        INSERT INTO t_mt_py_test_modal_shape_imag (mode_no, pid, point, re_ux, re_uy, re_uz, im_ux, im_uy, im_uz)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+        for mode in test_modes:
+            mode_num = _safe_int(mode["modal_number"])
+            for node, dis in mode["displacements"].items():
+                real_part = _to_builtin(dis['real'])
+                imag_part = _to_builtin(dis['imag'])
+                cursor.execute(modal_imag_sql, (
+                    mode_num,
+                    project_id,
+                    _safe_int(node),
+                    _safe_float(real_part[0]), _safe_float(real_part[1]), _safe_float(real_part[2]),
+                    _safe_float(imag_part[0]), _safe_float(imag_part[1]), _safe_float(imag_part[2])
+                ))
+        data_type = "IMAG"
+
+    _update_project_test_state(cursor, project_id, data_type)
+
+
+def _insert_static_results(cursor, project_id, file_id, test_modes):
+    static_sql = """
+    INSERT INTO t_mt_py_test_static_result
+    (pid, fid, load_case_no, result_no, point, ux, uy, uz, rx, ry, rz, load_factor, extra_json)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+
+    row_count = 0
+    for mode in test_modes:
+        load_case_no = _safe_int(mode.get("load_case")) or 0
+        result_no = _safe_int(mode.get("modal_number")) or 0
+        load_factor = _safe_float(mode.get("load_factor"))
+        extra_json = {
+            "analysis_type": _safe_int(mode.get("analysis_type")),
+            "data_type": _safe_int(mode.get("data_type")),
+            "ndv": _safe_int(mode.get("ndv")),
+        }
+
+        for node, dis in mode["displacements"].items():
+            real_part = list(_to_builtin(dis.get("real", (0.0, 0.0, 0.0))))
+            while len(real_part) < 3:
+                real_part.append(0.0)
+
+            rotate_part = _to_builtin(dis.get("rotate"))
+            if rotate_part is None:
+                rotate_part = [None, None, None]
+            else:
+                rotate_part = list(rotate_part)
+                while len(rotate_part) < 3:
+                    rotate_part.append(None)
+
+            row_extra_json = dict(extra_json)
+            imag_part = _to_builtin(dis.get("imag"))
+            if imag_part is not None:
+                row_extra_json["imag"] = list(imag_part)
+
+            cursor.execute(static_sql, (
+                project_id,
+                file_id,
+                load_case_no,
+                result_no,
+                _safe_int(node),
+                _safe_float(real_part[0]),
+                _safe_float(real_part[1]),
+                _safe_float(real_part[2]),
+                _safe_float(rotate_part[0]),
+                _safe_float(rotate_part[1]),
+                _safe_float(rotate_part[2]),
+                load_factor,
+                json.dumps(row_extra_json, ensure_ascii=False),
+            ))
+            row_count += 1
+
+    _update_project_test_state(cursor, project_id, "STATIC")
+    return row_count
+
+
 def parse_unv_file(file_path):
     """
     解析试验测试模态结果，并保存到mysql数据库中
@@ -77,6 +248,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
         test_nodes, test_elements, test_modes, message = parse_unv_file(file_path)
     except KeyError as e:
         raise e
+    result_kind = _classify_unv_result(message, test_modes)
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -123,96 +295,22 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
                 _safe_int(elem.get("point4")),
             ))
 
-        freq_sql = """
-        INSERT INTO t_mt_py_test_modal_frequency (mode_no, pid, fid, frequency, damping, eigenvalue_Re, eigenvalue_Im)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """
-
-        for mode in test_modes:
-            cursor.execute(freq_sql, (
-                _safe_int(mode["modal_number"]),
-                project_id,
-                file_id,
-                _safe_float(mode["frequency"]),
-                _safe_float(mode["damping"]),
-                _safe_float(mode.get("eigenvalue_Re")),
-                _safe_float(mode.get("eigenvalue_Im"))
-            ))
-
-        modal_sql = """
-        INSERT INTO t_mt_py_test_modal_shape (mode_no, pid, modal_shape)
-        VALUES (%s, %s, %s)
-        """
-
-        for mode in test_modes:
-            mode_num = _safe_int(mode["modal_number"])
-            mode_shape = json.dumps(_to_builtin(mode["displacements"]), ensure_ascii=False)
-            cursor.execute(modal_sql, (
-                mode_num,
-                project_id,
-                mode_shape
-            ))
-
-        if "is_real" in message:
-            if message["is_real"]:
-                modal_sql = """
-                            INSERT INTO t_mt_py_test_modal_shape_real (mode_no, pid, point, ux, uy, uz)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            """
-                for mode in test_modes:
-                    mode_num = _safe_int(mode["modal_number"])
-                    for node, dis in mode["displacements"].items():
-                        real_part = _to_builtin(dis['real'])
-                        cursor.execute(modal_sql, (
-                            mode_num,
-                            project_id,
-                            _safe_int(node),
-                            _safe_float(real_part[0]), _safe_float(real_part[1]), _safe_float(real_part[2])
-                        ))
-
-                cursor.execute("""
-                    UPDATE t_mt_work_condition_project
-                    SET test_modal_data_type = %s
-                    WHERE project_id = %s
-                """, ("REAL", project_id))
-
-            else:
-                modal_sql = """
-                            INSERT INTO t_mt_py_test_modal_shape_imag (mode_no, pid, point, re_ux, re_uy, re_uz, im_ux, im_uy, im_uz)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """
-                for mode in test_modes:
-                    mode_num = _safe_int(mode["modal_number"])
-                    for node, dis in mode["displacements"].items():
-                        real_part = _to_builtin(dis['real'])
-                        imag_part = _to_builtin(dis['imag'])
-                        cursor.execute(modal_sql, (
-                            mode_num,
-                            project_id,
-                            _safe_int(node),
-                            _safe_float(real_part[0]), _safe_float(real_part[1]), _safe_float(real_part[2]),
-                            _safe_float(imag_part[0]), _safe_float(imag_part[1]), _safe_float(imag_part[2])
-                        ))
-                cursor.execute("""
-                    UPDATE t_mt_work_condition_project
-                    SET test_modal_data_type = %s
-                    WHERE project_id = %s
-                """, ("IMAG", project_id))
-
-        cursor.execute("""
-            UPDATE t_mt_work_condition_project
-            SET test_data_status = %s
-            WHERE project_id = %s
-        """, (1, project_id))
+        static_result_count = 0
+        if result_kind == "static":
+            static_result_count = _insert_static_results(cursor, project_id, file_id, test_modes)
+        else:
+            _insert_dynamic_modal_data(cursor, project_id, file_id, test_modes, message)
 
         conn.commit()
 
         return {
             "file_path": file_path,
+            "result_kind": result_kind,
             "cleared_before_insert": clear_before_insert,
             "test_node_count": len(test_nodes),
             "test_element_count": len(test_elements),
-            "test_mode_count": len(test_modes)
+            "test_mode_count": len(test_modes),
+            "test_static_result_count": static_result_count,
         }
 
     except Exception:

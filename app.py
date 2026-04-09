@@ -1,4 +1,4 @@
-from config import FLASK_CONFIG
+from config import APP_CONFIG
 from fastapi import Request
 from src.l3.main import app
 
@@ -94,7 +94,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "app:app",
-        host=FLASK_CONFIG["host"],
-        port=FLASK_CONFIG["port"],
+        host=APP_CONFIG["host"],
+        port=APP_CONFIG["port"],
         reload=False,
     )

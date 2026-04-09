@@ -77,6 +77,29 @@ CREATE_TABLE_SQL_LIST = [
     ) COMMENT='试验振动模态数据表--复模态节点振型'
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_test_static_result (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        fid BIGINT NOT NULL COMMENT 'file id',
+        load_case_no INT NOT NULL COMMENT 'load case no',
+        result_no INT NOT NULL COMMENT 'result sequence no',
+        point INT NOT NULL COMMENT 'point id',
+        ux DOUBLE NULL COMMENT 'x displacement',
+        uy DOUBLE NULL COMMENT 'y displacement',
+        uz DOUBLE NULL COMMENT 'z displacement',
+        rx DOUBLE NULL COMMENT 'x rotation',
+        ry DOUBLE NULL COMMENT 'y rotation',
+        rz DOUBLE NULL COMMENT 'z rotation',
+        load_factor DOUBLE NULL COMMENT 'load factor',
+        extra_json JSON NULL COMMENT 'extra json',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created at',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_fid_case_result_point (pid, fid, load_case_no, result_no, point),
+        KEY idx_pid_case_result (pid, load_case_no, result_no),
+        KEY idx_pid_point (pid, point)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='test static result';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_test_coord (
         id INT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
@@ -597,6 +620,7 @@ def clear_unv_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_test_modal_shape WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_test_modal_shape_imag WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_test_modal_shape_real WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_test_static_result WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_match WHERE pid = {pid}")

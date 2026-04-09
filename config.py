@@ -10,7 +10,7 @@ DB_CONFIG = {
     "charset": "utf8mb4"
 }
 
-FLASK_CONFIG = {
+APP_CONFIG = {
     "host": "0.0.0.0",
     "port": 5000,
     "debug": False

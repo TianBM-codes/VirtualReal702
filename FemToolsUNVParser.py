@@ -20,7 +20,6 @@ from MeshElementFactory import MeshElementFactory
 import numpy as np
 import meshio
 
-
 UNV_2412_SUPPORTED = {
     11: ("line", 2),
     21: ("line", 2),
@@ -444,8 +443,8 @@ def parse_unv(filename: str):
             ndv = int(parts[5])
             i += 1
 
-            # 只处理 Normal Mode 和 Complex Eigenvalue
-            if analysis_type not in (2, 3):
+            # 只处理 Static / Normal Mode / Complex Eigenvalue
+            if analysis_type not in (1, 2, 3):
                 while i < lines_count and lines[i].strip() != "-1":
                     i += 1
                 if i < lines_count:
@@ -453,9 +452,9 @@ def parse_unv(filename: str):
                 continue
 
             # Record 7: 8I10
-            # analysis_type = 2 或 3 时:
+            # analysis_type = 1 / 2 / 3 时:
             #   field3 = load_case
-            #   field4 = modal_number
+            #   field4 = result number / modal number
             if i >= lines_count:
                 break
             parts = lines[i].split()
@@ -477,7 +476,19 @@ def parse_unv(filename: str):
             eig_real = 0.0
             eig_imag = 0.0
 
-            if analysis_type == 2:
+            load_factor = 0.0
+
+            if analysis_type == 1:
+                """
+                Static displacement:
+                Field 1: Load factor / scale factor (if present)
+                Other fields are not used by the current import chain.
+                """
+                load_factor = float(parts[0]) if len(parts) >= 1 else 0.0
+                damping = 0.0
+                message["is_static"] = True
+
+            elif analysis_type == 2:
                 """
                 Field 1: Frequency (Hertz)
                 Field 2: Modal Mass
@@ -486,6 +497,7 @@ def parse_unv(filename: str):
                 """
                 freq = float(parts[0]) if len(parts) >= 1 else 0.0
                 damping = float(parts[2])
+                message["is_static"] = False
 
             elif analysis_type == 3:
                 """
@@ -498,6 +510,7 @@ def parse_unv(filename: str):
                 """
                 eig_real = float(parts[0]) if len(parts) >= 1 else 0.0
                 eig_imag = float(parts[1]) if len(parts) >= 2 else 0.0
+                message["is_static"] = False
                 damping = 0
 
             else:
@@ -579,7 +592,10 @@ def parse_unv(filename: str):
                     uy = vals[1] if ndv >= 2 else 0.0
                     uz = vals[2] if ndv >= 3 else 0.0
 
-                    displacements[node_id] = {"real": (ux, uy, uz), "imag": (0, 0, 0)}
+                    if len(vals) == 6 and analysis_type == 1:
+                        displacements[node_id] = {"real": (ux, uy, uz), "imag": (0, 0, 0), "rotate": (vals[3], vals[4], vals[5])}
+                    else:
+                        displacements[node_id] = {"real": (ux, uy, uz), "imag": (0, 0, 0)}
 
                     if hit_end:
                         i += 1
@@ -639,7 +655,10 @@ def parse_unv(filename: str):
                 "damping": damping
             }
 
-            if analysis_type == 2:
+            if analysis_type == 1:
+                mode_info["frequency"] = 0.0
+                mode_info["load_factor"] = load_factor
+            elif analysis_type == 2:
                 mode_info["frequency"] = freq
             elif analysis_type == 3:
                 mode_info["frequency"] = abs(eig_imag) / (2 * math.pi)
