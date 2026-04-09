@@ -169,8 +169,9 @@ def _compute_mises(
     Compute Von Mises stress for the hit element at the given frame.
     Reads S field (INTEGRATION_POINT preferred, then ELEMENT_NODAL), averages
     over integration points, then applies the Von Mises formula.
-    Returns None if S field is unavailable or has fewer than 6 components.
+    Returns None if S field is unavailable or has fewer than 3 components.
     Component order assumed: [S11, S22, S33, S12, S13, S23].
+    Shell models store only 4 components [S11, S22, S33, S12]; S13/S23 are treated as 0.
     """
     s_path = _result_h5_path(workspace, step, "S")
     if not os.path.exists(s_path):
@@ -188,10 +189,13 @@ def _compute_mises(
                 # Average over all leading dims (integration points) until shape is 1-D
                 while elem_data.ndim > 1:
                     elem_data = elem_data.mean(axis=0)
-                if elem_data.ndim == 0 or len(elem_data) < 6:
+                if elem_data.ndim == 0 or len(elem_data) < 3:
                     return None
                 s11, s22, s33 = float(elem_data[0]), float(elem_data[1]), float(elem_data[2])
-                s12, s13, s23 = float(elem_data[3]), float(elem_data[4]), float(elem_data[5])
+                # Shell elements store only [S11, S22, S33, S12]; S13/S23 default to 0.
+                s12 = float(elem_data[3]) if len(elem_data) > 3 else 0.0
+                s13 = float(elem_data[4]) if len(elem_data) > 4 else 0.0
+                s23 = float(elem_data[5]) if len(elem_data) > 5 else 0.0
                 mises = float(np.sqrt(0.5 * (
                     (s11 - s22) ** 2 + (s22 - s33) ** 2 + (s33 - s11) ** 2
                     + 6.0 * (s12 ** 2 + s13 ** 2 + s23 ** 2)
@@ -202,25 +206,46 @@ def _compute_mises(
     return None
 
 
+def _find_node_pos_in_elem(
+    workspace: str, instance: str, etype_str: str, elem_row: int, node_row: int
+) -> Optional[int]:
+    """
+    Return the 0-based position of node_row within the element's corner connectivity.
+    Used to index into ELEMENT_NODAL data (first extra dim = corner node order).
+    Returns None if the geometry file is unavailable or the node is not found.
+    """
+    geom_h5 = os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            conn = np.asarray(f[f"elements/{etype_str}/conn"][elem_row])
+            valid = conn[conn >= 0]  # strip sentinel -1 padding
+            matches = np.where(valid == node_row)[0]
+            return int(matches[0]) if len(matches) > 0 else None
+    except Exception:
+        return None
+
+
 def _read_pick_result(
     workspace: str,
     instance: str,
-    face_node_rows: List[int],   # for NODAL path
-    elem_row: int,               # for ELEMENT_NODAL / INTEGRATION_POINT path
-    etype_str: str,              # for ELEMENT_NODAL / INTEGRATION_POINT path
+    face_node_rows: List[int],          # for NODAL element pick (all 3 face corners)
+    elem_row: int,                       # for ELEMENT_NODAL / INTEGRATION_POINT path
+    etype_str: str,                      # for ELEMENT_NODAL / INTEGRATION_POINT path
     frame_idx: int,
     step: str,
     field: str,
     component: Optional[str],
     component_idx: Optional[int],
     pick_mode: str,
+    selected_node_row: Optional[int] = None,  # node pick: the specific row chosen by node_idx
 ) -> Optional[PickResultInfo]:
     """
     Read pick result values, trying NODAL → ELEMENT_NODAL → INTEGRATION_POINT.
 
     NODAL:
       element pick → raw_values (one per face corner node) + display_value (mean)
-      node pick    → raw_value (single selected node value)
+      node pick    → raw_value for the single node identified by selected_node_row
+                     (falls back to face_node_rows[0] when selected_node_row is None)
 
     ELEMENT_NODAL / INTEGRATION_POINT (fallback when NODAL absent):
       Returns a single display_value averaged over the integration/nodal points of
@@ -258,9 +283,13 @@ def _read_pick_result(
                 if frame_idx >= nf:
                     return None
                 fd = ds[frame_idx]   # [N] or [N, ncomp]
-                node_rows_to_read = (
-                    face_node_rows[:1] if pick_mode == "node" else face_node_rows
-                )
+                if pick_mode == "node":
+                    node_rows_to_read = (
+                        [selected_node_row] if selected_node_row is not None
+                        else face_node_rows[:1]
+                    )
+                else:
+                    node_rows_to_read = face_node_rows
                 def _nval(r):
                     if fd.ndim == 1:
                         return float(fd[r])
@@ -283,8 +312,23 @@ def _read_pick_result(
                 if frame_idx >= nf:
                     return None
                 # Shape: [N_elem, ...extra_dims..., ncomp] or [N_elem, ncomp] or [N_elem]
-                elem_data = ds[frame_idx, elem_row]   # [...extra..., ncomp] or [ncomp] or scalar
-                # Average over all dims until scalar
+                elem_data = np.asarray(ds[frame_idx, elem_row])
+
+                # ELEMENT_NODAL in node mode: extract the specific node's extrapolated value.
+                # The first extra dim corresponds to element corner nodes in conn order.
+                if (position == "ELEMENT_NODAL"
+                        and pick_mode == "node"
+                        and selected_node_row is not None
+                        and elem_data.ndim >= 1):
+                    node_pos = _find_node_pos_in_elem(workspace, instance, etype_str,
+                                                      elem_row, selected_node_row)
+                    if node_pos is not None and node_pos < elem_data.shape[0]:
+                        node_val = _scalar(elem_data[node_pos]) if elem_data[node_pos].ndim >= 1 \
+                                   else float(elem_data[node_pos])
+                        return PickResultInfo(field=field, position=position,
+                                              component=component, raw_value=node_val)
+
+                # Average over all leading dims (IPs / nodes) until 1-D, then extract scalar
                 while hasattr(elem_data, "ndim") and elem_data.ndim > 1:
                     elem_data = elem_data.mean(axis=0)
                 display = _scalar(elem_data) if hasattr(elem_data, "__len__") else float(elem_data)
@@ -383,6 +427,7 @@ def pick(
             component=component,
             component_idx=component_idx,
             pick_mode=pick_mode,
+            selected_node_row=selected_node_row,
         )
 
     # ── Coords (orig + deformed) for node mode ──────────────────────────────

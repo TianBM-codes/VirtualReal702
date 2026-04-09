@@ -516,6 +516,47 @@ CREATE_TABLE_SQL_LIST = [
         sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
         PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应力响应表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_relative_error (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        point_name VARCHAR(200) NOT NULL COMMENT '测点名称',
+        error_value FLOAT NOT NULL COMMENT '误差值',
+        PRIMARY KEY (id),
+        KEY idx_pid (pid),
+        KEY idx_pid_point_name (pid, point_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='相对误差表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_confidence (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        response_type VARCHAR(32) NOT NULL COMMENT '响应类型',
+        confidence_value FLOAT NOT NULL COMMENT '置信度值',
+        PRIMARY KEY (id),
+        KEY idx_pid (pid),
+        KEY idx_pid_response_type (pid, response_type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='置信度表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_displacement_scale_factor (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        scale_factor FLOAT NOT NULL COMMENT '缩放因子值',
+        PRIMARY KEY (id),
+        KEY idx_pid (pid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='位移缩放因子表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_correlation_scatter (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        measure_point_value FLOAT NOT NULL COMMENT '测点值',
+        node_value FLOAT NOT NULL COMMENT '节点值',
+        PRIMARY KEY (id),
+        KEY idx_pid (pid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='相关性散点图表';
     """
 ]
 

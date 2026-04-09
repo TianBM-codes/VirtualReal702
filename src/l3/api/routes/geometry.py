@@ -58,9 +58,7 @@ async def get_render_buffers(odb_id: str, instance: str):
     return Response(
         content=payload,
         media_type="application/octet-stream",
-        headers={
-            "X-Face-Count": str(Rf),
-        },
+        headers={"X-Face-Count": str(Rf)},
     )
 
 

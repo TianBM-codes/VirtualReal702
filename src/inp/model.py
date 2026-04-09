@@ -438,7 +438,6 @@ class InpModel:
     materials:    Dict[str, Material]      = field(default_factory=dict)
     amplitudes:   Dict[str, Amplitude]     = field(default_factory=dict)
     orientations: Dict[str, Orientation]   = field(default_factory=dict)
-    initial_boundary_conditions: List[BCDeclaration] = field(default_factory=list)
     steps:        List[StepDeclaration]    = field(default_factory=list)
     time_points:  Dict[str, TimePoints]    = field(default_factory=dict)
     diagnostics:  List                     = field(default_factory=list)

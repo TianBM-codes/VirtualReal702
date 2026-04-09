@@ -19,4 +19,11 @@ class Settings:
         # odb_id used in URLs when dev mode is active (defaults to workspace dir name)
         self.odb_id = os.getenv("APP_ODB_ID", "")
 
+        # Security: restrict odb_path submissions to this root directory.
+        # Empty string = no restriction (suitable for internal deployments).
+        self.raw_odb_root = os.getenv("APP_RAW_ODB_ROOT", "")
+
+        # Compression: APP_ENABLE_GZIP=1 — wrap all responses with HTTP gzip
+        self.enable_gzip = os.getenv("APP_ENABLE_GZIP", "0") == "1"
+
 settings = Settings()

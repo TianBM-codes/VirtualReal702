@@ -147,10 +147,68 @@ def _write_assembly_h5(model: InpModel, workspace: str) -> None:
             return
         for inst_name, inst in asm.instances.items():
             grp = f.require_group("instances/{}".format(inst_name))
-            mat = getattr(inst, "transform_matrix", None)
-            if mat is None:
-                mat = np.eye(4, dtype=np.float64)
-            grp.create_dataset("transform", data=mat.astype(np.float64))
+            mat = _build_transform_matrix(inst)
+            grp.create_dataset("transform", data=mat)
+
+
+def _build_transform_matrix(inst) -> np.ndarray:
+    """
+    Build a 4×4 homogeneous transform matrix from Instance.translation + .rotation.
+
+    Abaqus instance placement:
+      1. Apply rotation  R  (axis-angle, axis given as two points)
+      2. Apply translation T
+
+    Combined: P_global = R @ P_local + T
+    As a 4×4 matrix:
+        | R  T |
+        | 0  1 |
+    """
+    mat = np.eye(4, dtype=np.float64)
+
+    tx, ty, tz = inst.translation
+    T = np.array([tx, ty, tz], dtype=np.float64)
+
+    # Abaqus instance positioning order:
+    #   1. Translate part by T
+    #   2. Rotate about the axis defined by (center, axis_point), angle_deg
+    #
+    # Combined: P_global = R @ (P_local + T - center) + center
+    #                     = R @ P_local  +  R @ (T - center) + center
+    #
+    # 4×4 matrix:
+    #   top-left 3×3  = R
+    #   top-right 3×1 = R @ (T - center) + center
+    #
+    # When there is no rotation, R = I, so offset = T. ✓
+    # When center == T (typical Bolt pattern), offset = R@0 + T = T. ✓
+
+    rot = inst.rotation
+    if rot is not None:
+        cx, cy, cz = rot.center
+        ax, ay, az = rot.axis
+        center = np.array([cx, cy, cz], dtype=np.float64)
+
+        dx, dy, dz = ax - cx, ay - cy, az - cz
+        length = (dx*dx + dy*dy + dz*dz) ** 0.5
+        if length > 1e-12:
+            dx, dy, dz = dx/length, dy/length, dz/length
+
+        angle_rad = rot.angle_deg * (3.141592653589793 / 180.0)
+        c, s = np.cos(angle_rad), np.sin(angle_rad)
+        t = 1.0 - c
+        R = np.array([
+            [t*dx*dx + c,    t*dx*dy - s*dz, t*dx*dz + s*dy],
+            [t*dx*dy + s*dz, t*dy*dy + c,    t*dy*dz - s*dx],
+            [t*dx*dz - s*dy, t*dy*dz + s*dx, t*dz*dz + c   ],
+        ], dtype=np.float64)
+
+        mat[:3, :3] = R
+        mat[:3,  3] = R @ (T - center) + center
+    else:
+        mat[:3, 3] = T
+
+    return mat
 
 
 # ---------------------------------------------------------------------------

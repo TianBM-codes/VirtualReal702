@@ -711,9 +711,10 @@ class InpParser:
         self._current_step.step_type = type_map.get(kw, kw)
 
     def _handle_boundary(self, block: KeywordBlock) -> None:
+        if self._current_step is None:
+            return
         op = block.params.get("op", "MOD").upper()
         amp = block.params.get("amplitude")
-        target = self._current_step.boundary_conditions if self._current_step is not None else self._model.initial_boundary_conditions
         for line in block.data_lines:
             parts = [p.strip() for p in line.split(",")]
             if not parts or not parts[0]:
@@ -726,7 +727,7 @@ class InpParser:
             type_kw = parts[1].upper()
             if type_kw in _BC_TYPE_MAP:
                 for dof_s, dof_e in _BC_TYPE_MAP[type_kw]:
-                    target.append(
+                    self._current_step.boundary_conditions.append(
                         BCDeclaration(nset_name=nset_name,
                                       dof_start=dof_s, dof_end=dof_e,
                                       value=0.0, op=op, amplitude_name=amp)
@@ -741,7 +742,7 @@ class InpParser:
                                        f"Bad *Boundary line: {line!r}",
                                        file=block.source_file, line=block.source_line)
                     continue
-                target.append(
+                self._current_step.boundary_conditions.append(
                     BCDeclaration(nset_name=nset_name,
                                   dof_start=dof_start, dof_end=dof_end,
                                   value=value, op=op, amplitude_name=amp)

@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import h5py
 import numpy as np
 from typing import Dict, Optional
@@ -104,19 +105,56 @@ class ModelIndex:
 class OdbRegistry:
     """
     Global singleton registry holding ModelIndex instances.
+    Thread-safe: a Lock protects the loaded dict, which is mutated by both
+    request handlers and the per-worker polling daemon thread.
     """
     def __init__(self):
-        # odb_id -> ModelIndex
         self.loaded: Dict[str, ModelIndex] = {}
+        self._lock = threading.Lock()
 
     def load(self, odb_id: str, workspace: str, status: str):
+        """
+        Load an ODB into memory.  Called at startup and by the polling thread
+        when a new ready/l1_done job is detected.
+        Skipped silently if workspace does not exist on disk.
+        """
+        if not os.path.exists(workspace):
+            logger.warning(
+                "ODB %s: workspace '%s' not found on disk, skipping load",
+                odb_id, workspace,
+            )
+            return
         idx = ModelIndex(odb_id, workspace)
         if status == "ready":
             idx.load_l2_render_data()
-        self.loaded[odb_id] = idx
+        with self._lock:
+            self.loaded[odb_id] = idx
+
+    def upgrade(self, odb_id: str):
+        """
+        Supplement an already-loaded ModelIndex with L2 render data after
+        the job transitions from l1_done → ready.
+        The heavy IO runs outside the lock; only the final flag-set is locked.
+        """
+        with self._lock:
+            idx = self.loaded.get(odb_id)
+        if idx is None:
+            return
+        idx.load_l2_render_data()       # IO outside lock
+        with self._lock:
+            idx.is_render_ready = True
+
+    def unload(self, odb_id: str):
+        """
+        Remove an ODB from memory.  Called by DELETE /api/jobs before the DB
+        record is removed so that in-flight requests receive a 404 immediately.
+        """
+        with self._lock:
+            self.loaded.pop(odb_id, None)
 
     def get(self, odb_id: str) -> Optional[ModelIndex]:
-        return self.loaded.get(odb_id)
+        with self._lock:
+            return self.loaded.get(odb_id)
 
 
 # Global singleton instance (initialized during FastAPI lifespan / Gunicorn pre-fork)
