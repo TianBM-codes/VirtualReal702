@@ -554,6 +554,8 @@ CREATE_TABLE_SQL_LIST = [
         pid BIGINT NOT NULL COMMENT '工程ID',
         measure_point_value FLOAT NOT NULL COMMENT '测点值',
         node_value FLOAT NOT NULL COMMENT '节点值',
+        measure_name VARCHAR(200) NOT NULL COMMENT '测点名称',
+        node_name VARCHAR(200) NOT NULL COMMENT '节点名称',
         PRIMARY KEY (id),
         KEY idx_pid (pid)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='相关性散点图表';
