@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import traceback
 
 import numpy as np
@@ -28,6 +29,17 @@ try:
 except ImportError:
     print("ERROR: odbAccess not found. Must run under 'abaqus python'.")
     sys.exit(1)
+
+# ELEMENT_NODAL constant — needed for getSubset() extrapolation calls.
+# Abaqus may expose it via abaqusConstants or directly on odbAccess.
+_ELEM_NODAL_CONST = None
+try:
+    from abaqusConstants import ELEMENT_NODAL as _ELEM_NODAL_CONST  # noqa: F401
+except Exception:
+    try:
+        _ELEM_NODAL_CONST = odbAccess.ELEMENT_NODAL
+    except Exception:
+        pass  # getSubset() extrapolation will be skipped if constant unavailable
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -94,6 +106,16 @@ def parse_args():
     p = argparse.ArgumentParser(description='ODB → npy dump (Phase 1)')
     p.add_argument('--odb', required=True)
     p.add_argument('--out', required=True, help='workspace directory')
+    p.add_argument('--mode', choices=['full', 'preflight', 'results-worker'],
+                   default='full',
+                   help='full=serial (default); preflight=geometry+meta only; '
+                        'results-worker=dump subset of fields (parallel worker)')
+    p.add_argument('--step',   default=None,
+                   help='Step name (results-worker mode only)')
+    p.add_argument('--fields', default=None,
+                   help='Comma-separated field names (results-worker mode only)')
+    p.add_argument('--worker-id', default='0',
+                   help='Worker ID shown in log prefix (results-worker mode only)')
     return p.parse_args()
 
 
@@ -119,6 +141,13 @@ def npsave(path, arr):
 def _pos_str(position_const):
     s = str(position_const)
     return s.split('.')[-1]
+
+
+def _fmt_t(secs):
+    """Format elapsed seconds as '1m 23.4s' or '5.2s'."""
+    if secs >= 60:
+        return "{:d}m {:.1f}s".format(int(secs) // 60, secs % 60)
+    return "{:.1f}s".format(secs)
 
 
 # ─── Transform ────────────────────────────────────────────────────────────────
@@ -238,9 +267,20 @@ def reshape_ip_block(block):
         (M, n_ip, ncomp)        solid
         (M, n_sp, n_ip, ncomp)  shell with section points
     """
-    labels_flat = np.array(block.elementLabels,          dtype=np.int32)
-    ip_flat     = np.array(block.integrationPointLabels, dtype=np.int32)
-    data_flat   = np.array(block.data,                   dtype=np.float32)
+    labels_flat = np.array(block.elementLabels, dtype=np.int32)
+    data_flat   = np.array(block.data,          dtype=np.float32)
+
+    # Abaqus 2024 可能改名或不暴露 integrationPointLabels，尝试多个属性名
+    ip_raw = (getattr(block, 'integrationPointLabels', None)
+              or getattr(block, 'ipLabels', None))
+    if ip_raw is not None:
+        ip_flat = np.array(ip_raw, dtype=np.int32)
+    else:
+        # 从数据推断：总行数 / 单元数 = 每单元积分点数
+        n_total   = len(labels_flat)
+        n_u_elems = len(np.unique(labels_flat))
+        n_ip_inf  = n_total // n_u_elems if n_u_elems else 1
+        ip_flat   = np.tile(np.arange(1, n_ip_inf + 1, dtype=np.int32), n_u_elems)
     ncomp       = data_flat.shape[1]
 
     # Attempt to read section-point labels (Blocker A)
@@ -300,6 +340,47 @@ def reshape_element_nodal_block(block):
     return u_elems, data_nd
 
 
+# ─── Assembly set helpers ─────────────────────────────────────────────────────
+
+def _set_nodes_by_inst(ns):
+    """
+    返回 {inst_name: [label, ...]} 字典。
+    兼容两种 Abaqus 版本：
+      - 旧版：ns.nodes 是扁平序列，每个 node 有 instanceName 属性
+      - 新版：ns.nodes 是按 instance 分组的嵌套序列，需配合 ns.instances 使用
+    """
+    by_inst = {}
+    nodes_seq = ns.nodes
+    inst_seq  = getattr(ns, 'instances', None)
+    if inst_seq and len(inst_seq) == len(nodes_seq):
+        # 新版：node_array 对应 inst_seq 中同位置的 instance
+        for inst, node_array in zip(inst_seq, nodes_seq):
+            iname = inst.name if hasattr(inst, 'name') else str(inst)
+            for node in node_array:
+                by_inst.setdefault(iname, []).append(node.label)
+    else:
+        # 旧版：每个 node 自带 instanceName
+        for node in nodes_seq:
+            by_inst.setdefault(node.instanceName, []).append(node.label)
+    return by_inst
+
+
+def _set_elems_by_inst(es):
+    """同上，针对 element set。"""
+    by_inst = {}
+    elems_seq = es.elements
+    inst_seq  = getattr(es, 'instances', None)
+    if inst_seq and len(inst_seq) == len(elems_seq):
+        for inst, elem_array in zip(inst_seq, elems_seq):
+            iname = inst.name if hasattr(inst, 'name') else str(inst)
+            for elem in elem_array:
+                by_inst.setdefault(iname, []).append(elem.label)
+    else:
+        for elem in elems_seq:
+            by_inst.setdefault(elem.instanceName, []).append(elem.label)
+    return by_inst
+
+
 # ─── Dump phases ──────────────────────────────────────────────────────────────
 
 def dump_assembly(odb, raw_dir, meta):
@@ -308,6 +389,7 @@ def dump_assembly(odb, raw_dir, meta):
     asm_dir  = os.path.join(raw_dir, 'assembly')
     mkdirs(asm_dir)
 
+    t0 = time.time()
     print("  Assembly ...")
     inst_meta = {}
     for inst_name, instance in assembly.instances.items():
@@ -315,18 +397,20 @@ def dump_assembly(odb, raw_dir, meta):
         d = os.path.join(asm_dir, 'instances', s)
         mkdirs(d)
         npsave(os.path.join(d, 'transform.npy'), get_instance_transform(instance))
+        part_name = getattr(instance, 'partName', None)
+        if part_name is None and hasattr(instance, 'part') and hasattr(instance.part, 'name'):
+            part_name = instance.part.name
+        if not part_name:
+            part_name = inst_name
         with open(os.path.join(d, 'part_name.txt'), 'w') as f:
-            f.write(instance.partName)
-        inst_meta[inst_name] = {'part_name': instance.partName}
+            f.write(part_name)
+        inst_meta[inst_name] = {'part_name': part_name}
 
     meta['instances'] = inst_meta
 
     # Assembly node sets (per-instance split)
     for set_name, ns in assembly.nodeSets.items():
-        by_inst = {}
-        for node in ns.nodes:
-            by_inst.setdefault(node.instanceName, []).append(node.label)
-        for inst_n, labels in by_inst.items():
+        for inst_n, labels in _set_nodes_by_inst(ns).items():
             d = os.path.join(asm_dir, 'asmsets', safe(set_name), safe(inst_n))
             mkdirs(d)
             npsave(os.path.join(d, 'node_labels.npy'),
@@ -334,17 +418,14 @@ def dump_assembly(odb, raw_dir, meta):
 
     # Assembly element sets (per-instance split)
     for set_name, es in assembly.elementSets.items():
-        by_inst = {}
-        for elem in es.elements:
-            by_inst.setdefault(elem.instanceName, []).append(elem.label)
-        for inst_n, labels in by_inst.items():
+        for inst_n, labels in _set_elems_by_inst(es).items():
             d = os.path.join(asm_dir, 'asmsets', safe(set_name), safe(inst_n))
             mkdirs(d)
             path = os.path.join(d, 'elem_labels.npy')
             if not os.path.exists(path):
                 npsave(path, np.array(sorted(labels), dtype=np.int32))
 
-    print("    done.")
+    print("    done. ({})".format(_fmt_t(time.time() - t0)))
 
 
 def dump_geometry(odb, raw_dir, meta):
@@ -355,7 +436,9 @@ def dump_geometry(odb, raw_dir, meta):
 
     geom_meta = {}   # populated into meta['geom']
 
+    t_geom = time.time()
     for inst_name, instance in assembly.instances.items():
+        t_inst = time.time()
         print("  Geom: {} ...".format(inst_name))
         s  = safe(inst_name)
         d  = os.path.join(geom_dir, s)
@@ -499,9 +582,15 @@ def dump_geometry(odb, raw_dir, meta):
         bbox_min = node_coords.min(axis=0).tolist()
         bbox_max = node_coords.max(axis=0).tolist()
 
+        part_name = getattr(instance, 'partName', None)
+        if part_name is None and hasattr(instance, 'part') and hasattr(instance.part, 'name'):
+            part_name = instance.part.name
+        if not part_name:
+            part_name = inst_name
+
         geom_meta[inst_name] = {
             'safe_name':    s,
-            'part_name':    instance.partName,
+            'part_name':    part_name,
             'node_count':   len(node_labels),
             'elem_count':   total_elems,
             'has_highorder': has_highorder,
@@ -511,10 +600,11 @@ def dump_geometry(odb, raw_dir, meta):
             'isets_node':   isets_node,
             'isets_elem':   isets_elem,
         }
-        print("    {} nodes, {} elems".format(len(node_labels), total_elems))
+        print("    {} nodes, {} elems ({})".format(
+            len(node_labels), total_elems, _fmt_t(time.time() - t_inst)))
 
     meta['geom'] = geom_meta
-    print("  Geometry done.")
+    print("  Geometry done. ({} total)".format(_fmt_t(time.time() - t_geom)))
 
 
 def dump_sets(odb, raw_dir, meta):
@@ -522,25 +612,20 @@ def dump_sets(odb, raw_dir, meta):
     assembly = odb.rootAssembly
     sets_dir = os.path.join(raw_dir, 'sets')
 
+    t0 = time.time()
     print("  Sets ...")
 
     # Assembly sets (already written partially in dump_assembly for assembly.h5;
     # here we write the canonical copy for sets.h5)
     for set_name, ns in assembly.nodeSets.items():
-        by_inst = {}
-        for node in ns.nodes:
-            by_inst.setdefault(node.instanceName, []).append(node.label)
-        for inst_n, labels in by_inst.items():
+        for inst_n, labels in _set_nodes_by_inst(ns).items():
             d = os.path.join(sets_dir, 'asmsets', safe(set_name), safe(inst_n))
             mkdirs(d)
             npsave(os.path.join(d, 'node_labels.npy'),
                    np.array(sorted(labels), dtype=np.int32))
 
     for set_name, es in assembly.elementSets.items():
-        by_inst = {}
-        for elem in es.elements:
-            by_inst.setdefault(elem.instanceName, []).append(elem.label)
-        for inst_n, labels in by_inst.items():
+        for inst_n, labels in _set_elems_by_inst(es).items():
             d = os.path.join(sets_dir, 'asmsets', safe(set_name), safe(inst_n))
             mkdirs(d)
             p = os.path.join(d, 'elem_labels.npy')
@@ -550,7 +635,11 @@ def dump_sets(odb, raw_dir, meta):
     # Part sets (via instance node/element sets — one per part)
     seen_parts = set()
     for inst_name, instance in assembly.instances.items():
-        part_name = instance.partName
+        part_name = getattr(instance, 'partName', None)
+        if part_name is None and hasattr(instance, 'part') and hasattr(instance.part, 'name'):
+            part_name = instance.part.name
+        if not part_name:
+            part_name = inst_name
         if part_name in seen_parts:
             continue
         seen_parts.add(part_name)
@@ -565,19 +654,95 @@ def dump_sets(odb, raw_dir, meta):
             lbls = np.array(sorted([e.label for e in es.elements]), dtype=np.int32)
             npsave(os.path.join(d, safe(sname) + '.npy'), lbls)
 
-    print("    done.")
+    print("    done. ({})".format(_fmt_t(time.time() - t0)))
 
 
-def dump_results(odb, raw_dir, meta):
-    """Write per-frame result arrays to l1_raw/results/<step>__<field>/<inst>/<pos>/[<etype>/]"""
+def dump_steps_meta_scan(odb, raw_dir, meta):
+    """
+    Scan step/frame metadata and collect field names WITHOUT reading any field data.
+    Writes l1_raw/fields_manifest.json (used by the parallel launcher).
+    Populates meta['steps'] with procedure/frame info only.
+    """
+    t0 = time.time()
+    print("  Scanning steps/fields (no data read) ...")
+    steps_meta = {}
+    fields_by_step = {}  # step_name -> [field_name, ...]
+
+    for step_num, (step_name, step) in enumerate(odb.steps.items()):
+        raw_proc = getattr(step, 'procedureType', None) or getattr(step, 'procedure', '') or ''
+        raw_proc_upper = raw_proc.upper().replace('*', '').strip()
+        procedure = PROCEDURE_MAP.get(raw_proc_upper)
+        if procedure is None:
+            for key, val in PROCEDURE_MAP.items():
+                if raw_proc_upper.startswith(key.split('_')[0]):
+                    procedure = val
+                    break
+        if procedure is None:
+            procedure = raw_proc_upper or 'STATIC'
+
+        num_frames = len(step.frames)
+        frames_meta = []
+        all_field_names = set()
+        for fi, frame in enumerate(step.frames):
+            frames_meta.append({
+                'frame_idx':   fi,
+                'frame_value': float(frame.frameValue),
+                'description': frame.description,
+            })
+            all_field_names.update(frame.fieldOutputs.keys())
+
+        steps_meta[step_name] = {
+            'step_number': step_num,
+            'procedure':   procedure,
+            'num_frames':  num_frames,
+            'frames':      frames_meta,
+        }
+        field_list = sorted(all_field_names)
+        fields_by_step[step_name] = field_list
+        print("    Step '{}': {} frames, {} fields".format(
+            step_name, num_frames, len(field_list)))
+
+    meta['steps'] = steps_meta
+    manifest = {'fields_by_step': fields_by_step}
+    jdump(os.path.join(raw_dir, 'fields_manifest.json'), manifest)
+    print("  Scan done. ({})".format(_fmt_t(time.time() - t0)))
+    print("  fields_manifest.json written.")
+
+
+def dump_results(odb, raw_dir, meta, field_filter=None):
+    """Write per-frame result arrays to l1_raw/results/<step>__<field>/<inst>/<pos>/[<etype>/]
+
+    field_filter: optional dict {step_name: set_of_field_names}.
+      If provided, only those (step, field) combinations are dumped.
+      Steps/fields absent from field_filter are silently skipped.
+      If None, all fields in all steps are dumped (original behaviour).
+    """
     results_dir = os.path.join(raw_dir, 'results')
     mkdirs(results_dir)
 
+    t_results = time.time()
     steps_meta = {}
 
     for step_num, (step_name, step) in enumerate(odb.steps.items()):
-        procedure  = PROCEDURE_MAP.get(step.procedureType, step.procedureType)
+        # If field_filter given, skip steps not in it entirely
+        if field_filter is not None and step_name not in field_filter:
+            continue
+
+        # Abaqus 2024+: step.procedure 返回原始关键字字符串如 '*STATIC'
+        # 旧版: step.procedureType 返回符号常量如 'STATIC_GENERAL'
+        raw_proc = getattr(step, 'procedureType', None) or getattr(step, 'procedure', '') or ''
+        raw_proc_upper = raw_proc.upper().replace('*', '').strip()
+        # 先按旧 key 查，再按关键字前缀匹配
+        procedure = PROCEDURE_MAP.get(raw_proc_upper)
+        if procedure is None:
+            for key, val in PROCEDURE_MAP.items():
+                if raw_proc_upper.startswith(key.split('_')[0]):
+                    procedure = val
+                    break
+        if procedure is None:
+            procedure = raw_proc_upper or 'STATIC'
         num_frames = len(step.frames)
+        t_step = time.time()
         print("  Step '{}' ({} frames) ...".format(step_name, num_frames))
 
         frames_meta = []
@@ -600,7 +765,13 @@ def dump_results(odb, raw_dir, meta):
         for frame in step.frames:
             all_field_names.update(frame.fieldOutputs.keys())
 
+        # Apply field_filter within this step
+        allowed_fields = field_filter[step_name] if field_filter is not None else None
+
         for field_name in sorted(all_field_names):
+            if allowed_fields is not None and field_name not in allowed_fields:
+                continue
+            t_field = time.time()
             print("    Field '{}' ...".format(field_name))
 
             # First frame with this field → discover structure
@@ -637,7 +808,15 @@ def dump_results(odb, raw_dir, meta):
                     continue
                 inst_name = block.instance.name
                 position  = _pos_str(block.position)
-                elem_type = getattr(block, 'elementType', None)
+                elem_type = (getattr(block, 'elementType', None)
+                             or getattr(block, 'baseElementType', None))
+                # Abaqus 2024 may return None for elementType; use ncomp+n_entities
+                # as a secondary discriminator so different-shaped blocks get separate keys
+                if elem_type is None:
+                    _d = np.array(block.data)
+                    _n = len(getattr(block, 'elementLabels',
+                             getattr(block, 'nodeLabels', [])))
+                    elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
                 key       = (inst_name, position, elem_type)
                 if key in block_struct:
                     continue  # already discovered
@@ -678,6 +857,53 @@ def dump_results(odb, raw_dir, meta):
 
                 block_struct[key] = info
 
+            # ── Auto-extrapolate ELEMENT_NODAL from INTEGRATION_POINT ────────
+            # If the ODB only has INTEGRATION_POINT output, call
+            # getSubset(position=ELEMENT_NODAL) to extrapolate integration-point
+            # values onto element corner nodes.  This is what Abaqus does
+            # internally when drawing contour plots.
+            # Instances that already have native ELEMENT_NODAL blocks are skipped.
+            _ip_insts = {k[0] for k in block_struct if k[1] == 'INTEGRATION_POINT'}
+            _en_insts = {k[0] for k in block_struct if k[1] == 'ELEMENT_NODAL'}
+            _extrapolate_en = bool(_ip_insts and _ELEM_NODAL_CONST is not None)
+            if _extrapolate_en:
+                try:
+                    _en_first = first_field.getSubset(position=_ELEM_NODAL_CONST)
+                    for block in _en_first.bulkDataBlocks:
+                        if block.instance is None:
+                            continue
+                        inst_name = block.instance.name
+                        if inst_name in _en_insts:
+                            continue  # native EN already present
+                        position  = 'ELEMENT_NODAL'
+                        elem_type = (getattr(block, 'elementType', None)
+                                     or getattr(block, 'baseElementType', None))
+                        if elem_type is None:
+                            _d = np.array(block.data)
+                            _n = len(getattr(block, 'elementLabels', []))
+                            elem_type = '_auto_{}x{}'.format(
+                                _n, _d.shape[1] if _d.ndim > 1 else 1)
+                        key = (inst_name, position, elem_type)
+                        if key in block_struct:
+                            continue
+                        bd = get_block_dir(inst_name, position, elem_type)
+                        ncomp = np.array(block.data).shape[1]
+                        u_elems, data_nd = reshape_element_nodal_block(block)
+                        npsave(os.path.join(bd, 'labels.npy'), u_elems)
+                        block_struct[key] = {
+                            'inst_name':  inst_name,
+                            'position':   position,
+                            'elem_type':  elem_type,
+                            'ncomp':      ncomp,
+                            'n_entities': len(u_elems),
+                            'n_enodes':   data_nd.shape[1],
+                        }
+                    print("    [EN extrapolation] discovered {} EN block(s)".format(
+                        len({k for k in block_struct if k[1] == 'ELEMENT_NODAL'}) - len(_en_insts)))
+                except Exception as _e:
+                    print("    [warn] getSubset(ELEMENT_NODAL) structure failed: {}".format(_e))
+                    _extrapolate_en = False
+
             # Write per-frame data
             has_section = 0
             for frame_idx, frame in enumerate(step.frames):
@@ -690,7 +916,13 @@ def dump_results(odb, raw_dir, meta):
                         continue
                     inst_name = block.instance.name
                     position  = _pos_str(block.position)
-                    elem_type = getattr(block, 'elementType', None)
+                    elem_type = (getattr(block, 'elementType', None)
+                                 or getattr(block, 'baseElementType', None))
+                    if elem_type is None:
+                        _d = np.array(block.data)
+                        _n = len(getattr(block, 'elementLabels',
+                                 getattr(block, 'nodeLabels', [])))
+                        elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
                     key       = (inst_name, position, elem_type)
                     if key not in block_struct:
                         continue
@@ -728,6 +960,34 @@ def dump_results(odb, raw_dir, meta):
                         out[rows] = raw_data
                         npsave(fr_path, out)
 
+                # ── Write extrapolated ELEMENT_NODAL data for this frame ──────
+                if _extrapolate_en:
+                    try:
+                        _en_out = field_out.getSubset(position=_ELEM_NODAL_CONST)
+                        for block in _en_out.bulkDataBlocks:
+                            if block.instance is None:
+                                continue
+                            inst_name = block.instance.name
+                            if inst_name in _en_insts:
+                                continue  # native EN already written
+                            position  = 'ELEMENT_NODAL'
+                            elem_type = (getattr(block, 'elementType', None)
+                                         or getattr(block, 'baseElementType', None))
+                            if elem_type is None:
+                                _d = np.array(block.data)
+                                _n = len(getattr(block, 'elementLabels', []))
+                                elem_type = '_auto_{}x{}'.format(
+                                    _n, _d.shape[1] if _d.ndim > 1 else 1)
+                            key = (inst_name, position, elem_type)
+                            if key not in block_struct:
+                                continue
+                            bd      = get_block_dir(inst_name, position, elem_type)
+                            fr_path = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
+                            _, data_nd = reshape_element_nodal_block(block)
+                            npsave(fr_path, data_nd)
+                    except Exception as _e:
+                        pass  # per-frame EN extrapolation failure is non-fatal
+
             # Write field meta.json
             jdump(os.path.join(field_dir, 'meta.json'), {
                 'step_name':   step_name,
@@ -745,10 +1005,12 @@ def dump_results(odb, raw_dir, meta):
                     for k, v in block_struct.items()
                 ],
             })
-            print("      done ({} blocks)".format(len(block_struct)))
+            print("      done ({} blocks, {})".format(
+                len(block_struct), _fmt_t(time.time() - t_field)))
+        print("  Step '{}' done. ({})".format(step_name, _fmt_t(time.time() - t_step)))
 
     meta['steps'] = steps_meta
-    print("  Results done.")
+    print("  Results done. ({} total)".format(_fmt_t(time.time() - t_results)))
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -765,21 +1027,59 @@ def main():
 
     mkdirs(raw_dir)
 
-    print("=== Layer 1 Phase 1: ODB → npy ===")
+    t_total = time.time()
+    mode = args.mode
+
+    if mode == 'results-worker':
+        # Parallel worker: only dump a subset of fields for one step.
+        # Assembly/geom/sets must already exist (written by preflight run).
+        if not args.step or not args.fields:
+            print("ERROR: --mode results-worker requires --step and --fields")
+            sys.exit(1)
+        wid         = args.worker_id
+        step_name   = args.step
+        field_names = set(f.strip() for f in args.fields.split(',') if f.strip())
+        field_filter = {step_name: field_names}
+        print("=== Worker {} — step='{}' fields={} ===".format(
+            wid, step_name, sorted(field_names)))
+        t0 = time.time()
+        print("Opening ODB (readOnly) ...")
+        odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+        print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
+        try:
+            meta = {}
+            dump_results(odb, raw_dir, meta, field_filter=field_filter)
+        except Exception:
+            print("\n!!! ERROR (worker {}):".format(wid))
+            traceback.print_exc()
+            odb.close()
+            sys.exit(1)
+        odb.close()
+        print("=== Worker {} done in {}. ===".format(wid, _fmt_t(time.time() - t_total)))
+        return
+
+    # full or preflight: print header and open ODB
+    print("=== Layer 1 Phase 1: ODB → npy ({}) ===".format(mode))
     print("  ODB:       {}".format(odb_path))
     print("  Workspace: {}".format(workspace))
 
-    meta = {}  # top-level metadata dict, written to dump_meta.json at end
+    meta = {}
 
+    t0 = time.time()
     print("Opening ODB ...")
     odb = odbAccess.openOdb(path=odb_path, readOnly=True)
-    print("  ODB opened.")
+    print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
 
     try:
         dump_assembly(odb, raw_dir, meta)
         dump_geometry(odb, raw_dir, meta)
         dump_sets(odb, raw_dir, meta)
-        dump_results(odb, raw_dir, meta)
+        if mode == 'preflight':
+            # Scan step/frame metadata + build fields_manifest.json; no field data read.
+            dump_steps_meta_scan(odb, raw_dir, meta)
+        else:
+            # full: serial dump of all results (original behaviour)
+            dump_results(odb, raw_dir, meta)
     except Exception:
         print("\n!!! ERROR:")
         traceback.print_exc()
@@ -789,7 +1089,13 @@ def main():
     odb.close()
 
     jdump(os.path.join(raw_dir, 'dump_meta.json'), meta)
-    print("=== Phase 1 complete. Run l1_pack.py next. ===")
+    if mode == 'preflight':
+        print("=== Preflight complete in {}. "
+              "Now run abaqus_dump_parallel.py or launch workers manually. ===".format(
+              _fmt_t(time.time() - t_total)))
+    else:
+        print("=== Phase 1 complete in {}. Run l1_pack.py next. ===".format(
+            _fmt_t(time.time() - t_total)))
 
 
 if __name__ == '__main__':

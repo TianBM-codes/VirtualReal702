@@ -23,3 +23,35 @@ def apply_jet(normalized: np.ndarray) -> np.ndarray:
     """
     idx = np.clip((normalized * 255).astype(np.int32), 0, 255)
     return _JET_LUT[idx]
+
+
+# Medium gray for elements that have no value (outside user-defined set)
+_NEUTRAL_RGBA = np.array([160, 160, 160, 255], dtype=np.uint8)
+
+
+def apply_jet_with_neutral(
+    scalar_face: np.ndarray,
+    val_min: float,
+    val_max: float,
+) -> np.ndarray:
+    """
+    Map scalar_face [Rf] (may contain NaN) to RGBA:
+      NaN  → neutral gray  (element not in user-defined set)
+      else → jet colormap, normalized to [val_min, val_max]
+
+    Returns [Rf, 4] uint8.
+    """
+    nan_mask = np.isnan(scalar_face)
+    span = val_max - val_min
+    if span > 1e-12:
+        normalized = np.clip((scalar_face - val_min) / span, 0.0, 1.0)
+    else:
+        # All values identical → show at jet midpoint (green-ish)
+        normalized = np.where(nan_mask, 0.0, 0.5).astype(np.float32)
+
+    # Replace NaN with 0 before LUT indexing (NaN → int cast triggers RuntimeWarning).
+    # The nan_mask positions will be overwritten with neutral gray anyway.
+    normalized_safe = np.where(nan_mask, 0.0, normalized).astype(np.float32)
+    colors = apply_jet(normalized_safe)     # [Rf, 4] uint8
+    colors[nan_mask] = _NEUTRAL_RGBA
+    return colors

@@ -20,10 +20,13 @@ class ManifestRepo:
         return conn
 
     def get_instance_info(self, instance_name: str):
-        with self._get_conn() as conn:
-            return conn.execute(
-                "SELECT * FROM instances WHERE instance_name=?", (instance_name,)
-            ).fetchone()
+        try:
+            with self._get_conn() as conn:
+                return conn.execute(
+                    "SELECT * FROM instances WHERE instance_name=?", (instance_name,)
+                ).fetchone()
+        except Exception:
+            return None
 
     def get_result_block(self, step: str, field: str, instance: str, position: str, elem_type: str = None):
         query = """
@@ -40,16 +43,78 @@ class ManifestRepo:
         with self._get_conn() as conn:
             return conn.execute(query, params).fetchone()
             
-    def get_overview(self):
-        """Returns instances, steps, and available fields for meta/overview."""
+    def has_nodal_block(self, step: str, field: str, instance: str) -> bool:
+        """Return True if result_blocks has a NODAL entry for (step, field, instance)."""
         with self._get_conn() as conn:
-            instances = [dict(r) for r in conn.execute("SELECT * FROM instances").fetchall()]
-            steps = [dict(r) for r in conn.execute("SELECT * FROM steps").fetchall()]
-            fields = [
-                dict(r) for r in conn.execute(
-                    "SELECT DISTINCT field_name, components, positions FROM result_files"
-                ).fetchall()
-            ]
+            row = conn.execute(
+                """
+                SELECT 1 FROM result_blocks
+                WHERE step_name=? AND field_name=? AND instance_name=? AND position='NODAL'
+                LIMIT 1
+                """,
+                (step, field, instance),
+            ).fetchone()
+        return row is not None
+
+    def get_step_info(self, step_name: str):
+        """Return the steps row for step_name, or None."""
+        try:
+            with self._get_conn() as conn:
+                return conn.execute(
+                    "SELECT * FROM steps WHERE step_name=?", (step_name,)
+                ).fetchone()
+        except Exception:
+            return None
+
+    def get_fields_by_instance(self, step: str, instance: str):
+        """
+        Return fields available for a specific (step, instance) combination.
+        Joins result_blocks (instance-level positions) with result_files (components).
+        Returns rows with columns: field_name, positions (comma-separated), components (JSON).
+        """
+        with self._get_conn() as conn:
+            return conn.execute(
+                """
+                SELECT rb.field_name,
+                       GROUP_CONCAT(DISTINCT rb.position) AS positions,
+                       rf.components
+                FROM result_blocks rb
+                JOIN result_files rf
+                  ON rb.step_name = rf.step_name AND rb.field_name = rf.field_name
+                WHERE rb.step_name = ? AND rb.instance_name = ?
+                GROUP BY rb.field_name
+                ORDER BY rb.field_name
+                """,
+                (step, instance),
+            ).fetchall()
+
+    def get_result_file(self, step: str, field: str):
+        """Return the result_files row for (step, field), or None."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM result_files WHERE step_name=? AND field_name=?",
+                (step, field),
+            ).fetchone()
+
+    def get_overview(self):
+        """
+        Returns instances, steps, and available fields for meta/overview.
+        Gracefully returns empty lists if the manifest schema is not yet
+        initialised (e.g. workspace exists but L1 packing never completed).
+        """
+        def _safe_query(conn, sql):
+            try:
+                return [dict(r) for r in conn.execute(sql).fetchall()]
+            except Exception:
+                return []
+
+        with self._get_conn() as conn:
+            instances = _safe_query(conn, "SELECT * FROM instances")
+            steps     = _safe_query(conn, "SELECT * FROM steps")
+            fields    = _safe_query(
+                conn,
+                "SELECT DISTINCT field_name, components, positions FROM result_files",
+            )
         return {"instances": instances, "steps": steps, "fields": fields}
 
     def _ensure_user_tables(self, conn):
@@ -120,6 +185,127 @@ class ManifestRepo:
 
             conn.commit()
             return us_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # ── user_fields (scalar value per element set) ─────────────────────────────
+
+    def _ensure_user_fields_table(self, conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_fields (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                instance_name TEXT NOT NULL,
+                value REAL NOT NULL,
+                element_labels BLOB NOT NULL,
+                created_at TEXT,
+                UNIQUE(name, instance_name)
+            )
+        """)
+
+    def save_user_field(
+        self,
+        name: str,
+        instance_name: str,
+        value: float,
+        element_labels: "np.ndarray",  # int32 1D
+    ) -> int:
+        """
+        Insert or replace a named user field.
+        element_labels: all elements in the set (get value `value`).
+        Returns the row id.
+        """
+        blob = zlib.compress(np.asarray(element_labels, dtype=np.int32).tobytes())
+        conn = self._get_conn()
+        try:
+            self._ensure_user_fields_table(conn)
+            conn.execute(
+                """
+                INSERT INTO user_fields (name, instance_name, value, element_labels, created_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(name, instance_name) DO UPDATE SET
+                    value = excluded.value,
+                    element_labels = excluded.element_labels,
+                    created_at = excluded.created_at
+                """,
+                (name, instance_name, float(value), blob),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT id FROM user_fields WHERE name=? AND instance_name=?",
+                (name, instance_name),
+            ).fetchone()
+            return row["id"]
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_user_field(self, name: str, instance_name: str):
+        """
+        Returns dict {id, name, instance_name, value, element_labels (int32 ndarray)}
+        or None if not found.
+        """
+        try:
+            with self._get_conn() as conn:
+                self._ensure_user_fields_table(conn)
+                row = conn.execute(
+                    "SELECT * FROM user_fields WHERE name=? AND instance_name=?",
+                    (name, instance_name),
+                ).fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        labels = np.frombuffer(
+            zlib.decompress(row["element_labels"]), dtype=np.int32
+        ).copy()
+        return {
+            "id":            row["id"],
+            "name":          row["name"],
+            "instance_name": row["instance_name"],
+            "value":         row["value"],
+            "element_labels": labels,
+        }
+
+    def list_user_fields(self, instance_name: str = None):
+        """
+        Returns list of dicts {id, name, instance_name, value, created_at}.
+        Optionally filtered by instance_name.
+        """
+        try:
+            with self._get_conn() as conn:
+                self._ensure_user_fields_table(conn)
+                if instance_name:
+                    rows = conn.execute(
+                        "SELECT id, name, instance_name, value, created_at "
+                        "FROM user_fields WHERE instance_name=? ORDER BY name",
+                        (instance_name,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT id, name, instance_name, value, created_at "
+                        "FROM user_fields ORDER BY name",
+                    ).fetchall()
+        except Exception:
+            return []
+        return [dict(r) for r in rows]
+
+    def delete_user_field(self, name: str, instance_name: str) -> bool:
+        """Delete a named user field. Returns True if it existed."""
+        conn = self._get_conn()
+        try:
+            self._ensure_user_fields_table(conn)
+            cur = conn.execute(
+                "DELETE FROM user_fields WHERE name=? AND instance_name=?",
+                (name, instance_name),
+            )
+            conn.commit()
+            return cur.rowcount > 0
         except Exception:
             conn.rollback()
             raise

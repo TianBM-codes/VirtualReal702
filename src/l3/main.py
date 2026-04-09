@@ -119,8 +119,18 @@ def _start_poll_thread() -> None:
 async def lifespan(app: FastAPI):
     _bootstrap_registry()
     _start_poll_thread()
+    if settings.embedded_runner:
+        from .infra.runner_thread import start_embedded_runner
+        started = start_embedded_runner(
+            registry_db=settings.registry_db_path,
+            data_root=settings.data_root,
+            abaqus_cmd=settings.abaqus_cmd,
+            poll_interval=settings.runner_poll_interval,
+        )
+        if not started:
+            logger.debug("Embedded runner not started in this worker (lock held elsewhere)")
     yield
-    # daemon thread exits automatically when the process terminates
+    # daemon threads exit automatically when the process terminates
 
 
 app = FastAPI(
@@ -142,6 +152,12 @@ app.add_middleware(
         "X-Val-Min", "X-Val-Max", "X-Component", "X-Frame",
         "X-Face-Count", "X-Payload-Type", "X-Layout-Version",
         "X-Tri-Count", "X-Edge-Count", "X-Axis", "X-Position",
+        # raw-values endpoint
+        "X-Components", "X-Etype-Groups",
+        # node-table endpoints
+        "X-Node-Count", "X-Col-Count", "X-Columns", "X-Field-Coverage",
+        # user-field endpoints
+        "X-Field-Name",
     ],
 )
 

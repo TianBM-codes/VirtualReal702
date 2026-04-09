@@ -167,6 +167,15 @@ def frame_colors(
         result = _scalar_from_nodal(f, instance, frame_idx, component)
         if result is not None:
             scalar_node, num_frames = result
+            n_result_nodes = len(scalar_node)
+            max_node_row = int(src_node_rows.max()) if src_node_rows.size else 0
+            if max_node_row >= n_result_nodes:
+                # Sparse NODAL field: dataset covers fewer nodes than the full geometry.
+                # Extend with NaN so indexing always succeeds; NaN → 0 later via nan_to_num.
+                extended = np.full(max_node_row + 1, np.nan, dtype=np.float32)
+                extended[:n_result_nodes] = scalar_node
+                scalar_node = extended
+
             if render_mode == "flat" and src_elem_row is not None:
                 # Average node values per face, then average per (etype, elem_row) element.
                 # Must use composite key: src_elem_row is per-etype-local, not globally unique.
