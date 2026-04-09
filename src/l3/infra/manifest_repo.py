@@ -311,3 +311,87 @@ class ManifestRepo:
             raise
         finally:
             conn.close()
+
+    # ── Simright adapter helpers ───────────────────────────────────────────────
+
+    def list_steps(self):
+        """Return all steps ordered by rowid, each as a dict."""
+        try:
+            with self._get_conn() as conn:
+                return [dict(r) for r in conn.execute(
+                    "SELECT rowid, step_name, procedure, num_frames FROM steps ORDER BY rowid"
+                ).fetchall()]
+        except Exception:
+            return []
+
+    def list_frames(self, step_name: str):
+        """Return frames for a step ordered by frame_idx."""
+        try:
+            with self._get_conn() as conn:
+                return [dict(r) for r in conn.execute(
+                    "SELECT frame_idx, frame_value, description FROM frames "
+                    "WHERE step_name=? ORDER BY frame_idx",
+                    (step_name,),
+                ).fetchall()]
+        except Exception:
+            return []
+
+    def list_result_files(self, step_name: str = None):
+        """Return result_files rows, optionally filtered by step."""
+        try:
+            with self._get_conn() as conn:
+                if step_name:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT step_name, field_name, components, positions FROM result_files "
+                        "WHERE step_name=? ORDER BY field_name",
+                        (step_name,),
+                    ).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT step_name, field_name, components, positions FROM result_files "
+                    "ORDER BY field_name"
+                ).fetchall()]
+        except Exception:
+            return []
+
+    def list_instances(self):
+        """Return all instances as dicts (includes bbox_min/bbox_max JSON strings)."""
+        try:
+            with self._get_conn() as conn:
+                return [dict(r) for r in conn.execute(
+                    "SELECT rowid, instance_name, part_name, geom_path, bbox_min, bbox_max "
+                    "FROM instances ORDER BY rowid"
+                ).fetchall()]
+        except Exception:
+            return []
+
+    def list_node_sets(self):
+        """Return all node sets."""
+        try:
+            with self._get_conn() as conn:
+                return [dict(r) for r in conn.execute(
+                    "SELECT set_name, instance_name FROM node_sets"
+                ).fetchall()]
+        except Exception:
+            return []
+
+    def list_element_sets(self):
+        """Return all element sets."""
+        try:
+            with self._get_conn() as conn:
+                return [dict(r) for r in conn.execute(
+                    "SELECT set_name, instance_name FROM element_sets"
+                ).fetchall()]
+        except Exception:
+            return []
+
+    def list_result_blocks(self, step_name: str, field_name: str):
+        """Return result_blocks for (step, field) — one row per (instance, position, etype)."""
+        try:
+            with self._get_conn() as conn:
+                return [dict(r) for r in conn.execute(
+                    "SELECT instance_name, position, elem_type, h5_path FROM result_blocks "
+                    "WHERE step_name=? AND field_name=? ORDER BY instance_name",
+                    (step_name, field_name),
+                ).fetchall()]
+        except Exception:
+            return []
