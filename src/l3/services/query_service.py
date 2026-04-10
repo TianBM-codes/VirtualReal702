@@ -12,7 +12,7 @@ from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.hdf5_repo import HDF5Repo
 from ..infra.manifest_repo import ManifestRepo
-from ..schemas.query import PickOdbInfo, PickResponse, PickResultInfo, BBoxResponse, RenderFacesResponse
+from ..schemas.query import PickOdbInfo, PickResponse, PickResultInfo, BBoxResponse, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -638,6 +638,235 @@ def _batch_elem_labels(
         return None
 
 
+def _point_to_triangles_sq_dist(
+    p: np.ndarray,
+    tris: np.ndarray,
+) -> tuple:
+    """
+    Vectorized minimum squared distance from point p to each of N triangles.
+
+    Based on Ericson "Real-Time Collision Detection" §5.1.5 (Voronoi region method).
+    Handles all 7 regions (3 vertices, 3 edges, interior) without branching loops.
+
+    Parameters
+    ----------
+    p    : (3,) float64 — query point
+    tris : (N, 3, 3) float64 — N triangles, each with 3 vertices × 3 coords
+
+    Returns
+    -------
+    sq_dists      : (N,) float64 — squared distances
+    closest_points: (N, 3) float64 — closest point on each triangle to p
+    """
+    A = tris[:, 0]  # (N, 3)
+    B = tris[:, 1]
+    C = tris[:, 2]
+
+    AB = B - A   # (N, 3) edge vectors from A
+    AC = C - A
+
+    AP = p - A   # (N, 3) — note: p broadcasts over N
+    BP = p - B
+    CP = p - C
+
+    d1 = (AB * AP).sum(axis=1)   # dot(AB, AP), shape (N,)
+    d2 = (AC * AP).sum(axis=1)
+    d3 = (AB * BP).sum(axis=1)
+    d4 = (AC * BP).sum(axis=1)
+    d5 = (AB * CP).sum(axis=1)
+    d6 = (AC * CP).sum(axis=1)
+
+    # Auxiliary quantities used to determine which Voronoi region the point is in
+    vc = d1 * d4 - d3 * d2   # proportional to bary-w for edge AB region
+    vb = d5 * d2 - d1 * d6   # proportional to bary-w for edge AC region
+    va = d3 * d6 - d5 * d4   # proportional to bary-w for edge BC region
+
+    N = len(tris)
+    closest = np.empty((N, 3), dtype=np.float64)
+    assigned = np.zeros(N, dtype=bool)
+
+    # ── Region A (closest to vertex A) ──────────────────────────────────────
+    rA = (d1 <= 0.0) & (d2 <= 0.0)
+    closest[rA] = A[rA]
+    assigned |= rA
+
+    # ── Region B (closest to vertex B) ──────────────────────────────────────
+    rB = ~assigned & (d3 >= 0.0) & (d4 <= d3)
+    closest[rB] = B[rB]
+    assigned |= rB
+
+    # ── Region C (closest to vertex C) ──────────────────────────────────────
+    rC = ~assigned & (d6 >= 0.0) & (d5 <= d6)
+    closest[rC] = C[rC]
+    assigned |= rC
+
+    # ── Region AB (closest to edge AB) ──────────────────────────────────────
+    rAB = ~assigned & (vc <= 0.0) & (d1 >= 0.0) & (d3 <= 0.0)
+    denom_AB = d1 - d3
+    t_AB = np.where(np.abs(denom_AB) > 1e-30, d1 / denom_AB, 0.5)
+    closest[rAB] = A[rAB] + t_AB[rAB, None] * AB[rAB]
+    assigned |= rAB
+
+    # ── Region AC (closest to edge AC) ──────────────────────────────────────
+    rAC = ~assigned & (vb <= 0.0) & (d2 >= 0.0) & (d6 <= 0.0)
+    denom_AC = d2 - d6
+    t_AC = np.where(np.abs(denom_AC) > 1e-30, d2 / denom_AC, 0.5)
+    closest[rAC] = A[rAC] + t_AC[rAC, None] * AC[rAC]
+    assigned |= rAC
+
+    # ── Region BC (closest to edge BC) ──────────────────────────────────────
+    rBC = ~assigned & (va <= 0.0) & ((d4 - d3) >= 0.0) & ((d5 - d6) >= 0.0)
+    denom_BC = (d4 - d3) + (d5 - d6)
+    t_BC = np.where(np.abs(denom_BC) > 1e-30, (d4 - d3) / denom_BC, 0.5)
+    closest[rBC] = B[rBC] + t_BC[rBC, None] * (C[rBC] - B[rBC])
+    assigned |= rBC
+
+    # ── Interior (projection onto triangle plane) ────────────────────────────
+    rInt = ~assigned
+    denom_int = va + vb + vc
+    safe_denom = np.where(np.abs(denom_int) > 1e-30, denom_int, 1.0)
+    bary_v = vb / safe_denom
+    bary_w = vc / safe_denom
+    bary_u = 1.0 - bary_v - bary_w
+    closest[rInt] = (
+        bary_u[rInt, None] * A[rInt]
+        + bary_v[rInt, None] * B[rInt]
+        + bary_w[rInt, None] * C[rInt]
+    )
+
+    diff = p - closest          # (N, 3)
+    sq_dists = (diff * diff).sum(axis=1)  # (N,)
+    return sq_dists, closest
+
+
+def _triangle_normal(v0: np.ndarray, v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
+    """Return the unit normal of a triangle defined by three vertex positions."""
+    n = np.cross(v1 - v0, v2 - v0)
+    length = float(np.linalg.norm(n))
+    if length < 1e-30:
+        return np.array([0.0, 0.0, 1.0])
+    return n / length
+
+
+def nearest_face(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    point: List[float],
+) -> NearestFaceResponse:
+    """
+    Find the surface triangle face closest to an arbitrary 3-D point.
+
+    The point does NOT need to be a mesh node or element centroid — it can be
+    anywhere in space.  Uses the octree for acceleration, then falls back to a
+    brute-force scan if the octree is absent.
+
+    Algorithm
+    ---------
+    1. Query the octree with a zero-size AABB at the query point (= find the leaf
+       that contains/is nearest to the point).  Expand the box until candidates are
+       found (handles points outside the mesh).
+    2. Compute exact point-to-triangle distances for all candidates and find d_min.
+    3. Re-query with a box of radius d_min — any triangle that could be closer
+       must have at least one vertex inside this box, so this guarantees the
+       global optimum without scanning every triangle.
+    4. Return the best face, its unit normal, and the closest point on that face.
+    """
+    idx = _get_ready_index(registry, odb_id)
+
+    coords = idx.coords_global.get(instance)
+    node_rows = idx.source_node_rows.get(instance)
+    if coords is None or node_rows is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no L2 geometry in ODB '{odb_id}'",
+            {"instance": instance},
+        )
+
+    p = np.asarray(point, dtype=np.float64)
+    octree = idx.octree.get(instance)
+
+    # ── Step 1: initial candidates via octree ────────────────────────────────
+    if octree is not None:
+        model_diag = float(np.linalg.norm(
+            coords.max(axis=0).astype(np.float64)
+            - coords.min(axis=0).astype(np.float64)
+        ))
+        radius = max(model_diag * 0.005, 1e-6)   # start at 0.5 % of model diagonal
+        candidates = np.zeros(0, dtype=np.int32)
+        pf = p.astype(np.float32)
+        for _ in range(20):                        # at most 20 doublings ≈ ×1M expansion
+            lo = pf - np.float32(radius)
+            hi = pf + np.float32(radius)
+            candidates = _octree_candidates(octree, lo, hi)
+            if len(candidates) > 0:
+                break
+            radius *= 2.0
+    else:
+        logger.warning(
+            "ODB %s instance %s: no octree, falling back to full face scan", odb_id, instance
+        )
+        candidates = np.arange(len(node_rows), dtype=np.int32)
+
+    if len(candidates) == 0:
+        raise NotFoundError(
+            "No surface faces found near the query point — model may be empty",
+            {"point": point},
+        )
+
+    # ── Step 2: exact distances for initial candidates ───────────────────────
+    cand_tris = coords[node_rows[candidates]].astype(np.float64)  # (C, 3, 3)
+    sq_dists, closest_pts = _point_to_triangles_sq_dist(p, cand_tris)
+    best_local = int(np.argmin(sq_dists))
+    d_min = float(np.sqrt(sq_dists[best_local]))
+    best_face = int(candidates[best_local])
+    best_closest = closest_pts[best_local]
+
+    # ── Step 3: re-query with expanded box to guarantee global optimum ───────
+    if octree is not None and d_min > 0.0:
+        lo = (p - d_min * 1.001).astype(np.float32)
+        hi = (p + d_min * 1.001).astype(np.float32)
+        expanded = _octree_candidates(octree, lo, hi)
+        new_mask = ~np.isin(expanded, candidates)
+        new_cands = expanded[new_mask]
+        if len(new_cands) > 0:
+            new_tris = coords[node_rows[new_cands]].astype(np.float64)
+            new_sq, new_closest = _point_to_triangles_sq_dist(p, new_tris)
+            new_best = int(np.argmin(new_sq))
+            if new_sq[new_best] < sq_dists[best_local]:
+                best_face = int(new_cands[new_best])
+                d_min = float(np.sqrt(new_sq[new_best]))
+                best_closest = new_closest[new_best]
+
+    # ── Step 4: compute face normal and ODB metadata ─────────────────────────
+    face_verts = coords[node_rows[best_face]].astype(np.float64)  # (3, 3)
+    normal = _triangle_normal(face_verts[0], face_verts[1], face_verts[2])
+
+    src_map = idx.render_source_elem_row.get(instance)
+    etype_arr = idx.source_elem_etype.get(instance)
+    elem_label: Optional[int] = None
+    etype_str: Optional[str] = None
+
+    if src_map is not None and best_face < len(src_map):
+        elem_row = int(src_map[best_face])
+        if etype_arr is not None and best_face < len(etype_arr):
+            etype_str = etype_arr[best_face].decode("ascii").rstrip("\x00")
+        try:
+            hdf5_repo = HDF5Repo(idx.workspace)
+            elem_label = hdf5_repo.get_elem_label(instance, etype_str or "", elem_row)
+        except Exception:
+            logger.warning("Could not look up elem_label for nearest_face", exc_info=True)
+
+    return NearestFaceResponse(
+        instance=instance,
+        render_face_idx=best_face,
+        elem_label=elem_label,
+        elem_type=etype_str,
+        normal=normal.tolist(),
+        closest_point=best_closest.tolist(),
+        distance=d_min,
+    )
+
+
 def resolve_render_faces(
     registry: OdbRegistry,
     odb_id: str,
@@ -753,4 +982,207 @@ def resolve_render_faces(
         node_count=node_count,
         node_labels=node_labels,
         node_positions=node_positions,
+    )
+
+
+def surface_patch(
+    registry: OdbRegistry,
+    odb_id: str,
+    req: SurfacePatchRequest,
+) -> SurfacePatchResponse:
+    """
+    Select all surface faces that intersect an oriented rectangle.
+
+    The rectangle lies in the plane perpendicular to `req.normal` and centred at
+    `req.center`.  A local 2-D frame (u, v) is constructed as:
+
+        n = normalize(normal)
+        u = normalize(cross(up_hint, n))   # "width" axis
+        v = normalize(cross(n, u))          # "height" axis
+
+    If up_hint is parallel to n (dot > 0.999), fall back to global X [1,0,0].
+
+    A face is selected when its triangle (projected onto the u/v plane) overlaps
+    the rectangle [-width/2, width/2] × [-height/2, height/2].  This uses the
+    2-D Separating Axis Theorem (5 axes: 2 AABB + 3 triangle edge normals),
+    so even faces that only *touch* an edge of the rectangle are included.
+
+    The octree is used to pre-filter candidates (AABB of the oriented rectangle),
+    then the exact SAT test is applied.
+    """
+    idx = _get_ready_index(registry, odb_id)
+
+    coords = idx.coords_global.get(req.instance)
+    node_rows = idx.source_node_rows.get(req.instance)
+    if coords is None or node_rows is None:
+        raise NotFoundError(
+            f"Instance '{req.instance}' has no L2 geometry in ODB '{odb_id}'",
+            {"instance": req.instance},
+        )
+
+    # ── Build local frame ────────────────────────────────────────────────────
+    n = np.asarray(req.normal, dtype=np.float64)
+    norm_len = float(np.linalg.norm(n))
+    if norm_len < 1e-12:
+        raise ValidationError("normal vector must not be zero", {"normal": req.normal})
+    n /= norm_len
+
+    up = np.asarray(req.up_hint, dtype=np.float64)
+    up_len = float(np.linalg.norm(up))
+    if up_len < 1e-12:
+        up = np.array([0.0, 1.0, 0.0])
+    else:
+        up /= up_len
+
+    # Fall back if up is parallel to n
+    if abs(float(np.dot(up, n))) > 0.999:
+        up = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(up, n))) > 0.999:
+            up = np.array([0.0, 1.0, 0.0])
+
+    u = np.cross(up, n)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    v /= np.linalg.norm(v)
+
+    center = np.asarray(req.center, dtype=np.float64)
+    half_w = req.width  / 2.0
+    half_h = req.height / 2.0
+
+    # ── Octree pre-filter: AABB of the oriented rectangle ────────────────────
+    # The rectangle corners in world space span ±half_w*u ± half_h*v from center.
+    # The enclosing AABB is: center ± (|half_w*u| + |half_h*v|) per component.
+    aabb_extent = np.abs(u) * half_w + np.abs(v) * half_h
+    lo = (center - aabb_extent).astype(np.float32)
+    hi = (center + aabb_extent).astype(np.float32)
+
+    octree = idx.octree.get(req.instance)
+    if octree is not None:
+        candidates = _octree_candidates(octree, lo, hi)
+    else:
+        logger.warning(
+            "ODB %s instance %s: no octree, full face scan for surface_patch",
+            odb_id, req.instance,
+        )
+        candidates = np.arange(len(node_rows), dtype=np.int32)
+
+    if len(candidates) == 0:
+        return SurfacePatchResponse(
+            face_count=0, elem_count=0, node_count=0,
+            render_face_indices=[],
+        )
+
+    # ── 2-D SAT intersection: triangle vs. rectangle in (u,v) plane ─────────
+    # Project each candidate triangle's 3 vertices onto (u, v).
+    # A face is selected if its 2-D shadow overlaps the rectangle
+    # [-half_w, half_w] × [-half_h, half_h].
+    #
+    # SAT axes tested (5 total):
+    #   • u-axis (rectangle width)
+    #   • v-axis (rectangle height)
+    #   • 3 edge-normal axes of the projected triangle
+    #
+    # No separation on ALL axes → intersection → face is selected.
+    cand_verts = coords[node_rows[candidates]].astype(np.float64)  # (C, 3, 3)
+    offsets_v  = cand_verts - center                                # (C, 3, 3)
+
+    lu_v = offsets_v @ u   # (C, 3) — u-projections of each vertex
+    lv_v = offsets_v @ v   # (C, 3) — v-projections of each vertex
+
+    # Axes 1 & 2: AABB separating axes
+    sep = (
+        (lu_v.max(axis=1) < -half_w) | (lu_v.min(axis=1) > half_w) |
+        (lv_v.max(axis=1) < -half_h) | (lv_v.min(axis=1) > half_h)
+    )
+
+    # Axes 3–5: one per triangle edge normal (perpendicular to edge in 2-D)
+    for i0, i1 in ((0, 1), (1, 2), (2, 0)):
+        en_u = -(lv_v[:, i1] - lv_v[:, i0])   # (C,)  normal = (-dv, du)
+        en_v =   lu_v[:, i1] - lu_v[:, i0]    # (C,)
+        # Project all 3 triangle verts onto this axis
+        projs   = en_u[:, None] * lu_v + en_v[:, None] * lv_v  # (C, 3)
+        tri_min = projs.min(axis=1)
+        tri_max = projs.max(axis=1)
+        # AABB extent along the (per-face) axis vector
+        r = np.abs(en_u) * half_w + np.abs(en_v) * half_h       # (C,)
+        sep |= (tri_max < -r) | (tri_min > r)
+
+    hit_faces = candidates[~sep]   # render face indices of overlapping triangles
+
+    # ── Depth filter: centroid must be within ±depth/2 along the normal ──────
+    # Auto-depth: half the shorter side.  This keeps only faces on the same
+    # surface layer and excludes faces that project to the rectangle footprint
+    # but are deep inside the model (a common issue with thin-walled parts).
+    half_depth = (req.depth / 2.0) if req.depth is not None else min(half_w, half_h)
+    if len(hit_faces) > 0:
+        hit_verts   = coords[node_rows[hit_faces]].astype(np.float64)  # (H, 3, 3)
+        centroids_h = hit_verts.mean(axis=1)                           # (H, 3)
+        ln_h        = (centroids_h - center) @ n                       # (H,)
+        depth_ok    = np.abs(ln_h) <= half_depth
+        hit_faces   = hit_faces[depth_ok]
+
+    if len(hit_faces) == 0:
+        return SurfacePatchResponse(
+            face_count=0, elem_count=0, node_count=0,
+            render_face_indices=[],
+        )
+
+    # ── Expand to all faces of the parent elements ───────────────────────────
+    # hit_faces are the triangles the rectangle touches.  For display we want
+    # the full element silhouette (all surface triangles of each parent element).
+    src_map   = idx.render_source_elem_row.get(req.instance)
+    etype_arr = idx.source_elem_etype.get(req.instance)
+
+    elem_rows  = src_map[hit_faces].astype(np.int32) if src_map is not None else None
+    etype_rows = etype_arr[hit_faces] if etype_arr is not None else None
+
+    elem_labels_out: Optional[List[int]] = None
+    elem_count = 0
+    # render_face_indices to return (expanded to full elements if possible)
+    render_face_indices_out: np.ndarray = hit_faces
+    if elem_rows is not None:
+        composite = _composite_elem_key(elem_rows, etype_rows)
+        _, uniq_idx = np.unique(composite, return_index=True)
+        uniq_elem_rows  = elem_rows[uniq_idx]
+        uniq_etype_rows = etype_rows[uniq_idx] if etype_rows is not None else None
+        elem_count = len(uniq_idx)
+        if elem_count <= 2000:
+            elem_labels_out = _batch_elem_labels(
+                idx.workspace, req.instance, uniq_elem_rows, uniq_etype_rows
+            )
+        # Expand: find ALL surface faces that belong to the same parent elements
+        # so the frontend can highlight complete elements rather than just
+        # the individual triangles the rectangle touched.
+        uniq_elem_rows_set = np.unique(uniq_elem_rows)
+        expanded_mask = np.isin(src_map.astype(np.int32), uniq_elem_rows_set)
+        render_face_indices_out = np.where(expanded_mask)[0].astype(np.int32)
+
+    # ── Collect unique nodes (from expanded faces for full element coverage) ──
+    hit_node_rows = node_rows[render_face_indices_out]              # (H, 3)
+    unique_node_rows = np.unique(hit_node_rows.ravel())         # sorted unique rows
+    node_count = len(unique_node_rows)
+
+    node_labels_out: Optional[List[int]] = None
+    node_positions_out: Optional[List[List[float]]] = None
+
+    if node_count <= 2000:
+        try:
+            hdf5_repo = HDF5Repo(idx.workspace)
+            node_labels_out = hdf5_repo.get_node_labels_for_rows(
+                req.instance, unique_node_rows.tolist()
+            )
+        except Exception:
+            logger.warning("Could not look up node labels for surface_patch", exc_info=True)
+
+    if node_count <= 5000:
+        node_positions_out = coords[unique_node_rows].tolist()
+
+    return SurfacePatchResponse(
+        face_count=int(len(render_face_indices_out)),
+        elem_count=elem_count,
+        node_count=node_count,
+        render_face_indices=render_face_indices_out.tolist(),
+        elem_labels=elem_labels_out,
+        node_labels=node_labels_out,
+        node_positions=node_positions_out,
     )

@@ -181,18 +181,47 @@ class EmbeddedRunner:
     # ── Subprocess helpers ─────────────────────────────────────────────────────
 
     def _run_streaming(self, cmd: list, odb_id: str, label: str):
-        """Run subprocess; stream each line to logger. Returns (returncode, last_50_lines)."""
+        """Run subprocess; stream each line to logger. Returns (returncode, last_50_lines).
+
+        Sets PYTHONUNBUFFERED=1 so Abaqus Python 2.7 flushes print() immediately.
+        Also logs a "still running" heartbeat every 30 s so the terminal doesn't go
+        silent during long operations (e.g. large ODB dumps).
+        """
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
         lines = []
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            encoding='utf-8', errors='replace', bufsize=1, env=env,
         )
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line:
-                logger.info("[%s] %s: %s", odb_id, label, line)
-                lines.append(line)
+
+        start = time.monotonic()
+        last_progress_log = start
+        _PROGRESS_INTERVAL = 30  # seconds between "still running" messages
+
+        def _read_stdout():
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    logger.info("[%s] %s: %s", odb_id, label, line)
+                    lines.append(line)
+
+        reader = threading.Thread(target=_read_stdout, daemon=True)
+        reader.start()
+
+        while reader.is_alive():
+            reader.join(timeout=_PROGRESS_INTERVAL)
+            if reader.is_alive():
+                elapsed = time.monotonic() - start
+                logger.info(
+                    "[%s] %s: still running… (%.0f s elapsed)",
+                    odb_id, label, elapsed,
+                )
+
         proc.wait()
+        total = time.monotonic() - start
+        logger.info("[%s] %s: finished in %.1f s (exit code %d)", odb_id, label, total, proc.returncode)
         return proc.returncode, "\n".join(lines[-50:])
 
     # ── L1 pipeline ───────────────────────────────────────────────────────────
@@ -263,7 +292,7 @@ class EmbeddedRunner:
 
         ret = subprocess.run(
             [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
-            capture_output=True, text=True,
+            capture_output=True, encoding='utf-8', errors='replace',
         )
         if ret.returncode != 0:
             self._update_status(odb_id, "l1_done",

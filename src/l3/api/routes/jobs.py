@@ -63,11 +63,34 @@ async def submit_job(body: SubmitJobRequest):
     os.makedirs(workspace, exist_ok=True)
 
     size = os.path.getsize(body.odb_path)
-    # Store only odb_id (portable), not the full absolute path.
-    # resolve_workspace() reconstructs the absolute path from data_root at load time.
-    _repo().create_job(odb_id, body.display_name, body.odb_path, odb_id, size)
+    repo = _repo()
+    repo.create_job(odb_id, body.display_name, body.odb_path, odb_id, size)
 
-    return {"odb_id": odb_id, "display_name": body.display_name, "status": "submitted"}
+    # Check whether the job runner is alive so the caller knows immediately
+    # if processing will not start.
+    runner_alive = repo.is_runner_alive()
+    warning = None
+    if not runner_alive:
+        if settings.embedded_runner:
+            warning = (
+                "Job queued but the embedded runner does not appear to be running. "
+                "Check the server console for startup errors (e.g. missing Abaqus). "
+                "You can also start the runner manually: python src/job_runner.py"
+            )
+        else:
+            warning = (
+                "Job queued but no job runner is active "
+                "(APP_EMBEDDED_RUNNER=0). "
+                "Start the runner manually: python src/job_runner.py"
+            )
+
+    return {
+        "odb_id": odb_id,
+        "display_name": body.display_name,
+        "status": "submitted",
+        "runner_alive": runner_alive,
+        "warning": warning,
+    }
 
 
 @router.get("")
