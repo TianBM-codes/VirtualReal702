@@ -22,6 +22,10 @@ import sys
 import time
 import traceback
 
+# Force line-buffered stdout so progress prints appear in real time
+# even when piped by the job runner (Abaqus Python 2.7 buffers by default).
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 1)
+
 import numpy as np
 
 try:
@@ -996,12 +1000,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                 'invariants':  invariants,
                 'has_section': has_section,
                 'blocks':      [
-                    {
-                        'inst_name': k[0],
-                        'position':  k[1],
-                        'elem_type': k[2],
-                        **v,
-                    }
+                    dict(
+                        {'inst_name': k[0], 'position': k[1], 'elem_type': k[2]},
+                        **v
+                    )
                     for k, v in block_struct.items()
                 ],
             })

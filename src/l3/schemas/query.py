@@ -78,3 +78,37 @@ class RenderFacesResponse(BaseModel):
     node_count: int = 0
     node_labels: Optional[List[int]] = None        # capped at 2000
     node_positions: Optional[List[List[float]]] = None  # [[x,y,z],...] capped at 5000
+
+
+class SurfacePatchRequest(BaseModel):
+    instance: str
+    center: List[float] = Field(..., min_length=3, max_length=3)
+    normal: List[float] = Field(..., min_length=3, max_length=3)
+    width: float = Field(..., gt=0)
+    height: float = Field(..., gt=0)
+    up_hint: List[float] = Field(default=[0.0, 1.0, 0.0], min_length=3, max_length=3)
+    # Slab thickness along the normal direction.
+    # Only faces whose centroid lies within ±depth/2 of the center plane are kept.
+    # None (default) → auto: uses min(width, height) / 2.
+    depth: Optional[float] = Field(default=None, gt=0)
+
+
+class SurfacePatchResponse(BaseModel):
+    face_count: int
+    elem_count: int
+    node_count: int
+    render_face_indices: List[int]
+    elem_labels: Optional[List[int]] = None    # null when elem_count > 2000
+    node_labels: Optional[List[int]] = None    # null when node_count > 2000
+    node_positions: Optional[List[List[float]]] = None  # null when node_count > 5000
+
+
+class NearestFaceResponse(BaseModel):
+    """Result of a nearest-face spatial query."""
+    instance: str
+    render_face_idx: int          # index into the triangle soup (stable per instance)
+    elem_label: Optional[int]     # ODB element label of the owning element
+    elem_type: Optional[str]      # element type string e.g. "C3D8R"
+    normal: List[float]           # unit outward normal [nx, ny, nz]
+    closest_point: List[float]    # closest point ON the face to the query point [x, y, z]
+    distance: float               # Euclidean distance from query point to closest_point

@@ -190,6 +190,27 @@ class RegistryRepo:
         basename = re.split(r'[/\\]', stored.rstrip('/\\'))[-1]
         return os.path.join(data_root, basename)
 
+    def is_runner_alive(self, ttl_seconds: int = 30) -> bool:
+        """
+        Return True if a job runner has refreshed its heartbeat within the last
+        `ttl_seconds` seconds.  Reads the runner_lock table written by runner_thread.py.
+        Returns False if the table doesn't exist yet or the heartbeat is stale.
+        """
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT heartbeat FROM runner_lock WHERE singleton=1"
+                ).fetchone()
+                if row is None or not row["heartbeat"]:
+                    return False
+                hb = datetime.fromisoformat(row["heartbeat"])
+                if hb.tzinfo is None:
+                    hb = hb.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - hb).total_seconds()
+                return age < ttl_seconds
+        except Exception:
+            return False
+
     def list_ready_or_l1done(self) -> list:
         """
         Used by the L3 polling thread.

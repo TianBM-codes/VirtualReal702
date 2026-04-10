@@ -1,7 +1,7 @@
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, Query
 from ...core.state import registry
-from ...schemas.query import BBoxRequest, PickResponse, BBoxResponse, RenderFacesRequest, RenderFacesResponse
+from ...schemas.query import BBoxRequest, PickResponse, BBoxResponse, RenderFacesRequest, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse
 from ...services import query_service
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["query"])
@@ -77,4 +77,53 @@ async def render_faces_query(odb_id: str, body: RenderFacesRequest):
         instance=body.instance,
         render_face_indices=body.render_face_indices,
         mode=body.mode,
+    )
+
+
+@router.post("/query/surface-patch", response_model=SurfacePatchResponse)
+async def surface_patch_query(odb_id: str, body: SurfacePatchRequest):
+    """
+    Select all surface faces whose triangle overlaps an oriented rectangle (including edge-touching).
+
+    The rectangle is defined by a center point, a normal vector (which becomes
+    the plane normal), and width/height dimensions.  An optional up_hint vector
+    orients the rectangle within the plane (default: global Y).
+
+    Typical workflow:
+      1. Call GET /query/nearest-face to get the center point and face normal.
+      2. Call this endpoint with the returned normal and desired dimensions.
+
+    Returns all matching render_face_indices (for frontend highlighting),
+    elem_labels, node_labels, and node_positions.
+    """
+    return query_service.surface_patch(
+        registry=registry,
+        odb_id=odb_id,
+        req=body,
+    )
+
+
+@router.get("/query/nearest-face", response_model=NearestFaceResponse)
+async def nearest_face_query(
+    odb_id: str,
+    instance: str,
+    x: float = Query(..., description="X coordinate of query point"),
+    y: float = Query(..., description="Y coordinate of query point"),
+    z: float = Query(..., description="Z coordinate of query point"),
+):
+    """
+    Find the surface triangle face closest to an arbitrary point in 3-D space.
+
+    The point does not need to coincide with a mesh node or element centroid.
+    Uses the L2 octree for efficient search, then verifies the global optimum
+    via a second-pass expansion query.
+
+    Returns the closest face's unit normal vector, the closest point ON the face,
+    and the Euclidean distance from the query point to that face.
+    """
+    return query_service.nearest_face(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        point=[x, y, z],
     )

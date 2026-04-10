@@ -79,3 +79,29 @@ class Settings:
 
 
 settings = Settings()
+
+
+def log_startup_config() -> None:
+    """Print a clear summary of active configuration to the log at startup."""
+    import logging
+    log = logging.getLogger(__name__)
+    lines = [
+        "=" * 60,
+        "  ODB Service — startup configuration",
+        "=" * 60,
+        f"  data_root         : {settings.data_root}",
+        f"  registry_db       : {settings.registry_db_path}",
+        f"  abaqus_cmd        : {settings.abaqus_cmd}",
+        f"  embedded_runner   : {settings.embedded_runner}",
+        f"  runner_poll_interval: {settings.runner_poll_interval}s",
+        f"  log_level         : {settings.log_level}",
+        f"  enable_gzip       : {settings.enable_gzip}",
+    ]
+    if settings.odb_workspace:
+        lines.append(f"  [DEV] odb_workspace: {settings.odb_workspace}")
+        lines.append(f"  [DEV] odb_id       : {settings.odb_id}")
+    if settings.raw_odb_root:
+        lines.append(f"  raw_odb_root      : {settings.raw_odb_root}")
+    lines.append("=" * 60)
+    for line in lines:
+        log.info(line)

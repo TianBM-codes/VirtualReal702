@@ -1187,6 +1187,72 @@ def handle_probe_group_by_pos(args: Dict, workspace: str,
     }
 
 
+def handle_nearest_face(
+    args: Dict,
+    workspace: str,
+    manifest: ManifestRepo,
+    odb_id: str,
+    registry: OdbRegistry,
+) -> Dict:
+    """
+    Find the surface triangle face closest to an arbitrary point in 3-D space.
+
+    args
+    ----
+    filename : str    — model identifier (resolved to odb_id by dispatch)
+    pos      : [x, y, z] float — query point in global coordinates
+    instance : str (optional) — limit search to this instance; defaults to
+               the first render-ready instance if omitted
+
+    Returns
+    -------
+    {
+        "instance":      str,
+        "renderFaceIdx": int,
+        "elemLabel":     int | null,
+        "elemType":      str | null,
+        "normal":        [nx, ny, nz],   # unit outward normal
+        "closestPoint":  [cx, cy, cz],   # closest point ON the face
+        "distance":      float           # distance from pos to closestPoint
+    }
+    """
+    from .query_service import nearest_face as _nearest_face  # avoid top-level circular import
+
+    pos = args.get("pos")
+    if pos is None or len(pos) != 3:
+        raise ValidationError(
+            "args.pos must be a list of 3 floats [x, y, z]",
+            {"pos": pos},
+        )
+
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not loaded", {"odb_id": odb_id})
+
+    # Resolve instance: use provided name, or pick the first available instance
+    instance = args.get("instance", "")
+    if not instance:
+        instances = list((idx.coords_global or {}).keys())
+        if not instances:
+            raise NotFoundError(
+                f"ODB '{odb_id}' has no render-ready geometry",
+                {"odb_id": odb_id},
+            )
+        instance = instances[0]
+
+    result = _nearest_face(registry, odb_id, instance, [float(v) for v in pos])
+
+    return {
+        "instance":      result.instance,
+        "renderFaceIdx": result.render_face_idx,
+        "elemLabel":     result.elem_label,
+        "elemType":      result.elem_type,
+        "normal":        result.normal,
+        "closestPoint":  result.closest_point,
+        "distance":      result.distance,
+    }
+
+
 def handle_delete_model_file(args: Dict, workspace: str, manifest: ManifestRepo,
                              odb_id: str, registry: OdbRegistry) -> Any:
     """
@@ -1229,6 +1295,8 @@ _HANDLERS = {
     "nodeId":           handle_node_id,
     "probeGroupByPos":  handle_probe_group_by_pos,
     "deleteModelFile":  handle_delete_model_file,
+    # Batch 3
+    "nearestFace":      handle_nearest_face,
 }
 
 
@@ -1236,8 +1304,8 @@ _HANDLERS = {
 _IDX_HANDLERS = {
     "hitEntities", "measureValue", "nodeId", "probeGroupByPos",
 }
-# Handlers that also need odb_id + registry (for deletion)
-_REGISTRY_HANDLERS = {"deleteModelFile"}
+# Handlers that also need odb_id + registry
+_REGISTRY_HANDLERS = {"deleteModelFile", "nearestFace"}
 
 
 def dispatch(name: str, args: Dict, registry: OdbRegistry) -> Any:

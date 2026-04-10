@@ -117,6 +117,8 @@ def _start_poll_thread() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .core.config import log_startup_config
+    log_startup_config()
     _bootstrap_registry()
     _start_poll_thread()
     if settings.embedded_runner:
