@@ -403,6 +403,28 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='fem modal result';
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_static_result (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        load_case_no INT NOT NULL DEFAULT 1 COMMENT 'load case no',
+        instance_name VARCHAR(200) NULL COMMENT 'instance name',
+        part_name VARCHAR(200) NULL COMMENT 'part name',
+        fem_node_label BIGINT NOT NULL COMMENT 'fem node label',
+        u1 DOUBLE NULL COMMENT 'u1',
+        u2 DOUBLE NULL COMMENT 'u2',
+        u3 DOUBLE NULL COMMENT 'u3',
+        ur1 DOUBLE NULL COMMENT 'ur1',
+        ur2 DOUBLE NULL COMMENT 'ur2',
+        ur3 DOUBLE NULL COMMENT 'ur3',
+        extra_json JSON NULL COMMENT 'extra json',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created at',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_static_case_node (pid, load_case_no, instance_name, fem_node_label),
+        KEY idx_pid_static_case (pid, load_case_no),
+        KEY idx_pid_static_node (pid, fem_node_label)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='fem static result';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_modal_correlation (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
         pid BIGINT NOT NULL COMMENT 'project id',
@@ -649,4 +671,5 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_match WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_response_catalog WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_modal_result WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_static_result WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = {pid}")

@@ -1791,6 +1791,185 @@ def get_fe_modal_results(project_id):
         conn.close()
 
 
+def _load_static_result_rows_from_txt(file_path: str) -> List[dict]:
+    rows: List[dict] = []
+    with open(file_path, "r", encoding="utf-8") as fp:
+        lines = fp.readlines()
+
+    if len(lines) <= 3:
+        raise ValueError("static result txt does not contain data rows after the first three header lines")
+
+    for line_no, raw_line in enumerate(lines[3:], start=4):
+        text = raw_line.strip()
+        if not text:
+            continue
+
+        parts = text.replace(",", " ").split()
+        if len(parts) < 7:
+            raise ValueError(f"invalid static result line {line_no}: expected 7 columns, got {len(parts)}")
+
+        rows.append({
+            "fem_node_label": int(parts[0]),
+            "u1": float(parts[1]),
+            "u2": float(parts[2]),
+            "u3": float(parts[3]),
+            "ur1": float(parts[4]),
+            "ur2": float(parts[5]),
+            "ur3": float(parts[6]),
+        })
+
+    if not rows:
+        raise ValueError("static result txt has no valid data rows")
+    return rows
+
+
+def _load_static_result_payload(file_path=None, rows=None) -> List[dict]:
+    if file_path:
+        return _load_static_result_rows_from_txt(file_path)
+
+    if not rows:
+        raise ValueError("static result payload is empty")
+
+    normalized = []
+    for item in rows:
+        item = dict(item)
+        fem_node_label = item.get("fem_node_label", item.get("node_label", item.get("node")))
+        if fem_node_label is None:
+            raise ValueError("static result row missing fem_node_label/node_label/node")
+
+        normalized.append({
+            "fem_node_label": int(fem_node_label),
+            "u1": _safe_float(item.get("u1", item.get("ux"))),
+            "u2": _safe_float(item.get("u2", item.get("uy"))),
+            "u3": _safe_float(item.get("u3", item.get("uz"))),
+            "ur1": _safe_float(item.get("ur1", item.get("rx"))),
+            "ur2": _safe_float(item.get("ur2", item.get("ry"))),
+            "ur3": _safe_float(item.get("ur3", item.get("rz"))),
+            "instance_name": item.get("instance_name"),
+            "part_name": item.get("part_name"),
+            "load_case_no": item.get("load_case_no"),
+            "extra_json": item.get("extra_json") or {},
+        })
+    return normalized
+
+
+def import_fe_static_results(project_id, overwrite=True, file_path=None, rows=None,
+                             load_case_no=1, instance_name=None, part_name=None):
+    ensure_tables_exist()
+    static_rows = _load_static_result_payload(file_path=file_path, rows=rows)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        if overwrite:
+            cursor.execute("DELETE FROM t_mt_py_fem_static_result WHERE pid = %s", (project_id,))
+
+        insert_sql = """
+        INSERT INTO t_mt_py_fem_static_result
+        (pid, load_case_no, instance_name, part_name, fem_node_label, u1, u2, u3, ur1, ur2, ur3, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            part_name = VALUES(part_name),
+            u1 = VALUES(u1),
+            u2 = VALUES(u2),
+            u3 = VALUES(u3),
+            ur1 = VALUES(ur1),
+            ur2 = VALUES(ur2),
+            ur3 = VALUES(ur3),
+            extra_json = VALUES(extra_json),
+            created_at = CURRENT_TIMESTAMP
+        """
+
+        row_count = 0
+        preview = []
+        case_nos = set()
+        source_file_path = os.path.abspath(file_path) if file_path else None
+        for item in static_rows:
+            item_load_case_no = int(item.get("load_case_no") or load_case_no or 1)
+            item_instance_name = item.get("instance_name") if item.get("instance_name") is not None else instance_name
+            item_part_name = item.get("part_name") if item.get("part_name") is not None else part_name
+            extra_json = dict(item.get("extra_json") or {})
+            if source_file_path:
+                extra_json["source_file_path"] = source_file_path
+
+            payload = {
+                "load_case_no": item_load_case_no,
+                "instance_name": item_instance_name,
+                "part_name": item_part_name,
+                "fem_node_label": int(item["fem_node_label"]),
+                "u1": _safe_float(item.get("u1")),
+                "u2": _safe_float(item.get("u2")),
+                "u3": _safe_float(item.get("u3")),
+                "ur1": _safe_float(item.get("ur1")),
+                "ur2": _safe_float(item.get("ur2")),
+                "ur3": _safe_float(item.get("ur3")),
+                "extra_json": extra_json,
+            }
+            cursor.execute(insert_sql, (
+                project_id,
+                payload["load_case_no"],
+                payload["instance_name"],
+                payload["part_name"],
+                payload["fem_node_label"],
+                payload["u1"],
+                payload["u2"],
+                payload["u3"],
+                payload["ur1"],
+                payload["ur2"],
+                payload["ur3"],
+                _json_dumps(payload["extra_json"]),
+            ))
+            row_count += 1
+            case_nos.add(payload["load_case_no"])
+            if len(preview) < 20:
+                preview.append(payload)
+
+        conn.commit()
+        return {
+            "project_id": project_id,
+            "load_case_nos": sorted(case_nos),
+            "row_count": row_count,
+            "source_file_path": source_file_path,
+            "rows_preview": preview,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_fe_static_results(project_id, load_case_no=None):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if load_case_no is None:
+            cursor.execute("""
+                SELECT load_case_no, instance_name, part_name, fem_node_label,
+                       u1, u2, u3, ur1, ur2, ur3, extra_json, created_at
+                FROM t_mt_py_fem_static_result
+                WHERE pid = %s
+                ORDER BY load_case_no, instance_name, fem_node_label
+            """, (project_id,))
+        else:
+            cursor.execute("""
+                SELECT load_case_no, instance_name, part_name, fem_node_label,
+                       u1, u2, u3, ur1, ur2, ur3, extra_json, created_at
+                FROM t_mt_py_fem_static_result
+                WHERE pid = %s AND load_case_no = %s
+                ORDER BY load_case_no, instance_name, fem_node_label
+            """, (project_id, int(load_case_no)))
+        return {
+            "project_id": project_id,
+            "load_case_no": None if load_case_no is None else int(load_case_no),
+            "rows": cursor.fetchall(),
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def _load_test_mode_vectors(cursor, project_id: int) -> Dict[int, Dict[str, np.ndarray]]:
     modes: Dict[int, Dict[str, np.ndarray]] = {}
 

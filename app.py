@@ -9,8 +9,10 @@ from services.model_update.analysis.inp_service import (
     get_dof_matches,
     get_fe_modal_results,
     get_fe_response_catalog,
+    get_fe_static_results,
     get_modal_correlation,
     import_fe_modal_results,
+    import_fe_static_results,
     match_test_dofs,
 )
 
@@ -70,6 +72,31 @@ async def get_fem_modal_api(request: Request):
     body = await request.json()
     result = get_fe_modal_results(int(body["project_id"]))
     return {"ok": True, "message": "fem modal query success", "data": result}
+
+
+@app.post("/import/fem/static")
+async def import_fem_static_api(request: Request):
+    body = await request.json()
+    result = import_fe_static_results(
+        project_id=int(body["project_id"]),
+        overwrite=bool(body.get("overwrite", True)),
+        file_path=body.get("file_path"),
+        rows=body.get("rows"),
+        load_case_no=int(body.get("load_case_no", 1)),
+        instance_name=body.get("instance_name"),
+        part_name=body.get("part_name"),
+    )
+    return {"ok": True, "message": "fem static import success", "data": result}
+
+
+@app.post("/import/fem/static/query")
+async def get_fem_static_api(request: Request):
+    body = await request.json()
+    result = get_fe_static_results(
+        int(body["project_id"]),
+        load_case_no=body.get("load_case_no"),
+    )
+    return {"ok": True, "message": "fem static query success", "data": result}
 
 
 @app.post("/correlation/modal/compute")
