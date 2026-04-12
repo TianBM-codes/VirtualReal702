@@ -178,6 +178,8 @@ class Section:
     elset_name: str
     material_name: str
     thickness: Optional[float] = None        # shell thickness
+    thickness_expression: Optional[str] = None
+    thickness_parameter: Optional[str] = None
     orientation_name: Optional[str] = None
     extra: Dict[str, object] = field(default_factory=dict)  # section-type-specific data
 
@@ -422,6 +424,35 @@ class StepDeclaration:
     dsloads: List[DsloadDeclaration]          = field(default_factory=list)
 
 
+@dataclass
+class ParameterDefinition:
+    name: str
+    expression: Optional[str] = None
+    scalar_value: Optional[float] = None
+    referenced_parameters: List[str] = field(default_factory=list)
+
+
+@dataclass
+class DesignParameter:
+    name: str
+    order: int
+
+
+@dataclass
+class DesignResponseRequest:
+    region_type: str
+    set_name: str
+    variables: List[str] = field(default_factory=list)
+
+
+@dataclass
+class DesignResponse:
+    step_name: Optional[str] = None
+    frequency: int = 1
+    requests: List[DesignResponseRequest] = field(default_factory=list)
+    extra: Dict[str, object] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Top-level model
 # ---------------------------------------------------------------------------
@@ -440,4 +471,7 @@ class InpModel:
     orientations: Dict[str, Orientation]   = field(default_factory=dict)
     steps:        List[StepDeclaration]    = field(default_factory=list)
     time_points:  Dict[str, TimePoints]    = field(default_factory=dict)
+    parameters:   Dict[str, ParameterDefinition] = field(default_factory=dict)
+    design_parameters: List[DesignParameter] = field(default_factory=list)
+    design_responses: List[DesignResponse] = field(default_factory=list)
     diagnostics:  List                     = field(default_factory=list)

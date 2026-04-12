@@ -304,6 +304,58 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户创建的优化参数';
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_definition (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        parameter_name VARCHAR(200) NOT NULL COMMENT 'parameter name',
+        expression VARCHAR(500) NULL COMMENT 'parameter expression',
+        scalar_value DOUBLE NULL COMMENT 'parameter scalar value',
+        is_design_parameter TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'is design parameter',
+        design_order INT NULL COMMENT 'design parameter order',
+        extra_json JSON NULL COMMENT 'extra json',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_parameter_definition (pid, parameter_name),
+        KEY idx_pid_design_parameter (pid, is_design_parameter, design_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='parsed inp parameter definitions';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_target (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        parameter_name VARCHAR(200) NOT NULL COMMENT 'parameter name',
+        target_type VARCHAR(32) NOT NULL COMMENT 'target type',
+        set_name VARCHAR(200) NOT NULL COMMENT 'set name',
+        set_type VARCHAR(32) NOT NULL COMMENT 'set type',
+        set_scope VARCHAR(32) NOT NULL COMMENT 'set scope',
+        instance_name VARCHAR(200) NULL COMMENT 'instance name',
+        part_name VARCHAR(200) NULL COMMENT 'part name',
+        source_keyword VARCHAR(100) NOT NULL COMMENT 'source keyword',
+        source_path VARCHAR(255) NOT NULL COMMENT 'source path',
+        component_name VARCHAR(100) NULL COMMENT 'component name',
+        extra_json JSON NULL COMMENT 'extra json',
+        PRIMARY KEY (id),
+        KEY idx_pid_parameter_target (pid, parameter_name),
+        KEY idx_pid_target_set (pid, set_name, set_type, set_scope)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='parsed inp parameter target mapping';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_design_response_catalog (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        response_no INT NOT NULL COMMENT 'response index',
+        request_no INT NOT NULL COMMENT 'request index',
+        step_name VARCHAR(200) NULL COMMENT 'step name',
+        frequency INT NOT NULL DEFAULT 1 COMMENT 'response frequency',
+        region_type VARCHAR(32) NOT NULL COMMENT 'region type',
+        set_name VARCHAR(200) NOT NULL COMMENT 'set name',
+        variables_json JSON NULL COMMENT 'variables json',
+        extra_json JSON NULL COMMENT 'extra json',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_design_response (pid, response_no, request_no),
+        KEY idx_pid_design_response_step (pid, step_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='parsed inp design response catalog';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_node_octree_cache (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
         pid BIGINT NOT NULL COMMENT '项目ID',
@@ -666,6 +718,9 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_candidate WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_set_catalog WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_optimization_parameter WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_target WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_octree_cache WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_match WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_match WHERE pid = {pid}")

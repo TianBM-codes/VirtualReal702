@@ -11,6 +11,7 @@ import numpy as np
 
 from db import get_connection
 from src.inp import parse_inp
+from src.inp.parameter_mapping import build_parameter_target_map
 from src.l3.core.state import registry
 from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.manifest_repo import ManifestRepo
@@ -830,6 +831,17 @@ def _load_project_optimization_parameters(project_id: int) -> List[dict]:
 
 
 def _extract_dsa_field_index(field_prefix: str, source_field_name: str) -> int:
+    suffix = _extract_dsa_field_token(field_prefix, source_field_name)
+    match = _DSA_PARAMETER_TOKEN_RE.fullmatch(suffix)
+    if not match:
+        raise ValidationError(
+            "DSA field name does not contain a T-index suffix",
+            {"field_prefix": field_prefix, "field": str(source_field_name), "suffix": suffix},
+        )
+    return int(match.group(1))
+
+
+def _extract_dsa_field_token(field_prefix: str, source_field_name: str) -> str:
     source_name = str(source_field_name)
     if not source_name.startswith(field_prefix):
         raise ValidationError(
@@ -838,13 +850,7 @@ def _extract_dsa_field_index(field_prefix: str, source_field_name: str) -> int:
         )
 
     suffix = source_name[len(field_prefix):] or source_name
-    match = _DSA_PARAMETER_TOKEN_RE.fullmatch(suffix)
-    if not match:
-        raise ValidationError(
-            "DSA field name does not contain a T-index suffix",
-            {"field_prefix": field_prefix, "field": source_name, "suffix": suffix},
-        )
-    return int(match.group(1))
+    return str(suffix)
 
 
 def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, source_field_names: List[str]) -> Dict[str, dict]:
@@ -1139,12 +1145,13 @@ def _export_sensitivity_vtu(
         source_mode = "l3_api"
 
     dsa_parameter_rows = _load_project_optimization_parameters(project_id) if selector["kind"] == "prefix" else []
+    dsa_model = parse_inp(resolved_inp_path) if selector["kind"] == "prefix" else None
+    dsa_direct_target_map = build_parameter_target_map(dsa_model) if dsa_model is not None else {}
     dsa_parameter_map = (
         _build_dsa_parameter_row_map(dsa_parameter_rows, selector["field_prefix"], discovery["field_names"])
-        if selector["kind"] == "prefix"
+        if selector["kind"] == "prefix" and dsa_parameter_rows
         else {}
     )
-    dsa_model = parse_inp(resolved_inp_path) if selector["kind"] == "prefix" else None
     export_field_name = selector["field_prefix"] if selector["kind"] == "prefix" else None
     for instance_name in discovery["instances"]:
         for field_meta in discovery["per_instance"][instance_name]:
@@ -1174,31 +1181,45 @@ def _export_sensitivity_vtu(
                 )
             label_map = _normalize_vtu_label_map(label_map)
             if selector["kind"] == "prefix":
-                parameter_row = _resolve_dsa_parameter_row(dsa_parameter_map, source_field_name)
+                parameter_token = _extract_dsa_field_token(selector["field_prefix"], source_field_name)
                 dsa_value = _extract_single_dsa_result_value(label_map, source_field=source_field_name)
-                target, composed_map = _compose_dsa_label_map(dsa_model, parameter_row, dsa_value)
-                if target == "point":
-                    _merge_vtu_result_map(
-                        node_results.setdefault(current_export_field, {}),
-                        composed_map,
-                        details={
-                            "export_field": current_export_field,
-                            "source_field": source_field_name,
-                            "parameter_name": parameter_row.get("parameter_name"),
-                            "set_name": parameter_row.get("set_name"),
-                        },
-                    )
-                else:
-                    _merge_vtu_result_map(
-                        cell_results.setdefault(current_export_field, {}),
-                        composed_map,
-                        details={
-                            "export_field": current_export_field,
-                            "source_field": source_field_name,
-                            "parameter_name": parameter_row.get("parameter_name"),
-                            "set_name": parameter_row.get("set_name"),
-                        },
-                    )
+                direct_target_rows = list(dsa_direct_target_map.get(parameter_token, []))
+                mapped_parameter_name = parameter_token
+                target_rows = direct_target_rows
+                mapping_mode = "inp_parameter"
+                if not target_rows:
+                    parameter_row = _resolve_dsa_parameter_row(dsa_parameter_map, source_field_name)
+                    target_rows = [parameter_row]
+                    mapped_parameter_name = str(parameter_row.get("parameter_name") or parameter_token)
+                    mapping_mode = "optimization_parameter"
+
+                for target_row in target_rows:
+                    target, composed_map = _compose_dsa_label_map(dsa_model, target_row, dsa_value)
+                    if target == "point":
+                        _merge_vtu_result_map(
+                            node_results.setdefault(current_export_field, {}),
+                            composed_map,
+                            details={
+                                "export_field": current_export_field,
+                                "source_field": source_field_name,
+                                "parameter_name": mapped_parameter_name,
+                                "set_name": target_row.get("set_name"),
+                            },
+                        )
+                    else:
+                        _merge_vtu_result_map(
+                            cell_results.setdefault(current_export_field, {}),
+                            composed_map,
+                            details={
+                                "export_field": current_export_field,
+                                "source_field": source_field_name,
+                                "parameter_name": mapped_parameter_name,
+                                "set_name": target_row.get("set_name"),
+                            },
+                        )
+                target = "mixed" if len({str(row.get("set_type")) for row in target_rows}) > 1 else (
+                    "point" if target_rows and str(target_rows[0].get("set_type")).upper() == "NSET" else "cell"
+                )
             else:
                 if selected_position == "NODAL":
                     node_results.setdefault(current_export_field, {}).update(label_map)
@@ -1211,7 +1232,8 @@ def _export_sensitivity_vtu(
                     "instance": instance_name,
                     "field": source_field_name,
                     "export_field": current_export_field,
-                    "parameter_name": parameter_row.get("parameter_name") if selector["kind"] == "prefix" else None,
+                    "parameter_name": mapped_parameter_name if selector["kind"] == "prefix" else None,
+                    "mapping_mode": mapping_mode if selector["kind"] == "prefix" else None,
                     "position": selected_position,
                     "target": target,
                     "value_count": len(label_map),

@@ -14,7 +14,10 @@ expanding surface face IDs — those are Resolver tasks.
 """
 from __future__ import annotations
 
+import ast
 import math
+import operator
+import re
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .diagnostics import (
@@ -27,8 +30,10 @@ from .lexer import KeywordBlock, tokenize
 from .model import (
     Assembly, AssemblyElset, AssemblyNset, Amplitude,
     BCDeclaration, CLoadDeclaration, DLoadDeclaration, DsloadDeclaration,
+    DesignParameter, DesignResponse, DesignResponseRequest,
     ElasticData, Element, Elset, InpModel,
     Material, Node, Nset, Orientation, Part,
+    ParameterDefinition,
     PlasticData, HyperelasticData, DamageData, CreepData,
     Rotation, Section, StepDeclaration, Surface, SurfaceEntry,
     TieConstraint, CouplingConstraint, TimePoints,
@@ -88,6 +93,8 @@ class InpParser:
         self._instance_data:    List[str] = []
         # Pending coupling constraint (waiting for *Kinematic / *Distributing sub-block)
         self._current_coupling: Optional[CouplingConstraint] = None
+        # Pending design response declaration (waiting for *Element Response / *Node Response)
+        self._current_design_response: Optional[DesignResponse] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -165,6 +172,9 @@ class InpParser:
         # If a *Coupling is pending and this is not its sub-keyword, clear the pointer.
         if self._current_coupling is not None and kw not in _COUPLING_SUB_KEYWORDS:
             self._current_coupling = None
+
+        if self._current_design_response is not None and kw not in _DESIGN_RESPONSE_SUB_KEYWORDS:
+            self._current_design_response = None
 
         handler = _KEYWORD_HANDLERS.get(kw)
         if handler is None:
@@ -498,14 +508,16 @@ class InpParser:
         ori   = block.params.get("orientation")
         composite = "composite" in block.params
         thickness: Optional[float] = None
+        thickness_expr: Optional[str] = None
+        thickness_param: Optional[str] = None
         if not composite and block.data_lines:
-            try:
-                thickness = float(block.data_lines[0].split(",")[0])
-            except (ValueError, IndexError):
-                pass
+            token = block.data_lines[0].split(",")[0] if block.data_lines[0] else ""
+            thickness, thickness_expr, thickness_param = self._parse_scalar_token(token)
         sec = Section(section_type="SHELL", elset_name=elset,
                       material_name=mat, orientation_name=ori,
                       thickness=thickness,
+                      thickness_expression=thickness_expr,
+                      thickness_parameter=thickness_param,
                       extra={"composite": composite})
         self._add_section(sec)
 
@@ -516,12 +528,17 @@ class InpParser:
         ori     = block.params.get("orientation")
         # First data line: section dimensions; second: beam normal direction
         dims:   List[float] = []
+        dim_expressions: List[Optional[str]] = []
+        dim_parameters: List[Optional[str]] = []
         normal: List[float] = []
         if len(block.data_lines) > 0:
-            try:
-                dims = [float(v) for v in block.data_lines[0].split(",") if v.strip()]
-            except ValueError:
-                pass
+            for token in block.data_lines[0].split(","):
+                if not token.strip():
+                    continue
+                value, expression, parameter_name = self._parse_scalar_token(token)
+                dims.append(value if value is not None else 0.0)
+                dim_expressions.append(expression)
+                dim_parameters.append(parameter_name)
         if len(block.data_lines) > 1:
             try:
                 normal = [float(v) for v in block.data_lines[1].split(",") if v.strip()]
@@ -529,20 +546,28 @@ class InpParser:
                 pass
         sec = Section(section_type="BEAM", elset_name=elset,
                       material_name=mat, orientation_name=ori,
-                      extra={"section_shape": section, "dims": dims, "normal": normal})
+                      extra={
+                          "section_shape": section,
+                          "dims": dims,
+                          "dim_expressions": dim_expressions,
+                          "dim_parameters": dim_parameters,
+                          "normal": normal,
+                      })
         self._add_section(sec)
 
     def _handle_membrane_section(self, block: KeywordBlock) -> None:
         elset = block.params.get("elset", "").strip()
         mat   = block.params.get("material", "").strip()
         thickness: Optional[float] = None
+        thickness_expr: Optional[str] = None
+        thickness_param: Optional[str] = None
         if block.data_lines:
-            try:
-                thickness = float(block.data_lines[0].split(",")[0])
-            except (ValueError, IndexError):
-                pass
+            token = block.data_lines[0].split(",")[0] if block.data_lines[0] else ""
+            thickness, thickness_expr, thickness_param = self._parse_scalar_token(token)
         sec = Section(section_type="MEMBRANE", elset_name=elset,
-                      material_name=mat, thickness=thickness)
+                      material_name=mat, thickness=thickness,
+                      thickness_expression=thickness_expr,
+                      thickness_parameter=thickness_param)
         self._add_section(sec)
 
     def _add_section(self, sec: Section) -> None:
@@ -671,6 +696,72 @@ class InpParser:
                 pass
         self._model.orientations[name] = Orientation(name=name, system=system, data=data)
 
+    def _handle_parameter(self, block: KeywordBlock) -> None:
+        for line in block.data_lines:
+            for name, expression in _parse_parameter_assignments(line):
+                scalar_value, refs = _evaluate_parameter_expression(
+                    expression,
+                    {
+                        key: item.scalar_value
+                        for key, item in self._model.parameters.items()
+                        if item.scalar_value is not None
+                    },
+                )
+                self._model.parameters[name] = ParameterDefinition(
+                    name=name,
+                    expression=expression,
+                    scalar_value=scalar_value,
+                    referenced_parameters=refs,
+                )
+
+    def _handle_design_parameter(self, block: KeywordBlock) -> None:
+        seen = {item.name for item in self._model.design_parameters}
+        for line in block.data_lines:
+            for token in line.split(","):
+                name = token.strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                self._model.design_parameters.append(
+                    DesignParameter(name=name, order=len(self._model.design_parameters) + 1)
+                )
+
+    def _handle_design_response(self, block: KeywordBlock) -> None:
+        frequency_raw = block.params.get("frequency", "1")
+        try:
+            frequency = int(float(frequency_raw))
+        except ValueError:
+            frequency = 1
+        response = DesignResponse(
+            step_name=self._current_step.name if self._current_step is not None else None,
+            frequency=frequency,
+            extra={"params": dict(block.params)},
+        )
+        self._model.design_responses.append(response)
+        self._current_design_response = response
+
+    def _handle_element_response(self, block: KeywordBlock) -> None:
+        if self._current_design_response is None:
+            return
+        elset_name = block.params.get("elset", "").strip()
+        if not elset_name:
+            return
+        variables = _parse_response_variables(block.data_lines)
+        self._current_design_response.requests.append(
+            DesignResponseRequest(region_type="ELEMENT", set_name=elset_name, variables=variables)
+        )
+
+    def _handle_node_response(self, block: KeywordBlock) -> None:
+        if self._current_design_response is None:
+            return
+        nset_name = block.params.get("nset", "").strip()
+        if not nset_name:
+            return
+        variables = _parse_response_variables(block.data_lines)
+        self._current_design_response.requests.append(
+            DesignResponseRequest(region_type="NODE", set_name=nset_name, variables=variables)
+        )
+
     # ------------------------------------------------------------------
     # Step
     # ------------------------------------------------------------------
@@ -687,6 +778,7 @@ class InpParser:
 
     def _end_step(self, block: KeywordBlock) -> None:
         self._current_step = None
+        self._current_design_response = None
         if self._ctx == CTX_STEP:
             self._pop_ctx()
 
@@ -918,11 +1010,29 @@ class InpParser:
                                        file=block.source_file, line=block.source_line)
         self._model.time_points[name] = tp
 
+    def _parse_scalar_token(self, token: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+        raw = str(token or "").strip()
+        if not raw:
+            return None, None, None
+
+        match = _PARAM_PLACEHOLDER_RE.fullmatch(raw)
+        if match:
+            parameter_name = match.group(1)
+            parameter_def = self._model.parameters.get(parameter_name)
+            resolved_value = parameter_def.scalar_value if parameter_def is not None else None
+            return resolved_value, raw, parameter_name
+
+        try:
+            return float(raw), raw, None
+        except ValueError:
+            return None, raw, None
+
 
 # ---------------------------------------------------------------------------
 # Coupling sub-keywords (used to detect implicit Coupling context end in _dispatch)
 # ---------------------------------------------------------------------------
 _COUPLING_SUB_KEYWORDS = {"KINEMATIC", "DISTRIBUTING"}
+_DESIGN_RESPONSE_SUB_KEYWORDS = {"ELEMENT RESPONSE", "NODE RESPONSE"}
 
 # ---------------------------------------------------------------------------
 # Known-harmless keywords that produce no useful data — skip silently
@@ -930,7 +1040,7 @@ _COUPLING_SUB_KEYWORDS = {"KINEMATIC", "DISTRIBUTING"}
 # ---------------------------------------------------------------------------
 _SILENT_SKIP_KEYWORDS = {
     # File header / metadata
-    "HEADING", "PREPRINT", "PARAMETER", "PARAMETER SHAPE VARIATION",
+    "HEADING", "PREPRINT", "PARAMETER SHAPE VARIATION",
     # Output requests (post-processing, not geometry/material)
     "OUTPUT", "NODE OUTPUT", "ELEMENT OUTPUT", "CONTACT OUTPUT",
     "ENERGY OUTPUT", "MODAL OUTPUT", "RADIATION OUTPUT",
@@ -994,6 +1104,8 @@ _KEYWORD_HANDLERS: Dict[str, HandlerFn] = {
     "PART":             _p._handle_part,
     "ASSEMBLY":         _p._handle_assembly,
     "INSTANCE":         _p._handle_instance,
+    "PARAMETER":        _p._handle_parameter,
+    "DESIGN PARAMETER": _p._handle_design_parameter,
     # Geometry
     "NODE":             _p._handle_node,
     "ELEMENT":          _p._handle_element,
@@ -1024,6 +1136,9 @@ _KEYWORD_HANDLERS: Dict[str, HandlerFn] = {
     "ORIENTATION":      _p._handle_orientation,
     # Step
     "STEP":             _p._handle_step,
+    "DESIGN RESPONSE":  _p._handle_design_response,
+    "ELEMENT RESPONSE": _p._handle_element_response,
+    "NODE RESPONSE":    _p._handle_node_response,
     "STATIC":           _p._handle_step_type,
     "DYNAMIC":          _p._handle_step_type,
     "FREQUENCY":        _p._handle_step_type,
@@ -1106,3 +1221,98 @@ def _parse_float_table(data_lines: List[str]) -> List[Tuple]:
         except ValueError:
             pass
     return result
+
+
+_PARAM_PLACEHOLDER_RE = re.compile(r"^<\s*([A-Za-z_][A-Za-z0-9_]*)\s*>$")
+
+
+def _parse_parameter_assignments(line: str) -> List[Tuple[str, str]]:
+    assignments: List[Tuple[str, str]] = []
+    current = ""
+    depth = 0
+    parts: List[str] = []
+    for ch in str(line):
+        if ch == "," and depth == 0:
+            if current.strip():
+                parts.append(current.strip())
+            current = ""
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+        current += ch
+    if current.strip():
+        parts.append(current.strip())
+
+    for part in parts:
+        if "=" not in part:
+            continue
+        name, _, expression = part.partition("=")
+        param_name = name.strip()
+        expr = expression.strip()
+        if param_name and expr:
+            assignments.append((param_name, expr))
+    return assignments
+
+
+_ALLOWED_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.Mod: operator.mod,
+}
+_ALLOWED_UNARYOPS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+
+
+def _evaluate_parameter_expression(expression: str, values: Dict[str, Optional[float]]) -> Tuple[Optional[float], List[str]]:
+    refs: List[str] = []
+    text = str(expression or "").strip()
+    if not text:
+        return None, refs
+
+    try:
+        node = ast.parse(text.replace("^", "**"), mode="eval")
+    except SyntaxError:
+        return None, refs
+
+    def _visit(current) -> float:
+        if isinstance(current, ast.Expression):
+            return _visit(current.body)
+        if isinstance(current, ast.Constant):
+            if isinstance(current.value, (int, float)):
+                return float(current.value)
+            raise ValueError("unsupported constant")
+        if isinstance(current, ast.Num):
+            return float(current.n)
+        if isinstance(current, ast.Name):
+            refs.append(current.id)
+            if current.id not in values or values[current.id] is None:
+                raise ValueError("unknown parameter reference")
+            return float(values[current.id])
+        if isinstance(current, ast.BinOp) and type(current.op) in _ALLOWED_BINOPS:
+            return _ALLOWED_BINOPS[type(current.op)](_visit(current.left), _visit(current.right))
+        if isinstance(current, ast.UnaryOp) and type(current.op) in _ALLOWED_UNARYOPS:
+            return _ALLOWED_UNARYOPS[type(current.op)](_visit(current.operand))
+        raise ValueError("unsupported expression")
+
+    try:
+        return float(_visit(node)), refs
+    except Exception:
+        return None, refs
+
+
+def _parse_response_variables(data_lines: List[str]) -> List[str]:
+    variables: List[str] = []
+    seen = set()
+    for line in data_lines:
+        token = line.split(",")[0].strip().upper()
+        if token and token not in seen:
+            seen.add(token)
+            variables.append(token)
+    return variables

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from services.model_update.analysis import sensitivity_service
-from src.inp.model import Assembly, Elset, InpModel, Instance, Part
+from src.inp.model import Assembly, DesignParameter, Elset, InpModel, Instance, Part, Section
 
 
 class _FakeODBClient:
@@ -308,6 +308,77 @@ def test_export_odb_sensitivity_vtu_supports_registry_mode_with_only_odb_id(monk
     assert result["workspace"] == str(workspace.resolve())
     assert result["base_url"] is None
     assert captured["cell_results"] == {"d_UR_": {"INST_A::100": 6.28}}
+
+
+def test_export_odb_sensitivity_vtu_uses_direct_inp_parameter_targets(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+
+    captured = {}
+    model = InpModel(
+        parts={
+            "P1": Part(
+                name="P1",
+                elsets={"SET_SHELL": Elset(name="SET_SHELL", elem_labels=[10, 20])},
+                sections=[
+                    Section(
+                        section_type="SHELL",
+                        elset_name="SET_SHELL",
+                        material_name="MAT1",
+                        thickness_expression="<T10>",
+                        thickness_parameter="T10",
+                    )
+                ],
+            )
+        },
+        assembly=Assembly(instances={"INST_A": Instance(name="INST_A", part_name="P1")}),
+        design_parameters=[DesignParameter(name="T10", order=1)],
+    )
+
+    class _DirectMapClient(_FakeODBClient):
+        def get_fields(self, odb_id, instance, step):
+            return [
+                {
+                    "field": "d_UR_T10",
+                    "positions": ["INTEGRATION_POINT"],
+                    "components": ["C1"],
+                }
+            ]
+
+    monkeypatch.setattr(sensitivity_service, "ODBClient", _DirectMapClient)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_resolve_inp_path_from_project",
+        lambda project_id: str(inp_path),
+    )
+    monkeypatch.setattr(sensitivity_service, "parse_inp", lambda path: model)
+
+    import tools.inp_to_vtu as inp_to_vtu
+
+    def fake_write_vtu(inp, output, *, node_results=None, cell_results=None, apply_transforms=True):
+        captured["cell_results"] = cell_results
+
+    monkeypatch.setattr(inp_to_vtu, "write_vtu", fake_write_vtu)
+
+    out_path = tmp_path / "direct_map.vtu"
+    result = sensitivity_service.export_odb_sensitivity_vtu(
+        project_id=1001,
+        odb_id="odb-1",
+        output_vtu=str(out_path),
+        base_url="http://127.0.0.1:18765",
+    )
+
+    assert result["exported_fields"] == ["d_UR_T10"]
+    first_item = next(item for item in result["items"] if item["field"] == "d_UR_T10")
+    assert first_item["parameter_name"] == "T10"
+    assert first_item["mapping_mode"] == "inp_parameter"
+    assert captured["cell_results"]["d_UR_"]["INST_A::10"] == 10.0
+    assert captured["cell_results"]["d_UR_"]["INST_A::20"] == 10.0
 
 
 def test_export_adjoint_sensitivity_vtu_uses_exact_field_name(monkeypatch, tmp_path: Path):

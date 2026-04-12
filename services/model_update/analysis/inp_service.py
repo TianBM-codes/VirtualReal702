@@ -3,6 +3,11 @@ import json
 import math
 import os
 from src.inp import parse_inp
+from src.inp.parameter_mapping import (
+    extract_design_response_rows,
+    extract_parameter_definition_rows,
+    extract_parameter_target_rows,
+)
 from db import get_connection, ensure_tables_exist, clear_fem_tables
 from typing import Dict, List, Sequence, Tuple
 
@@ -653,6 +658,9 @@ def _extract_legacy_boundary_rows(model):
 
 def _extract_candidates(model):
     candidates = []
+    parameter_defs = {
+        str(item["parameter_name"]): item for item in extract_parameter_definition_rows(model)
+    }
 
     def add_candidate(candidate_code: str, candidate_name: str, keyword_name: str,
                       source_scope: str, source_name: str, source_path: str,
@@ -668,6 +676,23 @@ def _extract_candidates(model):
             "unit": unit,
             "extra_json": extra or {},
         })
+
+    for item in sorted(parameter_defs.values(), key=lambda row: str(row["parameter_name"])):
+        add_candidate(
+            f"PARAM:{item['parameter_name']}",
+            f"parameter {item['parameter_name']}",
+            "PARAMETER",
+            "PARAMETER",
+            str(item["parameter_name"]),
+            f"parameters/{item['parameter_name']}",
+            item.get("scalar_value"),
+            extra={
+                "expression": item.get("expression"),
+                "is_design_parameter": bool(item.get("is_design_parameter")),
+                "design_order": item.get("design_order"),
+                **dict(item.get("extra_json") or {}),
+            },
+        )
 
     for mat_name, material in model.materials.items():
         if material.density_data:
@@ -723,7 +748,14 @@ def _extract_candidates(model):
 
     for part_name, part in model.parts.items():
         for sec_idx, section in enumerate(part.sections):
-            if section.section_type in ("SHELL", "MEMBRANE") and section.thickness is not None:
+            if section.section_type in ("SHELL", "MEMBRANE") and (
+                section.thickness is not None or getattr(section, "thickness_parameter", None)
+            ):
+                parameter_name = getattr(section, "thickness_parameter", None)
+                parameter_row = parameter_defs.get(str(parameter_name)) if parameter_name else None
+                scalar_value = section.thickness
+                if scalar_value is None and parameter_row is not None:
+                    scalar_value = parameter_row.get("scalar_value")
                 add_candidate(
                     f"SEC:{part_name}:{section.elset_name}:THICKNESS",
                     f"{part_name}/{section.elset_name} thickness",
@@ -731,12 +763,26 @@ def _extract_candidates(model):
                     "SECTION",
                     section.elset_name,
                     f"parts/{part_name}/sections/{sec_idx}/thickness",
-                    section.thickness,
-                    extra={"part_name": part_name, "material_name": section.material_name},
+                    scalar_value,
+                    extra={
+                        "part_name": part_name,
+                        "material_name": section.material_name,
+                        "parameter_name": parameter_name,
+                        "expression": getattr(section, "thickness_expression", None),
+                    },
                 )
 
             if section.section_type == "BEAM":
-                for dim_idx, value in enumerate(section.extra.get("dims", []), start=1):
+                dim_values = list(section.extra.get("dims", []) or [])
+                dim_parameters = list(section.extra.get("dim_parameters", []) or [])
+                dim_expressions = list(section.extra.get("dim_expressions", []) or [])
+                max_dim_count = max(len(dim_values), len(dim_parameters))
+                for dim_idx in range(1, max_dim_count + 1):
+                    parameter_name = dim_parameters[dim_idx - 1] if dim_idx - 1 < len(dim_parameters) else None
+                    parameter_row = parameter_defs.get(str(parameter_name)) if parameter_name else None
+                    value = dim_values[dim_idx - 1] if dim_idx - 1 < len(dim_values) else None
+                    if parameter_name and parameter_row is not None:
+                        value = parameter_row.get("scalar_value", value)
                     add_candidate(
                         f"SEC:{part_name}:{section.elset_name}:DIM{dim_idx}",
                         f"{part_name}/{section.elset_name} beam dim {dim_idx}",
@@ -745,7 +791,12 @@ def _extract_candidates(model):
                         section.elset_name,
                         f"parts/{part_name}/sections/{sec_idx}/dims/{dim_idx - 1}",
                         value,
-                        extra={"part_name": part_name, "material_name": section.material_name},
+                        extra={
+                            "part_name": part_name,
+                            "material_name": section.material_name,
+                            "parameter_name": parameter_name,
+                            "expression": dim_expressions[dim_idx - 1] if dim_idx - 1 < len(dim_expressions) else None,
+                        },
                     )
 
     return candidates
@@ -811,6 +862,9 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
     legacy_materials = _extract_legacy_material_rows(model)
     legacy_properties = _extract_legacy_property_rows(model)
     legacy_boundaries = _extract_legacy_boundary_rows(model)
+    parameter_definitions = extract_parameter_definition_rows(model)
+    parameter_targets = extract_parameter_target_rows(model)
+    design_responses = extract_design_response_rows(model)
     candidates = _extract_candidates(model)
     sets = _extract_sets(model)
     node_data = _collect_global_nodes(model)
@@ -826,6 +880,10 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
     try:
         if clear_before_insert:
             clear_fem_tables(cursor, project_id)
+        else:
+            cursor.execute("DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_parameter_target WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = %s", (project_id,))
 
         material_overview_sql = """
         INSERT INTO t_mt_py_fem_material_overview (Id, pid, Type)
@@ -947,6 +1005,62 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 item["rz"],
             ))
 
+        parameter_definition_sql = """
+        INSERT INTO t_mt_py_fem_parameter_definition
+        (pid, parameter_name, expression, scalar_value, is_design_parameter, design_order, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        for item in parameter_definitions:
+            cursor.execute(parameter_definition_sql, (
+                project_id,
+                item["parameter_name"],
+                item.get("expression"),
+                item.get("scalar_value"),
+                1 if item.get("is_design_parameter") else 0,
+                item.get("design_order"),
+                _json_dumps(item.get("extra_json") or {}),
+            ))
+
+        parameter_target_sql = """
+        INSERT INTO t_mt_py_fem_parameter_target
+        (pid, parameter_name, target_type, set_name, set_type, set_scope, instance_name, part_name,
+         source_keyword, source_path, component_name, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        for item in parameter_targets:
+            cursor.execute(parameter_target_sql, (
+                project_id,
+                item["parameter_name"],
+                item["target_type"],
+                item["set_name"],
+                item["set_type"],
+                item["set_scope"],
+                item.get("instance_name"),
+                item.get("part_name"),
+                item["source_keyword"],
+                item["source_path"],
+                item.get("component_name"),
+                _json_dumps(item.get("extra_json") or {}),
+            ))
+
+        design_response_sql = """
+        INSERT INTO t_mt_py_fem_design_response_catalog
+        (pid, response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        for item in design_responses:
+            cursor.execute(design_response_sql, (
+                project_id,
+                item["response_no"],
+                item["request_no"],
+                item.get("step_name"),
+                item["frequency"],
+                item["region_type"],
+                item["set_name"],
+                _json_dumps(item.get("variables") or []),
+                _json_dumps(item.get("extra_json") or {}),
+            ))
+
         candidate_sql = """
         INSERT INTO t_mt_py_fem_parameter_candidate
         (pid, candidate_code, candidate_name, keyword_name, source_scope, source_name,
@@ -1034,12 +1148,18 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "shell_property_count": len(legacy_properties["shell_rows"]),
             "beam_property_count": len(legacy_properties["beam_rows"]),
             "boundary_count": len(legacy_boundaries),
+            "parameter_definition_count": len(parameter_definitions),
+            "parameter_target_count": len(parameter_targets),
+            "design_response_count": len(design_responses),
             "candidate_count": len(candidates),
             "set_count": len(sets),
             "instance_count": len(node_data["entries"]),
             "node_count": int(len(node_data["point_labels"])),
             "octree_cache_path": os.path.abspath(cache_path) if cache_path else None,
             "diagnostics": len(getattr(model, "diagnostics", []) or []),
+            "parameter_definitions_preview": parameter_definitions[:10],
+            "parameter_targets_preview": parameter_targets[:10],
+            "design_responses_preview": design_responses[:10],
             "candidates_preview": candidates[:10],
             "sets_preview": sets[:10],
         }
@@ -1055,6 +1175,31 @@ def get_inp_catalog(project_id):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        cursor.execute("""
+            SELECT parameter_name, expression, scalar_value, is_design_parameter, design_order, extra_json
+            FROM t_mt_py_fem_parameter_definition
+            WHERE pid = %s
+            ORDER BY is_design_parameter DESC, design_order, parameter_name
+        """, (project_id,))
+        parameter_definitions = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT parameter_name, target_type, set_name, set_type, set_scope, instance_name, part_name,
+                   source_keyword, source_path, component_name, extra_json
+            FROM t_mt_py_fem_parameter_target
+            WHERE pid = %s
+            ORDER BY parameter_name, source_path
+        """, (project_id,))
+        parameter_targets = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json
+            FROM t_mt_py_fem_design_response_catalog
+            WHERE pid = %s
+            ORDER BY response_no, request_no
+        """, (project_id,))
+        design_responses = cursor.fetchall()
+
         cursor.execute("""
             SELECT candidate_code, candidate_name, keyword_name, source_scope, source_name,
                    source_path, scalar_value, unit, extra_json
@@ -1121,6 +1266,12 @@ def get_inp_catalog(project_id):
             "shell_property_count": shell_property_count,
             "beam_property_count": beam_property_count,
             "boundary_count": boundary_count,
+            "parameter_definition_count": len(parameter_definitions),
+            "parameter_target_count": len(parameter_targets),
+            "design_response_count": len(design_responses),
+            "parameter_definitions": parameter_definitions,
+            "parameter_targets": parameter_targets,
+            "design_responses": design_responses,
             "candidates": candidates,
             "sets": sets,
             "optimization_parameters": opt_params,
