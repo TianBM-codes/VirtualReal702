@@ -573,6 +573,11 @@ class InpParser:
     def _add_section(self, sec: Section) -> None:
         if self._current_part is not None:
             self._current_part.sections.append(sec)
+            return
+
+        if "__root__" not in self._model.parts:
+            self._model.parts["__root__"] = Part(name="__root__")
+        self._model.parts["__root__"].sections.append(sec)
 
     # ------------------------------------------------------------------
     # Material

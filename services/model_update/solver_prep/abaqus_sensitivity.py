@@ -491,8 +491,8 @@ def generate_sensitivity_inp(input_inp,
 
 
 if __name__ == "__main__":
-    input_file = r"D:\workspaces\myprogram\702\inp\workspace\door.inp"      # 改成您的普通 inp
-    output_dir = r"D:\workspaces\myprogram\702\inp\workspace"        # 改成您的输出目录
+    input_file = r"D:\WorkSpace\OtherProjects\702\model\door.inp"      # 改成您的普通 inp
+    output_dir = r"D:\WorkSpace\OtherProjects\702\model"        # 改成您的输出目录
 
     # 可手动指定设计响应集合；若为 None，会自动取文件里第一个 ELSET/NSET
     response_elset = None

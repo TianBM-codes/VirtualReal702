@@ -886,6 +886,19 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
     return field_map
 
 
+def _build_dsa_design_parameter_name_map(model) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    design_parameters = sorted(
+        list(getattr(model, "design_parameters", []) or []),
+        key=lambda item: int(getattr(item, "order", 0) or 0),
+    )
+    for offset, item in enumerate(design_parameters, start=1):
+        mapping[f"T{offset}"] = str(item.name)
+        order_value = int(getattr(item, "order", offset) or offset)
+        mapping[f"T{order_value}"] = str(item.name)
+    return mapping
+
+
 def _resolve_dsa_parameter_row(parameter_map: Dict[str, dict], source_field_name: str) -> dict:
     if source_field_name not in parameter_map:
         raise ValidationError("DSA field has no mapped optimization parameter", {"field": source_field_name})
@@ -1147,6 +1160,7 @@ def _export_sensitivity_vtu(
     dsa_parameter_rows = _load_project_optimization_parameters(project_id) if selector["kind"] == "prefix" else []
     dsa_model = parse_inp(resolved_inp_path) if selector["kind"] == "prefix" else None
     dsa_direct_target_map = build_parameter_target_map(dsa_model) if dsa_model is not None else {}
+    dsa_design_parameter_name_map = _build_dsa_design_parameter_name_map(dsa_model) if dsa_model is not None else {}
     dsa_parameter_map = (
         _build_dsa_parameter_row_map(dsa_parameter_rows, selector["field_prefix"], discovery["field_names"])
         if selector["kind"] == "prefix" and dsa_parameter_rows
@@ -1185,6 +1199,9 @@ def _export_sensitivity_vtu(
                 dsa_value = _extract_single_dsa_result_value(label_map, source_field=source_field_name)
                 direct_target_rows = list(dsa_direct_target_map.get(parameter_token, []))
                 mapped_parameter_name = parameter_token
+                if not direct_target_rows and parameter_token in dsa_design_parameter_name_map:
+                    mapped_parameter_name = dsa_design_parameter_name_map[parameter_token]
+                    direct_target_rows = list(dsa_direct_target_map.get(mapped_parameter_name, []))
                 target_rows = direct_target_rows
                 mapping_mode = "inp_parameter"
                 if not target_rows:
