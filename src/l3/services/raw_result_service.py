@@ -201,6 +201,33 @@ def get_raw_values(
     return sections, components, etype_groups
 
 
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _check_frame(frame_idx: int, num_frames: int) -> None:
+    if frame_idx >= num_frames:
+        raise ValidationError(
+            f"frame_idx {frame_idx} out of range [0, {num_frames})",
+            {"frame_idx": frame_idx},
+        )
+
+
+def _infer_components(field: str, ncomp: int) -> List[str]:
+    """
+    Best-effort component names from field name + component count.
+    Real names come from manifest; this is the fallback.
+    """
+    KNOWN = {
+        ("U",  3): ["U1", "U2", "U3"],
+        ("RF", 3): ["RF1", "RF2", "RF3"],
+        ("CF", 3): ["CF1", "CF2", "CF3"],
+        ("S",  6): ["S11", "S22", "S33", "S12", "S13", "S23"],
+        ("LE", 6): ["LE11", "LE22", "LE33", "LE12", "LE13", "LE23"],
+        ("E",  6): ["E11", "E22", "E33", "E12", "E13", "E23"],
+        ("PE", 6): ["PE11", "PE22", "PE33", "PE12", "PE13", "PE23"],
+    }
+    return KNOWN.get((field, ncomp), [f"{field}{i+1}" for i in range(ncomp)])
+
+
 def raw_values_to_json_payload(
     sections: List[Tuple[str, np.ndarray]],
     components: List[str],
@@ -243,30 +270,3 @@ def raw_values_to_json_payload(
         )
     payload["etype_groups"] = groups
     return payload
-
-
-# ── helpers ────────────────────────────────────────────────────────────────────
-
-def _check_frame(frame_idx: int, num_frames: int) -> None:
-    if frame_idx >= num_frames:
-        raise ValidationError(
-            f"frame_idx {frame_idx} out of range [0, {num_frames})",
-            {"frame_idx": frame_idx},
-        )
-
-
-def _infer_components(field: str, ncomp: int) -> List[str]:
-    """
-    Best-effort component names from field name + component count.
-    Real names come from manifest; this is the fallback.
-    """
-    KNOWN = {
-        ("U",  3): ["U1", "U2", "U3"],
-        ("RF", 3): ["RF1", "RF2", "RF3"],
-        ("CF", 3): ["CF1", "CF2", "CF3"],
-        ("S",  6): ["S11", "S22", "S33", "S12", "S13", "S23"],
-        ("LE", 6): ["LE11", "LE22", "LE33", "LE12", "LE13", "LE23"],
-        ("E",  6): ["E11", "E22", "E33", "E12", "E13", "E23"],
-        ("PE", 6): ["PE11", "PE22", "PE33", "PE12", "PE13", "PE23"],
-    }
-    return KNOWN.get((field, ncomp), [f"{field}{i+1}" for i in range(ncomp)])

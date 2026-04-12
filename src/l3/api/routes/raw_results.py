@@ -47,8 +47,7 @@ import json
 from typing import Literal
 
 from fastapi import APIRouter, Query
-from fastapi.responses import JSONResponse
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
