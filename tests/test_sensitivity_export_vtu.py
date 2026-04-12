@@ -381,6 +381,166 @@ def test_export_odb_sensitivity_vtu_uses_direct_inp_parameter_targets(monkeypatc
     assert captured["cell_results"]["d_UR_"]["INST_A::20"] == 10.0
 
 
+def test_export_odb_sensitivity_vtu_accepts_thickness_field_prefix(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+
+    captured = {}
+    model = InpModel(
+        parts={
+            "P1": Part(
+                name="P1",
+                elsets={"SET_SHELL": Elset(name="SET_SHELL", elem_labels=[10, 20])},
+                sections=[
+                    Section(
+                        section_type="SHELL",
+                        elset_name="SET_SHELL",
+                        material_name="MAT1",
+                        thickness_expression="<T10>",
+                        thickness_parameter="T10",
+                    )
+                ],
+            )
+        },
+        assembly=Assembly(instances={"INST_A": Instance(name="INST_A", part_name="P1")}),
+        design_parameters=[DesignParameter(name="T10", order=1)],
+    )
+
+    class _DirectMapClient(_FakeODBClient):
+        def get_fields(self, odb_id, instance, step):
+            return [
+                {
+                    "field": "d_UR_T10",
+                    "positions": ["INTEGRATION_POINT"],
+                    "components": ["C1"],
+                }
+            ]
+
+    monkeypatch.setattr(sensitivity_service, "ODBClient", _DirectMapClient)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_resolve_inp_path_from_project",
+        lambda project_id: str(inp_path),
+    )
+    monkeypatch.setattr(sensitivity_service, "parse_inp", lambda path: model)
+
+    import tools.inp_to_vtu as inp_to_vtu
+
+    def fake_write_vtu(inp, output, *, node_results=None, cell_results=None, apply_transforms=True):
+        captured["cell_results"] = cell_results
+
+    monkeypatch.setattr(inp_to_vtu, "write_vtu", fake_write_vtu)
+
+    out_path = tmp_path / "direct_map_thickness_prefix.vtu"
+    result = sensitivity_service.export_odb_sensitivity_vtu(
+        project_id=1001,
+        odb_id="odb-1",
+        output_vtu=str(out_path),
+        base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_T",
+    )
+
+    assert result["field_prefix"] == "d_UR_T"
+    assert result["exported_fields"] == ["d_UR_T10"]
+    first_item = next(item for item in result["items"] if item["field"] == "d_UR_T10")
+    assert first_item["parameter_name"] == "T10"
+    assert first_item["mapping_mode"] == "inp_parameter"
+    assert captured["cell_results"]["d_UR_T"]["INST_A::10"] == 10.0
+    assert captured["cell_results"]["d_UR_T"]["INST_A::20"] == 10.0
+
+
+def test_export_odb_sensitivity_vtu_supports_generic_parameter_prefix(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+
+    captured = {}
+    model = InpModel(
+        parts={
+            "P1": Part(
+                name="P1",
+                elsets={
+                    "SET_A": Elset(name="SET_A", elem_labels=[100]),
+                    "SET_B": Elset(name="SET_B", elem_labels=[200]),
+                },
+            )
+        },
+        assembly=Assembly(instances={"INST_A": Instance(name="INST_A", part_name="P1")}),
+    )
+
+    class _ElasticClient(_FakeODBClient):
+        def get_fields(self, odb_id, instance, step):
+            return [
+                {
+                    "field": "d_UR_E2",
+                    "positions": ["INTEGRATION_POINT"],
+                    "components": ["C1"],
+                }
+            ]
+
+        def get_result_label_map(self, **kwargs):
+            if kwargs["field"] == "d_UR_E2":
+                return {f"{kwargs['instance']}::2": 12.5}
+            raise AssertionError(f"unexpected field {kwargs['field']}")
+
+    monkeypatch.setattr(sensitivity_service, "ODBClient", _ElasticClient)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [
+            {
+                "parameter_name": "PARAM_A",
+                "set_name": "SET_A",
+                "set_type": "ELSET",
+                "set_scope": "PART",
+                "instance_name": None,
+                "part_name": "P1",
+            },
+            {
+                "parameter_name": "PARAM_B",
+                "set_name": "SET_B",
+                "set_type": "ELSET",
+                "set_scope": "PART",
+                "instance_name": None,
+                "part_name": "P1",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_resolve_inp_path_from_project",
+        lambda project_id: str(inp_path),
+    )
+    monkeypatch.setattr(sensitivity_service, "parse_inp", lambda path: model)
+
+    import tools.inp_to_vtu as inp_to_vtu
+
+    def fake_write_vtu(inp, output, *, node_results=None, cell_results=None, apply_transforms=True):
+        captured["cell_results"] = cell_results
+
+    monkeypatch.setattr(inp_to_vtu, "write_vtu", fake_write_vtu)
+
+    out_path = tmp_path / "generic_prefix.vtu"
+    result = sensitivity_service.export_odb_sensitivity_vtu(
+        project_id=1001,
+        odb_id="odb-1",
+        output_vtu=str(out_path),
+        base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_E",
+    )
+
+    assert result["field_prefix"] == "d_UR_E"
+    assert result["exported_fields"] == ["d_UR_E2"]
+    first_item = next(item for item in result["items"] if item["field"] == "d_UR_E2")
+    assert first_item["parameter_name"] == "PARAM_B"
+    assert first_item["mapping_mode"] == "optimization_parameter"
+    assert captured["cell_results"] == {"d_UR_E": {"INST_A::200": 12.5}}
+
+
 def test_export_odb_sensitivity_vtu_maps_t_index_to_design_parameter_name(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "model.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
@@ -497,6 +657,28 @@ def test_build_dsa_parameter_row_map_uses_field_index_mapping():
 
     mapping = sensitivity_service._build_dsa_parameter_row_map(rows, "d_UR_", ["d_UR_T2"])
     assert mapping["d_UR_T2"]["parameter_name"] == "PARAM_B"
+
+
+def test_build_dsa_parameter_row_map_accepts_thickness_field_prefix():
+    rows = [
+        {"parameter_name": "PARAM_A"},
+        {"parameter_name": "PARAM_B"},
+        {"parameter_name": "PARAM_C"},
+    ]
+
+    mapping = sensitivity_service._build_dsa_parameter_row_map(rows, "d_UR_T", ["d_UR_T2"])
+    assert mapping["d_UR_T2"]["parameter_name"] == "PARAM_B"
+
+
+def test_build_dsa_parameter_row_map_uses_generic_field_index_mapping():
+    rows = [
+        {"parameter_name": "PARAM_A"},
+        {"parameter_name": "PARAM_B"},
+        {"parameter_name": "PARAM_C"},
+    ]
+
+    mapping = sensitivity_service._build_dsa_parameter_row_map(rows, "d_UR_E", ["d_UR_E2"])
+    assert mapping["d_UR_E2"]["parameter_name"] == "PARAM_B"
 
 
 def test_build_dsa_parameter_row_map_falls_back_to_field_order_when_indices_exceed_count():

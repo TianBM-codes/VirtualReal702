@@ -22,7 +22,7 @@ from tools.odb_client import ODBClient
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
 _AGGREGATIONS = {"max_abs", "mean_abs", "max", "min", "mean"}
 _VTU_POSITION_PRIORITY = ("WHOLE_ELEMENT", "INTEGRATION_POINT", "ELEMENT_NODAL", "NODAL")
-_DSA_PARAMETER_TOKEN_RE = re.compile(r"^T(\d+)$", re.IGNORECASE)
+_DSA_PARAMETER_TOKEN_RE = re.compile(r"^([A-Z_][A-Z0-9_]*?)(\d+)$", re.IGNORECASE)
 
 
 def _repo_root() -> str:
@@ -831,35 +831,59 @@ def _load_project_optimization_parameters(project_id: int) -> List[dict]:
 
 
 def _extract_dsa_field_index(field_prefix: str, source_field_name: str) -> int:
-    suffix = _extract_dsa_field_token(field_prefix, source_field_name)
-    match = _DSA_PARAMETER_TOKEN_RE.fullmatch(suffix)
+    parameter_token = _extract_dsa_field_token(field_prefix, source_field_name)
+    match = _DSA_PARAMETER_TOKEN_RE.fullmatch(parameter_token)
     if not match:
         raise ValidationError(
-            "DSA field name does not contain a T-index suffix",
-            {"field_prefix": field_prefix, "field": str(source_field_name), "suffix": suffix},
+            "DSA field name does not contain a parameter-index suffix",
+            {"field_prefix": field_prefix, "field": str(source_field_name), "parameter_token": parameter_token},
         )
-    return int(match.group(1))
+    return int(match.group(2))
 
 
 def _extract_dsa_field_token(field_prefix: str, source_field_name: str) -> str:
     source_name = str(source_field_name)
-    if not source_name.startswith(field_prefix):
+    prefix = str(field_prefix)
+    if not source_name.startswith(prefix):
         raise ValidationError(
             "DSA field does not match the requested prefix",
-            {"field_prefix": field_prefix, "field": source_name},
+            {"field_prefix": prefix, "field": source_name},
         )
 
-    suffix = source_name[len(field_prefix):] or source_name
-    return str(suffix)
+    suffix = source_name[len(prefix):]
+    if suffix:
+        direct_match = _DSA_PARAMETER_TOKEN_RE.fullmatch(str(suffix))
+        if direct_match:
+            return str(suffix)
+
+        prefix_tail = prefix.rsplit("_", 1)[-1] if "_" in prefix else prefix
+        if prefix_tail and re.fullmatch(r"[A-Z][A-Z0-9]*", prefix_tail, re.IGNORECASE) and str(suffix).isdigit():
+            return f"{prefix_tail}{suffix}"
+
+    return str(suffix or source_name)
 
 
 def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, source_field_names: List[str]) -> Dict[str, dict]:
     if not parameter_rows:
         raise ValidationError("no optimization parameters found for DSA VTU export", {"field_prefix": field_prefix})
 
+    field_tokens = {
+        str(name): _extract_dsa_field_token(field_prefix, str(name))
+        for name in {str(item) for item in source_field_names}
+    }
+    field_indices: Dict[str, Optional[int]] = {}
+    for field_name, parameter_token in field_tokens.items():
+        match = _DSA_PARAMETER_TOKEN_RE.fullmatch(parameter_token)
+        field_indices[field_name] = int(match.group(2)) if match else None
+
     ordered_fields = sorted(
-        {str(name) for name in source_field_names},
-        key=lambda name: (_extract_dsa_field_index(field_prefix, name), str(name)),
+        field_tokens.keys(),
+        key=lambda name: (
+            field_indices[name] is None,
+            field_indices[name] if field_indices[name] is not None else 10**9,
+            field_tokens[name],
+            name,
+        ),
     )
     if len(ordered_fields) > len(parameter_rows):
         raise ValidationError(
@@ -872,13 +896,17 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
         )
 
     field_map: Dict[str, dict] = {}
-    all_indices = [_extract_dsa_field_index(field_prefix, name) for name in ordered_fields]
-    direct_indices_valid = all(1 <= idx <= len(parameter_rows) for idx in all_indices)
-    direct_indices_unique = len(set(all_indices)) == len(all_indices)
+    all_indices = [field_indices[name] for name in ordered_fields]
+    direct_indices = [idx for idx in all_indices if idx is not None]
+    direct_indices_valid = (
+        len(direct_indices) == len(ordered_fields)
+        and all(1 <= idx <= len(parameter_rows) for idx in direct_indices)
+    )
+    direct_indices_unique = len(set(direct_indices)) == len(direct_indices)
 
     if direct_indices_valid and direct_indices_unique:
-        for field_name, parameter_index in zip(ordered_fields, all_indices):
-            field_map[field_name] = parameter_rows[parameter_index - 1]
+        for field_name, parameter_index in zip(ordered_fields, direct_indices):
+            field_map[field_name] = parameter_rows[int(parameter_index) - 1]
         return field_map
 
     for offset, field_name in enumerate(ordered_fields):
@@ -886,16 +914,16 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
     return field_map
 
 
-def _build_dsa_design_parameter_name_map(model) -> Dict[str, str]:
-    mapping: Dict[str, str] = {}
+def _build_dsa_design_parameter_name_map(model) -> Dict[int, str]:
+    mapping: Dict[int, str] = {}
     design_parameters = sorted(
         list(getattr(model, "design_parameters", []) or []),
         key=lambda item: int(getattr(item, "order", 0) or 0),
     )
     for offset, item in enumerate(design_parameters, start=1):
-        mapping[f"T{offset}"] = str(item.name)
+        mapping[offset] = str(item.name)
         order_value = int(getattr(item, "order", offset) or offset)
-        mapping[f"T{order_value}"] = str(item.name)
+        mapping[order_value] = str(item.name)
     return mapping
 
 
@@ -1199,8 +1227,14 @@ def _export_sensitivity_vtu(
                 dsa_value = _extract_single_dsa_result_value(label_map, source_field=source_field_name)
                 direct_target_rows = list(dsa_direct_target_map.get(parameter_token, []))
                 mapped_parameter_name = parameter_token
-                if not direct_target_rows and parameter_token in dsa_design_parameter_name_map:
-                    mapped_parameter_name = dsa_design_parameter_name_map[parameter_token]
+                token_match = _DSA_PARAMETER_TOKEN_RE.fullmatch(parameter_token)
+                token_index = int(token_match.group(2)) if token_match else None
+                if (
+                    not direct_target_rows
+                    and token_index is not None
+                    and token_index in dsa_design_parameter_name_map
+                ):
+                    mapped_parameter_name = dsa_design_parameter_name_map[token_index]
                     direct_target_rows = list(dsa_direct_target_map.get(mapped_parameter_name, []))
                 target_rows = direct_target_rows
                 mapping_mode = "inp_parameter"
