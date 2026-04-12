@@ -5,6 +5,7 @@ from src.l3.main import app
 from webapi.routes import router as model_update_router
 from services.model_update.analysis.inp_service import (
     build_fe_response_catalog,
+    compute_static_correlation,
     compute_modal_correlation,
     get_dof_matches,
     get_fe_modal_results,
@@ -116,11 +117,24 @@ async def get_modal_correlation_api(request: Request):
     return {"ok": True, "message": "modal correlation query success", "data": result}
 
 
+@app.post("/correlation/static/compute")
+async def compute_static_correlation_api(request: Request):
+    body = await request.json()
+    result = compute_static_correlation(
+        project_id=int(body["project_id"]),
+        load_case_no=body.get("load_case_no"),
+        result_no=body.get("result_no"),
+        components=body.get("components"),
+        include_rotations=bool(body.get("include_rotations", False)),
+    )
+    return {"ok": True, "message": "static correlation success", "data": result}
+
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "app:app",
+        app,
         host=APP_CONFIG["host"],
         port=APP_CONFIG["port"],
         reload=False,

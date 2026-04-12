@@ -11,7 +11,7 @@ to ODB topology.
 """
 import json
 import os
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import h5py
 import numpy as np
@@ -199,6 +199,50 @@ def get_raw_values(
         )
 
     return sections, components, etype_groups
+
+
+def raw_values_to_json_payload(
+    sections: List[Tuple[str, np.ndarray]],
+    components: List[str],
+    etype_groups: List[str],
+    *,
+    position: str,
+    odb_id: str,
+    instance: str,
+    step: str,
+    field: str,
+    frame_idx: int,
+) -> Dict:
+    """
+    Convert raw-value sections to a JSON-serializable payload.
+    """
+    payload: Dict = {
+        "odb_id": odb_id,
+        "instance": instance,
+        "step": step,
+        "field": field,
+        "frame": frame_idx,
+        "position": position,
+        "components": components,
+    }
+
+    section_map = {name: arr for name, arr in sections}
+    if position == "NODAL":
+        payload["node_labels"] = section_map["node_labels"].astype(np.int32).tolist()
+        payload["values"] = section_map["values"].astype(np.float32).tolist()
+        return payload
+
+    groups = []
+    for etype in etype_groups:
+        groups.append(
+            {
+                "etype": etype,
+                "elem_labels": section_map[_safe_section_name("el_", etype)].astype(np.int32).tolist(),
+                "values": section_map[_safe_section_name("v_", etype)].astype(np.float32).tolist(),
+            }
+        )
+    payload["etype_groups"] = groups
+    return payload
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────

@@ -99,6 +99,38 @@ class SensitivityTableRequest(BaseModel):
     aggregation: str = "max_abs"
 
 
+class SensitivityExportVtuBaseRequest(BaseModel):
+    project_id: int
+    odb_id: Optional[str] = None
+    output_vtu: str
+    base_url: Optional[str] = None
+    inp_path: Optional[str] = None
+    workspace: Optional[str] = None
+    odb_path: Optional[str] = None
+    step: Optional[str] = None
+    instances: Optional[List[str]] = None
+    field_prefix: str = "d_UR_"
+    position: Optional[str] = None
+    aggregation: str = "max_abs"
+    frame: int = 0
+    abaqus: str = "abaqus"
+    python3: Optional[str] = None
+    keep_raw: bool = False
+    timeout: int = 60
+
+
+class SensitivityExportDsaVtuRequest(SensitivityExportVtuBaseRequest):
+    field_prefix: str = "d_UR_"
+
+
+class SensitivityExportAdjointVtuRequest(SensitivityExportVtuBaseRequest):
+    field_name: str
+
+
+class SensitivityExportVtuRequest(SensitivityExportDsaVtuRequest):
+    pass
+
+
 class AbaqusSensitivityRunRequest(BaseModel):
     input_inp: str
     output_dir: Optional[str] = None

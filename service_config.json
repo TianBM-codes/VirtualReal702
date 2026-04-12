@@ -1,5 +1,5 @@
   {                                                                                                                                                                                                                                         
     "APP_DATA_ROOT": "D:/WorkSpace/OtherProjects/VirtualReal702/model/",                                                                                                                                                                                                     
     "APP_REGISTRY_DB_PATH": "D:/WorkSpace/OtherProjects/VirtualReal702/model/registry.db",                                                                                                                                                                                   
-    "APP_ABAQUS_CMD": "abaqus"                                                                                                                                                                                                              
+    "APP_ABAQUS_CMD": "C:\\Program Files\\SIMULIA\\Commands\\abaqus.bat"
   }

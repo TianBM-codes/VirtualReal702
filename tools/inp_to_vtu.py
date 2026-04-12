@@ -51,7 +51,7 @@ import argparse
 import json
 import sys
 import os
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -64,12 +64,17 @@ except ImportError:
     sys.exit(1)
 
 from src.inp import parse_inp, InpModel
+from tools.odb_client import ODBClient
 
 # 结果类型别名
 #   node_results : {"字段名": {节点标签(int): float 或 list[float]}}
 #   cell_results : {"字段名": {单元标签(int): float 或 list[float]}}
-NodeResults = Dict[str, Dict[int, Union[float, List[float]]]]
-CellResults = Dict[str, Dict[int, Union[float, List[float]]]]
+ResultValue = Union[float, List[float]]
+ResultKey = Union[int, str, Tuple[str, int], Tuple[str, str]]
+NodeResults = Dict[str, Dict[ResultKey, ResultValue]]
+CellResults = Dict[str, Dict[ResultKey, ResultValue]]
+SCOPED_LABEL_SEP = "::"
+_ROOT_SCOPE_ALIASES = ("__root__", "PART-1-1", "PART1-1")
 
 
 # factory_type → meshio cell type string
@@ -90,6 +95,43 @@ FACTORY_TO_MESHIO = {
 }
 
 
+def _parse_result_key(key: ResultKey) -> Tuple[Optional[str], int]:
+    if isinstance(key, (tuple, list)):
+        if len(key) != 2:
+            raise ValueError(f"Invalid scoped result key: {key!r}")
+        return str(key[0]), int(key[1])
+
+    if isinstance(key, (int, np.integer)):
+        return None, int(key)
+
+    if isinstance(key, str):
+        if SCOPED_LABEL_SEP in key:
+            instance, label = key.split(SCOPED_LABEL_SEP, 1)
+            return instance, int(label)
+        return None, int(key)
+
+    raise ValueError(f"Unsupported result key type: {type(key)!r}")
+
+
+def _coerce_json_result_key(key: str) -> ResultKey:
+    if SCOPED_LABEL_SEP in key:
+        instance, label = key.split(SCOPED_LABEL_SEP, 1)
+        return f"{instance}{SCOPED_LABEL_SEP}{int(label)}"
+    return int(key)
+
+
+def _merge_result_sets(
+    base: Optional[Dict[str, Dict[ResultKey, ResultValue]]],
+    extra: Optional[Dict[str, Dict[ResultKey, ResultValue]]],
+) -> Optional[Dict[str, Dict[ResultKey, ResultValue]]]:
+    merged: Dict[str, Dict[ResultKey, ResultValue]] = {}
+    if base:
+        merged.update(base)
+    if extra:
+        merged.update(extra)
+    return merged or None
+
+
 def build_mesh(model: InpModel, apply_transforms: bool = True):
     """
     Build (points, cells, cell_data, label_to_pidxs) suitable for meshio.write().
@@ -101,16 +143,28 @@ def build_mesh(model: InpModel, apply_transforms: bool = True):
     points = []
     point_idx = {}    # (scope_key, node_label) -> 0-based index
     label_to_pidxs: Dict[int, List[int]] = {}  # node_label -> [global_idx, ...]
+    scoped_label_to_pidxs: Dict[Tuple[str, int], List[int]] = {}
 
     cells_by_type   = {}   # meshio_type -> list of connectivity rows
     cd_part_idx     = {}   # meshio_type -> list of part integers
     cd_inst_idx     = {}   # meshio_type -> list of instance integers
     cd_elem_label   = {}   # meshio_type -> list of element labels
+    elem_label_to_cells: Dict[int, List[Tuple[str, int]]] = {}
+    scoped_elem_label_to_cells: Dict[Tuple[str, int], List[Tuple[str, int]]] = {}
 
     part_names = list(model.parts.keys())
     inst_names = []
+    has_root_only_part = (
+        not (model.assembly and model.assembly.instances)
+        and list(model.parts.keys()) == ["__root__"]
+    )
 
-    def add_node(scope_key, label, x, y, z, transform=None):
+    def result_scope_aliases(result_scope):
+        if has_root_only_part and result_scope == "__root__":
+            return _ROOT_SCOPE_ALIASES
+        return (result_scope,)
+
+    def add_node(scope_key, result_scope, label, x, y, z, transform=None):
         if (scope_key, label) in point_idx:
             return point_idx[(scope_key, label)]
         p = np.array([x, y, z, 1.0], dtype=np.float64)
@@ -120,9 +174,11 @@ def build_mesh(model: InpModel, apply_transforms: bool = True):
         idx = len(points) - 1
         point_idx[(scope_key, label)] = idx
         label_to_pidxs.setdefault(label, []).append(idx)
+        for alias in result_scope_aliases(result_scope):
+            scoped_label_to_pidxs.setdefault((alias, label), []).append(idx)
         return idx
 
-    def add_element(scope_key, part_i, inst_i, elem):
+    def add_element(scope_key, result_scope, part_i, inst_i, elem):
         meshio_type = FACTORY_TO_MESHIO.get(elem.factory_type)
         if meshio_type is None:
             return
@@ -136,10 +192,14 @@ def build_mesh(model: InpModel, apply_transforms: bool = True):
             cd_inst_idx[meshio_type]    = []
             cd_elem_label[meshio_type]  = []
 
+        row_idx = len(cells_by_type[meshio_type])
         cells_by_type[meshio_type].append(conn)
         cd_part_idx[meshio_type].append(part_i)
         cd_inst_idx[meshio_type].append(inst_i)
         cd_elem_label[meshio_type].append(elem.label)
+        elem_label_to_cells.setdefault(elem.label, []).append((meshio_type, row_idx))
+        for alias in result_scope_aliases(result_scope):
+            scoped_elem_label_to_cells.setdefault((alias, elem.label), []).append((meshio_type, row_idx))
 
     if model.assembly and model.assembly.instances:
         # Assembled mode: apply per-instance transform
@@ -154,7 +214,7 @@ def build_mesh(model: InpModel, apply_transforms: bool = True):
 
             # Add nodes
             for label, node in part.nodes.items():
-                add_node((inst_name, "n"), label, node.x, node.y, node.z, transform)
+                add_node((inst_name, "n"), inst_name, label, node.x, node.y, node.z, transform)
 
             # Add elements
             for elem in part.elements.values():
@@ -162,19 +222,19 @@ def build_mesh(model: InpModel, apply_transforms: bool = True):
                 # (already added above with key (inst_name, "n"))
                 elem_copy_scope = (inst_name, "n")
                 # rebuild a temporary scope lookup
-                add_element(elem_copy_scope, part_i, inst_i, elem)
+                add_element(elem_copy_scope, inst_name, part_i, inst_i, elem)
     else:
         # No assembly: dump all parts in local coordinates
         for part_i, (part_name, part) in enumerate(model.parts.items()):
             scope_key = (part_name, "n")
             for label, node in part.nodes.items():
-                add_node(scope_key, label, node.x, node.y, node.z)
+                add_node(scope_key, part_name, label, node.x, node.y, node.z)
             for elem in part.elements.values():
-                add_element(scope_key, part_i, 0, elem)
+                add_element(scope_key, part_name, part_i, 0, elem)
 
     if not points:
         print("No points to write — model may be empty.")
-        return None, None, None
+        return None, None, None, None, None, None, None
 
     points_arr = np.array(points, dtype=np.float64)
 
@@ -187,7 +247,35 @@ def build_mesh(model: InpModel, apply_transforms: bool = True):
         "element_label":[np.array(cd_elem_label[t], dtype=np.int64)  for t, _ in cells],
     }
 
-    return points_arr, cells, cell_data, label_to_pidxs
+    return (
+        points_arr,
+        cells,
+        cell_data,
+        label_to_pidxs,
+        scoped_label_to_pidxs,
+        elem_label_to_cells,
+        scoped_elem_label_to_cells,
+    )
+
+
+def _lookup_result_targets(
+    key: ResultKey,
+    unscoped_index: Dict[int, List[Any]],
+    scoped_index: Dict[Tuple[str, int], List[Any]],
+) -> List[Any]:
+    instance_name, label = _parse_result_key(key)
+    if instance_name is not None:
+        return scoped_index.get((instance_name, label), [])
+    return unscoped_index.get(label, [])
+
+
+def _normalize_result_value(value: ResultValue) -> ResultValue:
+    arr = np.asarray(value)
+    if arr.ndim == 0:
+        return float(arr.item())
+    if arr.ndim == 1 and arr.size == 1:
+        return float(arr.reshape(-1)[0].item())
+    return arr.tolist()
 
 
 def write_vtu(
@@ -241,7 +329,15 @@ def write_vtu(
     else:
         model = inp
 
-    points, cells, cell_data, label_to_pidxs = build_mesh(model, apply_transforms)
+    (
+        points,
+        cells,
+        cell_data,
+        label_to_pidxs,
+        scoped_label_to_pidxs,
+        elem_label_to_cells,
+        scoped_elem_label_to_cells,
+    ) = build_mesh(model, apply_transforms)
     if points is None:
         raise ValueError("模型为空，无法生成 VTU")
 
@@ -253,7 +349,7 @@ def write_vtu(
             if not label_values:
                 continue
             # 判断标量还是向量
-            first_val = next(iter(label_values.values()))
+            first_val = _normalize_result_value(next(iter(label_values.values())))
             is_scalar = np.isscalar(first_val)
             ncomp = 1 if is_scalar else len(first_val)
 
@@ -264,12 +360,13 @@ def write_vtu(
 
             missing = 0
             for label, val in label_values.items():
-                pidxs = label_to_pidxs.get(int(label), [])
+                pidxs = _lookup_result_targets(label, label_to_pidxs, scoped_label_to_pidxs)
                 if not pidxs:
                     missing += 1
                     continue
+                normalized_val = _normalize_result_value(val)
                 for pidx in pidxs:
-                    arr[pidx] = val
+                    arr[pidx] = normalized_val
 
             if missing:
                 print(f"  [WARN] node_results['{field_name}']: "
@@ -280,15 +377,12 @@ def write_vtu(
     if cell_results:
         # 预先建立 elem_label → (type_idx, row_idx) 索引，方便 O(1) 查找
         # cell_data["element_label"] 是与 cells 列表平行的数组列表
-        elem_index: Dict[int, tuple] = {}   # label -> (type_idx, row_idx)
-        for ti, lbl_arr in enumerate(cell_data["element_label"]):
-            for ri, lbl in enumerate(lbl_arr):
-                elem_index[int(lbl)] = (ti, ri)
+        type_to_cell_idx = {cell_type: idx for idx, (cell_type, _) in enumerate(cells)}
 
         for field_name, label_values in cell_results.items():
             if not label_values:
                 continue
-            first_val = next(iter(label_values.values()))
+            first_val = _normalize_result_value(next(iter(label_values.values())))
             is_scalar = np.isscalar(first_val)
             ncomp = 1 if is_scalar else len(first_val)
 
@@ -306,12 +400,17 @@ def write_vtu(
 
             missing = 0
             for label, val in label_values.items():
-                pos = elem_index.get(int(label))
-                if pos is None:
+                positions = _lookup_result_targets(
+                    label,
+                    elem_label_to_cells,
+                    scoped_elem_label_to_cells,
+                )
+                if not positions:
                     missing += 1
                     continue
-                ti, ri = pos
-                per_type[ti][ri] = val
+                normalized_val = _normalize_result_value(val)
+                for cell_type, ri in positions:
+                    per_type[type_to_cell_idx[cell_type]][ri] = normalized_val
 
             if missing:
                 print(f"  [WARN] cell_results['{field_name}']: "
@@ -334,9 +433,82 @@ def _load_results_json(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
     return {
-        field: {int(k): v for k, v in label_vals.items()}
+        field: {_coerce_json_result_key(k): v for k, v in label_vals.items()}
         for field, label_vals in raw.items()
     }
+
+
+def _default_odb_result_name(spec: Dict[str, Any]) -> str:
+    field = spec["field"]
+    suffix = spec.get("component")
+    if suffix is None and spec.get("component_index") is not None:
+        suffix = f"c{spec['component_index']}"
+    if suffix is None:
+        suffix = spec["position"].lower()
+    return f"{field}_{suffix}"
+
+
+def _build_odb_results(
+    spec_path: str,
+) -> Tuple[Optional[NodeResults], Optional[CellResults]]:
+    with open(spec_path, encoding="utf-8") as f:
+        spec = json.load(f)
+
+    client = ODBClient(
+        base_url=spec.get("base_url", "http://localhost:18765"),
+        timeout=int(spec.get("timeout", 60)),
+    )
+
+    odb_id = spec["odb_id"]
+    default_instance = spec.get("instance")
+    default_step = spec.get("step")
+    default_frame = int(spec.get("frame", 0))
+
+    node_results: NodeResults = {}
+    cell_results: CellResults = {}
+
+    for item in spec.get("results", []):
+        instance = item.get("instance", default_instance)
+        step = item.get("step", default_step)
+        if not instance or not step:
+            raise ValueError("Each ODB result spec requires instance and step")
+
+        position = item["position"]
+        frame = int(item.get("frame", default_frame))
+        target = item.get("target")
+        if target is None:
+            target = "point" if position == "NODAL" else "cell"
+
+        result_map = client.get_result_label_map(
+            odb_id=odb_id,
+            instance=instance,
+            step=step,
+            field=item["field"],
+            position=position,
+            frame=frame,
+            component=item.get("component"),
+            component_index=item.get("component_index", item.get("component_idx")),
+            aggregation=item.get("aggregation", "mean"),
+            scoped=bool(item.get("scoped", True)),
+        )
+
+        field_name = item.get("name") or _default_odb_result_name(item)
+        if target == "point":
+            if position != "NODAL":
+                raise ValueError(
+                    f"ODB result '{field_name}' uses position '{position}' and cannot be written as point data"
+                )
+            node_results[field_name] = result_map
+        elif target == "cell":
+            if position == "NODAL":
+                raise ValueError(
+                    f"ODB result '{field_name}' uses NODAL data and cannot be written as cell data"
+                )
+            cell_results[field_name] = result_map
+        else:
+            raise ValueError(f"Unknown target '{target}' in ODB result spec")
+
+    return (node_results or None), (cell_results or None)
 
 
 def main():
@@ -349,6 +521,8 @@ def main():
                         help='节点结果 JSON 文件，格式: {"字段名": {"节点标签": 值或数组}}')
     parser.add_argument("--cell-results", metavar="JSON",
                         help='单元结果 JSON 文件，格式: {"字段名": {"单元标签": 值或数组}}')
+    parser.add_argument("--odb-results-spec", metavar="JSON",
+                        help="Fetch ODB raw-values and export them to VTU using a JSON spec")
     args = parser.parse_args()
 
     print(f"Parsing {args.inp} ...")
@@ -369,10 +543,14 @@ def main():
 
     node_results = _load_results_json(args.node_results) if args.node_results else None
     cell_results = _load_results_json(args.cell_results) if args.cell_results else None
+    if args.odb_results_spec:
+        odb_node_results, odb_cell_results = _build_odb_results(args.odb_results_spec)
+        node_results = _merge_result_sets(node_results, odb_node_results)
+        cell_results = _merge_result_sets(cell_results, odb_cell_results)
 
     apply_transforms = not args.no_transform
     print(f"Building mesh (apply_transforms={apply_transforms}) ...")
-    points, cells, cell_data, _ = build_mesh(model, apply_transforms)
+    points, cells, cell_data, _, _, _, _ = build_mesh(model, apply_transforms)
 
     if points is None:
         sys.exit(1)

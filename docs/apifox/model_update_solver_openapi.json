@@ -1,9 +1,9 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "VirtualReal702 Model Update Solver API",
+    "title": "VirtualReal702 Model Update Solver And Sensitivity API",
     "version": "1.0.0",
-    "description": "模型修正主线新增的本地求解器调用接口，可直接导入 Apifox。"
+    "description": "模型修正主线新增的本地求解器调用与灵敏度 VTU 导出接口，可直接导入 Apifox。"
   },
   "servers": [
     {
@@ -31,6 +31,153 @@
                     "file_path": "D:/models/door.inp",
                     "show_labels": true,
                     "max_labels": 8
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sensitivity/export/vtu": {
+      "post": {
+        "tags": [
+          "sensitivity"
+        ],
+        "summary": "导出 DSA 灵敏度结果为 VTU（兼容入口）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SensitivityExportDsaVtuRequest"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "project_id": 1001,
+                    "odb_id": "door-odb",
+                    "output_vtu": "D:/runs/door_dsa.vtu",
+                    "base_url": "http://127.0.0.1:18765",
+                    "step": "Step-1",
+                    "instances": [
+                      "PART-1-1"
+                    ],
+                    "field_prefix": "d_UR_",
+                    "position": "INTEGRATION_POINT",
+                    "aggregation": "max_abs",
+                    "frame": 0,
+                    "timeout": 60
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sensitivity/export/vtu/dsa": {
+      "post": {
+        "tags": [
+          "sensitivity"
+        ],
+        "summary": "导出 DSA 灵敏度结果为 VTU",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SensitivityExportDsaVtuRequest"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "project_id": 1001,
+                    "odb_id": "door-odb",
+                    "output_vtu": "D:/runs/door_dsa.vtu",
+                    "base_url": "http://127.0.0.1:18765",
+                    "step": "Step-1",
+                    "instances": [
+                      "PART-1-1"
+                    ],
+                    "field_prefix": "d_UR_",
+                    "position": "INTEGRATION_POINT",
+                    "aggregation": "max_abs",
+                    "frame": 0,
+                    "timeout": 60
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sensitivity/export/vtu/adjoint": {
+      "post": {
+        "tags": [
+          "sensitivity"
+        ],
+        "summary": "导出 Adjoint 灵敏度结果为 VTU",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SensitivityExportAdjointVtuRequest"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "project_id": 1001,
+                    "odb_id": "shell-odb",
+                    "output_vtu": "D:/runs/shell_adjoint.vtu",
+                    "base_url": "http://127.0.0.1:18765",
+                    "step": "Step-1",
+                    "instances": [
+                      "PART-1-1"
+                    ],
+                    "field_name": "S",
+                    "position": "INTEGRATION_POINT",
+                    "aggregation": "max_abs",
+                    "frame": 0,
+                    "timeout": 60
                   }
                 }
               }
@@ -228,6 +375,105 @@
             "default": 8
           }
         }
+      },
+      "SensitivityExportVtuBaseRequest": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "output_vtu"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "integer"
+          },
+          "odb_id": {
+            "type": "string"
+          },
+          "output_vtu": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "inp_path": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          },
+          "odb_path": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          },
+          "instances": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "position": {
+            "type": "string"
+          },
+          "aggregation": {
+            "type": "string",
+            "default": "max_abs"
+          },
+          "frame": {
+            "type": "integer",
+            "default": 0
+          },
+          "abaqus": {
+            "type": "string",
+            "default": "abaqus"
+          },
+          "python3": {
+            "type": "string"
+          },
+          "keep_raw": {
+            "type": "boolean",
+            "default": false
+          },
+          "timeout": {
+            "type": "integer",
+            "default": 60
+          }
+        }
+      },
+      "SensitivityExportDsaVtuRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SensitivityExportVtuBaseRequest"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "field_prefix": {
+                "type": "string",
+                "default": "d_UR_"
+              }
+            }
+          }
+        ]
+      },
+      "SensitivityExportAdjointVtuRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SensitivityExportVtuBaseRequest"
+          },
+          {
+            "type": "object",
+            "required": [
+              "field_name"
+            ],
+            "properties": {
+              "field_name": {
+                "type": "string"
+              }
+            }
+          }
+        ]
       },
       "AbaqusSensitivityRunRequest": {
         "type": "object",

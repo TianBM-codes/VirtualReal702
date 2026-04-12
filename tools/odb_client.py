@@ -28,7 +28,7 @@ ODB L3 Service — Python 调用封装
 
 import json
 import struct
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import requests
@@ -40,6 +40,10 @@ _DTYPE_MAP = {
     5: np.int32, 6: np.uint32, 7: np.int64, 8: np.uint64,
     9: np.float32, 10: np.float64,
 }
+
+_SCOPED_LABEL_SEP = "::"
+_ELEMENT_POSITIONS = {"ELEMENT_NODAL", "INTEGRATION_POINT"}
+_REDUCTIONS = {"mean", "min", "max", "max_abs", "first"}
 
 
 def decode_l3be(data: bytes) -> Dict[str, np.ndarray]:
@@ -68,6 +72,139 @@ def decode_l3be(data: bytes) -> Dict[str, np.ndarray]:
             offset=offset,
         ).reshape(shape).copy()
         result[name] = arr
+    return result
+
+
+def _safe_section_name(prefix: str, etype: str) -> str:
+    safe = "".join(c if c.isalnum() else "_" for c in etype)
+    return f"{prefix}{safe}"[:32]
+
+
+def _make_scoped_label(instance: str, label: Union[int, np.integer]) -> str:
+    return f"{instance}{_SCOPED_LABEL_SEP}{int(label)}"
+
+
+def _resolve_component_index(
+    components: List[str],
+    component: Optional[str],
+    component_index: Optional[int],
+) -> Tuple[Optional[int], bool]:
+    if component_index is not None:
+        if component_index < 0:
+            raise ValueError("component_index must be >= 0")
+        return component_index, False
+
+    if component is None:
+        return None, False
+
+    comp = component.strip()
+    if not comp:
+        return None, False
+
+    if comp.upper() in {"MAG", "MAGNITUDE", "USUM"}:
+        return None, True
+
+    if comp in components:
+        return components.index(comp), False
+
+    comp_upper = comp.upper()
+    upper_to_idx = {name.upper(): idx for idx, name in enumerate(components)}
+    if comp_upper in upper_to_idx:
+        return upper_to_idx[comp_upper], False
+
+    raise ValueError(
+        f"Unknown component '{component}'. Known components: {components or '[]'}"
+    )
+
+
+def _select_component_values(
+    values: np.ndarray,
+    components: List[str],
+    component: Optional[str],
+    component_index: Optional[int],
+) -> Tuple[np.ndarray, bool]:
+    arr = np.asarray(values)
+    comp_idx, use_magnitude = _resolve_component_index(components, component, component_index)
+
+    if use_magnitude:
+        if arr.ndim <= 1:
+            return np.abs(arr), True
+        return np.linalg.norm(arr, axis=-1), True
+
+    if comp_idx is None:
+        return arr, False
+
+    if arr.ndim == 1:
+        if comp_idx != 0:
+            raise ValueError(
+                f"component_index {comp_idx} out of range for scalar values"
+            )
+        return arr, True
+
+    if comp_idx >= arr.shape[-1]:
+        raise ValueError(
+            f"component_index {comp_idx} out of range for last dimension size {arr.shape[-1]}"
+        )
+
+    return np.take(arr, indices=comp_idx, axis=-1), True
+
+
+def _aggregate_along_axes(values: np.ndarray, axes: Tuple[int, ...], aggregation: str) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if not axes:
+        return arr
+    if aggregation == "mean":
+        return arr.mean(axis=axes)
+    if aggregation == "min":
+        return arr.min(axis=axes)
+    if aggregation == "max":
+        return arr.max(axis=axes)
+    if aggregation == "max_abs":
+        return np.abs(arr).max(axis=axes)
+    if aggregation == "first":
+        out = arr
+        for axis in sorted(axes, reverse=True):
+            out = np.take(out, indices=0, axis=axis)
+        return out
+    raise ValueError(
+        f"Unknown aggregation '{aggregation}'. Expected one of {sorted(_REDUCTIONS)}"
+    )
+
+
+def _aggregate_element_values(
+    values: np.ndarray,
+    aggregation: str,
+    *,
+    component_selected: bool,
+) -> np.ndarray:
+    arr = np.asarray(values)
+    if arr.ndim <= 1:
+        return arr
+    if component_selected:
+        axes = tuple(range(1, arr.ndim))
+        return _aggregate_along_axes(arr, axes, aggregation)
+    if arr.ndim == 2:
+        return arr
+    axes = tuple(range(1, arr.ndim - 1))
+    return _aggregate_along_axes(arr, axes, aggregation)
+
+
+def _label_value_map(
+    labels: np.ndarray,
+    values: np.ndarray,
+    *,
+    instance: Optional[str],
+    scoped: bool,
+) -> Dict[Union[int, str], Union[float, List[float]]]:
+    result: Dict[Union[int, str], Union[float, List[float]]] = {}
+    arr = np.asarray(values)
+    for label, value in zip(np.asarray(labels).tolist(), arr.tolist()):
+        key: Union[int, str] = int(label)
+        if scoped:
+            if not instance:
+                raise ValueError("instance is required when scoped=True")
+            key = _make_scoped_label(instance, key)
+        result[key] = value
     return result
 
 
@@ -431,7 +568,7 @@ class ODBClient:
         raw, headers = self._get_binary(
             f"/api/odb/{odb_id}/results/raw-values",
             instance=instance, step=step, field=field,
-            frame=frame, position=position,
+            frame=frame, position=position, format="l3be",
         )
         sections = decode_l3be(raw)
         components = json.loads(headers.get("X-Components", "[]"))
@@ -439,26 +576,129 @@ class ODBClient:
 
         if pos == "NODAL":
             return {
-                "position":    pos,
-                "components":  components,
-                "node_labels": sections["node_labels"],
-                "values":      sections["values"],
+                "position":     pos,
+                "components":   components,
+                "node_labels":  sections["node_labels"],
+                "values":       sections["values"],
+                "instance":     instance,
+                "step":         step,
+                "field":        field,
+                "frame":        frame,
             }
 
         etype_groups = json.loads(headers.get("X-Etype-Groups", "[]"))
         groups = {}
         for etype in etype_groups:
-            safe = etype.replace("-", "_").replace(" ", "_")
             groups[etype] = {
-                "elem_labels": sections[f"el_{safe}"],
-                "values":      sections[f"v_{safe}"],
+                "elem_labels": sections[_safe_section_name("el_", etype)],
+                "values":      sections[_safe_section_name("v_", etype)],
             }
         return {
-            "position":     pos,
-            "components":   components,
-            "etype_groups": etype_groups,
-            "groups":       groups,
+            "position":      pos,
+            "components":    components,
+            "etype_groups":  etype_groups,
+            "groups":        groups,
+            "instance":      instance,
+            "step":          step,
+            "field":         field,
+            "frame":         frame,
         }
+
+    def raw_values_to_label_map(
+        self,
+        raw_values: Dict[str, Any],
+        *,
+        instance: Optional[str] = None,
+        component: Optional[str] = None,
+        component_index: Optional[int] = None,
+        aggregation: str = "mean",
+        scoped: bool = False,
+    ) -> Dict[Union[int, str], Union[float, List[float]]]:
+        """
+        Convert get_raw_values() output to a node/element label -> value map.
+
+        NODAL returns node-label keyed values.
+        ELEMENT_NODAL / INTEGRATION_POINT aggregate per element and return
+        element-label keyed values.
+        """
+        pos = raw_values.get("position")
+        components = list(raw_values.get("components", []))
+        instance_name = instance or raw_values.get("instance")
+
+        if pos == "NODAL":
+            values, _component_selected = _select_component_values(
+                np.asarray(raw_values["values"]),
+                components,
+                component,
+                component_index,
+            )
+            return _label_value_map(
+                np.asarray(raw_values["node_labels"]),
+                values,
+                instance=instance_name,
+                scoped=scoped,
+            )
+
+        if pos not in _ELEMENT_POSITIONS:
+            raise ValueError(f"Unsupported raw-values position '{pos}'")
+
+        if aggregation not in _REDUCTIONS:
+            raise ValueError(
+                f"Unknown aggregation '{aggregation}'. Expected one of {sorted(_REDUCTIONS)}"
+            )
+
+        label_map: Dict[Union[int, str], Union[float, List[float]]] = {}
+        for etype in raw_values.get("etype_groups", []):
+            group = raw_values["groups"][etype]
+            selected, component_selected = _select_component_values(
+                np.asarray(group["values"]),
+                components,
+                component,
+                component_index,
+            )
+            aggregated = _aggregate_element_values(
+                selected,
+                aggregation,
+                component_selected=component_selected,
+            )
+            label_map.update(_label_value_map(
+                np.asarray(group["elem_labels"]),
+                aggregated,
+                instance=instance_name,
+                scoped=scoped,
+            ))
+        return label_map
+
+    def get_result_label_map(
+        self,
+        odb_id: str,
+        instance: str,
+        step: str,
+        field: str,
+        position: str,
+        *,
+        frame: int = 0,
+        component: Optional[str] = None,
+        component_index: Optional[int] = None,
+        aggregation: str = "mean",
+        scoped: bool = False,
+    ) -> Dict[Union[int, str], Union[float, List[float]]]:
+        raw_values = self.get_raw_values(
+            odb_id=odb_id,
+            instance=instance,
+            step=step,
+            field=field,
+            position=position,
+            frame=frame,
+        )
+        return self.raw_values_to_label_map(
+            raw_values,
+            instance=instance,
+            component=component,
+            component_index=component_index,
+            aggregation=aggregation,
+            scoped=scoped,
+        )
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 五、节点字段表

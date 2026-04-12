@@ -41,10 +41,15 @@ ecosystem.config.js
 /data/
 *.inp
 *.npz
+*.npy
+*.txt
 model/
 runtime_bundle/
 *.odb
 *.h5
 *.hdf5
 *.vtu
+*.db
+*.db-shm
+*.db-wal
 AGENTS.md

@@ -192,14 +192,16 @@ class RegistryRepo:
 
     def is_runner_alive(self, ttl_seconds: int = 30) -> bool:
         """
-        Return True if a job runner has refreshed its heartbeat within the last
-        `ttl_seconds` seconds.  Reads the runner_lock table written by runner_thread.py.
-        Returns False if the table doesn't exist yet or the heartbeat is stale.
+        Return True if a job runner is genuinely alive:
+          1. runner_lock heartbeat is within ttl_seconds, AND
+          2. the recorded PID is still running (os.kill check).
+        Returns False if the table doesn't exist, heartbeat is stale, or PID is dead.
         """
+        import os as _os
         try:
             with self._connect() as conn:
                 row = conn.execute(
-                    "SELECT heartbeat FROM runner_lock WHERE singleton=1"
+                    "SELECT pid, heartbeat FROM runner_lock WHERE singleton=1"
                 ).fetchone()
                 if row is None or not row["heartbeat"]:
                     return False
@@ -207,7 +209,17 @@ class RegistryRepo:
                 if hb.tzinfo is None:
                     hb = hb.replace(tzinfo=timezone.utc)
                 age = (datetime.now(timezone.utc) - hb).total_seconds()
-                return age < ttl_seconds
+                if age >= ttl_seconds:
+                    return False
+                # Heartbeat is fresh — also verify the PID is still alive
+                try:
+                    _os.kill(row["pid"], 0)
+                except Exception:
+                    # On Windows, probing a dead PID may raise SystemError
+                    # instead of ProcessLookupError. Any failure means the
+                    # runner should be considered dead.
+                    return False
+                return True
         except Exception:
             return False
 

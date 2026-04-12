@@ -70,10 +70,24 @@ class EmbeddedRunner:
 
     # ── Process lock ───────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """Return True if the process with the given PID is still running."""
+        try:
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            # On Windows, os.kill(pid, 0) against a stale PID can surface as
+            # SystemError/OSError rather than a clean ProcessLookupError.
+            # Treat any probe failure as "not alive" so a stale runner_lock
+            # never blocks the embedded runner from starting.
+            return False
+
     def try_acquire_lock(self) -> bool:
         """
         Return True if this process successfully acquired the runner lock.
-        Another worker holding a fresh lock → return False.
+        Another worker holding a fresh lock AND whose PID is alive → return False.
+        Steals the lock immediately if the PID is dead, regardless of heartbeat age.
         """
         try:
             with self._connect() as conn:
@@ -82,15 +96,22 @@ class EmbeddedRunner:
                     "SELECT pid, heartbeat FROM runner_lock WHERE singleton=1"
                 ).fetchone()
                 if row and row["pid"] != self._pid:
-                    try:
-                        hb = datetime.fromisoformat(row["heartbeat"])
-                        if hb.tzinfo is None:
-                            hb = hb.replace(tzinfo=timezone.utc)
-                        age = (datetime.now(timezone.utc) - hb).total_seconds()
-                        if age < _LOCK_TTL:
-                            return False   # another runner is alive
-                    except Exception:
-                        pass   # malformed heartbeat → steal
+                    # If the PID is still alive, respect the heartbeat TTL
+                    if self._pid_alive(row["pid"]):
+                        try:
+                            hb = datetime.fromisoformat(row["heartbeat"])
+                            if hb.tzinfo is None:
+                                hb = hb.replace(tzinfo=timezone.utc)
+                            age = (datetime.now(timezone.utc) - hb).total_seconds()
+                            if age < _LOCK_TTL:
+                                return False   # another runner is alive
+                        except Exception:
+                            pass   # malformed heartbeat → steal
+                    else:
+                        logger.info(
+                            "Runner: lock held by dead PID %d — stealing immediately",
+                            row["pid"],
+                        )
 
                 conn.execute(
                     "INSERT OR REPLACE INTO runner_lock (singleton, pid, heartbeat) "
@@ -184,8 +205,8 @@ class EmbeddedRunner:
         """Run subprocess; stream each line to logger. Returns (returncode, last_50_lines).
 
         Sets PYTHONUNBUFFERED=1 so Abaqus Python 2.7 flushes print() immediately.
-        Also logs a "still running" heartbeat every 30 s so the terminal doesn't go
-        silent during long operations (e.g. large ODB dumps).
+        Also refreshes the runner lock heartbeat every _HB_INTERVAL seconds so the
+        lock is not stolen by another worker during long-running L1 jobs.
         """
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -197,8 +218,8 @@ class EmbeddedRunner:
         )
 
         start = time.monotonic()
-        last_progress_log = start
-        _PROGRESS_INTERVAL = 30  # seconds between "still running" messages
+        last_hb = start
+        _PROGRESS_INTERVAL = 30  # seconds between "still running" log messages
 
         def _read_stdout():
             for line in proc.stdout:
@@ -211,9 +232,13 @@ class EmbeddedRunner:
         reader.start()
 
         while reader.is_alive():
-            reader.join(timeout=_PROGRESS_INTERVAL)
-            if reader.is_alive():
-                elapsed = time.monotonic() - start
+            reader.join(timeout=min(_PROGRESS_INTERVAL, _HB_INTERVAL))
+            now = time.monotonic()
+            if now - last_hb >= _HB_INTERVAL:
+                self._refresh_lock()
+                last_hb = now
+            if reader.is_alive() and now - start >= _PROGRESS_INTERVAL:
+                elapsed = now - start
                 logger.info(
                     "[%s] %s: still running… (%.0f s elapsed)",
                     odb_id, label, elapsed,

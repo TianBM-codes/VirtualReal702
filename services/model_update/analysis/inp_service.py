@@ -1970,6 +1970,238 @@ def get_fe_static_results(project_id, load_case_no=None):
         conn.close()
 
 
+STATIC_COMPONENT_MAP = {
+    "UX": ("ux", "u1"),
+    "UY": ("uy", "u2"),
+    "UZ": ("uz", "u3"),
+    "RX": ("rx", "ur1"),
+    "RY": ("ry", "ur2"),
+    "RZ": ("rz", "ur3"),
+}
+
+
+def _resolve_static_components(components=None, include_rotations=False):
+    if components:
+        names = [str(comp).upper() for comp in components]
+    else:
+        names = ["UX", "UY", "UZ"]
+        if include_rotations:
+            names.extend(["RX", "RY", "RZ"])
+
+    invalid = [name for name in names if name not in STATIC_COMPONENT_MAP]
+    if invalid:
+        raise ValueError(f"unsupported static components: {invalid}")
+    return names
+
+
+def _resolve_static_case_selection(cursor, project_id: int, load_case_no=None, result_no=None):
+    cursor.execute("""
+        SELECT DISTINCT load_case_no, result_no
+        FROM t_mt_py_test_static_result
+        WHERE pid = %s
+        ORDER BY load_case_no, result_no
+    """, (project_id,))
+    test_pairs = cursor.fetchall()
+    if not test_pairs:
+        raise ValueError("test static results not found")
+
+    cursor.execute("""
+        SELECT DISTINCT load_case_no
+        FROM t_mt_py_fem_static_result
+        WHERE pid = %s
+        ORDER BY load_case_no
+    """, (project_id,))
+    fem_cases = [int(row["load_case_no"]) for row in cursor.fetchall()]
+    if not fem_cases:
+        raise ValueError("fem static results not found")
+
+    test_case_to_results = {}
+    for row in test_pairs:
+        test_case_to_results.setdefault(int(row["load_case_no"]), []).append(int(row["result_no"]))
+
+    common_cases = sorted(set(test_case_to_results.keys()) & set(fem_cases))
+    if load_case_no is None:
+        if not common_cases:
+            raise ValueError("no common static load_case_no between test and fem static tables")
+        chosen_load_case_no = int(common_cases[0])
+    else:
+        chosen_load_case_no = int(load_case_no)
+        if chosen_load_case_no not in test_case_to_results:
+            raise ValueError(f"test static load_case_no not found: {chosen_load_case_no}")
+        if chosen_load_case_no not in fem_cases:
+            raise ValueError(f"fem static load_case_no not found: {chosen_load_case_no}")
+
+    result_candidates = sorted(test_case_to_results[chosen_load_case_no])
+    if result_no is None:
+        chosen_result_no = int(result_candidates[0])
+    else:
+        chosen_result_no = int(result_no)
+        if chosen_result_no not in result_candidates:
+            raise ValueError(
+                f"test static result_no not found for load_case_no={chosen_load_case_no}: {chosen_result_no}"
+            )
+
+    return chosen_load_case_no, chosen_result_no
+
+
+def _build_static_alignment(test_rows, fem_rows, node_matches):
+    fem_by_key = {}
+    fem_by_label = {}
+    duplicate_labels = set()
+    for row in fem_rows:
+        key = (str(row["instance_name"] or ""), int(row["fem_node_label"]))
+        fem_by_key[key] = row
+        label = int(row["fem_node_label"])
+        if label in fem_by_label:
+            duplicate_labels.add(label)
+        fem_by_label[label] = row
+
+    aligned = []
+    if node_matches:
+        for match in node_matches:
+            test_row = test_rows.get(str(match["test_node_id"]))
+            if test_row is None:
+                continue
+            fem_row = fem_by_key.get((str(match["instance_name"] or ""), int(match["fem_node_label"])))
+            if fem_row is None:
+                continue
+            aligned.append((test_row, fem_row, match))
+        return aligned
+
+    for point_id, test_row in test_rows.items():
+        label = int(point_id)
+        if label in duplicate_labels:
+            continue
+        fem_row = fem_by_label.get(label)
+        if fem_row is None:
+            continue
+        aligned.append((
+            test_row,
+            fem_row,
+            {
+                "test_node_id": point_id,
+                "instance_name": fem_row["instance_name"],
+                "fem_node_label": fem_row["fem_node_label"],
+                "match_mode": "label_fallback",
+            },
+        ))
+    return aligned
+
+
+def compute_static_correlation(
+    project_id,
+    load_case_no=None,
+    result_no=None,
+    components=None,
+    include_rotations=False,
+):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        chosen_load_case_no, chosen_result_no = _resolve_static_case_selection(
+            cursor,
+            project_id,
+            load_case_no=load_case_no,
+            result_no=result_no,
+        )
+        component_names = _resolve_static_components(
+            components=components,
+            include_rotations=include_rotations,
+        )
+
+        cursor.execute("""
+            SELECT point, ux, uy, uz, rx, ry, rz, load_factor, extra_json
+            FROM t_mt_py_test_static_result
+            WHERE pid = %s AND load_case_no = %s AND result_no = %s
+            ORDER BY point
+        """, (project_id, chosen_load_case_no, chosen_result_no))
+        test_rows_raw = cursor.fetchall()
+        if not test_rows_raw:
+            raise ValueError("selected test static result rows not found")
+        test_rows = {str(row["point"]): row for row in test_rows_raw}
+
+        cursor.execute("""
+            SELECT load_case_no, instance_name, part_name, fem_node_label,
+                   u1, u2, u3, ur1, ur2, ur3, extra_json
+            FROM t_mt_py_fem_static_result
+            WHERE pid = %s AND load_case_no = %s
+            ORDER BY instance_name, fem_node_label
+        """, (project_id, chosen_load_case_no))
+        fem_rows = cursor.fetchall()
+        if not fem_rows:
+            raise ValueError("selected fem static result rows not found")
+
+        cursor.execute("""
+            SELECT test_node_id, instance_name, fem_node_label
+            FROM t_mt_py_fem_node_match
+            WHERE pid = %s
+            ORDER BY test_node_id
+        """, (project_id,))
+        node_matches = cursor.fetchall()
+
+        aligned_rows = _build_static_alignment(test_rows, fem_rows, node_matches)
+        if not aligned_rows:
+            raise ValueError("no aligned static rows found between test and fem results")
+
+        test_values = []
+        fem_values = []
+        anchors = []
+        component_counts = {name: 0 for name in component_names}
+
+        for test_row, fem_row, match in aligned_rows:
+            for comp_name in component_names:
+                test_col, fem_col = STATIC_COMPONENT_MAP[comp_name]
+                test_val = test_row.get(test_col)
+                fem_val = fem_row.get(fem_col)
+                if test_val is None or fem_val is None:
+                    continue
+                test_values.append(complex(float(test_val), 0.0))
+                fem_values.append(complex(float(fem_val), 0.0))
+                component_counts[comp_name] += 1
+                if len(anchors) < 50:
+                    anchors.append({
+                        "test_point": str(test_row["point"]),
+                        "instance_name": fem_row["instance_name"],
+                        "fem_node_label": int(fem_row["fem_node_label"]),
+                        "component": comp_name,
+                        "test_value": float(test_val),
+                        "fem_value": float(fem_val),
+                        "match_mode": match.get("match_mode", "node_match"),
+                    })
+
+        if len(test_values) < 2:
+            raise ValueError("not enough aligned static values to compute dac/dsf")
+
+        metrics = _compute_dac_dsf(
+            np.asarray(test_values, dtype=np.complex128),
+            np.asarray(fem_values, dtype=np.complex128),
+        )
+
+        return {
+            "project_id": project_id,
+            "load_case_no": int(chosen_load_case_no),
+            "result_no": int(chosen_result_no),
+            "components": component_names,
+            "aligned_point_count": len(aligned_rows),
+            "value_count": len(test_values),
+            "component_value_counts": component_counts,
+            "dac": metrics["dac"],
+            "dsf": metrics["dsf"],
+            "extra": {
+                "scale_real": metrics["scale_real"],
+                "scale_imag": metrics["scale_imag"],
+                "scale_phase_deg": metrics["scale_phase_deg"],
+                "test_norm": metrics["test_norm"],
+                "fem_norm": metrics["fem_norm"],
+                "residual_norm": metrics["residual_norm"],
+                "anchors_preview": anchors,
+            },
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def _load_test_mode_vectors(cursor, project_id: int) -> Dict[int, Dict[str, np.ndarray]]:
     modes: Dict[int, Dict[str, np.ndarray]] = {}
 
@@ -2059,7 +2291,7 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
         raise ValueError("vector energy is zero")
 
     cross = np.vdot(test_vec, fem_vec)
-    scale = np.vdot(fem_vec, test_vec) / np.vdot(fem_vec, fem_vec)
+    scale = np.vdot(fem_vec, test_vec) / np.vdot(test_vec, test_vec)
     residual = test_vec - scale * fem_vec
     return {
         "dac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),

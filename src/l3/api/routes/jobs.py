@@ -85,6 +85,7 @@ async def submit_job(body: SubmitJobRequest):
             )
 
     return {
+        "id": odb_id,
         "odb_id": odb_id,
         "display_name": body.display_name,
         "status": "submitted",
@@ -156,4 +157,4 @@ async def retry_job(odb_id: str):
                                    f"(only 'error' jobs can be retried)")
 
     repo.update_status(odb_id, "submitted", error_msg=None)
-    return {"odb_id": odb_id, "status": "submitted"}
+    return {"id": odb_id, "odb_id": odb_id, "status": "submitted"}
