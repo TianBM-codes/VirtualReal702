@@ -52,6 +52,7 @@ from fastapi.responses import JSONResponse, Response
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...services.raw_result_service import get_raw_values, raw_values_to_json_payload
+from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 
@@ -81,7 +82,7 @@ async def get_raw_result_values(
 
     if format == "json":
         return JSONResponse(
-            content=raw_values_to_json_payload(
+            content=ok(raw_values_to_json_payload(
                 sections=sections,
                 components=components,
                 etype_groups=etype_groups,
@@ -91,7 +92,7 @@ async def get_raw_result_values(
                 step=step,
                 field=field,
                 frame_idx=frame,
-            ),
+            )),
             headers={
                 "X-Payload-Type":  "raw_values_json_v1",
                 "X-Layout-Version": "1",

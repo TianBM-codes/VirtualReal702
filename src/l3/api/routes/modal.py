@@ -19,6 +19,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from ...services import modal_service
+from ..response import ok
 
 router = APIRouter(prefix="/api/modal", tags=["modal"])
 
@@ -51,7 +52,7 @@ async def load_model(req: LoadRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"注册失败: {e}")
 
-    return {"ok": True, "model_id": model_id}
+    return ok({"model_id": model_id})
 
 
 # ── 接口 2：几何数据 ───────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ async def get_geometry(model_id: str):
     """
     _check(model_id)
     try:
-        return {"ok": True, "data": modal_service.get_geometry(model_id)}
+        return ok(modal_service.get_geometry(model_id))
     except Exception as e:
         logger.exception("get_geometry failed for %s", model_id)
         raise HTTPException(status_code=500, detail=str(e))
@@ -79,7 +80,7 @@ async def get_modes(model_id: str):
     """
     _check(model_id)
     try:
-        return {"ok": True, "data": modal_service.get_modes(model_id)}
+        return ok(modal_service.get_modes(model_id))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -92,7 +93,7 @@ async def get_components(model_id: str):
     返回可用分量列表：["U-Modulus:usum", "DOF UX", "DOF UY", "DOF UZ"]
     """
     _check(model_id)
-    return {"ok": True, "data": modal_service.get_components()}
+    return ok(modal_service.get_components())
 
 
 # ── 接口 5：变形振型 ───────────────────────────────────────────────────────
@@ -113,9 +114,7 @@ async def get_deformed(
     """
     _check(model_id)
     try:
-        return {"ok": True, "data": modal_service.get_deformed(
-            model_id, order, max_scalar_size, coefficient
-        )}
+        return ok(modal_service.get_deformed(model_id, order, max_scalar_size, coefficient))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -132,7 +131,7 @@ async def get_animation(model_id: str, order: int):
     """
     _check(model_id)
     try:
-        return {"ok": True, "data": modal_service.get_animation(model_id, order)}
+        return ok(modal_service.get_animation(model_id, order))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -157,9 +156,7 @@ async def get_colormap(
     """
     _check(model_id)
     try:
-        return {"ok": True, "data": modal_service.get_colormap(
-            model_id, order, component, max_scalar_size, coefficient
-        )}
+        return ok(modal_service.get_colormap(model_id, order, component, max_scalar_size, coefficient))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

@@ -18,6 +18,7 @@ from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...services import color_service
+from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["color_code"])
 
@@ -28,7 +29,7 @@ async def get_color_schemes(odb_id: str, instance: str):
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    return color_service.get_schemes(idx, instance)
+    return ok(color_service.get_schemes(idx, instance))
 
 
 @router.get("/color-code/{instance}")

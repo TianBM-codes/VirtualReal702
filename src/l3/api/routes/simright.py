@@ -41,7 +41,7 @@ class SimrightRequest(BaseModel):
 
 
 def _ok(data: Any) -> Dict:
-    return {"code": 0, "data": data, "message": "success"}
+    return {"code": 200, "data": data, "message": ""}
 
 
 def _err(code: int, message: str) -> Dict:
@@ -59,7 +59,7 @@ async def simright_query(body: SimrightRequest):
         return _ok(data)
     except AppError as e:
         logger.warning("simright query '%s' error: %s", body.name, e.message)
-        return _err(1, e.message)
+        return _err(400, e.message)
     except Exception as e:
         logger.exception("simright query '%s' unexpected error", body.name)
         return _err(500, str(e))

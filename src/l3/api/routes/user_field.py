@@ -27,6 +27,7 @@ from ...services.user_field_service import (
     list_user_fields,
     save_user_field,
 )
+from ..response import ok, err
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["user-field"])
 
@@ -56,7 +57,7 @@ async def post_user_field(odb_id: str, body: UserFieldBody):
         value=body.value,
         element_labels=body.element_labels,
     )
-    return JSONResponse(status_code=201, content=result)
+    return JSONResponse(status_code=201, content=ok(result))
 
 
 # ── GET: list ─────────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ async def get_user_fields(
 ):
     """List all user fields stored for this ODB, optionally filtered by instance."""
     fields = list_user_fields(registry=registry, odb_id=odb_id, instance=instance)
-    return {"odb_id": odb_id, "fields": fields}
+    return ok({"odb_id": odb_id, "fields": fields})
 
 
 # ── GET: cloud-map colors ─────────────────────────────────────────────────────
@@ -135,6 +136,6 @@ async def delete_user_field_endpoint(
     if not deleted:
         return JSONResponse(
             status_code=404,
-            content={"detail": f"User field '{name}' not found for instance '{instance}'"},
+            content=err(404, f"User field '{name}' not found for instance '{instance}'"),
         )
-    return {"deleted": True, "name": name, "instance": instance}
+    return ok({"deleted": True, "name": name, "instance": instance})

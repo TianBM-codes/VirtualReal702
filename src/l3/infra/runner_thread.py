@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT    = Path(__file__).resolve().parent.parent.parent.parent
 _DUMP_SCRIPT  = _REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
 _PACK_SCRIPT  = _REPO_ROOT / "src" / "l1" / "l1_pack.py"
+_INP_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "inp_pack.py"
 _INGEST_SCRIPT = _REPO_ROOT / "src" / "l2" / "ingest.py"
 
 _LOCK_TTL    = 30   # seconds — steal lock if heartbeat is older than this
@@ -211,10 +212,16 @@ class EmbeddedRunner:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
+        # On Windows, CREATE_NEW_PROCESS_GROUP isolates the child from the
+        # parent's console group so that Intel MKL/Fortran runtime cleanup
+        # in the child does not propagate CTRL_C_EVENT to the parent process.
+        _win_flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+
         lines = []
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             encoding='utf-8', errors='replace', bufsize=1, env=env,
+            creationflags=_win_flags,
         )
 
         start = time.monotonic()
@@ -275,18 +282,15 @@ class EmbeddedRunner:
         return True
 
     def _run_l1_inp(self, odb_id: str, inp_path: str, workspace: str) -> bool:
-        logger.info("[%s] L1 (INP): parsing %s", odb_id, inp_path)
-        try:
-            from src.inp import parse_inp
-            from src.inp.exporter import export_l1
-            model = parse_inp(inp_path)
-            export_l1(model, workspace)
-        except Exception as exc:
-            self._update_status(odb_id, "error",
-                error_msg=f"INP parse/export failed: {exc}")
-            logger.exception("[%s] INP L1 failed", odb_id)
+        logger.info("[%s] L1 (INP): inp_pack.py", odb_id)
+        rc, tail = self._run_streaming(
+            [sys.executable, str(_INP_PACK_SCRIPT),
+             "--inp", inp_path, "--workspace", workspace],
+            odb_id, "inp_pack",
+        )
+        if rc != 0:
+            self._update_status(odb_id, "error", error_msg=f"inp_pack failed: {tail}")
             return False
-        logger.info("[%s] L1 (INP) done", odb_id)
         return True
 
     def _run_l1(self, odb_id: str, source_path: str, workspace: str) -> bool:
@@ -315,9 +319,11 @@ class EmbeddedRunner:
         self._update_status(odb_id, "l2_running", l2_started_at=_now_iso())
         logger.info("[%s] L2: ingest.py", odb_id)
 
+        _win_flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         ret = subprocess.run(
             [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
             capture_output=True, encoding='utf-8', errors='replace',
+            creationflags=_win_flags,
         )
         if ret.returncode != 0:
             self._update_status(odb_id, "l1_done",

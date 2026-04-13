@@ -19,6 +19,7 @@ from ...core.config import settings
 from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.registry_repo import RegistryRepo
+from ..response import ok
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -84,21 +85,21 @@ async def submit_job(body: SubmitJobRequest):
                 "Start the runner manually: python src/job_runner.py"
             )
 
-    return {
+    return ok({
         "id": odb_id,
         "odb_id": odb_id,
         "display_name": body.display_name,
         "status": "submitted",
         "runner_alive": runner_alive,
         "warning": warning,
-    }
+    })
 
 
 @router.get("")
 async def list_jobs():
     """Return all jobs ordered by submission time (newest first)."""
     rows = _repo().list_jobs()
-    return [_row_to_summary(r) for r in rows]
+    return ok([_row_to_summary(r) for r in rows])
 
 
 @router.get("/{odb_id}")
@@ -107,7 +108,7 @@ async def get_job(odb_id: str):
     row = _repo().get_job(odb_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"Job '{odb_id}' not found")
-    return _row_to_summary(row)
+    return ok(_row_to_summary(row))
 
 
 @router.delete("/{odb_id}")
@@ -138,7 +139,7 @@ async def delete_job(
     if hard and workspace and os.path.exists(workspace):
         shutil.rmtree(workspace, ignore_errors=True)
 
-    return {"ok": True, "hard": hard}
+    return ok({"hard": hard})
 
 
 @router.post("/{odb_id}/retry")
@@ -157,4 +158,4 @@ async def retry_job(odb_id: str):
                                    f"(only 'error' jobs can be retried)")
 
     repo.update_status(odb_id, "submitted", error_msg=None)
-    return {"id": odb_id, "odb_id": odb_id, "status": "submitted"}
+    return ok({"id": odb_id, "odb_id": odb_id, "status": "submitted"})

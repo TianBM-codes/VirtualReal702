@@ -1,14 +1,15 @@
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+
+from ..response import ok
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/api/health/live")
 async def live():
-    return {"ok": True, "data": {"status": "live"}}
+    return ok({"status": "live"})
 
 
 @router.get("/api/health/ready")
 async def ready():
-    return {"ok": True, "data": {"status": "ready"}}
+    return ok({"status": "ready"})

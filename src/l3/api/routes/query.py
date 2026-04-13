@@ -3,11 +3,12 @@ from fastapi import APIRouter, Query
 from ...core.state import registry
 from ...schemas.query import BBoxRequest, PickResponse, BBoxResponse, RenderFacesRequest, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse
 from ...services import query_service
+from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["query"])
 
 
-@router.get("/query/pick", response_model=PickResponse)
+@router.get("/query/pick")
 async def pick(
     odb_id: str,
     instance: str,
@@ -43,10 +44,10 @@ async def pick(
         include_coords=include_coords,
         deform_scale=deform_scale,
     )
-    return result
+    return ok(result.model_dump())
 
 
-@router.post("/query/bbox", response_model=BBoxResponse)
+@router.post("/query/bbox")
 async def bbox_query(odb_id: str, body: BBoxRequest):
     result = query_service.bbox(
         registry=registry,
@@ -57,10 +58,10 @@ async def bbox_query(odb_id: str, body: BBoxRequest):
         mode=body.mode,
         set_name=body.set_name,
     )
-    return result
+    return ok(result.model_dump())
 
 
-@router.post("/query/render-faces", response_model=RenderFacesResponse)
+@router.post("/query/render-faces")
 async def render_faces_query(odb_id: str, body: RenderFacesRequest):
     """
     Resolve a list of render face indices (from a screen-space bbox selection)
@@ -71,16 +72,17 @@ async def render_faces_query(odb_id: str, body: RenderFacesRequest):
     node mode:    collects unique nodes from face vertices, returns node_labels +
                   node_positions.
     """
-    return query_service.resolve_render_faces(
+    result = query_service.resolve_render_faces(
         registry=registry,
         odb_id=odb_id,
         instance=body.instance,
         render_face_indices=body.render_face_indices,
         mode=body.mode,
     )
+    return ok(result.model_dump())
 
 
-@router.post("/query/surface-patch", response_model=SurfacePatchResponse)
+@router.post("/query/surface-patch")
 async def surface_patch_query(odb_id: str, body: SurfacePatchRequest):
     """
     Select all surface faces whose triangle overlaps an oriented rectangle (including edge-touching).
@@ -96,14 +98,15 @@ async def surface_patch_query(odb_id: str, body: SurfacePatchRequest):
     Returns all matching render_face_indices (for frontend highlighting),
     elem_labels, node_labels, and node_positions.
     """
-    return query_service.surface_patch(
+    result = query_service.surface_patch(
         registry=registry,
         odb_id=odb_id,
         req=body,
     )
+    return ok(result.model_dump())
 
 
-@router.get("/query/nearest-face", response_model=NearestFaceResponse)
+@router.get("/query/nearest-face")
 async def nearest_face_query(
     odb_id: str,
     instance: str,
@@ -121,9 +124,10 @@ async def nearest_face_query(
     Returns the closest face's unit normal vector, the closest point ON the face,
     and the Euclidean distance from the query point to that face.
     """
-    return query_service.nearest_face(
+    result = query_service.nearest_face(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
         point=[x, y, z],
     )
+    return ok(result.model_dump())

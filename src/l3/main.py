@@ -1,11 +1,17 @@
 """
 L3 FastAPI entry point.
 
-Start with:
+Linux / macOS (embedded runner ON by default):
     uvicorn src.l3.main:app --reload                              # dev
     gunicorn src.l3.main:app -w 4 -k uvicorn.workers.UvicornWorker  # prod
+
+Windows (embedded runner OFF by default — run job_runner separately):
+    Terminal 1:  python app.py               (or uvicorn src.l3.main:app)
+    Terminal 2:  python src/job_runner.py
 """
 import logging
+import os
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -131,6 +137,14 @@ async def lifespan(app: FastAPI):
         )
         if not started:
             logger.debug("Embedded runner not started in this worker (lock held elsewhere)")
+    else:
+        if sys.platform == "win32":
+            logger.info(
+                "Embedded runner disabled on Windows (APP_EMBEDDED_RUNNER=0). "
+                "Start job_runner.py in a separate terminal: python src/job_runner.py"
+            )
+        else:
+            logger.info("Embedded runner disabled (APP_EMBEDDED_RUNNER=0). Run src/job_runner.py separately.")
     yield
     # daemon threads exit automatically when the process terminates
 

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 # Priority: environment variable > config file > built-in default
 #
@@ -67,9 +68,12 @@ class Settings:
         self.enable_gzip = _get(cfg, "APP_ENABLE_GZIP", "0") == "1"
 
         # Embedded runner: run L1+L2 job pipeline as a daemon thread inside
-        # the web process (default on).  Set APP_EMBEDDED_RUNNER=0 if you
-        # want to run job_runner.py as a separate process instead.
-        self.embedded_runner = _get(cfg, "APP_EMBEDDED_RUNNER", "1") == "1"
+        # the web process.  Default: ON on Linux/macOS, OFF on Windows.
+        # On Windows, numpy/MKL (Intel Fortran runtime) conflicts with
+        # asyncio's ProactorEventLoop — run job_runner.py as a separate
+        # process instead (APP_EMBEDDED_RUNNER=0).
+        _runner_default = "0" if sys.platform == "win32" else "1"
+        self.embedded_runner = _get(cfg, "APP_EMBEDDED_RUNNER", _runner_default) == "1"
 
         # Abaqus executable — override if `abaqus` is not on PATH
         self.abaqus_cmd = _get(cfg, "APP_ABAQUS_CMD", "abaqus")

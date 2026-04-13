@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...services.node_table_service import get_instance_fields, get_node_table
+from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 
@@ -57,7 +58,7 @@ async def list_fields(
     step: str = Query(..., description="Step name"),
 ):
     fields = get_instance_fields(registry, odb_id, instance, step)
-    return {"instance": instance, "step": step, "fields": fields}
+    return ok({"instance": instance, "step": step, "fields": fields})
 
 
 # ── POST /results/node-table ───────────────────────────────────────────────────
