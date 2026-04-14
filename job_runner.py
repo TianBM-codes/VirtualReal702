@@ -39,12 +39,39 @@ INGEST_SCRIPT = REPO_ROOT / "src" / "l2" / "ingest.py"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
+def _load_service_config() -> dict:
+    """Read service_config.json from repo root (same logic as src/l3/core/config.py)."""
+    import json
+    candidates = [
+        os.getenv("CONFIG_FILE", ""),
+        os.path.join(os.getcwd(), "service_config.json"),
+        str(REPO_ROOT / "service_config.json"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return {}
+
+
+def _cfg(cfg: dict, key: str, default: str) -> str:
+    """env var wins → config file → default."""
+    if key in os.environ:
+        return os.environ[key]
+    return str(cfg.get(key, default))
+
+
+_svc_cfg = _load_service_config()
+
 _DEFAULT_MODEL   = str(REPO_ROOT / "model")
-REGISTRY_DB      = os.getenv("APP_REGISTRY_DB_PATH", str(REPO_ROOT / "model" / "registry.db"))
-DATA_ROOT        = os.getenv("APP_DATA_ROOT", _DEFAULT_MODEL)
-POLL_INTERVAL    = int(os.getenv("JOB_RUNNER_POLL_INTERVAL", "10"))    # seconds
+REGISTRY_DB      = _cfg(_svc_cfg, "APP_REGISTRY_DB_PATH", str(REPO_ROOT / "model" / "registry.db"))
+DATA_ROOT        = _cfg(_svc_cfg, "APP_DATA_ROOT", _DEFAULT_MODEL)
+POLL_INTERVAL    = int(_cfg(_svc_cfg, "JOB_RUNNER_POLL_INTERVAL", "10"))    # seconds
 HEARTBEAT_INTERVAL = 60   # seconds between heartbeat updates
-ABAQUS_CMD       = os.getenv("APP_ABAQUS_CMD", "abaqus")  # override if not in PATH
+ABAQUS_CMD       = _cfg(_svc_cfg, "APP_ABAQUS_CMD", "abaqus")  # override if not in PATH
 
 logging.basicConfig(
     level=logging.INFO,

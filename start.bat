@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 > nul
+cd /d "%~dp0"
 echo Starting ODB Service...
 
 start "ODB Web Service" cmd /k "python app.py"
