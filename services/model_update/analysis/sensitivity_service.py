@@ -4,7 +4,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -16,13 +16,22 @@ from src.l3.core.state import registry
 from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.manifest_repo import ManifestRepo
 from src.l3.services.node_table_service import get_instance_fields
-from tools.odb_client import ODBClient
+from tools.odb_client import ODBClient, _select_component_values
 
 
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
 _AGGREGATIONS = {"max_abs", "mean_abs", "max", "min", "mean"}
 _VTU_POSITION_PRIORITY = ("WHOLE_ELEMENT", "INTEGRATION_POINT", "ELEMENT_NODAL", "NODAL")
 _DSA_PARAMETER_TOKEN_RE = re.compile(r"^([A-Z_][A-Z0-9_]*?)(\d+)$", re.IGNORECASE)
+_RESPONSE_TOKEN_RE = re.compile(r"^d_([A-Z0-9_]+?)(?:_[A-Z]+)?_?$", re.IGNORECASE)
+_VECTOR_DIRECTION_ALIASES = {
+    "UX": ("U", "U1"),
+    "UY": ("U", "U2"),
+    "UZ": ("U", "U3"),
+    "RX": ("UR", "UR1"),
+    "RY": ("UR", "UR2"),
+    "RZ": ("UR", "UR3"),
+}
 
 
 def _repo_root() -> str:
@@ -817,10 +826,13 @@ def _load_project_optimization_parameters(project_id: int) -> List[dict]:
     try:
         cursor.execute(
             """
-            SELECT id, parameter_name, candidate_code, set_name, set_type, set_scope, instance_name, part_name
-            FROM t_mt_py_fem_optimization_parameter
-            WHERE pid = %s
-            ORDER BY created_at ASC, id ASC
+            SELECT op.id, op.parameter_name, op.candidate_code, op.set_name, op.set_type, op.set_scope,
+                   op.instance_name, op.part_name, cand.scalar_value
+            FROM t_mt_py_fem_optimization_parameter op
+            LEFT JOIN t_mt_py_fem_parameter_candidate cand
+              ON cand.pid = op.pid AND cand.candidate_code = op.candidate_code
+            WHERE op.pid = %s
+            ORDER BY op.created_at ASC, op.id ASC
             """,
             (project_id,),
         )
@@ -927,6 +939,79 @@ def _build_dsa_design_parameter_name_map(model) -> Dict[int, str]:
     return mapping
 
 
+def _flatten_design_response_requests(model, *, step_name: Optional[str]) -> List[dict]:
+    rows: List[dict] = []
+    for response in list(getattr(model, "design_responses", []) or []):
+        response_step = getattr(response, "step_name", None)
+        if step_name and response_step not in (None, step_name):
+            continue
+        for request in list(getattr(response, "requests", []) or []):
+            rows.append(
+                {
+                    "step_name": response_step,
+                    "frequency": int(getattr(response, "frequency", 1) or 1),
+                    "region_type": str(getattr(request, "region_type", "") or "").upper(),
+                    "set_name": str(getattr(request, "set_name", "") or ""),
+                    "variables": [str(item).upper() for item in (getattr(request, "variables", []) or []) if str(item).strip()],
+                }
+            )
+    return rows
+
+
+def _parse_design_response_variable(variable: str) -> dict:
+    token = str(variable or "").strip().upper()
+    if not token:
+        raise ValidationError("design response variable is empty")
+
+    alias = _VECTOR_DIRECTION_ALIASES.get(token)
+    if alias:
+        field_name, component_name = alias
+        component_index = int(component_name[-1]) - 1
+        return {
+            "variable": token,
+            "field_name": field_name,
+            "component": component_name,
+            "component_index": component_index,
+        }
+
+    direct_component = re.fullmatch(r"([A-Z]+)(\d+)", token)
+    if direct_component:
+        field_name = direct_component.group(1)
+        component_name = token
+        component_index = int(direct_component.group(2)) - 1
+        return {
+            "variable": token,
+            "field_name": field_name,
+            "component": component_name,
+            "component_index": component_index,
+        }
+
+    return {
+        "variable": token,
+        "field_name": token,
+        "component": None,
+        "component_index": None,
+    }
+
+
+def _resolve_dsa_response_spec(model, *, step_name: Optional[str]) -> Optional[dict]:
+    requests = _flatten_design_response_requests(model, step_name=step_name)
+    specs = []
+    for request in requests:
+        variables = list(request["variables"] or [])
+        if len(variables) != 1:
+            continue
+        parsed = _parse_design_response_variable(variables[0])
+        specs.append(
+            {
+                **request,
+                **parsed,
+                "preferred_position": "NODAL" if request["region_type"] == "NODE" else None,
+            }
+        )
+    return specs
+
+
 def _resolve_dsa_parameter_row(parameter_map: Dict[str, dict], source_field_name: str) -> dict:
     if source_field_name not in parameter_map:
         raise ValidationError("DSA field has no mapped optimization parameter", {"field": source_field_name})
@@ -1024,6 +1109,208 @@ def _compose_dsa_label_map(model, parameter_row: dict, value: object) -> tuple[s
     return target_kind, {target: value for target in targets}
 
 
+def _resolve_dsa_parameter_scalar_value(model, *, parameter_name: Optional[str], target_rows: List[dict]) -> float:
+    if parameter_name:
+        parameter_def = getattr(model, "parameters", {}).get(str(parameter_name))
+        scalar_value = getattr(parameter_def, "scalar_value", None) if parameter_def is not None else None
+        if scalar_value is not None:
+            return float(scalar_value)
+
+    for row in target_rows:
+        scalar_value = row.get("scalar_value")
+        if scalar_value is not None:
+            return float(scalar_value)
+        extra_json = row.get("extra_json") or {}
+        if isinstance(extra_json, dict) and extra_json.get("scalar_value") is not None:
+            return float(extra_json["scalar_value"])
+
+    raise ValidationError(
+        "unable to resolve the current parameter value for DSA normalization",
+        {"parameter_name": parameter_name, "target_rows": target_rows[:3]},
+    )
+
+
+def _normalize_dsa_sensitivity_value(
+    sensitivity_value,
+    *,
+    parameter_value: float,
+    response_value,
+    source_field: str,
+    response_field: str,
+):
+    sens_arr = np.asarray(sensitivity_value, dtype=np.float64)
+    resp_arr = np.asarray(response_value, dtype=np.float64)
+
+    if resp_arr.size == 0:
+        raise ValidationError(
+            "response value is empty for DSA normalization",
+            {"field": source_field, "response_field": response_field},
+        )
+
+    if np.any(~np.isfinite(resp_arr)):
+        raise ValidationError(
+            "response value contains non-finite entries for DSA normalization",
+            {"field": source_field, "response_field": response_field, "response_value": response_value},
+        )
+
+    if np.any(np.isclose(resp_arr, 0.0, atol=1e-18)):
+        raise ValidationError(
+            "response value is zero and cannot be used for DSA normalization",
+            {"field": source_field, "response_field": response_field, "response_value": response_value},
+        )
+
+    normalized = (sens_arr * float(parameter_value)) / resp_arr
+    if normalized.ndim == 0:
+        return float(normalized.item())
+    values = normalized.tolist()
+    return values[0] if isinstance(values, list) and len(values) == 1 else values
+
+
+def _field_prefix_response_token(field_prefix: str) -> Optional[str]:
+    prefix = str(field_prefix or "").strip()
+    if not prefix:
+        return None
+    match = _RESPONSE_TOKEN_RE.fullmatch(prefix)
+    if not match:
+        return None
+    return str(match.group(1)).upper()
+
+
+def _design_response_token_candidates(spec: dict) -> List[str]:
+    candidates = set()
+    variable = str(spec.get("variable") or "").upper()
+    field_name = str(spec.get("field_name") or "").upper()
+    component = spec.get("component")
+    if variable:
+        candidates.add(variable)
+    if field_name:
+        candidates.add(field_name)
+    if component:
+        candidates.add(str(component).upper())
+
+    if field_name == "U":
+        candidates.update({"UR"})
+    if field_name == "UR":
+        candidates.update({"UR"})
+
+    return sorted(candidates)
+
+
+def _design_response_matches_token(spec: dict, response_token: Optional[str]) -> bool:
+    if not response_token:
+        return True
+    return str(response_token).upper() in _design_response_token_candidates(spec)
+
+
+def _safe_vtu_field_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_") or "field"
+
+
+def _dsa_response_export_field(base_name: str, response_label: object, component: Optional[str]) -> str:
+    suffix = str(response_label).replace("::", "_")
+    if component:
+        suffix = f"{suffix}_{component}"
+    base = str(base_name)
+    joiner = "" if base.endswith("_") else "_"
+    return _safe_vtu_field_name(f"{base}{joiner}{suffix}")
+
+
+def _workspace_field_meta(workspace: str, *, step: str, instance: str, field: str) -> dict:
+    workspace_abs = _workspace_path(workspace)
+    conn = _manifest_conn(workspace_abs)
+    try:
+        result_file = conn.execute(
+            "SELECT components FROM result_files WHERE step_name = ? AND field_name = ?",
+            (step, field),
+        ).fetchone()
+        if not result_file:
+            raise NotFoundError(
+                f"result file not found for step='{step}' field='{field}'",
+                {"workspace": workspace_abs, "step": step, "field": field},
+            )
+
+        rows = conn.execute(
+            """
+            SELECT DISTINCT position
+            FROM result_blocks
+            WHERE step_name = ? AND field_name = ? AND instance_name = ?
+            ORDER BY position
+            """,
+            (step, field, instance),
+        ).fetchall()
+        positions = [str(row["position"]) for row in rows]
+        if not positions:
+            raise NotFoundError(
+                f"result blocks not found for field '{field}'",
+                {"workspace": workspace_abs, "step": step, "field": field, "instance": instance},
+            )
+
+        return {
+            "field": field,
+            "components": _load_json_list(result_file["components"]),
+            "positions": positions,
+        }
+    finally:
+        conn.close()
+
+
+def _registry_field_meta(odb_id: str, *, step: str, instance: str, field: str) -> dict:
+    fields = get_instance_fields(registry, odb_id, instance, step)
+    for item in fields:
+        field_name = str(item.get("name") or item.get("field") or "")
+        if field_name == str(field):
+            return {
+                "field": field_name,
+                "components": list(item.get("components") or []),
+                "positions": list(item.get("positions") or []),
+            }
+    raise NotFoundError(
+        f"field '{field}' not found",
+        {"odb_id": odb_id, "step": step, "instance": instance, "field": field},
+    )
+
+
+def _api_field_meta(client: ODBClient, odb_id: str, *, step: str, instance: str, field: str) -> dict:
+    fields = client.get_fields(odb_id, instance, step)
+    for item in fields:
+        field_name = str(item.get("field") or "")
+        if field_name == str(field):
+            return {
+                "field": field_name,
+                "components": list(item.get("components") or []),
+                "positions": list(item.get("positions") or []),
+            }
+    raise NotFoundError(
+        f"field '{field}' not found",
+        {"odb_id": odb_id, "step": step, "instance": instance, "field": field},
+    )
+
+
+def _resolve_response_field_meta(
+    *,
+    source_mode: str,
+    workspace: Optional[str],
+    client: Optional[ODBClient],
+    odb_id: Optional[str],
+    step: str,
+    instance: str,
+    field: str,
+) -> dict:
+    if source_mode in {"workspace", "registry"}:
+        return _workspace_field_meta(str(workspace), step=step, instance=instance, field=field)
+    if source_mode == "l3_api":
+        return _api_field_meta(client, str(odb_id), step=step, instance=instance, field=field)
+    raise ValidationError("unsupported source_mode for response field resolution", {"source_mode": source_mode})
+
+
+def _pick_response_position(field_meta: dict, preferred: Optional[str]) -> str:
+    if preferred:
+        positions = [str(x) for x in (field_meta.get("positions") or [])]
+        if preferred in positions:
+            return preferred
+    return _pick_export_position(field_meta, None)
+
+
 def _workspace_result_label_map(
     workspace: str,
     *,
@@ -1033,12 +1320,14 @@ def _workspace_result_label_map(
     position: str,
     frame: int,
     aggregation: str,
+    component: Optional[str] = None,
+    component_index: Optional[int] = None,
 ) -> Dict[str, object]:
     workspace_abs = _workspace_path(workspace)
     conn = _manifest_conn(workspace_abs)
     try:
         result_file = conn.execute(
-            "SELECT file_path FROM result_files WHERE step_name = ? AND field_name = ?",
+            "SELECT file_path, components FROM result_files WHERE step_name = ? AND field_name = ?",
             (step, field),
         ).fetchone()
         if not result_file:
@@ -1077,12 +1366,19 @@ def _workspace_result_label_map(
             raise NotFoundError(f"result h5 file not found: {h5_path}", {"file_path": h5_path})
 
         label_map: Dict[str, object] = {}
+        components = _load_json_list(result_file["components"])
         with h5py.File(h5_path, "r") as h5:
             for row in block_rows:
                 group = h5[str(row["h5_path"])]
                 labels = np.asarray(group["labels"][:], dtype=np.int64)
                 data = _reduce_frame_values(group["data"][int(frame)], aggregation=aggregation)
-                for label, value in zip(labels.tolist(), data.tolist()):
+                selected, _ = _select_component_values(
+                    np.asarray(data),
+                    components,
+                    component,
+                    component_index,
+                )
+                for label, value in zip(labels.tolist(), np.asarray(selected).tolist()):
                     if isinstance(value, list) and len(value) == 1:
                         value = value[0]
                     label_map[f"{instance}::{int(label)}"] = value
@@ -1128,6 +1424,7 @@ def _export_sensitivity_vtu(
     export_items = []
     resolved_base_url = base_url or "http://127.0.0.1:18765"
     workspace_built = False
+    client: Optional[ODBClient] = None
 
     if odb_path:
         if not workspace:
@@ -1189,12 +1486,14 @@ def _export_sensitivity_vtu(
     dsa_model = parse_inp(resolved_inp_path) if selector["kind"] == "prefix" else None
     dsa_direct_target_map = build_parameter_target_map(dsa_model) if dsa_model is not None else {}
     dsa_design_parameter_name_map = _build_dsa_design_parameter_name_map(dsa_model) if dsa_model is not None else {}
+    dsa_response_specs = _resolve_dsa_response_spec(dsa_model, step_name=discovery["step"]) if dsa_model is not None else []
     dsa_parameter_map = (
         _build_dsa_parameter_row_map(dsa_parameter_rows, selector["field_prefix"], discovery["field_names"])
         if selector["kind"] == "prefix" and dsa_parameter_rows
         else {}
     )
     export_field_name = selector["field_prefix"] if selector["kind"] == "prefix" else None
+    response_value_cache: Dict[Tuple[str, str, str, str, Optional[str], Optional[int], int, str], object] = {}
     for instance_name in discovery["instances"]:
         for field_meta in discovery["per_instance"][instance_name]:
             source_field_name = field_meta["field"]
@@ -1224,7 +1523,6 @@ def _export_sensitivity_vtu(
             label_map = _normalize_vtu_label_map(label_map)
             if selector["kind"] == "prefix":
                 parameter_token = _extract_dsa_field_token(selector["field_prefix"], source_field_name)
-                dsa_value = _extract_single_dsa_result_value(label_map, source_field=source_field_name)
                 direct_target_rows = list(dsa_direct_target_map.get(parameter_token, []))
                 mapped_parameter_name = parameter_token
                 token_match = _DSA_PARAMETER_TOKEN_RE.fullmatch(parameter_token)
@@ -1244,30 +1542,218 @@ def _export_sensitivity_vtu(
                     mapped_parameter_name = str(parameter_row.get("parameter_name") or parameter_token)
                     mapping_mode = "optimization_parameter"
 
-                for target_row in target_rows:
-                    target, composed_map = _compose_dsa_label_map(dsa_model, target_row, dsa_value)
-                    if target == "point":
-                        _merge_vtu_result_map(
-                            node_results.setdefault(current_export_field, {}),
-                            composed_map,
-                            details={
-                                "export_field": current_export_field,
+                normalized = False
+                response_field_name = None
+                response_component = None
+                response_position = None
+                response_value = None
+                export_value_map = None
+                response_token = _field_prefix_response_token(selector["field_prefix"])
+                response_label_map = None
+                chosen_response_spec = None
+                if dsa_response_specs:
+                    candidate_specs = [
+                        spec for spec in dsa_response_specs if _design_response_matches_token(spec, response_token)
+                    ] or list(dsa_response_specs)
+                    best_score = -1
+                    best_specs = []
+                    best_response_label_map = None
+                    best_position = None
+
+                    for spec in candidate_specs:
+                        candidate_field_name = str(spec["field_name"])
+                        candidate_component = spec.get("component")
+                        if source_mode in {"workspace", "registry"}:
+                            candidate_dsa_map = _workspace_result_label_map(
+                                resolved_workspace,
+                                step=discovery["step"],
+                                field=source_field_name,
+                                instance=instance_name,
+                                position=selected_position,
+                                frame=frame,
+                                aggregation=aggregation,
+                                component=candidate_component,
+                                component_index=spec.get("component_index"),
+                            )
+                        else:
+                            candidate_dsa_map = client.get_result_label_map(
+                                odb_id=odb_id,
+                                instance=instance_name,
+                                step=discovery["step"],
+                                field=source_field_name,
+                                position=selected_position,
+                                frame=frame,
+                                aggregation=aggregation,
+                                component=candidate_component,
+                                component_index=spec.get("component_index"),
+                                scoped=True,
+                            )
+                        candidate_dsa_map = _normalize_vtu_label_map(candidate_dsa_map)
+                        if not candidate_dsa_map:
+                            continue
+
+                        response_field_meta = _resolve_response_field_meta(
+                            source_mode=source_mode,
+                            workspace=resolved_workspace,
+                            client=client,
+                            odb_id=odb_id,
+                            step=discovery["step"],
+                            instance=instance_name,
+                            field=candidate_field_name,
+                        )
+                        candidate_position = _pick_response_position(
+                            response_field_meta,
+                            spec.get("preferred_position"),
+                        )
+                        response_cache_key = (
+                            str(instance_name),
+                            str(discovery["step"]),
+                            candidate_field_name,
+                            candidate_position,
+                            candidate_component,
+                            spec.get("component_index"),
+                            int(frame),
+                            str(aggregation),
+                        )
+                        if response_cache_key not in response_value_cache:
+                            if source_mode in {"workspace", "registry"}:
+                                cached_response_map = _workspace_result_label_map(
+                                    resolved_workspace,
+                                    step=discovery["step"],
+                                    field=candidate_field_name,
+                                    instance=instance_name,
+                                    position=candidate_position,
+                                    frame=frame,
+                                    aggregation=aggregation,
+                                    component=candidate_component,
+                                    component_index=spec.get("component_index"),
+                                )
+                            else:
+                                cached_response_map = client.get_result_label_map(
+                                    odb_id=odb_id,
+                                    instance=instance_name,
+                                    step=discovery["step"],
+                                    field=candidate_field_name,
+                                    position=candidate_position,
+                                    frame=frame,
+                                    aggregation=aggregation,
+                                    component=candidate_component,
+                                    component_index=spec.get("component_index"),
+                                    scoped=True,
+                                )
+                            response_value_cache[response_cache_key] = _normalize_vtu_label_map(cached_response_map)
+
+                        candidate_response_label_map = response_value_cache[response_cache_key]
+                        overlap = sorted(set(candidate_dsa_map.keys()) & set(candidate_response_label_map.keys()))
+                        score = len(overlap)
+                        if score <= 0:
+                            continue
+                        if score > best_score:
+                            best_score = score
+                            best_specs = [spec]
+                            best_response_label_map = candidate_response_label_map
+                            best_position = candidate_position
+                            label_map = candidate_dsa_map
+                        elif score == best_score:
+                            best_specs.append(spec)
+
+                    if len(best_specs) == 1:
+                        chosen_response_spec = best_specs[0]
+                        response_label_map = dict(best_response_label_map or {})
+                        response_field_name = str(chosen_response_spec["field_name"])
+                        response_component = chosen_response_spec.get("component")
+                        response_position = best_position
+                    elif len(best_specs) > 1:
+                        raise ValidationError(
+                            "multiple design responses match the requested DSA field",
+                            {
+                                "field_prefix": selector["field_prefix"],
                                 "source_field": source_field_name,
-                                "parameter_name": mapped_parameter_name,
-                                "set_name": target_row.get("set_name"),
+                                "step": discovery["step"],
+                                "instance": instance_name,
+                                "matches": [
+                                    {
+                                        "field_name": str(spec["field_name"]),
+                                        "component": spec.get("component"),
+                                        "set_name": spec.get("set_name"),
+                                        "region_type": spec.get("region_type"),
+                                    }
+                                    for spec in best_specs
+                                ],
                             },
                         )
-                    else:
-                        _merge_vtu_result_map(
-                            cell_results.setdefault(current_export_field, {}),
-                            composed_map,
-                            details={
-                                "export_field": current_export_field,
+
+                if chosen_response_spec and response_label_map:
+                    parameter_value = _resolve_dsa_parameter_scalar_value(
+                        dsa_model,
+                        parameter_name=mapped_parameter_name,
+                        target_rows=target_rows,
+                    )
+                    matched_labels = sorted(set(label_map.keys()) & set(response_label_map.keys()))
+                    if not matched_labels:
+                        raise ValidationError(
+                            "no overlapping response labels were found for DSA normalization",
+                            {
                                 "source_field": source_field_name,
-                                "parameter_name": mapped_parameter_name,
-                                "set_name": target_row.get("set_name"),
+                                "response_field": response_field_name,
+                                "instance": instance_name,
                             },
                         )
+                    export_value_map = {}
+                    for response_label_key in matched_labels:
+                        normalized_value = _normalize_dsa_sensitivity_value(
+                            label_map[response_label_key],
+                            parameter_value=parameter_value,
+                            response_value=response_label_map[response_label_key],
+                            source_field=source_field_name,
+                            response_field=response_field_name,
+                        )
+                        export_name = (
+                            current_export_field
+                            if len(matched_labels) == 1
+                            else _dsa_response_export_field(
+                                current_export_field,
+                                response_label_key,
+                                response_component,
+                            )
+                        )
+                        export_value_map[export_name] = normalized_value
+                    normalized = True
+                    response_value = (
+                        next(iter(response_label_map.values()))
+                        if len(response_label_map) == 1
+                        else None
+                    )
+
+                if export_value_map is None:
+                    raw_dsa_value = _extract_single_dsa_result_value(label_map, source_field=source_field_name)
+                    export_value_map = {current_export_field: raw_dsa_value}
+
+                for export_name, dsa_value in export_value_map.items():
+                    for target_row in target_rows:
+                        target, composed_map = _compose_dsa_label_map(dsa_model, target_row, dsa_value)
+                        if target == "point":
+                            _merge_vtu_result_map(
+                                node_results.setdefault(export_name, {}),
+                                composed_map,
+                                details={
+                                    "export_field": export_name,
+                                    "source_field": source_field_name,
+                                    "parameter_name": mapped_parameter_name,
+                                    "set_name": target_row.get("set_name"),
+                                },
+                            )
+                        else:
+                            _merge_vtu_result_map(
+                                cell_results.setdefault(export_name, {}),
+                                composed_map,
+                                details={
+                                    "export_field": export_name,
+                                    "source_field": source_field_name,
+                                    "parameter_name": mapped_parameter_name,
+                                    "set_name": target_row.get("set_name"),
+                                },
+                            )
                 target = "mixed" if len({str(row.get("set_type")) for row in target_rows}) > 1 else (
                     "point" if target_rows and str(target_rows[0].get("set_type")).upper() == "NSET" else "cell"
                 )
@@ -1285,6 +1771,12 @@ def _export_sensitivity_vtu(
                     "export_field": current_export_field,
                     "parameter_name": mapped_parameter_name if selector["kind"] == "prefix" else None,
                     "mapping_mode": mapping_mode if selector["kind"] == "prefix" else None,
+                    "normalized": normalized if selector["kind"] == "prefix" else None,
+                    "generated_fields": sorted(export_value_map.keys()) if selector["kind"] == "prefix" else None,
+                    "response_field": response_field_name if selector["kind"] == "prefix" else None,
+                    "response_component": response_component if selector["kind"] == "prefix" else None,
+                    "response_position": response_position if selector["kind"] == "prefix" else None,
+                    "response_value": response_value if selector["kind"] == "prefix" else None,
                     "position": selected_position,
                     "target": target,
                     "value_count": len(label_map),

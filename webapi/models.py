@@ -60,6 +60,70 @@ class CreateOptimizationParameterRequest(BaseModel):
     part_name: Optional[str] = None
 
 
+class BayesianModelUpdateRequest(BaseModel):
+    project_id: int
+    input_inp: str
+    target_responses: Any
+    parameter_scatter: Any
+    response_scatter: Any
+    output_dir: Optional[str] = None
+    odb_id: Optional[str] = None
+    base_url: Optional[str] = None
+    workspace: Optional[str] = None
+    odb_path: Optional[str] = None
+    step: Optional[str] = None
+    instances: Optional[List[str]] = None
+    field_prefix: str = "d_UR_"
+    position: Optional[str] = None
+    aggregation: str = "max_abs"
+    frame: int = 0
+    iterations: int = Field(default=1, ge=1)
+    damping: float = 1e-8
+    step_scale: float = 1.0
+    lower_bound: Optional[Any] = None
+    upper_bound: Optional[Any] = None
+    abaqus: str = "abaqus"
+    python3: Optional[str] = None
+    keep_raw: bool = False
+    timeout: int = 60
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    run_solver: bool = False
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+
+
+class TextRowReadRequest(BaseModel):
+    file_path: str
+    row: int = Field(ge=1)
+    col_start: int = Field(default=1, ge=1)
+
+
+class TextMatrixReadRequest(BaseModel):
+    file_path: str
+    row_start: int = Field(ge=1)
+    row_count: int = Field(ge=1)
+    col_start: int = Field(default=1, ge=1)
+
+
+class BayesianTextCheckRequest(BaseModel):
+    sensitivity_matrix: TextMatrixReadRequest
+    model_response: TextRowReadRequest
+    target_response: TextRowReadRequest
+    parameter_names: List[str]
+    parameter_scatter: Any
+    response_scatter: Any
+    input_inp: Optional[str] = None
+    parameter_values: Optional[Any] = None
+    damping: float = 1e-8
+    step_scale: float = 1.0
+    lower_bound: Optional[Any] = None
+    upper_bound: Optional[Any] = None
+    output_dir: Optional[str] = None
+    case_name: str = "bayesian_text_check"
+
+
 class RotationRequest(BaseModel):
     center: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0], min_length=3, max_length=3)
     axis: List[float] = Field(default_factory=lambda: [0.0, 0.0, 1.0], min_length=3, max_length=3)

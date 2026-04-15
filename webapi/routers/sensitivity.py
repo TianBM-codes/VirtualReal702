@@ -8,8 +8,9 @@ from services.model_update.analysis.sensitivity_service import (
     export_odb_sensitivity_vtu,
     get_sensitivity_overview,
 )
+from src.l3.core.errors import AppError
 
-from ..common import server_error
+from ..common import error_response, server_error, success_response
 from ..models import (
     SensitivityBuildWorkspaceRequest,
     SensitivityExportAdjointVtuRequest,
@@ -34,9 +35,12 @@ async def build_sensitivity_workspace(request: Request, body: SensitivityBuildWo
             python3=body.python3,
             keep_raw=body.keep_raw,
         )
-        return {"ok": True, "message": "sensitivity workspace built", "data": data}
+        return success_response(data, "灵敏度工作区构建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/sensitivity/overview")
@@ -44,9 +48,12 @@ async def sensitivity_overview(request: Request, body: SensitivityOverviewReques
     await log_request(request, model_to_dict(body))
     try:
         data = get_sensitivity_overview(body.workspace)
-        return {"ok": True, "message": "sensitivity overview success", "data": data}
+        return success_response(data, "灵敏度概览获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/sensitivity/table")
@@ -64,9 +71,12 @@ async def sensitivity_table(request: Request, body: SensitivityTableRequest):
             entity_labels=body.entity_labels,
             aggregation=body.aggregation,
         )
-        return {"ok": True, "message": "sensitivity table success", "data": data}
+        return success_response(data, "灵敏度表格获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/sensitivity/export/vtu")
@@ -92,9 +102,12 @@ async def sensitivity_export_vtu(request: Request, body: SensitivityExportVtuReq
             keep_raw=body.keep_raw,
             timeout=body.timeout,
         )
-        return {"ok": True, "message": "sensitivity vtu export success", "data": data}
+        return success_response(data, "灵敏度 VTU 导出成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/sensitivity/export/vtu/dsa")
@@ -120,9 +133,12 @@ async def sensitivity_export_dsa_vtu(request: Request, body: SensitivityExportDs
             keep_raw=body.keep_raw,
             timeout=body.timeout,
         )
-        return {"ok": True, "message": "dsa sensitivity vtu export success", "data": data}
+        return success_response(data, "DSA 灵敏度 VTU 导出成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/sensitivity/export/vtu/adjoint")
@@ -148,6 +164,9 @@ async def sensitivity_export_adjoint_vtu(request: Request, body: SensitivityExpo
             keep_raw=body.keep_raw,
             timeout=body.timeout,
         )
-        return {"ok": True, "message": "adjoint sensitivity vtu export success", "data": data}
+        return success_response(data, "伴随灵敏度 VTU 导出成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)

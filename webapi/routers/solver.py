@@ -7,7 +7,7 @@ from services.model_update.analysis.solver_service import (
 )
 from src.l3.core.errors import AppError
 
-from ..common import server_error
+from ..common import error_response, server_error, success_response
 from ..models import (
     AbaqusAdjointRunRequest,
     AbaqusSensitivityRunRequest,
@@ -38,11 +38,12 @@ async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRu
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
         )
-        return {"ok": True, "message": "abaqus sensitivity workflow success", "data": data}
-    except AppError:
-        raise
+        return success_response(data, "Abaqus 灵敏度流程执行成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/solver/abaqus/adjoint")
@@ -61,11 +62,12 @@ async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
         )
-        return {"ok": True, "message": "abaqus adjoint workflow success", "data": data}
-    except AppError:
-        raise
+        return success_response(data, "Abaqus 伴随流程执行成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/solver/nastran/sol103")
@@ -81,8 +83,9 @@ async def run_nastran_sol103_api(request: Request, body: NastranSol103RunRequest
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
         )
-        return {"ok": True, "message": "nastran sol103 workflow success", "data": data}
-    except AppError:
-        raise
+        return success_response(data, "Nastran SOL103 流程执行成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)

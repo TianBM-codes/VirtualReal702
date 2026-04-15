@@ -5,7 +5,7 @@ from services.model_update.analysis.inp_service import get_inp_catalog, import_i
 from services.model_update.analysis.inp_tree_service import get_inp_tree
 from src.l3.core.errors import AppError
 
-from ..common import server_error
+from ..common import error_response, server_error, success_response
 from ..models import ImportBdfRequest, ImportInpCatalogRequest, InpCatalogRequest, InpTreeRequest
 from ..utils import log_request, model_to_dict
 
@@ -21,11 +21,12 @@ async def import_bdf(request: Request, body: ImportBdfRequest):
             body.project_id,
             clear_before_insert=body.clear_before_insert,
         )
-        return {"ok": True, "message": "bdf import success", "data": result}
-    except AppError:
-        raise
+        return success_response(result, "BDF 导入成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/import/inp/catalog")
@@ -39,11 +40,12 @@ async def import_inp_catalog_api(request: Request, body: ImportInpCatalogRequest
             build_octree=body.build_octree,
             force_rebuild_octree=body.force_rebuild_octree,
         )
-        return {"ok": True, "message": "inp catalog import success", "data": result}
-    except AppError:
-        raise
+        return success_response(result, "INP 目录导入成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/catalog/inp")
@@ -51,11 +53,12 @@ async def get_inp_catalog_api(request: Request, body: InpCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
         result = get_inp_catalog(body.project_id)
-        return {"ok": True, "message": "inp catalog query success", "data": result}
-    except AppError:
-        raise
+        return success_response(result, "INP 目录查询成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/tools/inp/tree")
@@ -67,8 +70,9 @@ async def get_inp_tree_api(request: Request, body: InpTreeRequest):
             show_labels=body.show_labels,
             max_labels=body.max_labels,
         )
-        return {"ok": True, "message": "inp tree parse success", "data": result}
-    except AppError:
-        raise
+        return success_response(result, "INP 树解析成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
-        raise server_error(exc) from exc
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)

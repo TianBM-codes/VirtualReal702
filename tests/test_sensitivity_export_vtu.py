@@ -1,7 +1,18 @@
 from pathlib import Path
 
 from services.model_update.analysis import sensitivity_service
-from src.inp.model import Assembly, DesignParameter, Elset, InpModel, Instance, Part, Section
+from src.inp.model import (
+    Assembly,
+    DesignParameter,
+    DesignResponse,
+    DesignResponseRequest,
+    Elset,
+    InpModel,
+    Instance,
+    ParameterDefinition,
+    Part,
+    Section,
+)
 
 
 class _FakeODBClient:
@@ -609,6 +620,301 @@ def test_export_odb_sensitivity_vtu_maps_t_index_to_design_parameter_name(monkey
 
     assert captured["cell_results"] == {
         "d_UR_": {"INST_A::11": 8.88, "INST_A::12": 8.88}
+    }
+
+
+def test_export_odb_sensitivity_vtu_normalizes_using_design_response_component(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+
+    captured = {}
+    calls = []
+
+    class _NormalizedClient(_FakeODBClient):
+        def get_fields(self, odb_id, instance, step):
+            return [
+                {
+                    "field": "d_UR_T10",
+                    "positions": ["INTEGRATION_POINT"],
+                    "components": ["U1", "U2", "U3"],
+                },
+                {
+                    "field": "U",
+                    "positions": ["NODAL"],
+                    "components": ["U1", "U2", "U3"],
+                },
+            ]
+
+        def get_result_label_map(self, **kwargs):
+            calls.append(dict(kwargs))
+            if kwargs["field"] == "d_UR_T10":
+                if kwargs.get("component") is not None:
+                    assert kwargs["component"] == "U2"
+                return {f"{kwargs['instance']}::1": 5.0}
+            if kwargs["field"] == "U":
+                assert kwargs["component"] == "U2"
+                return {f"{kwargs['instance']}::1": 10.0}
+            raise AssertionError(f"unexpected field {kwargs['field']}")
+
+    model = InpModel(
+        parts={
+            "P1": Part(
+                name="P1",
+                elsets={"SET_SHELL": Elset(name="SET_SHELL", elem_labels=[10, 20])},
+                sections=[
+                    Section(
+                        section_type="SHELL",
+                        elset_name="SET_SHELL",
+                        material_name="MAT1",
+                        thickness_expression="<T10>",
+                        thickness_parameter="T10",
+                    )
+                ],
+            )
+        },
+        assembly=Assembly(instances={"INST_A": Instance(name="INST_A", part_name="P1")}),
+        parameters={"T10": ParameterDefinition(name="T10", scalar_value=2.0)},
+        design_parameters=[DesignParameter(name="T10", order=1)],
+        design_responses=[
+            DesignResponse(
+                step_name="Step-1",
+                frequency=1,
+                requests=[DesignResponseRequest(region_type="NODE", set_name="NRESP", variables=["U2"])],
+            )
+        ],
+    )
+
+    monkeypatch.setattr(sensitivity_service, "ODBClient", _NormalizedClient)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_resolve_inp_path_from_project",
+        lambda project_id: str(inp_path),
+    )
+    monkeypatch.setattr(sensitivity_service, "parse_inp", lambda path: model)
+
+    import tools.inp_to_vtu as inp_to_vtu
+
+    def fake_write_vtu(inp, output, *, node_results=None, cell_results=None, apply_transforms=True):
+        captured["cell_results"] = cell_results
+
+    monkeypatch.setattr(inp_to_vtu, "write_vtu", fake_write_vtu)
+
+    sensitivity_service.export_odb_sensitivity_vtu(
+        project_id=1001,
+        odb_id="odb-1",
+        output_vtu=str(tmp_path / "normalized_u2.vtu"),
+        base_url="http://127.0.0.1:18765",
+    )
+
+    assert captured["cell_results"] == {
+        "d_UR_": {"INST_A::10": 1.0, "INST_A::20": 1.0}
+    }
+    dsa_calls = [item for item in calls if item["field"] == "d_UR_T10" and item.get("component") == "U2"]
+    response_calls = [item for item in calls if item["field"] == "U"]
+    assert len(dsa_calls) == 2
+    assert len(response_calls) == 2
+    assert all(item["component"] == "U2" for item in dsa_calls)
+    assert all(item["component"] == "U2" for item in response_calls)
+
+
+def test_export_odb_sensitivity_vtu_matches_among_multiple_design_responses(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+
+    captured = {}
+    calls = []
+
+    class _MultiResponseClient(_FakeODBClient):
+        def get_fields(self, odb_id, instance, step):
+            return [
+                {
+                    "field": "d_UR_T10",
+                    "positions": ["INTEGRATION_POINT"],
+                    "components": ["U1", "U2", "U3"],
+                },
+                {
+                    "field": "U",
+                    "positions": ["NODAL"],
+                    "components": ["U1", "U2", "U3"],
+                },
+                {
+                    "field": "S",
+                    "positions": ["INTEGRATION_POINT"],
+                    "components": ["S11", "S22"],
+                },
+            ]
+
+        def get_result_label_map(self, **kwargs):
+            calls.append(dict(kwargs))
+            if kwargs["field"] == "d_UR_T10":
+                if kwargs.get("component") is not None:
+                    assert kwargs["component"] == "U2"
+                return {f"{kwargs['instance']}::1": 3.0}
+            if kwargs["field"] == "U":
+                assert kwargs["component"] == "U2"
+                return {f"{kwargs['instance']}::1": 6.0}
+            if kwargs["field"] == "S":
+                return {f"{kwargs['instance']}::99": 100.0}
+            raise AssertionError(f"unexpected field {kwargs['field']}")
+
+    model = InpModel(
+        parts={
+            "P1": Part(
+                name="P1",
+                elsets={"SET_SHELL": Elset(name="SET_SHELL", elem_labels=[10])},
+                sections=[
+                    Section(
+                        section_type="SHELL",
+                        elset_name="SET_SHELL",
+                        material_name="MAT1",
+                        thickness_expression="<T10>",
+                        thickness_parameter="T10",
+                    )
+                ],
+            )
+        },
+        assembly=Assembly(instances={"INST_A": Instance(name="INST_A", part_name="P1")}),
+        parameters={"T10": ParameterDefinition(name="T10", scalar_value=2.0)},
+        design_parameters=[DesignParameter(name="T10", order=1)],
+        design_responses=[
+            DesignResponse(
+                step_name="Step-1",
+                frequency=1,
+                requests=[DesignResponseRequest(region_type="ELEMENT", set_name="ESET", variables=["S11"])],
+            ),
+            DesignResponse(
+                step_name="Step-1",
+                frequency=1,
+                requests=[DesignResponseRequest(region_type="NODE", set_name="NRESP", variables=["U2"])],
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(sensitivity_service, "ODBClient", _MultiResponseClient)
+    monkeypatch.setattr(sensitivity_service, "_load_project_optimization_parameters", lambda project_id: [])
+    monkeypatch.setattr(sensitivity_service, "_resolve_inp_path_from_project", lambda project_id: str(inp_path))
+    monkeypatch.setattr(sensitivity_service, "parse_inp", lambda path: model)
+
+    import tools.inp_to_vtu as inp_to_vtu
+
+    def fake_write_vtu(inp, output, *, node_results=None, cell_results=None, apply_transforms=True):
+        captured["cell_results"] = cell_results
+
+    monkeypatch.setattr(inp_to_vtu, "write_vtu", fake_write_vtu)
+
+    sensitivity_service.export_odb_sensitivity_vtu(
+        project_id=1001,
+        odb_id="odb-1",
+        output_vtu=str(tmp_path / "multi_design_response.vtu"),
+        base_url="http://127.0.0.1:18765",
+    )
+
+    assert captured["cell_results"] == {"d_UR_": {"INST_A::10": 1.0}}
+    assert all(item["field"] != "S" or item.get("component") is None for item in calls)
+
+
+def test_export_odb_sensitivity_vtu_splits_multiple_response_locations(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+
+    captured = {}
+
+    class _MultiLocationClient(_FakeODBClient):
+        def get_overview(self, odb_id):
+            return {
+                "default_step": "Step-1",
+                "instances": ["INST_A"],
+            }
+
+        def get_fields(self, odb_id, instance, step):
+            return [
+                {
+                    "field": "d_UR_T10",
+                    "positions": ["INTEGRATION_POINT"],
+                    "components": ["U1", "U2", "U3"],
+                },
+                {
+                    "field": "U",
+                    "positions": ["NODAL"],
+                    "components": ["U1", "U2", "U3"],
+                },
+            ]
+
+        def get_result_label_map(self, **kwargs):
+            if kwargs["field"] == "d_UR_T10":
+                if kwargs.get("component") is None:
+                    return {
+                        f"{kwargs['instance']}::1": [0.0, 5.0, 0.0],
+                        f"{kwargs['instance']}::2": [0.0, 10.0, 0.0],
+                    }
+                assert kwargs["component"] == "U2"
+                return {
+                    f"{kwargs['instance']}::1": 5.0,
+                    f"{kwargs['instance']}::2": 10.0,
+                }
+            if kwargs["field"] == "U":
+                assert kwargs["component"] == "U2"
+                return {
+                    f"{kwargs['instance']}::1": 10.0,
+                    f"{kwargs['instance']}::2": 20.0,
+                }
+            raise AssertionError(f"unexpected field {kwargs['field']}")
+
+    model = InpModel(
+        parts={
+            "P1": Part(
+                name="P1",
+                elsets={"SET_SHELL": Elset(name="SET_SHELL", elem_labels=[10])},
+                sections=[
+                    Section(
+                        section_type="SHELL",
+                        elset_name="SET_SHELL",
+                        material_name="MAT1",
+                        thickness_expression="<T10>",
+                        thickness_parameter="T10",
+                    )
+                ],
+            )
+        },
+        assembly=Assembly(instances={"INST_A": Instance(name="INST_A", part_name="P1")}),
+        parameters={"T10": ParameterDefinition(name="T10", scalar_value=2.0)},
+        design_parameters=[DesignParameter(name="T10", order=1)],
+        design_responses=[
+            DesignResponse(
+                step_name="Step-1",
+                frequency=1,
+                requests=[DesignResponseRequest(region_type="NODE", set_name="NRESP", variables=["U2"])],
+            )
+        ],
+    )
+
+    monkeypatch.setattr(sensitivity_service, "ODBClient", _MultiLocationClient)
+    monkeypatch.setattr(sensitivity_service, "_load_project_optimization_parameters", lambda project_id: [])
+    monkeypatch.setattr(sensitivity_service, "_resolve_inp_path_from_project", lambda project_id: str(inp_path))
+    monkeypatch.setattr(sensitivity_service, "parse_inp", lambda path: model)
+
+    import tools.inp_to_vtu as inp_to_vtu
+
+    def fake_write_vtu(inp, output, *, node_results=None, cell_results=None, apply_transforms=True):
+        captured["cell_results"] = cell_results
+
+    monkeypatch.setattr(inp_to_vtu, "write_vtu", fake_write_vtu)
+
+    sensitivity_service.export_odb_sensitivity_vtu(
+        project_id=1001,
+        odb_id="odb-1",
+        output_vtu=str(tmp_path / "multi_location.vtu"),
+        base_url="http://127.0.0.1:18765",
+    )
+
+    assert captured["cell_results"] == {
+        "d_UR_INST_A_1_U2": {"INST_A::10": 1.0},
+        "d_UR_INST_A_2_U2": {"INST_A::10": 1.0},
     }
 
 
