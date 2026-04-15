@@ -53,6 +53,7 @@ class CreateOptimizationParameterRequest(BaseModel):
     candidate_code: str
     set_name: str
     parameter_name: Optional[str] = None
+    scatter: Optional[float] = None
     description: str = ""
     set_type: Optional[str] = None
     set_scope: Optional[str] = None
@@ -64,8 +65,8 @@ class BayesianModelUpdateRequest(BaseModel):
     project_id: int
     input_inp: str
     target_responses: Any
-    parameter_scatter: Any
-    response_scatter: Any
+    parameter_scatter: Any = None
+    response_scatter: Any = None
     output_dir: Optional[str] = None
     odb_id: Optional[str] = None
     base_url: Optional[str] = None
@@ -74,6 +75,7 @@ class BayesianModelUpdateRequest(BaseModel):
     step: Optional[str] = None
     instances: Optional[List[str]] = None
     field_prefix: str = "d_UR_"
+    response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
     frame: int = 0
@@ -112,8 +114,8 @@ class BayesianTextCheckRequest(BaseModel):
     model_response: TextRowReadRequest
     target_response: TextRowReadRequest
     parameter_names: List[str]
-    parameter_scatter: Any
-    response_scatter: Any
+    parameter_scatter: Any = None
+    response_scatter: Any = None
     input_inp: Optional[str] = None
     parameter_values: Optional[Any] = None
     damping: float = 1e-8
@@ -174,6 +176,7 @@ class SensitivityExportVtuBaseRequest(BaseModel):
     step: Optional[str] = None
     instances: Optional[List[str]] = None
     field_prefix: str = "d_UR_"
+    response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
     frame: int = 0

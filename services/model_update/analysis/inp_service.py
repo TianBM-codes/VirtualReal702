@@ -673,6 +673,7 @@ def _extract_candidates(model):
             "source_name": source_name,
             "source_path": source_path,
             "scalar_value": _safe_float(scalar_value),
+            "scatter": _DEFAULT_PARAMETER_SCATTER,
             "unit": unit,
             "extra_json": extra or {},
         })
@@ -853,6 +854,9 @@ def _extract_sets(model):
             })
 
     return sets
+
+
+_DEFAULT_PARAMETER_SCATTER = 0.25
 
 
 def import_inp_catalog(file_path, project_id, clear_before_insert=True,
@@ -1064,8 +1068,8 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
         candidate_sql = """
         INSERT INTO t_mt_py_fem_parameter_candidate
         (pid, candidate_code, candidate_name, keyword_name, source_scope, source_name,
-         source_path, scalar_value, unit, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         source_path, scalar_value, scatter, unit, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             candidate_name = VALUES(candidate_name),
             keyword_name = VALUES(keyword_name),
@@ -1073,6 +1077,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             source_name = VALUES(source_name),
             source_path = VALUES(source_path),
             scalar_value = VALUES(scalar_value),
+            scatter = VALUES(scatter),
             unit = VALUES(unit),
             extra_json = VALUES(extra_json)
         """
@@ -1086,6 +1091,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 item["source_name"],
                 item["source_path"],
                 item["scalar_value"],
+                float(item.get("scatter", _DEFAULT_PARAMETER_SCATTER)),
                 item["unit"],
                 _json_dumps(item["extra_json"]),
             ))
@@ -1202,7 +1208,7 @@ def get_inp_catalog(project_id):
 
         cursor.execute("""
             SELECT candidate_code, candidate_name, keyword_name, source_scope, source_name,
-                   source_path, scalar_value, unit, extra_json
+                   source_path, scalar_value, scatter, unit, extra_json
             FROM t_mt_py_fem_parameter_candidate
             WHERE pid = %s
             ORDER BY keyword_name, candidate_code
@@ -1219,7 +1225,7 @@ def get_inp_catalog(project_id):
 
         cursor.execute("""
             SELECT parameter_name, candidate_code, set_name, set_type, set_scope,
-                   instance_name, part_name, description, created_at
+                   instance_name, part_name, scatter, description, created_at
             FROM t_mt_py_fem_optimization_parameter
             WHERE pid = %s
             ORDER BY created_at DESC, parameter_name
@@ -1288,6 +1294,7 @@ def get_inp_catalog(project_id):
 
 
 def create_optimization_parameter(project_id, candidate_code, set_name, parameter_name=None,
+                                  scatter=None,
                                   description="", set_type=None, set_scope=None,
                                   instance_name=None, part_name=None):
     ensure_tables_exist()
@@ -1295,7 +1302,7 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT candidate_code, candidate_name
+            SELECT candidate_code, candidate_name, scatter
             FROM t_mt_py_fem_parameter_candidate
             WHERE pid = %s AND candidate_code = %s
         """, (project_id, candidate_code))
@@ -1331,10 +1338,18 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
         if not parameter_name:
             parameter_name = f"{candidate_code}@{set_row['set_name']}"
 
+        resolved_scatter = float(
+            candidate.get("scatter", _DEFAULT_PARAMETER_SCATTER)
+            if scatter is None
+            else scatter
+        )
+        if resolved_scatter <= 0:
+            raise ValueError("scatter must be > 0")
+
         cursor.execute("""
         INSERT INTO t_mt_py_fem_optimization_parameter
-        (pid, parameter_name, candidate_code, set_name, set_type, set_scope, instance_name, part_name, description)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (pid, parameter_name, candidate_code, set_name, set_type, set_scope, instance_name, part_name, scatter, description)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             project_id,
             parameter_name,
@@ -1344,6 +1359,7 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
             set_row["set_scope"],
             set_row["instance_name"],
             set_row["part_name"],
+            resolved_scatter,
             description or "",
         ))
 
@@ -1364,6 +1380,7 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
             "set_scope": set_row["set_scope"],
             "instance_name": set_row["instance_name"],
             "part_name": set_row["part_name"],
+            "scatter": resolved_scatter,
             "description": description or "",
         }
     except Exception:

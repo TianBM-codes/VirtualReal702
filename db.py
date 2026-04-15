@@ -257,6 +257,7 @@ CREATE_TABLE_SQL_LIST = [
         source_name VARCHAR(200) NOT NULL COMMENT '来源名称',
         source_path VARCHAR(255) NOT NULL COMMENT '解析路径',
         scalar_value DOUBLE NULL COMMENT '当前数值',
+        scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '默认离散度',
         unit VARCHAR(50) NULL COMMENT '单位',
         extra_json JSON NULL COMMENT '扩展信息',
         PRIMARY KEY (id),
@@ -291,7 +292,7 @@ CREATE_TABLE_SQL_LIST = [
         set_scope VARCHAR(32) NOT NULL COMMENT '集合作用域',
         instance_name VARCHAR(200) NULL COMMENT '实例名称',
         part_name VARCHAR(200) NULL COMMENT '零件名称',
-        scatter FLOAT NOT NULL COMMENT '离散度',
+        scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '离散度',
         lower_bound DOUBLE NULL COMMENT '优化下界',
         upper_bound DOUBLE NULL COMMENT '优化上界',
         value DOUBLE NULL COMMENT '当前值',
@@ -678,6 +679,16 @@ def ensure_tables_exist():
     try:
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
+        cursor.execute("SHOW COLUMNS FROM t_mt_py_fem_parameter_candidate LIKE 'scatter'")
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "ALTER TABLE t_mt_py_fem_parameter_candidate "
+                "ADD COLUMN scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '默认离散度' AFTER scalar_value"
+            )
+        cursor.execute(
+            "ALTER TABLE t_mt_py_fem_optimization_parameter "
+            "MODIFY COLUMN scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '离散度'"
+        )
         conn.commit()
     except Exception:
         conn.rollback()

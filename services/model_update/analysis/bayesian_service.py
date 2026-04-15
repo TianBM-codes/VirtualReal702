@@ -163,6 +163,48 @@ def _vector_from_input(
     )
 
 
+def _default_scatter_vector(
+    items: Sequence[dict],
+    *,
+    default_value: float,
+    metadata_key: Optional[str] = None,
+) -> List[float]:
+    values: List[float] = []
+    for item in items:
+        value = item.get(metadata_key) if metadata_key else None
+        if value is None:
+            values.append(float(default_value))
+            continue
+        numeric = float(value)
+        if numeric <= 0:
+            raise ValidationError(
+                "scatter must be > 0",
+                {"metadata_key": metadata_key, "item": dict(item), "value": value},
+            )
+        values.append(numeric)
+    return values
+
+
+def _resolve_scatter_vector(
+    raw_value: Any,
+    items: Sequence[dict],
+    *,
+    label: str,
+    key_candidates: Sequence[str],
+    default_value: float,
+    metadata_key: Optional[str] = None,
+) -> np.ndarray:
+    if raw_value is None:
+        return np.asarray(
+            _default_scatter_vector(items, default_value=default_value, metadata_key=metadata_key),
+            dtype=np.float64,
+        )
+    return np.asarray(
+        _vector_from_input(raw_value, items, label=label, key_candidates=key_candidates),
+        dtype=np.float64,
+    )
+
+
 def _save_json(path: Path, payload: Any) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_clone_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -295,7 +337,7 @@ def bayesian_update_normalized(
     Dp = np.diag(p_ref)
     y = 100.0 * delta_r.reshape(-1, 1) / np.maximum(r_model.reshape(-1, 1), eps)
 
-    Cp_n = np.diag(1.0 / np.maximum(p_scatter, eps) ** 2)
+    Cp_n = 2.0 * np.diag(1.0 / np.maximum(p_scatter, eps) ** 2)
     Cr_n = np.diag(1.0 / np.maximum(r_scatter, eps) ** 2)
     Cp_n_eff = Cp_n + float(damping) * np.eye(len(p_current))
 
@@ -395,6 +437,7 @@ def build_dsa_normalized_sensitivity_matrix(
     step: Optional[str] = None,
     instances: Optional[List[str]] = None,
     field_prefix: str = "d_UR_",
+    response_component: Optional[str] = None,
     position: Optional[str] = None,
     aggregation: str = "max_abs",
     frame: int = 0,
@@ -488,6 +531,11 @@ def build_dsa_normalized_sensitivity_matrix(
             "no usable design response definition was found in the inp file",
             {"inp_path": resolved_inp_path, "step": discovery["step"]},
         )
+    selected_response_specs, explicit_response = _sens._select_dsa_response_specs(
+        list(dsa_response_specs),
+        field_prefix=field_prefix,
+        response_component=response_component,
+    )
 
     response_value_cache: Dict[Tuple[str, str, str, str, Optional[str], Optional[int], int, str], Dict[str, Any]] = {}
     row_order: List[str] = []
@@ -523,10 +571,7 @@ def build_dsa_normalized_sensitivity_matrix(
                 mapped_parameter_name = str(parameter_row.get("parameter_name") or parameter_token)
                 mapping_mode = "optimization_parameter"
 
-            response_token = _sens._field_prefix_response_token(field_prefix)
-            candidate_specs = [
-                spec for spec in dsa_response_specs if _sens._design_response_matches_token(spec, response_token)
-            ] or list(dsa_response_specs)
+            candidate_specs = list(selected_response_specs)
 
             best_score = -1
             best_specs = []
@@ -537,8 +582,16 @@ def build_dsa_normalized_sensitivity_matrix(
 
             for spec in candidate_specs:
                 candidate_field_name = str(spec["field_name"])
-                candidate_component = spec.get("component")
-                candidate_component_index = spec.get("component_index")
+                candidate_component = (
+                    explicit_response["component"]
+                    if explicit_response is not None
+                    else spec.get("component")
+                )
+                candidate_component_index = (
+                    explicit_response["component_index"]
+                    if explicit_response is not None
+                    else spec.get("component_index")
+                )
 
                 if source_mode in {"workspace", "registry"}:
                     candidate_dsa_map = _sens._workspace_result_label_map(
@@ -659,8 +712,16 @@ def build_dsa_normalized_sensitivity_matrix(
 
             chosen_response_spec = best_specs[0]
             response_field_name = str(chosen_response_spec["field_name"])
-            response_component = chosen_response_spec.get("component")
-            if response_component is None and best_response_field_meta is not None:
+            resolved_response_component = (
+                explicit_response["component"]
+                if explicit_response is not None
+                else chosen_response_spec.get("component")
+            )
+            if (
+                explicit_response is None
+                and resolved_response_component is None
+                and best_response_field_meta is not None
+            ):
                 (
                     best_sensitivity_map,
                     best_response_map,
@@ -675,7 +736,7 @@ def build_dsa_normalized_sensitivity_matrix(
                     instance_name=str(instance_name),
                 )
                 if inferred_component is not None:
-                    response_component = inferred_component
+                    resolved_response_component = inferred_component
             parameter_value = _sens._resolve_dsa_parameter_scalar_value(
                 dsa_model,
                 parameter_name=mapped_parameter_name,
@@ -689,6 +750,11 @@ def build_dsa_normalized_sensitivity_matrix(
                 "parameter_name": mapped_parameter_name,
                 "parameter_value": float(parameter_value),
                 "mapping_mode": mapping_mode,
+                "scatter": float(
+                    parameter_row.get("scatter", _sens._DEFAULT_PARAMETER_SCATTER)
+                    if mapping_mode == "optimization_parameter"
+                    else _sens._DEFAULT_PARAMETER_SCATTER
+                ),
             }
             if existing_column_meta is not None and existing_column_meta != column_meta:
                 raise ValidationError(
@@ -709,7 +775,7 @@ def build_dsa_normalized_sensitivity_matrix(
                 row_key = _response_row_key(
                     instance=str(instance_name),
                     response_field=response_field_name,
-                    response_component=response_component,
+                    response_component=resolved_response_component,
                     response_position=str(best_position),
                     response_label=str(response_label),
                 )
@@ -729,7 +795,7 @@ def build_dsa_normalized_sensitivity_matrix(
                         "row_key": row_key,
                         "instance": str(instance_name),
                         "response_field": response_field_name,
-                        "response_component": response_component,
+                        "response_component": resolved_response_component,
                         "response_position": str(best_position),
                         "response_label": str(response_label),
                     }
@@ -787,6 +853,7 @@ def build_dsa_normalized_sensitivity_matrix(
         "frame": int(frame),
         "aggregation": aggregation,
         "field_prefix": field_prefix,
+        "response_component": explicit_response["component"] if explicit_response is not None else None,
         "response_rows": ordered_rows,
         "parameter_columns": ordered_columns,
         "response_values": response_values,
@@ -867,8 +934,8 @@ def run_bayesian_update_workflow(
     project_id: int,
     input_inp: str,
     target_responses: Any,
-    parameter_scatter: Any,
-    response_scatter: Any,
+    parameter_scatter: Any = None,
+    response_scatter: Any = None,
     output_dir: Optional[str] = None,
     odb_id: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -877,6 +944,7 @@ def run_bayesian_update_workflow(
     step: Optional[str] = None,
     instances: Optional[List[str]] = None,
     field_prefix: str = "d_UR_",
+    response_component: Optional[str] = None,
     position: Optional[str] = None,
     aggregation: str = "max_abs",
     frame: int = 0,
@@ -958,6 +1026,7 @@ def run_bayesian_update_workflow(
             step=step,
             instances=instances,
             field_prefix=field_prefix,
+            response_component=response_component,
             position=position,
             aggregation=aggregation,
             frame=frame,
@@ -981,23 +1050,20 @@ def run_bayesian_update_workflow(
             ),
             dtype=np.float64,
         )
-        p_scatter = np.asarray(
-            _vector_from_input(
-                parameter_scatter,
-                parameter_columns,
-                label="parameter_scatter",
-                key_candidates=("parameter_name", "field", "parameter_token"),
-            ),
-            dtype=np.float64,
+        p_scatter = _resolve_scatter_vector(
+            parameter_scatter,
+            parameter_columns,
+            label="parameter_scatter",
+            key_candidates=("parameter_name", "field", "parameter_token"),
+            default_value=_sens._DEFAULT_PARAMETER_SCATTER,
+            metadata_key="scatter",
         )
-        r_scatter = np.asarray(
-            _vector_from_input(
-                response_scatter,
-                response_rows,
-                label="response_scatter",
-                key_candidates=("row_key", "response_label"),
-            ),
-            dtype=np.float64,
+        r_scatter = _resolve_scatter_vector(
+            response_scatter,
+            response_rows,
+            label="response_scatter",
+            key_candidates=("row_key", "response_label"),
+            default_value=_sens._DEFAULT_RESPONSE_SCATTER,
         )
         lower_bound_values = None
         if lower_bound is not None:
@@ -1097,6 +1163,7 @@ def run_bayesian_update_workflow(
         "output_dir": str(root_dir),
         "iterations": int(iterations),
         "field_prefix": field_prefix,
+        "response_component": response_component,
         "step": step,
         "instances": [str(item) for item in (instances or [])],
         "final_updated_inp": final_iteration["updated_inp"],
@@ -1120,8 +1187,8 @@ def run_bayesian_update_from_text(
     target_response_row: int,
     target_response_col_start: int = 1,
     parameter_names: List[str],
-    parameter_scatter: Any,
-    response_scatter: Any,
+    parameter_scatter: Any = None,
+    response_scatter: Any = None,
     input_inp: Optional[str] = None,
     parameter_values: Optional[Any] = None,
     damping: float = 1e-8,
@@ -1179,23 +1246,19 @@ def run_bayesian_update_from_text(
             },
         )
 
-    p_scatter = np.asarray(
-        _vector_from_input(
-            parameter_scatter,
-            parameter_items,
-            label="parameter_scatter",
-            key_candidates=("parameter_name", "field", "parameter_token"),
-        ),
-        dtype=np.float64,
+    p_scatter = _resolve_scatter_vector(
+        parameter_scatter,
+        parameter_items,
+        label="parameter_scatter",
+        key_candidates=("parameter_name", "field", "parameter_token"),
+        default_value=_sens._DEFAULT_PARAMETER_SCATTER,
     )
-    r_scatter = np.asarray(
-        _vector_from_input(
-            response_scatter,
-            response_items,
-            label="response_scatter",
-            key_candidates=("row_key", "response_label"),
-        ),
-        dtype=np.float64,
+    r_scatter = _resolve_scatter_vector(
+        response_scatter,
+        response_items,
+        label="response_scatter",
+        key_candidates=("row_key", "response_label"),
+        default_value=_sens._DEFAULT_RESPONSE_SCATTER,
     )
     lower_bound_values = None
     if lower_bound is not None:

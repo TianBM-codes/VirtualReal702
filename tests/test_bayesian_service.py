@@ -118,6 +118,88 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
     assert [item["response_component"] for item in result["response_rows"]] == ["U2", "U2"]
 
 
+def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_component(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "fake.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    model = SimpleNamespace(
+        parts={},
+        assembly=None,
+        parameters={
+            "T1": SimpleNamespace(scalar_value=2.0),
+        },
+        design_parameters=[
+            SimpleNamespace(name="T1", order=1),
+        ],
+        design_responses=[
+            SimpleNamespace(
+                step_name="Step-1",
+                frequency=1,
+                requests=[
+                    SimpleNamespace(region_type="NODE", set_name="NSET4", variables=["U"]),
+                ],
+            )
+        ],
+    )
+
+    monkeypatch.setattr(bayesian_service, "parse_inp", lambda path: model)
+    monkeypatch.setattr(bayesian_service._sens, "_resolve_inp_path_from_project", lambda project_id: str(inp_path))
+    monkeypatch.setattr(bayesian_service._sens, "_workspace_path", lambda path: str(Path(path).resolve()))
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_discover_sensitivity_fields_from_workspace",
+        lambda workspace, **kwargs: {
+            "workspace": workspace,
+            "step": "Step-1",
+            "instances": ["INST"],
+            "per_instance": {
+                "INST": [
+                    {"field": "d_UR_T1", "position": "NODAL", "components": []},
+                ]
+            },
+            "field_names": ["d_UR_T1"],
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_load_project_optimization_parameters",
+        lambda project_id: [
+            {"parameter_name": "T1", "set_name": "E1", "set_type": "ELSET", "set_scope": "PART", "scalar_value": 2.0},
+        ],
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_resolve_response_field_meta",
+        lambda **kwargs: {"field": "U", "components": ["U1", "U2", "U3"], "positions": ["NODAL"]},
+    )
+    monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
+
+    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None):
+        if field == "d_UR_T1":
+            assert component == "U2"
+            return {"INST::10": 1.0}
+        if field == "U":
+            assert component == "U2"
+            return {"INST::10": 10.0}
+        return {}
+
+    monkeypatch.setattr(bayesian_service._sens, "_workspace_result_label_map", fake_label_map)
+
+    result = bayesian_service.build_dsa_normalized_sensitivity_matrix(
+        project_id=1,
+        inp_path=str(inp_path),
+        workspace=str(workspace),
+        field_prefix="d_UR_",
+        response_component="UY",
+    )
+
+    assert result["response_component"] == "U2"
+    assert result["matrix"] == [[0.2]]
+    assert [item["response_component"] for item in result["response_rows"]] == ["U2"]
+
+
 def test_run_bayesian_update_workflow_rewrites_inp_across_iterations(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "model.inp"
     inp_path.write_text(
@@ -238,6 +320,68 @@ P2=2.0
     assert Path(result["iteration_results"][1]["saved_artifacts"]["files"]["sensitivity_matrix_txt"]).exists()
 
 
+def test_run_bayesian_update_workflow_uses_default_scatter_values(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text(
+        """*Heading
+*PARAMETER
+P1=1.0
+*Step
+*Static
+*End Step
+""",
+        encoding="utf-8",
+    )
+
+    matrix_payload = {
+        "workspace": str(tmp_path / "initial_ws"),
+        "source_mode": "workspace",
+        "workspace_built": False,
+        "odb_id": None,
+        "matrix": [[1.0]],
+        "response_values": [10.0],
+        "parameter_values": [1.0],
+        "parameter_columns": [
+            {"field": "d_UR_P1", "parameter_name": "P1", "parameter_token": "P1", "parameter_value": 1.0}
+        ],
+        "response_rows": [
+            {"row_key": "r1", "response_label": "INST::10"}
+        ],
+    }
+    captured = {}
+
+    monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", lambda **kwargs: matrix_payload)
+
+    def fake_bayesian_update(**kwargs):
+        captured["p_scatter"] = kwargs["p_scatter"]
+        captured["r_scatter"] = kwargs["r_scatter"]
+        return {
+            "delta_r": np.array([[1.0]]),
+            "y": np.array([[10.0]]),
+            "x": np.array([[0.1]]),
+            "dp": np.array([[0.1]]),
+            "p_new": np.array([1.1]),
+            "G_n": np.eye(1),
+        }
+
+    monkeypatch.setattr(bayesian_service, "bayesian_update_normalized", fake_bayesian_update)
+
+    result = bayesian_service.run_bayesian_update_workflow(
+        project_id=1,
+        input_inp=str(inp_path),
+        workspace=str(tmp_path / "initial_ws"),
+        target_responses=[8.0],
+        output_dir=str(tmp_path / "out"),
+        iterations=1,
+        run_solver=False,
+    )
+
+    assert captured["p_scatter"].tolist() == [0.25]
+    assert captured["r_scatter"].tolist() == [0.01]
+    assert result["iteration_results"][0]["parameter_scatter"] == [0.25]
+    assert result["iteration_results"][0]["response_scatter"] == [0.01]
+
+
 def test_run_bayesian_update_from_text_reads_external_matrix_and_responses(tmp_path: Path):
     matrix_file = tmp_path / "sens.txt"
     matrix_file.write_text(
@@ -299,3 +443,45 @@ P2=2.0
     assert np.allclose(result["bayesian"]["p_new"], expected["p_new"].tolist())
     assert Path(result["saved_artifacts"]["files"]["summary_json"]).exists()
     assert Path(result["saved_artifacts"]["files"]["updated_parameter_values_txt"]).exists()
+
+
+def test_run_bayesian_update_from_text_uses_default_scatter_values(tmp_path: Path):
+    matrix_file = tmp_path / "sens.txt"
+    matrix_file.write_text(
+        "\n".join(
+            [
+                "0.1",
+                "9.0",
+                "8.0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text(
+        """*Heading
+*PARAMETER
+P1=1.0
+*Step
+*Static
+*End Step
+""",
+        encoding="utf-8",
+    )
+
+    result = bayesian_service.run_bayesian_update_from_text(
+        sensitivity_matrix_file=str(matrix_file),
+        sensitivity_row_start=1,
+        sensitivity_row_count=1,
+        model_response_file=str(matrix_file),
+        model_response_row=2,
+        target_response_file=str(matrix_file),
+        target_response_row=3,
+        parameter_names=["P1"],
+        input_inp=str(inp_path),
+        case_name="default_scatter_check",
+    )
+
+    assert result["parameter_scatter"] == [0.25]
+    assert result["response_scatter"] == [0.01]

@@ -18,7 +18,6 @@ from src.l3.infra.manifest_repo import ManifestRepo
 from src.l3.services.node_table_service import get_instance_fields
 from tools.odb_client import ODBClient, _select_component_values
 
-
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
 _AGGREGATIONS = {"max_abs", "mean_abs", "max", "min", "mean"}
 _VTU_POSITION_PRIORITY = ("WHOLE_ELEMENT", "INTEGRATION_POINT", "ELEMENT_NODAL", "NODAL")
@@ -32,10 +31,12 @@ _VECTOR_DIRECTION_ALIASES = {
     "RY": ("UR", "UR2"),
     "RZ": ("UR", "UR3"),
 }
+_DEFAULT_PARAMETER_SCATTER = 0.25
+_DEFAULT_RESPONSE_SCATTER = 0.01
 
 
 def _repo_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def _workspace_path(workspace: str) -> str:
@@ -127,7 +128,7 @@ def _default_step_from_rows(step_rows: List[dict]) -> Optional[str]:
         try:
             step_no = int(step_no)
         except Exception:
-            step_no = 10**9
+            step_no = 10 ** 9
         return (step_no, str(row.get("step_name") or ""))
 
     ordered = sorted(step_rows, key=_sort_key)
@@ -136,11 +137,11 @@ def _default_step_from_rows(step_rows: List[dict]) -> Optional[str]:
 
 
 def build_workspace_from_odb(
-    odb_path: str,
-    workspace: str,
-    abaqus: str = "abaqus",
-    python3: Optional[str] = None,
-    keep_raw: bool = False,
+        odb_path: str,
+        workspace: str,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
 ) -> dict:
     odb_abs = os.path.abspath(odb_path)
     if not os.path.exists(odb_abs):
@@ -163,9 +164,12 @@ def build_workspace_from_odb(
     result = subprocess.run(
         cmd,
         cwd=_repo_root(),
-        text=True,
-        capture_output=True,
+        capture_output=True
     )
+
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+
     if result.returncode != 0:
         raise ValidationError(
             "failed to build workspace from odb",
@@ -173,8 +177,8 @@ def build_workspace_from_odb(
                 "odb_path": odb_abs,
                 "workspace": workspace_abs,
                 "returncode": result.returncode,
-                "stdout": result.stdout[-4000:],
-                "stderr": result.stderr[-4000:],
+                "stdout": stdout[-4000:],
+                "stderr": stderr[-4000:],
             },
         )
 
@@ -207,8 +211,8 @@ def get_sensitivity_overview(workspace: str) -> dict:
         ]
         result_files = []
         for row in conn.execute(
-            "SELECT step_name, field_name, file_path, components, positions, val_min, val_max "
-            "FROM result_files ORDER BY step_name, field_name"
+                "SELECT step_name, field_name, file_path, components, positions, val_min, val_max "
+                "FROM result_files ORDER BY step_name, field_name"
         ).fetchall():
             item = dict(row)
             item["components"] = _load_json_list(item.get("components"))
@@ -227,15 +231,15 @@ def get_sensitivity_overview(workspace: str) -> dict:
 
 
 def build_sensitivity_table(
-    workspace: str,
-    step: Optional[str],
-    field: Optional[str],
-    instance: Optional[str],
-    position: Optional[str] = None,
-    components: Optional[List[str]] = None,
-    frame_indices: Optional[List[int]] = None,
-    entity_labels: Optional[List[int]] = None,
-    aggregation: str = "max_abs",
+        workspace: str,
+        step: Optional[str],
+        field: Optional[str],
+        instance: Optional[str],
+        position: Optional[str] = None,
+        components: Optional[List[str]] = None,
+        frame_indices: Optional[List[int]] = None,
+        entity_labels: Optional[List[int]] = None,
+        aggregation: str = "max_abs",
 ) -> dict:
     if aggregation not in _AGGREGATIONS:
         raise ValidationError(
@@ -261,9 +265,9 @@ def build_sensitivity_table(
             [
                 row["instance_name"]
                 for row in conn.execute(
-                    "SELECT DISTINCT instance_name FROM result_blocks WHERE step_name = ? AND field_name = ?",
-                    (step_name, field_name),
-                )
+                "SELECT DISTINCT instance_name FROM result_blocks WHERE step_name = ? AND field_name = ?",
+                (step_name, field_name),
+            )
             ],
         )
 
@@ -554,13 +558,13 @@ def _raise_no_sensitivity_fields(selector: dict, *, step: str, instances: List[s
 
 
 def _discover_sensitivity_fields(
-    client: ODBClient,
-    odb_id: str,
-    *,
-    step: Optional[str],
-    instances: Optional[List[str]],
-    selector: dict,
-    position: Optional[str],
+        client: ODBClient,
+        odb_id: str,
+        *,
+        step: Optional[str],
+        instances: Optional[List[str]],
+        selector: dict,
+        position: Optional[str],
 ) -> dict:
     overview = client.get_overview(odb_id)
     chosen_step = step or overview.get("default_step")
@@ -611,12 +615,12 @@ def _discover_sensitivity_fields(
 
 
 def _discover_sensitivity_fields_from_workspace(
-    workspace: str,
-    *,
-    step: Optional[str],
-    instances: Optional[List[str]],
-    selector: dict,
-    position: Optional[str],
+        workspace: str,
+        *,
+        step: Optional[str],
+        instances: Optional[List[str]],
+        selector: dict,
+        position: Optional[str],
 ) -> dict:
     workspace_abs = _workspace_path(workspace)
     conn = _manifest_conn(workspace_abs)
@@ -706,12 +710,12 @@ def _discover_sensitivity_fields_from_workspace(
 
 
 def _discover_sensitivity_fields_from_registry(
-    odb_id: str,
-    *,
-    step: Optional[str],
-    instances: Optional[List[str]],
-    selector: dict,
-    position: Optional[str],
+        odb_id: str,
+        *,
+        step: Optional[str],
+        instances: Optional[List[str]],
+        selector: dict,
+        position: Optional[str],
 ) -> dict:
     idx = registry.get(odb_id)
     if idx is None:
@@ -827,7 +831,7 @@ def _load_project_optimization_parameters(project_id: int) -> List[dict]:
         cursor.execute(
             """
             SELECT op.id, op.parameter_name, op.candidate_code, op.set_name, op.set_type, op.set_scope,
-                   op.instance_name, op.part_name, cand.scalar_value
+                   op.instance_name, op.part_name, op.scatter, cand.scalar_value
             FROM t_mt_py_fem_optimization_parameter op
             LEFT JOIN t_mt_py_fem_parameter_candidate cand
               ON cand.pid = op.pid AND cand.candidate_code = op.candidate_code
@@ -892,7 +896,7 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
         field_tokens.keys(),
         key=lambda name: (
             field_indices[name] is None,
-            field_indices[name] if field_indices[name] is not None else 10**9,
+            field_indices[name] if field_indices[name] is not None else 10 ** 9,
             field_tokens[name],
             name,
         ),
@@ -911,8 +915,8 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
     all_indices = [field_indices[name] for name in ordered_fields]
     direct_indices = [idx for idx in all_indices if idx is not None]
     direct_indices_valid = (
-        len(direct_indices) == len(ordered_fields)
-        and all(1 <= idx <= len(parameter_rows) for idx in direct_indices)
+            len(direct_indices) == len(ordered_fields)
+            and all(1 <= idx <= len(parameter_rows) for idx in direct_indices)
     )
     direct_indices_unique = len(set(direct_indices)) == len(direct_indices)
 
@@ -994,6 +998,22 @@ def _parse_design_response_variable(variable: str) -> dict:
     }
 
 
+def _parse_explicit_response_component(response_component: Optional[str]) -> Optional[dict]:
+    if response_component is None:
+        return None
+
+    parsed = _parse_design_response_variable(str(response_component))
+    if parsed.get("component") is None:
+        raise ValidationError(
+            "response_component must describe a concrete direction",
+            {
+                "response_component": response_component,
+                "allowed_examples": ["U1", "U2", "U3", "UX", "UY", "UZ", "UR1", "UR2", "UR3", "RX", "RY", "RZ"],
+            },
+        )
+    return parsed
+
+
 def _resolve_dsa_response_spec(model, *, step_name: Optional[str]) -> Optional[dict]:
     requests = _flatten_design_response_requests(model, step_name=step_name)
     specs = []
@@ -1010,6 +1030,54 @@ def _resolve_dsa_response_spec(model, *, step_name: Optional[str]) -> Optional[d
             }
         )
     return specs
+
+
+def _select_dsa_response_specs(
+        specs: List[dict],
+        *,
+        field_prefix: str,
+        response_component: Optional[str],
+) -> Tuple[List[dict], Optional[dict]]:
+    response_token = _field_prefix_response_token(field_prefix)
+    candidate_specs = [
+                          spec for spec in specs if _design_response_matches_token(spec, response_token)
+                      ] or list(specs)
+
+    explicit_response = _parse_explicit_response_component(response_component)
+    if explicit_response is None:
+        return candidate_specs, None
+
+    filtered_specs = []
+    explicit_field_name = str(explicit_response["field_name"]).upper()
+    explicit_component = str(explicit_response["component"]).upper()
+    for spec in candidate_specs:
+        spec_field_name = str(spec.get("field_name") or "").upper()
+        spec_component = spec.get("component")
+        if spec_field_name != explicit_field_name:
+            continue
+        if spec_component is not None and str(spec_component).upper() != explicit_component:
+            continue
+        filtered_specs.append(spec)
+
+    if filtered_specs:
+        return filtered_specs, explicit_response
+
+    raise ValidationError(
+        "response_component does not match any design response defined in the inp file",
+        {
+            "field_prefix": field_prefix,
+            "response_component": response_component,
+            "available_design_responses": [
+                {
+                    "field_name": str(spec.get("field_name") or ""),
+                    "component": spec.get("component"),
+                    "set_name": spec.get("set_name"),
+                    "region_type": spec.get("region_type"),
+                }
+                for spec in candidate_specs[:20]
+            ],
+        },
+    )
 
 
 def _resolve_dsa_parameter_row(parameter_map: Dict[str, dict], source_field_name: str) -> dict:
@@ -1131,12 +1199,12 @@ def _resolve_dsa_parameter_scalar_value(model, *, parameter_name: Optional[str],
 
 
 def _normalize_dsa_sensitivity_value(
-    sensitivity_value,
-    *,
-    parameter_value: float,
-    response_value,
-    source_field: str,
-    response_field: str,
+        sensitivity_value,
+        *,
+        parameter_value: float,
+        response_value,
+        source_field: str,
+        response_field: str,
 ):
     sens_arr = np.asarray(sensitivity_value, dtype=np.float64)
     resp_arr = np.asarray(response_value, dtype=np.float64)
@@ -1287,14 +1355,14 @@ def _api_field_meta(client: ODBClient, odb_id: str, *, step: str, instance: str,
 
 
 def _resolve_response_field_meta(
-    *,
-    source_mode: str,
-    workspace: Optional[str],
-    client: Optional[ODBClient],
-    odb_id: Optional[str],
-    step: str,
-    instance: str,
-    field: str,
+        *,
+        source_mode: str,
+        workspace: Optional[str],
+        client: Optional[ODBClient],
+        odb_id: Optional[str],
+        step: str,
+        instance: str,
+        field: str,
 ) -> dict:
     if source_mode in {"workspace", "registry"}:
         return _workspace_field_meta(str(workspace), step=step, instance=instance, field=field)
@@ -1319,13 +1387,13 @@ def _component_name_for_index(field_meta: dict, field_name: str, component_index
 
 
 def _resolve_vector_design_response_component(
-    sensitivity_label_map: Dict[str, object],
-    response_label_map: Dict[str, object],
-    *,
-    response_field_meta: dict,
-    response_field_name: str,
-    source_field_name: str,
-    instance_name: str,
+        sensitivity_label_map: Dict[str, object],
+        response_label_map: Dict[str, object],
+        *,
+        response_field_meta: dict,
+        response_field_name: str,
+        source_field_name: str,
+        instance_name: str,
 ) -> Tuple[Dict[str, object], Dict[str, object], Optional[str], Optional[int]]:
     overlap = sorted(set(sensitivity_label_map.keys()) & set(response_label_map.keys()))
     if not overlap:
@@ -1390,16 +1458,16 @@ def _resolve_vector_design_response_component(
 
 
 def _workspace_result_label_map(
-    workspace: str,
-    *,
-    step: str,
-    field: str,
-    instance: str,
-    position: str,
-    frame: int,
-    aggregation: str,
-    component: Optional[str] = None,
-    component_index: Optional[int] = None,
+        workspace: str,
+        *,
+        step: str,
+        field: str,
+        instance: str,
+        position: str,
+        frame: int,
+        aggregation: str,
+        component: Optional[str] = None,
+        component_index: Optional[int] = None,
 ) -> Dict[str, object]:
     workspace_abs = _workspace_path(workspace)
     conn = _manifest_conn(workspace_abs)
@@ -1466,25 +1534,26 @@ def _workspace_result_label_map(
 
 
 def _export_sensitivity_vtu(
-    *,
-    project_id: int,
-    odb_id: Optional[str],
-    output_vtu: str,
-    base_url: Optional[str] = None,
-    inp_path: Optional[str] = None,
-    workspace: Optional[str] = None,
-    odb_path: Optional[str] = None,
-    step: Optional[str] = None,
-    instances: Optional[List[str]] = None,
-    field_prefix: Optional[str] = None,
-    field_name: Optional[str] = None,
-    position: Optional[str] = None,
-    aggregation: str = "max_abs",
-    frame: int = 0,
-    abaqus: str = "abaqus",
-    python3: Optional[str] = None,
-    keep_raw: bool = False,
-    timeout: int = 60,
+        *,
+        project_id: int,
+        odb_id: Optional[str],
+        output_vtu: str,
+        base_url: Optional[str] = None,
+        inp_path: Optional[str] = None,
+        workspace: Optional[str] = None,
+        odb_path: Optional[str] = None,
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
+        field_prefix: Optional[str] = None,
+        field_name: Optional[str] = None,
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
 ) -> dict:
     if aggregation not in _AGGREGATIONS and aggregation != "first":
         raise ValidationError(
@@ -1565,6 +1634,14 @@ def _export_sensitivity_vtu(
     dsa_direct_target_map = build_parameter_target_map(dsa_model) if dsa_model is not None else {}
     dsa_design_parameter_name_map = _build_dsa_design_parameter_name_map(dsa_model) if dsa_model is not None else {}
     dsa_response_specs = _resolve_dsa_response_spec(dsa_model, step_name=discovery["step"]) if dsa_model is not None else []
+    selected_response_specs = []
+    explicit_response = None
+    if selector["kind"] == "prefix":
+        selected_response_specs, explicit_response = _select_dsa_response_specs(
+            list(dsa_response_specs or []),
+            field_prefix=selector["field_prefix"],
+            response_component=response_component,
+        )
     dsa_parameter_map = (
         _build_dsa_parameter_row_map(dsa_parameter_rows, selector["field_prefix"], discovery["field_names"])
         if selector["kind"] == "prefix" and dsa_parameter_rows
@@ -1577,6 +1654,16 @@ def _export_sensitivity_vtu(
             source_field_name = field_meta["field"]
             current_export_field = export_field_name or source_field_name
             selected_position = field_meta["position"]
+            initial_component = (
+                explicit_response["component"]
+                if selector["kind"] == "prefix" and explicit_response is not None
+                else None
+            )
+            initial_component_index = (
+                explicit_response["component_index"]
+                if selector["kind"] == "prefix" and explicit_response is not None
+                else None
+            )
             if source_mode in {"workspace", "registry"}:
                 label_map = _workspace_result_label_map(
                     resolved_workspace,
@@ -1586,6 +1673,8 @@ def _export_sensitivity_vtu(
                     position=selected_position,
                     frame=frame,
                     aggregation=aggregation,
+                    component=initial_component,
+                    component_index=initial_component_index,
                 )
             else:
                 label_map = client.get_result_label_map(
@@ -1596,6 +1685,8 @@ def _export_sensitivity_vtu(
                     position=selected_position,
                     frame=frame,
                     aggregation=aggregation,
+                    component=initial_component,
+                    component_index=initial_component_index,
                     scoped=True,
                 )
             label_map = _normalize_vtu_label_map(label_map)
@@ -1606,9 +1697,9 @@ def _export_sensitivity_vtu(
                 token_match = _DSA_PARAMETER_TOKEN_RE.fullmatch(parameter_token)
                 token_index = int(token_match.group(2)) if token_match else None
                 if (
-                    not direct_target_rows
-                    and token_index is not None
-                    and token_index in dsa_design_parameter_name_map
+                        not direct_target_rows
+                        and token_index is not None
+                        and token_index in dsa_design_parameter_name_map
                 ):
                     mapped_parameter_name = dsa_design_parameter_name_map[token_index]
                     direct_target_rows = list(dsa_direct_target_map.get(mapped_parameter_name, []))
@@ -1626,13 +1717,10 @@ def _export_sensitivity_vtu(
                 response_position = None
                 response_value = None
                 export_value_map = None
-                response_token = _field_prefix_response_token(selector["field_prefix"])
                 response_label_map = None
                 chosen_response_spec = None
-                if dsa_response_specs:
-                    candidate_specs = [
-                        spec for spec in dsa_response_specs if _design_response_matches_token(spec, response_token)
-                    ] or list(dsa_response_specs)
+                if selected_response_specs:
+                    candidate_specs = list(selected_response_specs)
                     best_score = -1
                     best_specs = []
                     best_response_label_map = None
@@ -1641,7 +1729,16 @@ def _export_sensitivity_vtu(
 
                     for spec in candidate_specs:
                         candidate_field_name = str(spec["field_name"])
-                        candidate_component = spec.get("component")
+                        candidate_component = (
+                            explicit_response["component"]
+                            if explicit_response is not None
+                            else spec.get("component")
+                        )
+                        candidate_component_index = (
+                            explicit_response["component_index"]
+                            if explicit_response is not None
+                            else spec.get("component_index")
+                        )
                         if source_mode in {"workspace", "registry"}:
                             candidate_dsa_map = _workspace_result_label_map(
                                 resolved_workspace,
@@ -1652,7 +1749,7 @@ def _export_sensitivity_vtu(
                                 frame=frame,
                                 aggregation=aggregation,
                                 component=candidate_component,
-                                component_index=spec.get("component_index"),
+                                component_index=candidate_component_index,
                             )
                         else:
                             candidate_dsa_map = client.get_result_label_map(
@@ -1664,7 +1761,7 @@ def _export_sensitivity_vtu(
                                 frame=frame,
                                 aggregation=aggregation,
                                 component=candidate_component,
-                                component_index=spec.get("component_index"),
+                                component_index=candidate_component_index,
                                 scoped=True,
                             )
                         candidate_dsa_map = _normalize_vtu_label_map(candidate_dsa_map)
@@ -1690,7 +1787,7 @@ def _export_sensitivity_vtu(
                             candidate_field_name,
                             candidate_position,
                             candidate_component,
-                            spec.get("component_index"),
+                            candidate_component_index,
                             int(frame),
                             str(aggregation),
                         )
@@ -1705,7 +1802,7 @@ def _export_sensitivity_vtu(
                                     frame=frame,
                                     aggregation=aggregation,
                                     component=candidate_component,
-                                    component_index=spec.get("component_index"),
+                                    component_index=candidate_component_index,
                                 )
                             else:
                                 cached_response_map = client.get_result_label_map(
@@ -1717,7 +1814,7 @@ def _export_sensitivity_vtu(
                                     frame=frame,
                                     aggregation=aggregation,
                                     component=candidate_component,
-                                    component_index=spec.get("component_index"),
+                                    component_index=candidate_component_index,
                                     scoped=True,
                                 )
                             response_value_cache[response_cache_key] = _normalize_vtu_label_map(cached_response_map)
@@ -1741,9 +1838,17 @@ def _export_sensitivity_vtu(
                         chosen_response_spec = best_specs[0]
                         response_label_map = dict(best_response_label_map or {})
                         response_field_name = str(chosen_response_spec["field_name"])
-                        response_component = chosen_response_spec.get("component")
+                        response_component = (
+                            explicit_response["component"]
+                            if explicit_response is not None
+                            else chosen_response_spec.get("component")
+                        )
                         response_position = best_position
-                        if response_component is None and best_response_field_meta is not None:
+                        if (
+                                explicit_response is None
+                                and response_component is None
+                                and best_response_field_meta is not None
+                        ):
                             (
                                 label_map,
                                 response_label_map,
@@ -1908,30 +2013,32 @@ def _export_sensitivity_vtu(
     }
     if selector["kind"] == "prefix":
         result["field_prefix"] = selector["field_prefix"]
+        result["response_component"] = explicit_response["component"] if explicit_response is not None else None
     else:
         result["field_name"] = selector["field_name"]
     return result
 
 
 def export_dsa_sensitivity_vtu(
-    *,
-    project_id: int,
-    odb_id: Optional[str],
-    output_vtu: str,
-    base_url: Optional[str] = None,
-    inp_path: Optional[str] = None,
-    workspace: Optional[str] = None,
-    odb_path: Optional[str] = None,
-    step: Optional[str] = None,
-    instances: Optional[List[str]] = None,
-    field_prefix: str = "d_UR_",
-    position: Optional[str] = None,
-    aggregation: str = "max_abs",
-    frame: int = 0,
-    abaqus: str = "abaqus",
-    python3: Optional[str] = None,
-    keep_raw: bool = False,
-    timeout: int = 60,
+        *,
+        project_id: int,
+        odb_id: Optional[str],
+        output_vtu: str,
+        base_url: Optional[str] = None,
+        inp_path: Optional[str] = None,
+        workspace: Optional[str] = None,
+        odb_path: Optional[str] = None,
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
+        field_prefix: str = "d_UR_",
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
 ) -> dict:
     return _export_sensitivity_vtu(
         project_id=project_id,
@@ -1944,6 +2051,7 @@ def export_dsa_sensitivity_vtu(
         step=step,
         instances=instances,
         field_prefix=field_prefix,
+        response_component=response_component,
         position=position,
         aggregation=aggregation,
         frame=frame,
@@ -1955,24 +2063,24 @@ def export_dsa_sensitivity_vtu(
 
 
 def export_adjoint_sensitivity_vtu(
-    *,
-    project_id: int,
-    odb_id: Optional[str],
-    output_vtu: str,
-    field_name: str,
-    base_url: Optional[str] = None,
-    inp_path: Optional[str] = None,
-    workspace: Optional[str] = None,
-    odb_path: Optional[str] = None,
-    step: Optional[str] = None,
-    instances: Optional[List[str]] = None,
-    position: Optional[str] = None,
-    aggregation: str = "max_abs",
-    frame: int = 0,
-    abaqus: str = "abaqus",
-    python3: Optional[str] = None,
-    keep_raw: bool = False,
-    timeout: int = 60,
+        *,
+        project_id: int,
+        odb_id: Optional[str],
+        output_vtu: str,
+        field_name: str,
+        base_url: Optional[str] = None,
+        inp_path: Optional[str] = None,
+        workspace: Optional[str] = None,
+        odb_path: Optional[str] = None,
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
+        position: Optional[str] = None,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
 ) -> dict:
     return _export_sensitivity_vtu(
         project_id=project_id,
@@ -1985,6 +2093,7 @@ def export_adjoint_sensitivity_vtu(
         step=step,
         instances=instances,
         field_name=field_name,
+        response_component=None,
         position=position,
         aggregation=aggregation,
         frame=frame,
@@ -1996,24 +2105,25 @@ def export_adjoint_sensitivity_vtu(
 
 
 def export_odb_sensitivity_vtu(
-    *,
-    project_id: int,
-    odb_id: Optional[str],
-    output_vtu: str,
-    base_url: Optional[str] = None,
-    inp_path: Optional[str] = None,
-    workspace: Optional[str] = None,
-    odb_path: Optional[str] = None,
-    step: Optional[str] = None,
-    instances: Optional[List[str]] = None,
-    field_prefix: str = "d_UR_",
-    position: Optional[str] = None,
-    aggregation: str = "max_abs",
-    frame: int = 0,
-    abaqus: str = "abaqus",
-    python3: Optional[str] = None,
-    keep_raw: bool = False,
-    timeout: int = 60,
+        *,
+        project_id: int,
+        odb_id: Optional[str],
+        output_vtu: str,
+        base_url: Optional[str] = None,
+        inp_path: Optional[str] = None,
+        workspace: Optional[str] = None,
+        odb_path: Optional[str] = None,
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
+        field_prefix: str = "d_UR_",
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
 ) -> dict:
     return export_dsa_sensitivity_vtu(
         project_id=project_id,
@@ -2026,6 +2136,7 @@ def export_odb_sensitivity_vtu(
         step=step,
         instances=instances,
         field_prefix=field_prefix,
+        response_component=response_component,
         position=position,
         aggregation=aggregation,
         frame=frame,
