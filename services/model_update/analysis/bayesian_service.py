@@ -533,6 +533,7 @@ def build_dsa_normalized_sensitivity_matrix(
             best_sensitivity_map = None
             best_response_map = None
             best_position = None
+            best_response_field_meta = None
 
             for spec in candidate_specs:
                 candidate_field_name = str(spec["field_name"])
@@ -627,6 +628,7 @@ def build_dsa_normalized_sensitivity_matrix(
                     best_sensitivity_map = candidate_dsa_map
                     best_response_map = candidate_response_map
                     best_position = candidate_position
+                    best_response_field_meta = response_field_meta
                 elif score == best_score:
                     best_specs.append(spec)
 
@@ -658,6 +660,22 @@ def build_dsa_normalized_sensitivity_matrix(
             chosen_response_spec = best_specs[0]
             response_field_name = str(chosen_response_spec["field_name"])
             response_component = chosen_response_spec.get("component")
+            if response_component is None and best_response_field_meta is not None:
+                (
+                    best_sensitivity_map,
+                    best_response_map,
+                    inferred_component,
+                    _,
+                ) = _sens._resolve_vector_design_response_component(
+                    best_sensitivity_map,
+                    best_response_map,
+                    response_field_meta=best_response_field_meta,
+                    response_field_name=response_field_name,
+                    source_field_name=source_field_name,
+                    instance_name=str(instance_name),
+                )
+                if inferred_component is not None:
+                    response_component = inferred_component
             parameter_value = _sens._resolve_dsa_parameter_scalar_value(
                 dsa_model,
                 parameter_name=mapped_parameter_name,

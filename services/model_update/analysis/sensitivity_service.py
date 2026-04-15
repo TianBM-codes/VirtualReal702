@@ -1311,6 +1311,84 @@ def _pick_response_position(field_meta: dict, preferred: Optional[str]) -> str:
     return _pick_export_position(field_meta, None)
 
 
+def _component_name_for_index(field_meta: dict, field_name: str, component_index: int) -> str:
+    components = [str(item) for item in (field_meta.get("components") or []) if str(item).strip()]
+    if 0 <= int(component_index) < len(components):
+        return components[int(component_index)]
+    return f"{str(field_name)}{int(component_index) + 1}"
+
+
+def _resolve_vector_design_response_component(
+    sensitivity_label_map: Dict[str, object],
+    response_label_map: Dict[str, object],
+    *,
+    response_field_meta: dict,
+    response_field_name: str,
+    source_field_name: str,
+    instance_name: str,
+) -> Tuple[Dict[str, object], Dict[str, object], Optional[str], Optional[int]]:
+    overlap = sorted(set(sensitivity_label_map.keys()) & set(response_label_map.keys()))
+    if not overlap:
+        return sensitivity_label_map, response_label_map, None, None
+
+    response_vectors = []
+    sensitivity_vectors = []
+    for label in overlap:
+        response_arr = np.asarray(response_label_map[label], dtype=np.float64).reshape(-1)
+        sensitivity_arr = np.asarray(sensitivity_label_map[label], dtype=np.float64).reshape(-1)
+        if response_arr.size == 1 and sensitivity_arr.size == 1:
+            continue
+        response_vectors.append((label, response_arr))
+        sensitivity_vectors.append((label, sensitivity_arr))
+
+    if not response_vectors:
+        return sensitivity_label_map, response_label_map, None, None
+
+    component_count = response_vectors[0][1].size
+    if component_count <= 1:
+        return sensitivity_label_map, response_label_map, None, None
+
+    if any(arr.size != component_count for _, arr in response_vectors):
+        raise ValidationError(
+            "response values have inconsistent vector dimensions",
+            {"response_field": response_field_name, "source_field": source_field_name, "instance": instance_name},
+        )
+    if any(arr.size != component_count for _, arr in sensitivity_vectors):
+        raise ValidationError(
+            "DSA sensitivity values have inconsistent vector dimensions",
+            {"response_field": response_field_name, "source_field": source_field_name, "instance": instance_name},
+        )
+
+    active_indices = []
+    for idx in range(component_count):
+        has_signal = any(not np.isclose(arr[idx], 0.0, atol=1e-18) for _, arr in response_vectors)
+        if has_signal:
+            active_indices.append(idx)
+
+    if len(active_indices) != 1:
+        raise ValidationError(
+            "design response component is ambiguous; update the inp design response to use an explicit component",
+            {
+                "response_field": response_field_name,
+                "source_field": source_field_name,
+                "instance": instance_name,
+                "active_component_indices": active_indices,
+                "available_components": [str(item) for item in (response_field_meta.get("components") or [])],
+                "hint": "use U1/U2/U3, UX/UY/UZ, UR1/UR2/UR3, or RX/RY/RZ in *NODE RESPONSE",
+            },
+        )
+
+    chosen_index = int(active_indices[0])
+    chosen_component = _component_name_for_index(response_field_meta, response_field_name, chosen_index)
+    scalar_sensitivity = dict(sensitivity_label_map)
+    scalar_response = dict(response_label_map)
+    for label, response_arr in response_vectors:
+        scalar_response[label] = float(response_arr[chosen_index])
+    for label, sensitivity_arr in sensitivity_vectors:
+        scalar_sensitivity[label] = float(sensitivity_arr[chosen_index])
+    return scalar_sensitivity, scalar_response, chosen_component, chosen_index
+
+
 def _workspace_result_label_map(
     workspace: str,
     *,
@@ -1559,6 +1637,7 @@ def _export_sensitivity_vtu(
                     best_specs = []
                     best_response_label_map = None
                     best_position = None
+                    best_response_field_meta = None
 
                     for spec in candidate_specs:
                         candidate_field_name = str(spec["field_name"])
@@ -1653,6 +1732,7 @@ def _export_sensitivity_vtu(
                             best_specs = [spec]
                             best_response_label_map = candidate_response_label_map
                             best_position = candidate_position
+                            best_response_field_meta = response_field_meta
                             label_map = candidate_dsa_map
                         elif score == best_score:
                             best_specs.append(spec)
@@ -1663,6 +1743,22 @@ def _export_sensitivity_vtu(
                         response_field_name = str(chosen_response_spec["field_name"])
                         response_component = chosen_response_spec.get("component")
                         response_position = best_position
+                        if response_component is None and best_response_field_meta is not None:
+                            (
+                                label_map,
+                                response_label_map,
+                                inferred_component,
+                                _,
+                            ) = _resolve_vector_design_response_component(
+                                label_map,
+                                response_label_map,
+                                response_field_meta=best_response_field_meta,
+                                response_field_name=response_field_name,
+                                source_field_name=source_field_name,
+                                instance_name=str(instance_name),
+                            )
+                            if inferred_component is not None:
+                                response_component = inferred_component
                     elif len(best_specs) > 1:
                         raise ValidationError(
                             "multiple design responses match the requested DSA field",
