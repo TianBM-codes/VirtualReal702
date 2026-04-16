@@ -453,7 +453,7 @@ def test_export_odb_sensitivity_vtu_accepts_thickness_field_prefix(monkeypatch, 
         odb_id="odb-1",
         output_vtu=str(out_path),
         base_url="http://127.0.0.1:18765",
-        field_prefix="d_UR_T",
+        field_prefix="d_U_T",
     )
 
     assert result["field_prefix"] == "d_UR_T"

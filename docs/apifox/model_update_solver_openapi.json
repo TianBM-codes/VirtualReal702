@@ -451,7 +451,7 @@
             "properties": {
               "field_prefix": {
                 "type": "string",
-                "default": "d_UR_"
+                "default": "d_U_"
               }
             }
           }

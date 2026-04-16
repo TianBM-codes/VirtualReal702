@@ -94,9 +94,9 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
     monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
 
     def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None):
-        if field == "d_UR_T1" and component == "U2":
+        if field == "d_U_T1" and component == "U2":
             return {"INST::10": 1.0, "INST::20": 2.0}
-        if field == "d_UR_T2" and component == "U2":
+        if field == "d_U_T2" and component == "U2":
             return {"INST::10": 3.0, "INST::20": 4.0}
         if field == "U" and component == "U2":
             return {"INST::10": 10.0, "INST::20": 20.0}
@@ -108,7 +108,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
         project_id=1,
         inp_path=str(inp_path),
         workspace=str(workspace),
-        field_prefix="d_UR_",
+        field_prefix="d_U_",
     )
 
     assert result["matrix"] == [[0.2, 1.5], [0.2, 1.0]]

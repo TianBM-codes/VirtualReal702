@@ -74,7 +74,7 @@ class BayesianModelUpdateRequest(BaseModel):
     odb_path: Optional[str] = None
     step: Optional[str] = None
     instances: Optional[List[str]] = None
-    field_prefix: str = "d_UR_"
+    field_prefix: str = "d_U_"
     response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
@@ -175,7 +175,7 @@ class SensitivityExportVtuBaseRequest(BaseModel):
     odb_path: Optional[str] = None
     step: Optional[str] = None
     instances: Optional[List[str]] = None
-    field_prefix: str = "d_UR_"
+    field_prefix: str = "d_U_"
     response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
@@ -187,7 +187,7 @@ class SensitivityExportVtuBaseRequest(BaseModel):
 
 
 class SensitivityExportDsaVtuRequest(SensitivityExportVtuBaseRequest):
-    field_prefix: str = "d_UR_"
+    field_prefix: str = "d_U_"
 
 
 class SensitivityExportAdjointVtuRequest(SensitivityExportVtuBaseRequest):
