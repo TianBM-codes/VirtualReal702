@@ -71,11 +71,11 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
             "instances": ["INST"],
             "per_instance": {
                 "INST": [
-                    {"field": "d_UR_T1", "position": "NODAL", "components": []},
-                    {"field": "d_UR_T2", "position": "NODAL", "components": []},
+                    {"field": "d_U_T1", "position": "NODAL", "components": []},
+                    {"field": "d_U_T2", "position": "NODAL", "components": []},
                 ]
             },
-            "field_names": ["d_UR_T1", "d_UR_T2"],
+            "field_names": ["d_U_T1", "d_U_T2"],
         },
     )
     monkeypatch.setattr(
@@ -224,8 +224,30 @@ P2=2.0
             "response_values": [10.0, 20.0],
             "parameter_values": [1.0, 2.0],
             "parameter_columns": [
-                {"field": "d_UR_P1", "parameter_name": "P1", "parameter_token": "P1", "parameter_value": 1.0},
-                {"field": "d_UR_P2", "parameter_name": "P2", "parameter_token": "P2", "parameter_value": 2.0},
+                {
+                    "field": "d_UR_P1",
+                    "parameter_name": "P1",
+                    "parameter_token": "P1",
+                    "parameter_value": 1.0,
+                    "element_mapping": {
+                        "field": "d_UR_P1",
+                        "parameter_name": "P1",
+                        "target_kind": "cell",
+                        "targets_by_scope": {"PART-1-1": [101, 102]},
+                    },
+                },
+                {
+                    "field": "d_UR_P2",
+                    "parameter_name": "P2",
+                    "parameter_token": "P2",
+                    "parameter_value": 2.0,
+                    "element_mapping": {
+                        "field": "d_UR_P2",
+                        "parameter_name": "P2",
+                        "target_kind": "cell",
+                        "targets_by_scope": {"PART-1-1": [201]},
+                    },
+                },
             ],
             "response_rows": [
                 {"row_key": "r1", "response_label": "INST::10"},
@@ -241,8 +263,30 @@ P2=2.0
             "response_values": [9.0, 18.0],
             "parameter_values": [1.1, 2.2],
             "parameter_columns": [
-                {"field": "d_UR_P1", "parameter_name": "P1", "parameter_token": "P1", "parameter_value": 1.1},
-                {"field": "d_UR_P2", "parameter_name": "P2", "parameter_token": "P2", "parameter_value": 2.2},
+                {
+                    "field": "d_UR_P1",
+                    "parameter_name": "P1",
+                    "parameter_token": "P1",
+                    "parameter_value": 1.1,
+                    "element_mapping": {
+                        "field": "d_UR_P1",
+                        "parameter_name": "P1",
+                        "target_kind": "cell",
+                        "targets_by_scope": {"PART-1-1": [101, 102]},
+                    },
+                },
+                {
+                    "field": "d_UR_P2",
+                    "parameter_name": "P2",
+                    "parameter_token": "P2",
+                    "parameter_value": 2.2,
+                    "element_mapping": {
+                        "field": "d_UR_P2",
+                        "parameter_name": "P2",
+                        "target_kind": "cell",
+                        "targets_by_scope": {"PART-1-1": [201]},
+                    },
+                },
             ],
             "response_rows": [
                 {"row_key": "r1", "response_label": "INST::10"},
@@ -315,9 +359,15 @@ P2=2.0
     final_text = Path(result["final_updated_inp"]).read_text(encoding="utf-8")
     assert "P1=1.3" in final_text
     assert "P2=2.6" in final_text
+    assert Path(result["final_updated_inp"]).name == "model_iter2.inp"
+    assert Path(result["iteration_results"][0]["updated_inp"]).name == "model_iter1.inp"
+    assert Path(result["iteration_results"][1]["updated_inp"]).name == "model_iter2.inp"
     assert "next_iteration_solver" in result["iteration_results"][0]
     assert Path(result["iteration_results"][0]["saved_artifacts"]["files"]["summary_json"]).exists()
     assert Path(result["iteration_results"][1]["saved_artifacts"]["files"]["sensitivity_matrix_txt"]).exists()
+    mapping_json = Path(result["iteration_results"][0]["saved_artifacts"]["files"]["parameter_element_mapping_json"])
+    assert mapping_json.exists()
+    assert "\"targets_by_scope\"" in mapping_json.read_text(encoding="utf-8")
 
 
 def test_run_bayesian_update_workflow_uses_default_scatter_values(monkeypatch, tmp_path: Path):

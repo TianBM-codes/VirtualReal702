@@ -26,6 +26,8 @@ router = APIRouter(tags=["sensitivity"])
 
 @router.post("/sensitivity/workspace/build")
 async def build_sensitivity_workspace(request: Request, body: SensitivityBuildWorkspaceRequest):
+    # Build the SQLite/HDF5 workspace once from an ODB so later endpoints can
+    # query sensitivities repeatedly without reopening the raw solver result.
     await log_request(request, model_to_dict(body))
     try:
         data = build_workspace_from_odb(
@@ -45,6 +47,8 @@ async def build_sensitivity_workspace(request: Request, body: SensitivityBuildWo
 
 @router.post("/sensitivity/overview")
 async def sensitivity_overview(request: Request, body: SensitivityOverviewRequest):
+    # Surface the available steps, frames, instances, and fields stored in an
+    # existing workspace before the caller asks for a specific sensitivity view.
     await log_request(request, model_to_dict(body))
     try:
         data = get_sensitivity_overview(body.workspace)
@@ -58,6 +62,8 @@ async def sensitivity_overview(request: Request, body: SensitivityOverviewReques
 
 @router.post("/sensitivity/table")
 async def sensitivity_table(request: Request, body: SensitivityTableRequest):
+    # Return a tabular slice from the workspace after step/field/position
+    # selection and the requested aggregation rules have been applied.
     await log_request(request, model_to_dict(body))
     try:
         data = build_sensitivity_table(
@@ -81,6 +87,7 @@ async def sensitivity_table(request: Request, body: SensitivityTableRequest):
 
 @router.post("/sensitivity/export/vtu")
 async def sensitivity_export_vtu(request: Request, body: SensitivityExportVtuRequest):
+    # Export DSA-style ODB sensitivity fields to VTU for visual inspection.
     await log_request(request, model_to_dict(body))
     try:
         data = export_odb_sensitivity_vtu(
@@ -113,6 +120,8 @@ async def sensitivity_export_vtu(request: Request, body: SensitivityExportVtuReq
 
 @router.post("/sensitivity/export/vtu/dsa")
 async def sensitivity_export_dsa_vtu(request: Request, body: SensitivityExportDsaVtuRequest):
+    # Explicit DSA export path kept separate from the generic endpoint for
+    # clients that already know they need the design-sensitivity convention.
     await log_request(request, model_to_dict(body))
     try:
         data = export_dsa_sensitivity_vtu(
@@ -145,6 +154,8 @@ async def sensitivity_export_dsa_vtu(request: Request, body: SensitivityExportDs
 
 @router.post("/sensitivity/export/vtu/adjoint")
 async def sensitivity_export_adjoint_vtu(request: Request, body: SensitivityExportAdjointVtuRequest):
+    # Adjoint sensitivity fields use a different naming convention, so the
+    # route delegates to a dedicated exporter instead of the DSA helper.
     await log_request(request, model_to_dict(body))
     try:
         data = export_adjoint_sensitivity_vtu(

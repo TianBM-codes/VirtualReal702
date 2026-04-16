@@ -16,6 +16,8 @@ router = APIRouter(tags=["model-update"])
 
 @router.post("/optimization/parameter/create")
 async def create_optimization_parameter_api(request: Request, body: CreateOptimizationParameterRequest):
+    # Create a persistent optimization-parameter record by binding one candidate
+    # type to one resolved INP set entry in the imported catalog.
     await log_request(request, model_to_dict(body))
     try:
         if not body.candidate_code or not body.set_name:
@@ -43,6 +45,8 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
 
 @router.post("/optimization/bayesian/run")
 async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateRequest):
+    # Main Bayesian entrypoint used during debugging: it resolves sensitivities,
+    # runs the parameter update loop, and optionally re-solves each iteration.
     await log_request(request, model_to_dict(body))
     try:
         data = run_bayesian_update_workflow(
@@ -89,6 +93,8 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
 
 @router.post("/optimization/bayesian/check")
 async def run_bayesian_text_check_api(request: Request, body: BayesianTextCheckRequest):
+    # Lightweight text-based checker for validating the Bayesian math path
+    # without depending on ODB/workspace extraction.
     await log_request(request, model_to_dict(body))
     try:
         data = run_bayesian_update_from_text(

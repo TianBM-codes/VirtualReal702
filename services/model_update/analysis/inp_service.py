@@ -13,6 +13,10 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
+# This module is the "model-update integration" layer around parsed INP data.
+# It converts the parsed model into database catalogs, builds the spatial cache
+# used for test/FE matching, and stores the aligned response data consumed by
+# Bayesian/model-correlation workflows.
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_SIZE = 256
 TEST_DOF_SEQUENCE = ("UX", "UY", "UZ")
@@ -383,6 +387,8 @@ def _octree_nearest(cache: dict, query_point: np.ndarray):
 
 
 def _collect_global_nodes(model) -> dict:
+    # The imported cache must live in global coordinates because later matching
+    # works against measured test points, not part-local coordinates.
     entries = []
     if model.assembly and model.assembly.instances:
         for inst_name, inst in model.assembly.instances.items():
@@ -443,6 +449,8 @@ def _collect_global_nodes(model) -> dict:
 
 
 def _save_octree_cache(project_id: int, source_file_path: str, node_data: dict, force_rebuild: bool = False):
+    # Cache the global FE node cloud once per imported INP so repeated node
+    # matching does not need to rebuild the octree from scratch.
     cache_dir = _cache_dir(project_id)
     stem = os.path.splitext(os.path.basename(source_file_path))[0]
     cache_path = os.path.join(cache_dir, f"{stem}.node_octree.npz")
@@ -861,6 +869,10 @@ _DEFAULT_PARAMETER_SCATTER = 0.25
 
 def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                        build_octree=True, force_rebuild_octree=False):
+    # Central INP import pipeline:
+    # 1. parse the model and derive catalogs/parameter metadata
+    # 2. optionally build the global-node octree cache
+    # 3. refresh the database tables that the rest of the API queries
     ensure_tables_exist()
     model = parse_inp(file_path, resolve_refs=True)
     legacy_materials = _extract_legacy_material_rows(model)
@@ -883,8 +895,12 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
     cursor = conn.cursor()
     try:
         if clear_before_insert:
+            # Full refresh for the FEM-side catalog tables when a new INP is
+            # imported for the same project.
             clear_fem_tables(cursor, project_id)
         else:
+            # Keep unrelated FEM imports intact, but replace the parameter and
+            # response metadata derived directly from the current INP file.
             cursor.execute("DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_parameter_target WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = %s", (project_id,))
@@ -1297,6 +1313,8 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
                                   scatter=None,
                                   description="", set_type=None, set_scope=None,
                                   instance_name=None, part_name=None):
+    # This API turns a generic candidate type plus one cataloged set into a
+    # concrete optimization parameter record that Bayesian update can address.
     ensure_tables_exist()
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1336,6 +1354,8 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
             raise ValueError(f"set not found: {set_name}")
 
         if not parameter_name:
+            # Default names keep the originating candidate and target set visible
+            # in later debugging output and database inspection.
             parameter_name = f"{candidate_code}@{set_row['set_name']}"
 
         resolved_scatter = float(
@@ -1407,6 +1427,8 @@ def _get_latest_octree_meta(cursor, project_id):
 
 def match_test_nodes(project_id, max_distance=None, overwrite=True,
                      auto_translate=True, translation=None, rotation=None, auto_rotate=True):
+    # Match imported test nodes onto the FE node cloud stored in the octree
+    # cache. The saved mapping is reused by DOF matching and correlation steps.
     ensure_tables_exist()
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1437,10 +1459,14 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
         transform_mode = "none"
         fit_info = None
         if manual_transform:
+            # Manual transform overrides auto-fit so users can reproduce or
+            # compare a known registration against the automatic estimate.
             applied_translation = np.asarray(translation or [0.0, 0.0, 0.0], dtype=np.float64).reshape(3)
             applied_rotation = _rotation_from_matrix(_rotation_to_matrix(rotation), center=(rotation or {}).get("center"))
             transform_mode = "manual"
         elif auto_translate and auto_rotate and len(raw_test_coords) >= 3:
+            # ICP gives the best rigid registration when both translation and
+            # rotation are allowed and we have enough points to fit a transform.
             estimate = _estimate_rigid_transform_icp(cache, raw_test_coords)
             applied_translation = estimate["translation"]
             applied_rotation = _rotation_from_matrix(estimate["rotation_matrix"])
@@ -1471,6 +1497,8 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
 
         matches = []
         for row, coord_after in zip(test_nodes, transformed_coords):
+            # Each test node keeps both the matched FE node and the residual
+            # offset after registration so mismatches are visible in the DB.
             point_idx, distance = _octree_nearest(cache, coord_after)
             if point_idx < 0:
                 continue
@@ -1493,6 +1521,8 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
                 matches.append(match)
 
         if overwrite:
+            # Downstream tables depend on the node mapping, so they are cleared
+            # together when the caller requests a fresh node alignment.
             cursor.execute("DELETE FROM t_mt_py_fem_node_match WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_response_catalog WHERE pid = %s", (project_id,))
@@ -1691,6 +1721,8 @@ def get_dof_matches(project_id):
 
 
 def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=True, include_node_dofs=True):
+    # Build a normalized response directory that mixes modal frequencies and
+    # matched nodal DOFs into one table for optimization/correlation consumers.
     ensure_tables_exist()
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1702,6 +1734,8 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
         seq_no = 1
 
         if include_test_modes:
+            # Modal frequencies are treated as scalar responses alongside
+            # displacement-based responses even though they do not map to nodes.
             cursor.execute("""
                 SELECT mode_no, frequency
                 FROM t_mt_py_test_modal_frequency
@@ -1728,6 +1762,8 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
                 seq_no += 1
 
         if include_node_dofs:
+            # DOF-based responses come from the FE/test DOF matching table and
+            # preserve the resolved projection direction in extra_json.
             cursor.execute("""
                 SELECT test_node_id, test_dof, instance_name, part_name, fem_node_label, fem_dof,
                        direction_x, direction_y, direction_z, match_score
@@ -1854,6 +1890,8 @@ def _load_modal_payload(file_path=None, modes=None) -> List[dict]:
 
 
 def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=None):
+    # Import solver modal results into a flat per-node table so the later
+    # correlation pass can stream them mode-by-mode from SQL.
     ensure_tables_exist()
     modal_modes = _load_modal_payload(file_path=file_path, modes=modes)
 
@@ -1889,6 +1927,8 @@ def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=No
                 u2 = node_item.get("u2")
                 u3 = node_item.get("u3")
                 if vector is not None:
+                    # Accept either the explicit u1/u2/u3 schema or a compact
+                    # "vector" payload from external conversion scripts.
                     vector = list(vector)
                     if u1 is None:
                         u1 = vector[0]
@@ -1960,6 +2000,8 @@ def get_fe_modal_results(project_id):
 
 
 def _load_static_result_rows_from_txt(file_path: str) -> List[dict]:
+    # Text imports follow the legacy fixed-column export layout used by current
+    # FEMTools comparison files: node label plus 6 displacement/rotation values.
     rows: List[dict] = []
     with open(file_path, "r", encoding="utf-8") as fp:
         lines = fp.readlines()
@@ -2023,6 +2065,8 @@ def _load_static_result_payload(file_path=None, rows=None) -> List[dict]:
 
 def import_fe_static_results(project_id, overwrite=True, file_path=None, rows=None,
                              load_case_no=1, instance_name=None, part_name=None):
+    # Static results are stored with both translational and rotational
+    # components so UX/UY/UZ and RX/RY/RZ can be correlated independently.
     ensure_tables_exist()
     static_rows = _load_static_result_payload(file_path=file_path, rows=rows)
 
@@ -2213,6 +2257,8 @@ def _resolve_static_case_selection(cursor, project_id: int, load_case_no=None, r
 
 
 def _build_static_alignment(test_rows, fem_rows, node_matches):
+    # Prefer the persisted node-match table. If it does not exist yet, fall back
+    # to direct label matching only when labels are unambiguous.
     fem_by_key = {}
     fem_by_label = {}
     duplicate_labels = set()
@@ -2263,6 +2309,8 @@ def compute_static_correlation(
     components=None,
     include_rotations=False,
 ):
+    # Static correlation compares one chosen test static result against one FE
+    # load case after resolving node alignment and the requested components.
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -2317,6 +2365,8 @@ def compute_static_correlation(
         component_counts = {name: 0 for name in component_names}
 
         for test_row, fem_row, match in aligned_rows:
+            # Each aligned point can contribute multiple scalar channels
+            # depending on the requested component list.
             for comp_name in component_names:
                 test_col, fem_col = STATIC_COMPONENT_MAP[comp_name]
                 test_val = test_row.get(test_col)
@@ -2371,6 +2421,8 @@ def compute_static_correlation(
 
 
 def _load_test_mode_vectors(cursor, project_id: int) -> Dict[int, Dict[str, np.ndarray]]:
+    # Test modal shapes are stored in multiple historical schemas. This loader
+    # normalizes them into complex 3-component vectors keyed by test point id.
     modes: Dict[int, Dict[str, np.ndarray]] = {}
 
     cursor.execute("""
@@ -2474,6 +2526,8 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
 
 
 def compute_modal_correlation(project_id, overwrite=True):
+    # Modal correlation enumerates all test-mode / FE-mode combinations and
+    # scores them using the already-resolved DOF correspondence table.
     ensure_tables_exist()
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -2525,6 +2579,8 @@ def compute_modal_correlation(project_id, overwrite=True):
                 anchors = []
 
                 for match in dof_matches:
+                    # The FE modal vector is projected onto the matched test DOF
+                    # direction before DAC/DSF are evaluated.
                     test_point = test_mode_map.get(str(match["test_node_id"]))
                     if test_point is None:
                         continue
@@ -2603,6 +2659,8 @@ def compute_modal_correlation(project_id, overwrite=True):
             raise ValueError("no valid modal correlation pairs were produced")
 
         best_pair = max(results, key=lambda row: row["dac"])
+        # Keep the single strongest modal pair in the legacy static-shape pair
+        # table because some existing consumers still read that summary record.
         cursor.execute("""
             INSERT INTO t_mt_py_fem_static_shape_pairs
             (pid, fem_res, test_res, DAC, DSF)

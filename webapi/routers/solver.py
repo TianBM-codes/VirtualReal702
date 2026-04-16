@@ -20,6 +20,8 @@ router = APIRouter(tags=["solver"])
 
 @router.post("/solver/abaqus/sensitivity")
 async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRunRequest):
+    # Generate the Abaqus sensitivity deck and optionally launch the solver in
+    # one request so callers can use the same endpoint for prep-only or full run.
     await log_request(request, model_to_dict(body))
     try:
         data = run_abaqus_sensitivity_job(
@@ -48,6 +50,8 @@ async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRu
 
 @router.post("/solver/abaqus/adjoint")
 async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest):
+    # Thin API wrapper around the local adjoint workflow implemented in the
+    # service layer; the router only logs, validates, and normalizes responses.
     await log_request(request, model_to_dict(body))
     try:
         data = run_abaqus_adjoint_job(
@@ -72,6 +76,8 @@ async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest
 
 @router.post("/solver/nastran/sol103")
 async def run_nastran_sol103_api(request: Request, body: NastranSol103RunRequest):
+    # Nastran preprocessing and solve are exposed together so downstream code
+    # does not need to know where the converted SOL103 deck is written.
     await log_request(request, model_to_dict(body))
     try:
         data = run_nastran_sol103_job(

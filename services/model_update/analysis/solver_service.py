@@ -10,6 +10,9 @@ from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import convert_to_sol103
 from ..solver_prep.abaqus_sensitivity import generate_sensitivity_inp
 
+# This module stays at the "local solver orchestration" layer:
+# it validates file paths, generates derived analysis decks when needed,
+# launches the external solver process, and collects the generated artifacts.
 _ABAQUS_ARTIFACT_SUFFIXES = (
     ".inp",
     ".odb",
@@ -66,6 +69,8 @@ def _normalize_extra_args(extra_args: Optional[List[str]]) -> List[str]:
 
 
 def _collect_artifacts(workdir: Path, stem: str, suffixes) -> Dict[str, str]:
+    # Solver outputs are discovered by stem so the API can return whatever
+    # was actually produced on disk without hard-coding every workflow result.
     artifacts = {}
     for suffix in suffixes:
         path = workdir / f"{stem}{suffix}"
@@ -81,6 +86,8 @@ def _run_local_solver(
     artifact_suffixes,
     timeout_sec: Optional[int] = None,
 ) -> dict:
+    # All solver wrappers eventually funnel through this helper so timeout,
+    # stdout/stderr capture, and artifact collection behave consistently.
     if timeout_sec is not None and int(timeout_sec) <= 0:
         raise ValidationError("timeout_sec must be > 0", {"timeout_sec": timeout_sec})
 
@@ -130,6 +137,8 @@ def _build_abaqus_command(
     interactive: bool = True,
     extra_args: Optional[List[str]] = None,
 ) -> List[str]:
+    # Abaqus is invoked in the directory that contains the generated input deck,
+    # so the command only needs the file name, not the full absolute path.
     command = [str(abaqus), f"job={job_name}", f"input={inp_path.name}"]
     if interactive:
         command.append("interactive")
@@ -167,6 +176,9 @@ def run_abaqus_sensitivity_job(
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
 ) -> dict:
+    # This workflow has two phases:
+    # 1. generate the sensitivity-ready INP files
+    # 2. optionally execute Abaqus on the generated analysis input
     input_path = _abs_file(input_inp, "input_inp")
     target_dir = _abs_dir(output_dir, input_path.parent)
 
@@ -203,6 +215,8 @@ def run_abaqus_sensitivity_job(
         "solver": None,
     }
     if run_solver:
+        # Returning both the command preview and the execution result makes it
+        # easier to debug solver startup issues separately from deck generation.
         payload["solver"] = _run_local_solver(
             command=command,
             workdir=target_dir,
@@ -225,6 +239,8 @@ def run_abaqus_adjoint_job(
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
 ) -> dict:
+    # The adjoint workflow rewrites the source INP into a dedicated job deck.
+    # The caller can stop after generation, or continue directly into solve.
     input_path = _abs_file(input_inp, "input_inp")
     output_path = Path(output_inp).expanduser().resolve() if output_inp else input_path.with_name(
         f"{input_path.stem}_adjoint_thickness.inp"
@@ -281,6 +297,8 @@ def run_nastran_sol103_job(
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
 ) -> dict:
+    # Nastran differs from the Abaqus helpers: the preprocessing step converts
+    # an existing BDF into a SOL103 deck before the optional solve.
     input_path = _abs_file(input_bdf, "input_bdf")
     output_path = Path(output_bdf).expanduser().resolve() if output_bdf else input_path.with_name(
         f"{input_path.stem}_sol103.bdf"

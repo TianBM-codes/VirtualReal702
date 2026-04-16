@@ -241,8 +241,89 @@ def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
             iteration_dir / "updated_parameter_values.txt",
             iteration_result["bayesian"]["p_new"],
         ),
+        # This file is for manual cross-checking against FEMTools: parameter -> target elements.
+        "parameter_element_mapping_json": _save_json(
+            iteration_dir / "parameter_element_mapping.json",
+            iteration_result.get("parameter_element_mapping", []),
+        ),
     }
     return {"iteration_dir": str(iteration_dir), "files": files}
+
+
+def _group_scoped_targets(targets: Sequence[object]) -> Dict[str, List[int]]:
+    grouped: Dict[str, List[int]] = {}
+    for item in targets:
+        text = str(item)
+        if "::" in text:
+            scope_name, label_text = text.split("::", 1)
+        else:
+            scope_name, label_text = "", text
+        try:
+            label = int(label_text)
+        except ValueError:
+            continue
+        grouped.setdefault(scope_name, []).append(label)
+
+    for scope_name, labels in grouped.items():
+        grouped[scope_name] = sorted(set(int(label) for label in labels))
+    return grouped
+
+
+def _parameter_element_mapping_entry(
+    *,
+    model,
+    source_field_name: str,
+    parameter_token: str,
+    mapped_parameter_name: str,
+    parameter_value: float,
+    target_rows: Sequence[dict],
+    mapping_mode: str,
+    scatter: float,
+) -> dict:
+    # Persist the resolved parameter-to-element mapping used by this iteration so
+    # a bad update (for example negative thickness) can be traced back to its target set.
+    result = {
+        "field": str(source_field_name),
+        "parameter_token": str(parameter_token),
+        "parameter_name": str(mapped_parameter_name),
+        "parameter_value": float(parameter_value),
+        "mapping_mode": str(mapping_mode),
+        "scatter": float(scatter),
+        "target_rows": [_clone_jsonable(dict(row)) for row in target_rows],
+    }
+    try:
+        target_kind, scoped_targets = _sens._parameter_target_labels(model, dict(target_rows[0])) if len(target_rows) == 1 else (None, [])
+        if len(target_rows) > 1:
+            all_targets: List[object] = []
+            resolved_kind = None
+            for row in target_rows:
+                row_kind, row_targets = _sens._parameter_target_labels(model, dict(row))
+                if resolved_kind is None:
+                    resolved_kind = row_kind
+                elif resolved_kind != row_kind:
+                    resolved_kind = "mixed"
+                all_targets.extend(list(row_targets))
+            target_kind = resolved_kind
+            scoped_targets = all_targets
+        result.update(
+            {
+                "target_kind": target_kind,
+                "target_count": len(scoped_targets),
+                "scoped_targets": [str(item) for item in scoped_targets],
+                "targets_by_scope": _group_scoped_targets(scoped_targets),
+            }
+        )
+    except Exception as exc:
+        result.update(
+            {
+                "target_kind": None,
+                "target_count": 0,
+                "scoped_targets": [],
+                "targets_by_scope": {},
+                "mapping_error": str(exc),
+            }
+        )
+    return result
 
 
 def _read_text_matrix(file_path: str, row_start: int, row_count: int, col_start: int = 1) -> np.ndarray:
@@ -516,6 +597,8 @@ def build_dsa_normalized_sensitivity_matrix(
         )
         source_mode = "l3_api"
 
+    # DSA columns come from result fields, then are mapped back to design parameters
+    # and finally to INP target sets/sections.
     dsa_model = parse_inp(resolved_inp_path)
     dsa_parameter_rows = _sens._load_project_optimization_parameters(project_id)
     dsa_parameter_map = (
@@ -571,6 +654,8 @@ def build_dsa_normalized_sensitivity_matrix(
                 mapped_parameter_name = str(parameter_row.get("parameter_name") or parameter_token)
                 mapping_mode = "optimization_parameter"
 
+            # A DSA field may match multiple design responses in the INP. We keep the
+            # candidate with the largest overlap of result labels.
             candidate_specs = list(selected_response_specs)
 
             best_score = -1
@@ -744,16 +829,27 @@ def build_dsa_normalized_sensitivity_matrix(
             )
 
             existing_column_meta = column_meta_map.get(source_field_name)
+            parameter_scatter = float(
+                parameter_row.get("scatter", _sens._DEFAULT_PARAMETER_SCATTER)
+                if mapping_mode == "optimization_parameter"
+                else _sens._DEFAULT_PARAMETER_SCATTER
+            )
             column_meta = {
                 "field": source_field_name,
                 "parameter_token": parameter_token,
                 "parameter_name": mapped_parameter_name,
                 "parameter_value": float(parameter_value),
                 "mapping_mode": mapping_mode,
-                "scatter": float(
-                    parameter_row.get("scatter", _sens._DEFAULT_PARAMETER_SCATTER)
-                    if mapping_mode == "optimization_parameter"
-                    else _sens._DEFAULT_PARAMETER_SCATTER
+                "scatter": parameter_scatter,
+                "element_mapping": _parameter_element_mapping_entry(
+                    model=dsa_model,
+                    source_field_name=source_field_name,
+                    parameter_token=parameter_token,
+                    mapped_parameter_name=mapped_parameter_name,
+                    parameter_value=float(parameter_value),
+                    target_rows=target_rows,
+                    mapping_mode=mapping_mode,
+                    scatter=parameter_scatter,
                 ),
             }
             if existing_column_meta is not None and existing_column_meta != column_meta:
@@ -862,10 +958,11 @@ def build_dsa_normalized_sensitivity_matrix(
     }
 
 
-def _copy_iteration_input(input_inp: str, output_dir: Path, iteration: int) -> Path:
+def _copy_iteration_input(input_inp: str, output_dir: Path, iteration: int, *, base_stem: Optional[str] = None) -> Path:
     source_path = Path(input_inp).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    copied_path = (output_dir / f"{source_path.stem}_iter{iteration}.inp").resolve()
+    resolved_base_stem = str(base_stem or source_path.stem)
+    copied_path = (output_dir / f"{resolved_base_stem}_iter{iteration}.inp").resolve()
     shutil.copyfile(str(source_path), str(copied_path))
     return copied_path
 
@@ -884,6 +981,8 @@ def _run_iteration_solver(
     python3: Optional[str],
     keep_raw: bool,
 ) -> dict:
+    # Each Bayesian iteration solves the current INP first, then converts the new ODB
+    # into a queryable workspace for sensitivity/result extraction.
     resolved_job_name = _solver._sanitize_job_name(job_name or inp_path.stem)
     command = _solver._build_abaqus_command(
         abaqus=abaqus,
@@ -968,8 +1067,9 @@ def run_bayesian_update_workflow(
         raise ValidationError("iterations must be > 0", {"iterations": iterations})
 
     input_path = _solver._abs_file(input_inp, "input_inp")
+    input_base_stem = input_path.stem
     root_dir = _solver._abs_dir(output_dir, input_path.parent / f"{input_path.stem}_bayesian")
-    current_inp = _copy_iteration_input(str(input_path), root_dir, 0)
+    current_inp = _copy_iteration_input(str(input_path), root_dir, 0, base_stem=input_base_stem)
 
     has_initial_source = bool(workspace or odb_path or odb_id)
     if int(iterations) > 1 and not run_solver:
@@ -992,6 +1092,8 @@ def run_bayesian_update_workflow(
     }
 
     for iteration_index in range(int(iterations)):
+        # If the caller did not provide an existing result source, iteration 0 must
+        # solve the copied INP before the sensitivity matrix can be assembled.
         if iteration_index == 0 and not has_initial_source:
             solver_payload = _run_iteration_solver(
                 inp_path=current_inp,
@@ -1015,6 +1117,8 @@ def run_bayesian_update_workflow(
         else:
             solver_payload = None
 
+        # Matrix construction always uses the current iteration INP so parameter
+        # values and target-set mappings stay aligned with the file being updated.
         matrix_payload = build_dsa_normalized_sensitivity_matrix(
             project_id=project_id,
             odb_id=next_source.get("odb_id"),
@@ -1106,7 +1210,17 @@ def run_bayesian_update_workflow(
             str(column["parameter_name"]): float(update_payload["p_new"][col_idx])
             for col_idx, column in enumerate(parameter_columns)
         }
-        next_inp = _copy_iteration_input(str(current_inp), root_dir, iteration_index + 1)
+        parameter_element_mapping = []
+        for col_idx, column in enumerate(parameter_columns):
+            mapping_entry = _clone_jsonable(column.get("element_mapping") or {})
+            mapping_entry["updated_parameter_value"] = float(update_payload["p_new"][col_idx])
+            parameter_element_mapping.append(mapping_entry)
+        next_inp = _copy_iteration_input(
+            str(current_inp),
+            root_dir,
+            iteration_index + 1,
+            base_stem=input_base_stem,
+        )
         update_parameter_section_values(
             str(next_inp),
             parameter_updates,
@@ -1129,6 +1243,7 @@ def run_bayesian_update_workflow(
             "parameter_scatter": p_scatter.tolist(),
             "response_scatter": r_scatter.tolist(),
             "parameter_columns": parameter_columns,
+            "parameter_element_mapping": parameter_element_mapping,
             "response_rows": response_rows,
             "bayesian": _clone_jsonable(update_payload),
             "updated_inp": str(next_inp),
@@ -1140,6 +1255,8 @@ def run_bayesian_update_workflow(
         current_inp = next_inp
         next_source = {"workspace": None, "odb_path": None, "odb_id": None, "base_url": None}
         if iteration_index < int(iterations) - 1:
+            # For later iterations we always rerun the freshly updated INP instead of
+            # reusing the previous workspace.
             rerun_payload = _run_iteration_solver(
                 inp_path=current_inp,
                 output_dir=root_dir,

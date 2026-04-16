@@ -14,6 +14,7 @@ router = APIRouter(tags=["model-update"])
 
 @router.post("/import/bdf")
 async def import_bdf(request: Request, body: ImportBdfRequest):
+    # Import baseline BDF model data into the shared FEM tables.
     await log_request(request, model_to_dict(body))
     try:
         result = import_bdf_data(
@@ -31,6 +32,8 @@ async def import_bdf(request: Request, body: ImportBdfRequest):
 
 @router.post("/import/inp/catalog")
 async def import_inp_catalog_api(request: Request, body: ImportInpCatalogRequest):
+    # Parse the INP file into database catalogs plus the optional octree cache
+    # used later by node matching and FE/test response alignment.
     await log_request(request, model_to_dict(body))
     try:
         result = import_inp_catalog(
@@ -50,6 +53,7 @@ async def import_inp_catalog_api(request: Request, body: ImportInpCatalogRequest
 
 @router.post("/catalog/inp")
 async def get_inp_catalog_api(request: Request, body: InpCatalogRequest):
+    # Read back the imported INP catalog without reparsing the source file.
     await log_request(request, model_to_dict(body))
     try:
         result = get_inp_catalog(body.project_id)
@@ -63,6 +67,7 @@ async def get_inp_catalog_api(request: Request, body: InpCatalogRequest):
 
 @router.post("/tools/inp/tree")
 async def get_inp_tree_api(request: Request, body: InpTreeRequest):
+    # Tree view is a lightweight inspection helper and does not touch the DB.
     await log_request(request, model_to_dict(body))
     try:
         result = get_inp_tree(

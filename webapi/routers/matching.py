@@ -13,6 +13,8 @@ router = APIRouter(tags=["model-update"])
 
 @router.post("/match/nodes")
 async def match_nodes_api(request: Request, body: MatchNodesRequest):
+    # Node matching bridges imported test coordinates to the FE model so later
+    # modal/static correlation can reuse a stable node alignment table.
     await log_request(request, model_to_dict(body))
     try:
         result = match_test_nodes(

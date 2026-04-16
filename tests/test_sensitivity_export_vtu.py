@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from services.model_update.analysis import sensitivity_service
 from src.inp.model import (
@@ -55,6 +56,27 @@ class _FakeODBClient:
         if kwargs["field"] == "S":
             return {f"{kwargs['instance']}::3": 30.0}
         raise AssertionError(f"unexpected field {kwargs['field']}")
+
+
+def test_build_workspace_from_odb_returns_text_stdout(monkeypatch, tmp_path: Path):
+    odb_path = tmp_path / "demo.odb"
+    odb_path.write_text("fake", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "manifest.db").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sensitivity_service.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="中文输出".encode("utf-8"), stderr=b""),
+    )
+
+    result = sensitivity_service.build_workspace_from_odb(
+        odb_path=str(odb_path),
+        workspace=str(workspace),
+    )
+
+    assert result["stdout_tail"] == "中文输出"
 
 
 def test_export_odb_sensitivity_vtu_uses_project_inp_and_prefix(monkeypatch, tmp_path: Path):
@@ -130,6 +152,7 @@ def test_export_odb_sensitivity_vtu_uses_project_inp_and_prefix(monkeypatch, tmp
         odb_id="odb-1",
         output_vtu=str(out_path),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
     )
 
     assert result["inp_path"] == str(inp_path.resolve())
@@ -227,6 +250,7 @@ def test_export_odb_sensitivity_vtu_supports_local_workspace_without_base_url(mo
         output_vtu=str(out_path),
         workspace=str(workspace),
         base_url=None,
+        field_prefix="d_UR_",
     )
 
     assert result["source_mode"] == "workspace"
@@ -313,6 +337,7 @@ def test_export_odb_sensitivity_vtu_supports_registry_mode_with_only_odb_id(monk
         odb_id="odb-1",
         output_vtu=str(out_path),
         base_url=None,
+        field_prefix="d_UR_",
     )
 
     assert result["source_mode"] == "registry"
@@ -382,6 +407,7 @@ def test_export_odb_sensitivity_vtu_uses_direct_inp_parameter_targets(monkeypatc
         odb_id="odb-1",
         output_vtu=str(out_path),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
     )
 
     assert result["exported_fields"] == ["d_UR_T10"]
@@ -453,7 +479,7 @@ def test_export_odb_sensitivity_vtu_accepts_thickness_field_prefix(monkeypatch, 
         odb_id="odb-1",
         output_vtu=str(out_path),
         base_url="http://127.0.0.1:18765",
-        field_prefix="d_U_T",
+        field_prefix="d_UR_T",
     )
 
     assert result["field_prefix"] == "d_UR_T"
@@ -616,6 +642,7 @@ def test_export_odb_sensitivity_vtu_maps_t_index_to_design_parameter_name(monkey
         odb_id="odb-1",
         output_vtu=str(tmp_path / "t1_map.vtu"),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
     )
 
     assert captured["cell_results"] == {
@@ -709,6 +736,7 @@ def test_export_odb_sensitivity_vtu_normalizes_using_design_response_component(m
         odb_id="odb-1",
         output_vtu=str(tmp_path / "normalized_u2.vtu"),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
     )
 
     assert captured["cell_results"] == {
@@ -799,6 +827,7 @@ def test_export_odb_sensitivity_vtu_uses_explicit_response_component(monkeypatch
         odb_id="odb-1",
         output_vtu=str(tmp_path / "normalized_explicit_u2.vtu"),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
         response_component="UY",
     )
 
@@ -886,6 +915,7 @@ def test_export_odb_sensitivity_vtu_infers_single_active_component_from_vector_r
         odb_id="odb-1",
         output_vtu=str(tmp_path / "normalized_implicit_u.vtu"),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
     )
 
     assert captured["cell_results"] == {"d_UR_": {"INST_A::10": 1.0}}
@@ -981,6 +1011,7 @@ def test_export_odb_sensitivity_vtu_matches_among_multiple_design_responses(monk
         odb_id="odb-1",
         output_vtu=str(tmp_path / "multi_design_response.vtu"),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
     )
 
     assert captured["cell_results"] == {"d_UR_": {"INST_A::10": 1.0}}
@@ -1079,6 +1110,7 @@ def test_export_odb_sensitivity_vtu_splits_multiple_response_locations(monkeypat
         odb_id="odb-1",
         output_vtu=str(tmp_path / "multi_location.vtu"),
         base_url="http://127.0.0.1:18765",
+        field_prefix="d_UR_",
     )
 
     assert captured["cell_results"] == {
@@ -1227,6 +1259,7 @@ def test_export_odb_sensitivity_vtu_rejects_overlapping_parameter_sets(monkeypat
             odb_id="odb-1",
             output_vtu=str(tmp_path / "conflict.vtu"),
             base_url="http://127.0.0.1:18765",
+            field_prefix="d_UR_",
         )
         raise AssertionError("expected overlapping parameter sets to raise ValidationError")
     except sensitivity_service.ValidationError as exc:

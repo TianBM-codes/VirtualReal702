@@ -143,6 +143,8 @@ def build_workspace_from_odb(
         python3: Optional[str] = None,
         keep_raw: bool = False,
 ) -> dict:
+    # Bayesian/sensitivity workflows query results through the generated workspace,
+    # not directly from the raw ODB file.
     odb_abs = os.path.abspath(odb_path)
     if not os.path.exists(odb_abs):
         raise NotFoundError(f"odb file not found: {odb_abs}", {"odb_path": odb_abs})
@@ -187,7 +189,7 @@ def build_workspace_from_odb(
         "odb_path": odb_abs,
         "workspace": workspace_abs,
         "manifest_db": manifest if os.path.exists(manifest) else None,
-        "stdout_tail": result.stdout[-4000:],
+        "stdout_tail": stdout[-4000:],
     }
 
 
@@ -647,40 +649,26 @@ def _discover_sensitivity_fields_from_workspace(
         matched_field_names = set()
         per_instance: Dict[str, List[dict]] = {}
         for instance_name in chosen_instances:
-            if selector["kind"] == "prefix":
-                rows = conn.execute(
-                    """
-                    SELECT rf.field_name, rb.position
-                    FROM result_files rf
-                    JOIN result_blocks rb
-                      ON rb.step_name = rf.step_name
-                     AND rb.field_name = rf.field_name
-                    WHERE rf.step_name = ?
-                      AND rb.instance_name = ?
-                      AND rf.field_name LIKE ?
-                    ORDER BY rf.field_name, rb.position
-                    """,
-                    (chosen_step, instance_name, f"{selector['field_prefix']}%"),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT rf.field_name, rb.position
-                    FROM result_files rf
-                    JOIN result_blocks rb
-                      ON rb.step_name = rf.step_name
-                     AND rb.field_name = rf.field_name
-                    WHERE rf.step_name = ?
-                      AND rb.instance_name = ?
-                      AND rf.field_name = ?
-                    ORDER BY rf.field_name, rb.position
-                    """,
-                    (chosen_step, instance_name, selector["field_name"]),
-                ).fetchall()
+            rows = conn.execute(
+                """
+                SELECT rf.field_name, rb.position
+                FROM result_files rf
+                JOIN result_blocks rb
+                  ON rb.step_name = rf.step_name
+                 AND rb.field_name = rf.field_name
+                WHERE rf.step_name = ?
+                  AND rb.instance_name = ?
+                ORDER BY rf.field_name, rb.position
+                """,
+                (chosen_step, instance_name),
+            ).fetchall()
 
             fields_map: Dict[str, List[str]] = {}
             for row in rows:
-                fields_map.setdefault(str(row["field_name"]), []).append(str(row["position"]))
+                field_name = str(row["field_name"])
+                if not selector["match"](field_name):
+                    continue
+                fields_map.setdefault(field_name, []).append(str(row["position"]))
 
             selected = []
             for field_name, positions in fields_map.items():
