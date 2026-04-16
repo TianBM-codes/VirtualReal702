@@ -31,6 +31,39 @@ P2=2.0, P3=3.0
     assert "P2=2.0,P3=4.25" in text
 
 
+def test_bayesian_update_normalized_uses_normalized_residual_and_gain_matrix():
+    result = bayesian_service.bayesian_update_normalized(
+        p_current=np.array([2.0, 4.0]),
+        r_model=np.array([10.0, 20.0]),
+        r_target=np.array([8.0, 10.0]),
+        S_norm=np.array([[0.5, 0.25], [0.1, 0.3]]),
+        p_scatter=np.array([0.25]),
+        r_scatter=np.array([0.01]),
+        damping=1e-12,
+        p_ref=np.array([2.0, 4.0]),
+    )
+
+    expected_y = np.array([[0.2], [0.5]])
+    expected_p_scatter = np.array([0.25, 0.25])
+    expected_r_scatter = np.array([0.01, 0.01])
+    expected_cp_n = 2.0 * np.diag(1.0 / expected_p_scatter**2)
+    expected_cr_n = np.diag(1.0 / expected_r_scatter**2)
+    expected_cp_n_eff = expected_cp_n + 1e-12 * np.eye(2)
+    expected_cp_n_inv = np.linalg.inv(expected_cp_n_eff)
+    expected_cr_n_inv = np.linalg.inv(expected_cr_n)
+    expected_innovation_cov = expected_cr_n_inv + np.array([[0.5, 0.25], [0.1, 0.3]]) @ expected_cp_n_inv @ np.array([[0.5, 0.1], [0.25, 0.3]])
+    expected_g_n = expected_cp_n_inv @ np.array([[0.5, 0.1], [0.25, 0.3]]) @ np.linalg.inv(expected_innovation_cov)
+
+    assert np.allclose(result["y"], expected_y)
+    assert np.allclose(result["normalized_parameter_scatter"], expected_p_scatter)
+    assert np.allclose(result["normalized_response_scatter"], expected_r_scatter)
+    assert np.allclose(result["Cp_n"], expected_cp_n)
+    assert np.allclose(result["Cr_n"], expected_cr_n)
+    assert np.allclose(result["Cp_n_eff"], expected_cp_n_eff)
+    assert np.allclose(result["innovation_cov"], expected_innovation_cov)
+    assert np.allclose(result["G_n"], expected_g_n)
+
+
 def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_values(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "fake.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
@@ -198,6 +231,57 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_componen
     assert result["response_component"] == "U2"
     assert result["matrix"] == [[0.2]]
     assert [item["response_component"] for item in result["response_rows"]] == ["U2"]
+
+
+def test_run_iteration_solver_deletes_abaqus_process_files_after_workspace_build(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model_iter0.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    odb_path = tmp_path / "demo.odb"
+    odb_path.write_text("odb", encoding="utf-8")
+
+    deleted_suffixes = [".com", ".prt", ".pmg", ".pes", ".par", ".msg", ".sta", ".dat"]
+    for suffix in deleted_suffixes:
+        (tmp_path / f"demo{suffix}").write_text("tmp", encoding="utf-8")
+
+    monkeypatch.setattr(bayesian_service._solver, "_sanitize_job_name", lambda name: "demo")
+    monkeypatch.setattr(
+        bayesian_service._solver,
+        "_build_abaqus_command",
+        lambda **kwargs: ["abaqus", "job=demo", "input=model_iter0.inp"],
+    )
+    monkeypatch.setattr(
+        bayesian_service._solver,
+        "_run_local_solver",
+        lambda **kwargs: {
+            "ok": True,
+            "artifacts": {"odb": str(odb_path)},
+            "workdir": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "build_workspace_from_odb",
+        lambda **kwargs: {"workspace": str(tmp_path / "workspace_iter0")},
+    )
+
+    result = bayesian_service._run_iteration_solver(
+        inp_path=inp_path,
+        output_dir=tmp_path,
+        iteration=0,
+        abaqus="abaqus",
+        job_name="demo",
+        cpus=None,
+        interactive=True,
+        timeout_sec=None,
+        extra_args=None,
+        python3=None,
+        keep_raw=False,
+    )
+
+    assert Path(result["solver"]["artifacts"]["odb"]).exists()
+    for suffix in deleted_suffixes:
+        assert not (tmp_path / f"demo{suffix}").exists()
+    assert sorted(Path(path).suffix for path in result["solver"]["deleted_process_files"]) == sorted(deleted_suffixes)
 
 
 def test_run_bayesian_update_workflow_rewrites_inp_across_iterations(monkeypatch, tmp_path: Path):

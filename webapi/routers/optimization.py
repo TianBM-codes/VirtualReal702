@@ -14,6 +14,25 @@ from ..utils import log_request, model_to_dict
 router = APIRouter(tags=["model-update"])
 
 
+def _compact_bayesian_run_response(payload: dict) -> dict:
+    iteration_results = list(payload.get("iteration_results") or [])
+    iteration_dirs = [
+        item.get("saved_artifacts", {}).get("iteration_dir")
+        for item in iteration_results
+        if item.get("saved_artifacts", {}).get("iteration_dir")
+    ]
+    return {
+        "project_id": payload.get("project_id"),
+        "input_inp": payload.get("input_inp"),
+        "output_dir": payload.get("output_dir"),
+        "iterations": payload.get("iterations"),
+        "final_updated_inp": payload.get("final_updated_inp"),
+        # Detailed matrices, mappings, and per-iteration summaries stay on disk
+        # under output_dir. The API only returns the root paths needed to find them.
+        "iteration_dirs": iteration_dirs,
+    }
+
+
 @router.post("/optimization/parameter/create")
 async def create_optimization_parameter_api(request: Request, body: CreateOptimizationParameterRequest):
     # Create a persistent optimization-parameter record by binding one candidate
@@ -83,7 +102,7 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
         )
-        return success_response(data, "贝叶斯模型修正执行成功")
+        return success_response(_compact_bayesian_run_response(data), "Bayesian模型修正执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -120,7 +139,7 @@ async def run_bayesian_text_check_api(request: Request, body: BayesianTextCheckR
             output_dir=body.output_dir,
             case_name=body.case_name,
         )
-        return success_response(data, "贝叶斯文本校核执行成功")
+        return success_response(data, "Bayesian文本校核执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

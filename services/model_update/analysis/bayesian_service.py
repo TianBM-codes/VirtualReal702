@@ -16,6 +16,7 @@ from . import solver_service as _solver
 
 
 _PARAMETER_ASSIGNMENT_RE = re.compile(r"^\s*([^=\s,]+)\s*=\s*(.+?)\s*$")
+_ITERATION_CLEANUP_SUFFIXES = (".com", ".prt", ".pmg", ".pes", ".par", ".msg", ".sta", ".dat")
 
 
 def _format_scalar(value: float) -> str:
@@ -374,6 +375,96 @@ def _parameter_values_from_inp(input_inp: str, parameter_names: Sequence[str]) -
     return np.asarray(values, dtype=np.float64)
 
 
+def _expand_scatter_vector(scatter: Any, expected_size: int, *, label: str) -> np.ndarray:
+    values = np.asarray(scatter, dtype=np.float64).reshape(-1)
+    if values.size == 1 and int(expected_size) > 1:
+        values = np.full(int(expected_size), float(values[0]), dtype=np.float64)
+    if values.size != int(expected_size):
+        raise ValidationError(
+            f"{label} size mismatch",
+            {"expected": int(expected_size), "actual": int(values.size)},
+        )
+    if np.any(values <= 0):
+        raise ValidationError(
+            f"{label} must be > 0",
+            {"label": label, "values": values.tolist()},
+        )
+    return values
+
+
+def build_normalized_residual(
+    r_model: Any,
+    r_target: Any,
+    *,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    # Follow the FEMTools-style normalized residual used in Untitled-3.py:
+    # y_i = (r_model_i - r_target_i) / |r_model_i|
+    # If the residual is written as dR_i = r_target_i - r_model_i, then:
+    #   -y_i = dR_i / |r_model_i|
+    # The later update uses x = -G_n y, so the sign convention is equivalent
+    # to applying the normalized residual dR / r in the update direction.
+    r_model_arr = np.asarray(r_model, dtype=np.float64).reshape(-1)
+    r_target_arr = np.asarray(r_target, dtype=np.float64).reshape(-1)
+    if r_model_arr.shape != r_target_arr.shape:
+        raise ValidationError(
+            "r_model and r_target size mismatch",
+            {"r_model_size": int(r_model_arr.size), "r_target_size": int(r_target_arr.size)},
+        )
+    return (
+        (r_model_arr - r_target_arr).reshape(-1, 1)
+        / np.maximum(np.abs(r_model_arr).reshape(-1, 1), float(eps))
+    )
+
+
+def _build_normalized_gain_matrix(
+    S_norm: Any,
+    p_scatter: Any,
+    r_scatter: Any,
+    *,
+    damping: float = 1e-8,
+    eps: float = 1e-12,
+) -> dict:
+    S_norm_arr = np.asarray(S_norm, dtype=np.float64)
+    if S_norm_arr.ndim != 2:
+        raise ValidationError("S_norm must be a 2D matrix", {"shape": list(S_norm_arr.shape)})
+
+    n_resp, n_param = S_norm_arr.shape
+    p_scatter_arr = _expand_scatter_vector(p_scatter, n_param, label="parameter scatter")
+    r_scatter_arr = _expand_scatter_vector(r_scatter, n_resp, label="response scatter")
+
+    # Both covariance-like matrices are defined in normalized space, so the
+    # gain matrix below is also a normalized-space quantity.
+    #
+    # The key point is that S_norm is not the raw sensitivity dR/dp.
+    # Upstream DSA assembly already converts each scalar sensitivity to:
+    #
+    #   S_norm(j, i) = (dR_j / dp_i) * p_i / r_j
+    #
+    # Therefore G_n is the gain matrix associated with the normalized system,
+    # not a raw gain matrix that still needs an extra p/r factor afterwards.
+    Cp_n = 2.0 * np.diag(1.0 / np.maximum(p_scatter_arr, float(eps)) ** 2)
+    Cr_n = np.diag(1.0 / np.maximum(r_scatter_arr, float(eps)) ** 2)
+    Cp_n_eff = Cp_n + float(damping) * np.eye(n_param)
+
+    Cp_n_inv = np.linalg.inv(Cp_n_eff)
+    Cr_n_inv = np.linalg.inv(Cr_n)
+    innovation_cov = Cr_n_inv + S_norm_arr @ Cp_n_inv @ S_norm_arr.T
+    G_n = Cp_n_inv @ S_norm_arr.T @ np.linalg.inv(innovation_cov)
+
+    return {
+        "Cp_n": Cp_n,
+        "Cr_n": Cr_n,
+        "Cp_n_eff": Cp_n_eff,
+        "Cp_n_inv": Cp_n_inv,
+        "Cr_n_inv": Cr_n_inv,
+        "innovation_cov": innovation_cov,
+        "G_n": G_n,
+        "p_scatter": p_scatter_arr,
+        "r_scatter": r_scatter_arr,
+    }
+
+
 def bayesian_update_normalized(
     p_current,
     r_model,
@@ -408,23 +499,36 @@ def bayesian_update_normalized(
     p_ref = np.asarray(p_ref, dtype=float).reshape(-1)
     p_ref = np.maximum(np.abs(p_ref), eps)
 
-    p_scatter = np.asarray(p_scatter, dtype=float).reshape(-1)
-    r_scatter = np.asarray(r_scatter, dtype=float).reshape(-1)
-    if len(p_scatter) != len(p_current):
-        raise ValidationError("parameter scatter size mismatch", {"expected": len(p_current), "actual": len(p_scatter)})
-    if len(r_scatter) != len(r_model):
-        raise ValidationError("response scatter size mismatch", {"expected": len(r_model), "actual": len(r_scatter)})
-
     Dp = np.diag(p_ref)
-    y = 100.0 * delta_r.reshape(-1, 1) / np.maximum(r_model.reshape(-1, 1), eps)
-
-    Cp_n = 2.0 * np.diag(1.0 / np.maximum(p_scatter, eps) ** 2)
-    Cr_n = np.diag(1.0 / np.maximum(r_scatter, eps) ** 2)
-    Cp_n_eff = Cp_n + float(damping) * np.eye(len(p_current))
-
-    Cp_n_inv = np.linalg.inv(Cp_n_eff)
-    Cr_n_inv = np.linalg.inv(Cr_n)
-    G_n = Cp_n_inv @ S_norm.T @ np.linalg.inv(Cr_n_inv + S_norm @ Cp_n_inv @ S_norm.T)
+    # y is the normalized residual vector and G_n is the normalized gain matrix.
+    # The update is applied in two stages:
+    #
+    #   x = -G_n * y
+    #   dp = Dp * x
+    #   p_new = p_current + dp
+    #
+    # Combining them gives the practical form:
+    #
+    #   p_new = p_current + Dp * (-G_n * y)
+    #
+    # For a single response / single parameter case this corresponds to the
+    # same idea as:
+    #
+    #   p_u = p_0 + p_ii * (...) * dR / r_jj
+    #
+    # where:
+    #   1. the p_i / r_j factor is already embedded in S_norm
+    #   2. G_n is built from S_norm, Cp_n, Cr_n in normalized space
+    #   3. Dp multiplies back the parameter scale before writing p_new
+    y = build_normalized_residual(r_model=r_model, r_target=r_target, eps=eps)
+    gain_payload = _build_normalized_gain_matrix(
+        S_norm=S_norm,
+        p_scatter=p_scatter,
+        r_scatter=r_scatter,
+        damping=damping,
+        eps=eps,
+    )
+    G_n = gain_payload["G_n"]
 
     x = float(step_scale) * (G_n @ (-y))
     dp = Dp @ x
@@ -442,6 +546,12 @@ def bayesian_update_normalized(
         "dp": dp,
         "p_new": p_new,
         "G_n": G_n,
+        "Cp_n": gain_payload["Cp_n"],
+        "Cr_n": gain_payload["Cr_n"],
+        "Cp_n_eff": gain_payload["Cp_n_eff"],
+        "innovation_cov": gain_payload["innovation_cov"],
+        "normalized_parameter_scatter": gain_payload["p_scatter"],
+        "normalized_response_scatter": gain_payload["r_scatter"],
     }
 
 
@@ -967,6 +1077,17 @@ def _copy_iteration_input(input_inp: str, output_dir: Path, iteration: int, *, b
     return copied_path
 
 
+def _cleanup_iteration_solver_files(workdir: Path, job_name: str) -> List[str]:
+    deleted: List[str] = []
+    for suffix in _ITERATION_CLEANUP_SUFFIXES:
+        path = (workdir / f"{job_name}{suffix}").resolve()
+        if not path.exists() or not path.is_file():
+            continue
+        path.unlink()
+        deleted.append(str(path))
+    return deleted
+
+
 def _run_iteration_solver(
     *,
     inp_path: Path,
@@ -983,6 +1104,9 @@ def _run_iteration_solver(
 ) -> dict:
     # Each Bayesian iteration solves the current INP first, then converts the new ODB
     # into a queryable workspace for sensitivity/result extraction.
+    # Once the workspace has been built, the Abaqus process files are no longer
+    # needed for the Bayesian loop, so they are removed to keep the work
+    # directory small across many iterations.
     resolved_job_name = _solver._sanitize_job_name(job_name or inp_path.stem)
     command = _solver._build_abaqus_command(
         abaqus=abaqus,
@@ -1020,6 +1144,8 @@ def _run_iteration_solver(
         python3=python3,
         keep_raw=keep_raw,
     )
+    deleted_process_files = _cleanup_iteration_solver_files(inp_path.parent, resolved_job_name)
+    solver_result["deleted_process_files"] = deleted_process_files
     return {
         "job_name": resolved_job_name,
         "command_preview": command,
