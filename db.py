@@ -683,7 +683,7 @@ CREATE_TABLE_SQL_LIST = [
         pid BIGINT NOT NULL COMMENT '工程ID',
         tracking_type VARCHAR(10) NOT NULL COMMENT '跟踪类型 Parameter:参数跟踪 Response:响应跟踪',
         tracking_name VARCHAR(32) NOT NULL COMMENT '跟踪名称',
-        iteration INT NOT NULL COMMENT '迭代顺序',
+        iteration INT NOT NULL COMMENT '迭代步',
         track_value FLOAT COMMENT '跟踪值',
         PRIMARY KEY (pid, tracking_type, tracking_name, iteration)
     ) COMMENT='跟踪值表';
@@ -691,9 +691,9 @@ CREATE_TABLE_SQL_LIST = [
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_tracking_iteration (
         pid BIGINT NOT NULL COMMENT '工程ID',
-        tracking_type VARCHAR(10) NOT NULL COMMENT '跟踪类型 Parameter:参数跟踪 Response:响应跟踪',
+        batch_no INT COMMENT '批次号',
         iterations INT COMMENT '迭代次数',
-        PRIMARY KEY (pid, tracking_type)
+        PRIMARY KEY (pid, batch_no)
     ) COMMENT='跟踪迭代表';
     """,
     """
@@ -716,7 +716,7 @@ CREATE_TABLE_SQL_LIST = [
         iteration INT NOT NULL COMMENT '迭代次数',
         cal_result_value FLOAT COMMENT '计算结果值',
         test_result_value FLOAT COMMENT '测试结果值',
-        response_diff FLOAT COMMENT '响应差异',
+        response_diff FLOAT COMMENT '响应差异(%)',
         PRIMARY KEY (pid, response_name, iteration)
     ) COMMENT='响应差异表';
     """
