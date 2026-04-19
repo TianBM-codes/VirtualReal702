@@ -660,7 +660,7 @@ CREATE_TABLE_SQL_LIST = [
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_error_analyse (
-        id BIGINT PRIMARY KEY AUTOINCREMENT COMMENT '主键ID',
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
         node_no VARCHAR(64) COMMENT '节点号',
         point_no VARCHAR(64) COMMENT '测点号',
@@ -668,30 +668,34 @@ CREATE_TABLE_SQL_LIST = [
         point_value FLOAT COMMENT '测点值',
         relative_error FLOAT COMMENT '相对误差',
         abs_error REAL COMMENT '绝对误差',
-        sensor_type_id BIGINT COMMENT '传感器类型ID'
-    ) COMMENT='误差分析表';
+        sensor_type_id BIGINT COMMENT '传感器类型ID',
+        PRIMARY KEY (id),
+        KEY idx_pid (pid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='误差分析表';
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_dac_dsf (
-        pid INTEGER PRIMARY KEY COMMENT '工程ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
         dac FLOAT COMMENT 'DAC',
-        dsf FLOAT COMMENT 'DSF'
-    ) COMMENT='DAC/DSF表';
+        dsf FLOAT COMMENT 'DSF',
+        PRIMARY KEY (pid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='DAC/DSF表';
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_tracking_value (
         pid BIGINT NOT NULL COMMENT '工程ID',
+        batch_no INT NOT NULL DEFAULT 1 COMMENT '批次号',
         tracking_type VARCHAR(10) NOT NULL COMMENT '跟踪类型 Parameter:参数跟踪 Response:响应跟踪',
-        tracking_name VARCHAR(32) NOT NULL COMMENT '跟踪名称',
+        tracking_name VARCHAR(100) NOT NULL COMMENT '跟踪名称',
         iteration INT NOT NULL COMMENT '迭代步',
         track_value FLOAT COMMENT '跟踪值',
-        PRIMARY KEY (pid, tracking_type, tracking_name, iteration)
+        PRIMARY KEY (pid, batch_no, tracking_type, tracking_name, iteration)
     ) COMMENT='跟踪值表';
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_tracking_iteration (
         pid BIGINT NOT NULL COMMENT '工程ID',
-        batch_no INT COMMENT '批次号',
+        batch_no INT NOT NULL DEFAULT 1 COMMENT '批次号',
         iterations INT COMMENT '迭代次数',
         PRIMARY KEY (pid, batch_no)
     ) COMMENT='跟踪迭代表';
@@ -699,25 +703,27 @@ CREATE_TABLE_SQL_LIST = [
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_variation (
         pid BIGINT NOT NULL COMMENT '工程ID',
-        parameter_name VARCHAR(32) NOT NULL COMMENT '参数名称',
+        batch_no INT NOT NULL DEFAULT 1 COMMENT '批次号',
+        parameter_name VARCHAR(100) NOT NULL COMMENT '参数名称',
         parameter_hierarchy VARCHAR(10) COMMENT '参数层级',
         parameter_type VARCHAR(10) COMMENT '参数类型',
         parameter_scope VARCHAR(32) COMMENT '参数范围',
         ori_value FLOAT COMMENT '原始值',
         result_value FLOAT COMMENT '结果值',
         parameter_variation FLOAT COMMENT '参数变化',
-        PRIMARY KEY (pid, parameter_name)
+        PRIMARY KEY (pid, batch_no, parameter_name)
     ) COMMENT='参数变化表';
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_response_difference (
         pid INTEGER NOT NULL COMMENT '工程ID',
-        response_name VARCHAR(32) NOT NULL COMMENT '响应名称',
+        batch_no INT NOT NULL DEFAULT 1 COMMENT '批次号',
+        response_name VARCHAR(100) NOT NULL COMMENT '响应名称',
         iteration INT NOT NULL COMMENT '迭代次数',
         cal_result_value FLOAT COMMENT '计算结果值',
         test_result_value FLOAT COMMENT '测试结果值',
         response_diff FLOAT COMMENT '响应差异(%)',
-        PRIMARY KEY (pid, response_name, iteration)
+        PRIMARY KEY (pid, batch_no, response_name, iteration)
     ) COMMENT='响应差异表';
     """
 ]
@@ -805,5 +811,5 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_variation WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_tracking_iteration WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_tracking_value WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_error WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_error_analyse WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dac_dsf WHERE pid = {pid}")

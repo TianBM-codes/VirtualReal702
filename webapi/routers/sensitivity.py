@@ -6,7 +6,10 @@ from services.model_update.analysis.sensitivity_service import (
     export_adjoint_sensitivity_vtu,
     export_dsa_sensitivity_vtu,
     export_odb_sensitivity_vtu,
+    get_stored_sensitivity_matrix_payload,
+    get_stored_sensitivity_table_points,
     get_sensitivity_overview,
+    store_dsa_sensitivity_results,
 )
 from src.l3.core.errors import AppError
 
@@ -17,11 +20,87 @@ from ..models import (
     SensitivityExportDsaVtuRequest,
     SensitivityExportVtuRequest,
     SensitivityOverviewRequest,
+    SensitivityStoredQueryRequest,
+    SensitivityStoreDsaRequest,
     SensitivityTableRequest,
 )
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["sensitivity"])
+
+
+@router.post("/sensitivity/store/dsa")
+async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = store_dsa_sensitivity_results(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+            input_inp=body.input_inp,
+            output_dir=body.output_dir,
+            workspace=body.workspace,
+            odb_path=body.odb_path,
+            step=body.step,
+            instances=body.instances,
+            field_prefix=body.field_prefix,
+            response_component=body.response_component,
+            position=body.position,
+            aggregation=body.aggregation,
+            frame=body.frame,
+            response_elset=body.response_elset,
+            response_nset=body.response_nset,
+            response_frequency=body.response_frequency,
+            node_vars=body.node_vars,
+            element_vars=body.element_vars,
+            abaqus=body.abaqus,
+            python3=body.python3,
+            keep_raw=body.keep_raw,
+            timeout=body.timeout,
+            job_name=body.job_name,
+            cpus=body.cpus,
+            interactive=body.interactive,
+            run_solver=body.run_solver,
+            timeout_sec=body.timeout_sec,
+            extra_args=body.extra_args,
+        )
+        return success_response(data, "sensitivity results stored")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/stored/table")
+async def sensitivity_stored_table(request: Request, body: SensitivityStoredQueryRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = get_stored_sensitivity_table_points(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+        )
+        return success_response(data, "stored sensitivity table loaded")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/stored/matrix")
+async def sensitivity_stored_matrix(request: Request, body: SensitivityStoredQueryRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = get_stored_sensitivity_matrix_payload(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+        )
+        return success_response(data, "stored sensitivity matrix loaded")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/sensitivity/workspace/build")

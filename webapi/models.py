@@ -63,11 +63,13 @@ class CreateOptimizationParameterRequest(BaseModel):
 
 class BayesianModelUpdateRequest(BaseModel):
     project_id: int
+    batch_no: int = Field(default=1, ge=1)
     input_inp: str
     target_responses: Any
     parameter_scatter: Any = None
     response_scatter: Any = None
     output_dir: Optional[str] = None
+    save_results: bool = True
     odb_id: Optional[str] = None
     base_url: Optional[str] = None
     workspace: Optional[str] = None
@@ -80,6 +82,7 @@ class BayesianModelUpdateRequest(BaseModel):
     aggregation: str = "max_abs"
     frame: int = 0
     iterations: int = Field(default=1, ge=1)
+    exit_diff_percent: Optional[float] = Field(default=None, ge=0)
     damping: float = 1e-8
     step_scale: float = 1.0
     lower_bound: Optional[Any] = None
@@ -196,6 +199,42 @@ class SensitivityExportAdjointVtuRequest(SensitivityExportVtuBaseRequest):
 
 class SensitivityExportVtuRequest(SensitivityExportDsaVtuRequest):
     pass
+
+
+class SensitivityStoreDsaRequest(BaseModel):
+    project_id: int
+    batch_no: Optional[str] = "1"
+    input_inp: str
+    output_dir: Optional[str] = None
+    workspace: Optional[str] = None
+    odb_path: Optional[str] = None
+    step: Optional[str] = None
+    instances: Optional[List[str]] = None
+    field_prefix: str = "d_U_"
+    response_component: Optional[str] = None
+    position: Optional[str] = None
+    aggregation: str = "max_abs"
+    frame: int = 0
+    response_elset: Optional[str] = None
+    response_nset: Optional[str] = None
+    response_frequency: int = 1
+    node_vars: Optional[List[str]] = None
+    element_vars: Optional[List[str]] = None
+    abaqus: str = "abaqus"
+    python3: Optional[str] = None
+    keep_raw: bool = False
+    timeout: int = 60
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    run_solver: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+
+
+class SensitivityStoredQueryRequest(BaseModel):
+    project_id: int
+    batch_no: Optional[str] = "1"
 
 
 class AbaqusSensitivityRunRequest(BaseModel):

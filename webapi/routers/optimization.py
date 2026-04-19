@@ -23,10 +23,17 @@ def _compact_bayesian_run_response(payload: dict) -> dict:
     ]
     return {
         "project_id": payload.get("project_id"),
+        "batch_no": payload.get("batch_no"),
         "input_inp": payload.get("input_inp"),
         "output_dir": payload.get("output_dir"),
+        "save_results": payload.get("save_results"),
         "iterations": payload.get("iterations"),
+        "requested_iterations": payload.get("requested_iterations"),
+        "stopped_early": payload.get("stopped_early"),
+        "exit_diff_percent": payload.get("exit_diff_percent"),
         "final_updated_inp": payload.get("final_updated_inp"),
+        "history_dir": payload.get("saved_artifacts", {}).get("history_dir"),
+        "history_html": payload.get("saved_artifacts", {}).get("files", {}).get("overview_html"),
         # Detailed matrices, mappings, and per-iteration summaries stay on disk
         # under output_dir. The API only returns the root paths needed to find them.
         "iteration_dirs": iteration_dirs,
@@ -70,11 +77,13 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
     try:
         data = run_bayesian_update_workflow(
             project_id=body.project_id,
+            batch_no=body.batch_no,
             input_inp=body.input_inp,
             target_responses=body.target_responses,
             parameter_scatter=body.parameter_scatter,
             response_scatter=body.response_scatter,
             output_dir=body.output_dir,
+            save_results=body.save_results,
             odb_id=body.odb_id,
             base_url=body.base_url,
             workspace=body.workspace,
@@ -87,6 +96,7 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
             aggregation=body.aggregation,
             frame=body.frame,
             iterations=body.iterations,
+            exit_diff_percent=body.exit_diff_percent,
             damping=body.damping,
             step_scale=body.step_scale,
             lower_bound=body.lower_bound,

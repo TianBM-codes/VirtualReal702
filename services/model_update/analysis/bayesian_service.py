@@ -1,19 +1,25 @@
+import csv
 import json
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import matplotlib
 import numpy as np
 
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from db import ensure_tables_exist, get_connection
 from src.inp import parse_inp
 from src.inp.parameter_mapping import build_parameter_target_map
 from src.l3.core.errors import NotFoundError, ValidationError
 
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
-
 
 _PARAMETER_ASSIGNMENT_RE = re.compile(r"^\s*([^=\s,]+)\s*=\s*(.+?)\s*$")
 _ITERATION_CLEANUP_SUFFIXES = (".com", ".prt", ".pmg", ".pes", ".par", ".msg", ".sta", ".dat")
@@ -81,12 +87,12 @@ def _scalarize(value: Any, *, field: str, row_key: str) -> float:
 
 
 def _response_row_key(
-    *,
-    instance: str,
-    response_field: str,
-    response_component: Optional[str],
-    response_position: str,
-    response_label: str,
+        *,
+        instance: str,
+        response_field: str,
+        response_component: Optional[str],
+        response_position: str,
+        response_label: str,
 ) -> str:
     component = str(response_component or "")
     return f"{instance}|{response_field}|{component}|{response_position}|{response_label}"
@@ -98,17 +104,17 @@ def _ordered_dsa_field_names(field_prefix: str, field_names: Sequence[str]) -> L
         match = _sens._DSA_PARAMETER_TOKEN_RE.fullmatch(token)
         if match:
             return (0, int(match.group(2)), token, name)
-        return (1, 10**9, token, name)
+        return (1, 10 ** 9, token, name)
 
     return sorted({str(item) for item in field_names}, key=_sort_key)
 
 
 def _vector_from_input(
-    raw_value: Any,
-    items: Sequence[dict],
-    *,
-    label: str,
-    key_candidates: Sequence[str],
+        raw_value: Any,
+        items: Sequence[dict],
+        *,
+        label: str,
+        key_candidates: Sequence[str],
 ) -> List[float]:
     if raw_value is None:
         raise ValidationError(f"{label} is required", {label: raw_value})
@@ -165,10 +171,10 @@ def _vector_from_input(
 
 
 def _default_scatter_vector(
-    items: Sequence[dict],
-    *,
-    default_value: float,
-    metadata_key: Optional[str] = None,
+        items: Sequence[dict],
+        *,
+        default_value: float,
+        metadata_key: Optional[str] = None,
 ) -> List[float]:
     values: List[float] = []
     for item in items:
@@ -187,13 +193,13 @@ def _default_scatter_vector(
 
 
 def _resolve_scatter_vector(
-    raw_value: Any,
-    items: Sequence[dict],
-    *,
-    label: str,
-    key_candidates: Sequence[str],
-    default_value: float,
-    metadata_key: Optional[str] = None,
+        raw_value: Any,
+        items: Sequence[dict],
+        *,
+        label: str,
+        key_candidates: Sequence[str],
+        default_value: float,
+        metadata_key: Optional[str] = None,
 ) -> np.ndarray:
     if raw_value is None:
         return np.asarray(
@@ -224,6 +230,16 @@ def _save_matrix_txt(path: Path, matrix: Sequence[Sequence[float]]) -> str:
     return str(path.resolve())
 
 
+def _save_csv_rows(path: Path, fieldnames: Sequence[str], rows: Sequence[dict]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=[str(item) for item in fieldnames])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({str(field): _clone_jsonable(dict(row).get(field)) for field in fieldnames})
+    return str(path.resolve())
+
+
 def _iteration_dir(root_dir: Path, iteration: int) -> Path:
     path = (root_dir / f"iteration_{int(iteration):03d}").resolve()
     path.mkdir(parents=True, exist_ok=True)
@@ -251,6 +267,627 @@ def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
     return {"iteration_dir": str(iteration_dir), "files": files}
 
 
+def _normalize_batch_no(batch_no: Optional[int]) -> int:
+    resolved = 1 if batch_no is None else int(batch_no)
+    if resolved <= 0:
+        raise ValidationError("batch_no must be > 0", {"batch_no": batch_no})
+    return resolved
+
+
+def _truncate_tracking_name(value: Optional[str], *, default: str, max_length: int = 100) -> str:
+    text = str(value or default).strip()
+    return (text or default)[: int(max_length)]
+
+
+def _response_tracking_name(row_meta: dict, index: int) -> str:
+    candidates = (
+        row_meta.get("tracking_name"),
+        row_meta.get("response_name"),
+        row_meta.get("response_code"),
+    )
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return _truncate_tracking_name(text, default=f"response_{index}")
+    return f"response_{int(index)}"
+
+
+def _parameter_scope_value(column_meta: dict) -> str:
+    mapping = dict(column_meta.get("element_mapping") or {})
+    target_rows = list(mapping.get("target_rows") or [])
+    if target_rows:
+        first_row = dict(target_rows[0])
+        for key in ("set_name", "part_name", "instance_name"):
+            candidate = first_row.get(key)
+            if candidate:
+                return _truncate_tracking_name(str(candidate), default="default", max_length=32)
+    for key in ("parameter_scope", "set_name", "field"):
+        candidate = column_meta.get(key)
+        if candidate:
+            return _truncate_tracking_name(str(candidate), default="default", max_length=32)
+    return "default"
+
+
+def _response_difference_percent(calculated: float, target: float) -> float:
+    cal_value = float(calculated)
+    target_value = float(target)
+    if np.isclose(target_value, 0.0):
+        return 0.0
+    return float((cal_value - target_value) / target_value * 100.0)
+
+
+def _response_difference_percent_for_exit(calculated: float, target: float, *, eps: float = 1e-12) -> float:
+    cal_value = float(calculated)
+    target_value = float(target)
+    if np.isclose(target_value, 0.0, atol=float(eps)):
+        return 0.0 if np.isclose(cal_value, target_value, atol=float(eps)) else float("inf")
+    return float(abs((cal_value - target_value) / target_value * 100.0))
+
+
+def _evaluate_exit_condition(
+    response_values: Sequence[float],
+    target_values: Sequence[float],
+    *,
+    exit_diff_percent: Optional[float],
+) -> Optional[dict]:
+    if exit_diff_percent is None:
+        return None
+
+    threshold = float(exit_diff_percent)
+    diffs = [
+        _response_difference_percent_for_exit(calculated, target)
+        for calculated, target in zip(response_values, target_values)
+    ]
+    finite_diffs = [float(item) for item in diffs if np.isfinite(item)]
+    max_abs_diff = float(max(diffs)) if diffs else 0.0
+    mean_abs_diff = float(np.mean(finite_diffs)) if finite_diffs else (0.0 if diffs else 0.0)
+    return {
+        "enabled": True,
+        "threshold": threshold,
+        "response_diff_percents": [float(item) if np.isfinite(item) else "inf" for item in diffs],
+        "max_abs_response_diff_percent": max_abs_diff if np.isfinite(max_abs_diff) else float("inf"),
+        "mean_abs_response_diff_percent": mean_abs_diff,
+        "converged": bool(diffs) and all(float(item) <= threshold for item in diffs),
+    }
+
+
+def _group_history_rows(rows: Sequence[dict], name_key: str, value_key: str) -> Dict[str, List[Tuple[int, float]]]:
+    grouped: Dict[str, List[Tuple[int, float]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row[name_key]), []).append((int(row["iteration"]), float(row[value_key])))
+    for key, values in grouped.items():
+        grouped[key] = sorted(values, key=lambda item: item[0])
+    return grouped
+
+
+def _plot_history_series(
+        *,
+        path: Path,
+        title: str,
+        xlabel: str,
+        ylabel: str,
+        series_map: Dict[str, List[Tuple[int, float]]],
+) -> Optional[str]:
+    if not series_map:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    for name, points in series_map.items():
+        xs = [item[0] for item in points]
+        ys = [item[1] for item in points]
+        ax.plot(xs, ys, marker="o", linewidth=1.8, label=name)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    if len(series_map) <= 8:
+        ax.legend(loc="best")
+    else:
+        ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(path), dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return str(path.resolve())
+
+
+def _plot_optimization_overview(
+        *,
+        path: Path,
+        project_id: int,
+        batch_no: int,
+        iteration_rows: Sequence[dict],
+        parameter_rows: Sequence[dict],
+        response_rows: Sequence[dict],
+) -> Optional[str]:
+    if not iteration_rows:
+        return None
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    ax_obj, ax_param, ax_resp, ax_diff = axes.reshape(-1)
+
+    xs = [int(row["iteration"]) for row in iteration_rows]
+    ax_obj.plot(xs, [float(row["mean_abs_response_diff"]) for row in iteration_rows], marker="o", linewidth=1.8)
+    ax_obj.set_title("Mean Abs Response Difference (%)")
+    ax_obj.set_xlabel("Iteration")
+    ax_obj.set_ylabel("Mean Abs Diff (%)")
+    ax_obj.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+
+    parameter_series = _group_history_rows(parameter_rows, "parameter_name", "value")
+    for name, points in parameter_series.items():
+        ax_param.plot([item[0] for item in points], [item[1] for item in points], marker="o", linewidth=1.6, label=name)
+    ax_param.set_title("Parameter History")
+    ax_param.set_xlabel("Iteration")
+    ax_param.set_ylabel("Parameter Value")
+    ax_param.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    if parameter_series:
+        ax_param.legend(loc="best", fontsize=8)
+
+    response_series = _group_history_rows(response_rows, "response_name", "calculated_value")
+    for name, points in response_series.items():
+        ax_resp.plot([item[0] for item in points], [item[1] for item in points], marker="o", linewidth=1.6, label=f"{name} calc")
+    target_series = _group_history_rows(response_rows, "response_name", "target_value")
+    for name, points in target_series.items():
+        ax_resp.plot([item[0] for item in points], [item[1] for item in points], linestyle="--", linewidth=1.2, label=f"{name} target")
+    ax_resp.set_title("Response History")
+    ax_resp.set_xlabel("Iteration")
+    ax_resp.set_ylabel("Response Value")
+    ax_resp.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    if response_series or target_series:
+        ax_resp.legend(loc="best", fontsize=8)
+
+    diff_series = _group_history_rows(response_rows, "response_name", "response_diff_percent")
+    for name, points in diff_series.items():
+        ax_diff.plot([item[0] for item in points], [item[1] for item in points], marker="o", linewidth=1.6, label=name)
+    ax_diff.axhline(0.0, color="black", linewidth=1.0, alpha=0.6)
+    ax_diff.set_title("Response Difference (%)")
+    ax_diff.set_xlabel("Iteration")
+    ax_diff.set_ylabel("Diff (%)")
+    ax_diff.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    if diff_series:
+        ax_diff.legend(loc="best", fontsize=8)
+
+    fig.suptitle(f"Bayesian Optimization History | project={int(project_id)} batch={int(batch_no)}", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(path), dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return str(path.resolve())
+
+
+def _history_html_content(
+        *,
+        project_id: int,
+        batch_no: int,
+        iterations: int,
+        iteration_rows: Sequence[dict],
+        files: dict,
+) -> str:
+    table_rows = "\n".join(
+        (
+            "<tr>"
+            f"<td>{int(row['iteration'])}</td>"
+            f"<td>{float(row['mean_abs_response_diff']):.6g}</td>"
+            f"<td>{float(row['max_abs_response_diff']):.6g}</td>"
+            f"<td>{float(row['parameter_step_norm']):.6g}</td>"
+            "</tr>"
+        )
+        for row in iteration_rows
+    )
+    file_items = "\n".join(
+        f'<li><a href="{Path(path).name}">{label}</a></li>'
+        for label, path in files.items()
+        if path and label != "overview_html"
+    )
+    image_blocks = "\n".join(
+        (
+            f'<section class="card"><h2>{title}</h2><img src="{Path(path).name}" alt="{title}"></section>'
+        )
+        for title, path in (
+            ("Optimization Overview", files.get("overview_png")),
+            ("Parameter History", files.get("parameter_history_png")),
+            ("Response History", files.get("response_history_png")),
+            ("Response Difference", files.get("response_diff_history_png")),
+        )
+        if path
+    )
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bayesian Optimization History</title>
+  <style>
+    :root {{
+      --bg: #f4f0e8;
+      --panel: #fffdfa;
+      --ink: #1f2a30;
+      --muted: #68737a;
+      --line: #d8cfc2;
+      --accent: #1b6f6a;
+    }}
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", sans-serif;
+      background: linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
+      color: var(--ink);
+    }}
+    main {{
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }}
+    .hero {{
+      display: grid;
+      gap: 8px;
+      margin-bottom: 24px;
+    }}
+    .meta {{
+      color: var(--muted);
+      font-size: 14px;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 18px;
+    }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 12px 30px rgba(26, 39, 44, 0.06);
+    }}
+    h1, h2 {{
+      margin: 0 0 12px;
+    }}
+    img {{
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: white;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }}
+    th, td {{
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 18px;
+    }}
+    a {{
+      color: var(--accent);
+      text-decoration: none;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Bayesian Optimization History</h1>
+      <div class="meta">project_id={int(project_id)} | batch_no={int(batch_no)} | iterations={int(iterations)}</div>
+    </section>
+    <section class="grid">
+      <section class="card">
+        <h2>Iteration Summary</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Iteration</th>
+              <th>Mean Abs Diff (%)</th>
+              <th>Max Abs Diff (%)</th>
+              <th>Parameter Step Norm</th>
+            </tr>
+          </thead>
+          <tbody>
+            {table_rows}
+          </tbody>
+        </table>
+      </section>
+      <section class="card">
+        <h2>Exported Files</h2>
+        <ul>
+          {file_items}
+        </ul>
+      </section>
+      {image_blocks}
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def _save_bayesian_history_artifacts(
+        *,
+        root_dir: Path,
+        project_id: int,
+        batch_no: int,
+        iteration_results: Sequence[dict],
+) -> dict:
+    rows = list(iteration_results or [])
+    if not rows:
+        return {}
+
+    history_dir = (root_dir / "history").resolve()
+    history_dir.mkdir(parents=True, exist_ok=True)
+
+    first_iteration = dict(rows[0])
+    parameter_columns = list(first_iteration.get("parameter_columns") or [])
+    response_rows_meta = list(first_iteration.get("response_rows") or [])
+
+    parameter_history_rows: List[dict] = []
+    for index, column in enumerate(parameter_columns):
+        parameter_name = str(column.get("parameter_name") or f"parameter_{index + 1}")
+        parameter_history_rows.append(
+            {
+                "iteration": 0,
+                "parameter_name": parameter_name,
+                "value": float(first_iteration["parameter_values"][index]),
+            }
+        )
+    for iteration_result in rows:
+        updated_values = list(iteration_result.get("bayesian", {}).get("p_new") or [])
+        for index, column in enumerate(iteration_result.get("parameter_columns") or []):
+            parameter_history_rows.append(
+                {
+                    "iteration": int(iteration_result["iteration"]),
+                    "parameter_name": str(column.get("parameter_name") or f"parameter_{index + 1}"),
+                    "value": float(updated_values[index]),
+                }
+            )
+
+    response_history_rows: List[dict] = []
+    iteration_summary_rows: List[dict] = []
+    for iteration_result in rows:
+        iteration_no = int(iteration_result["iteration"])
+        diffs: List[float] = []
+        for index, row_meta in enumerate(iteration_result.get("response_rows") or response_rows_meta):
+            response_name = _response_tracking_name(dict(row_meta), index + 1)
+            calculated = float(iteration_result["response_values"][index])
+            target = float(iteration_result["target_responses"][index])
+            diff = _response_difference_percent(calculated, target)
+            diffs.append(abs(diff))
+            response_history_rows.append(
+                {
+                    "iteration": iteration_no,
+                    "response_name": response_name,
+                    "calculated_value": calculated,
+                    "target_value": target,
+                    "response_diff_percent": diff,
+                }
+            )
+
+        parameter_step = np.asarray(iteration_result.get("bayesian", {}).get("dp") or [], dtype=np.float64).reshape(-1)
+        iteration_summary_rows.append(
+            {
+                "iteration": iteration_no,
+                "mean_abs_response_diff": float(np.mean(diffs)) if diffs else 0.0,
+                "max_abs_response_diff": float(np.max(diffs)) if diffs else 0.0,
+                "parameter_step_norm": float(np.linalg.norm(parameter_step)) if parameter_step.size else 0.0,
+            }
+        )
+
+    summary_payload = {
+        "project_id": int(project_id),
+        "batch_no": int(batch_no),
+        "iterations": len(rows),
+        "parameter_names": sorted({str(row["parameter_name"]) for row in parameter_history_rows}),
+        "response_names": sorted({str(row["response_name"]) for row in response_history_rows}),
+        "iteration_summary": iteration_summary_rows,
+    }
+
+    files = {
+        "history_summary_json": _save_json(history_dir / "history_summary.json", summary_payload),
+        "parameter_history_csv": _save_csv_rows(
+            history_dir / "parameter_history.csv",
+            ("iteration", "parameter_name", "value"),
+            parameter_history_rows,
+        ),
+        "response_history_csv": _save_csv_rows(
+            history_dir / "response_history.csv",
+            ("iteration", "response_name", "calculated_value", "target_value", "response_diff_percent"),
+            response_history_rows,
+        ),
+        "iteration_summary_csv": _save_csv_rows(
+            history_dir / "iteration_summary.csv",
+            ("iteration", "mean_abs_response_diff", "max_abs_response_diff", "parameter_step_norm"),
+            iteration_summary_rows,
+        ),
+    }
+    files["parameter_history_png"] = _plot_history_series(
+        path=history_dir / "parameter_history.png",
+        title="Parameter History",
+        xlabel="Iteration",
+        ylabel="Parameter Value",
+        series_map=_group_history_rows(parameter_history_rows, "parameter_name", "value"),
+    )
+    files["response_history_png"] = _plot_history_series(
+        path=history_dir / "response_history.png",
+        title="Calculated Response History",
+        xlabel="Iteration",
+        ylabel="Response Value",
+        series_map=_group_history_rows(response_history_rows, "response_name", "calculated_value"),
+    )
+    files["response_diff_history_png"] = _plot_history_series(
+        path=history_dir / "response_diff_history.png",
+        title="Response Difference (%)",
+        xlabel="Iteration",
+        ylabel="Diff (%)",
+        series_map=_group_history_rows(response_history_rows, "response_name", "response_diff_percent"),
+    )
+    files["overview_png"] = _plot_optimization_overview(
+        path=history_dir / "optimization_overview.png",
+        project_id=project_id,
+        batch_no=batch_no,
+        iteration_rows=iteration_summary_rows,
+        parameter_rows=parameter_history_rows,
+        response_rows=response_history_rows,
+    )
+    overview_html = history_dir / "overview.html"
+    overview_html.write_text(
+        _history_html_content(
+            project_id=project_id,
+            batch_no=batch_no,
+            iterations=len(rows),
+            iteration_rows=iteration_summary_rows,
+            files=files,
+        ),
+        encoding="utf-8",
+    )
+    files["overview_html"] = str(overview_html.resolve())
+    return {
+        "history_dir": str(history_dir),
+        "files": files,
+        "iteration_summary": iteration_summary_rows,
+    }
+
+
+def _persist_bayesian_tracking_results(*, project_id: int, batch_no: int, iteration_results: Sequence[dict]) -> None:
+    resolved_batch_no = _normalize_batch_no(batch_no)
+    rows = list(iteration_results or [])
+    if not rows:
+        return
+
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        for table_name in (
+                "t_mt_py_fem_tracking_iteration",
+                "t_mt_py_fem_response_difference",
+                "t_mt_py_fem_parameter_variation",
+                "t_mt_py_fem_tracking_value",
+        ):
+            cursor.execute(f"DELETE FROM {table_name} WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no))
+
+        cursor.execute(
+            """
+            INSERT INTO t_mt_py_fem_tracking_iteration (pid, batch_no, iterations)
+            VALUES (%s, %s, %s)
+            """,
+            (int(project_id), resolved_batch_no, len(rows)),
+        )
+
+        first_iteration = dict(rows[0])
+        final_iteration = dict(rows[-1])
+
+        initial_parameter_values = {
+            _truncate_tracking_name(
+                str(column.get("parameter_name") or ""),
+                default=f"parameter_{index + 1}",
+            ): float(first_iteration["parameter_values"][index])
+            for index, column in enumerate(first_iteration.get("parameter_columns") or [])
+        }
+
+        for iteration_result in rows:
+            iteration_no = int(iteration_result["iteration"])
+            response_values = list(iteration_result.get("response_values") or [])
+            target_values = list(iteration_result.get("target_responses") or [])
+            response_rows = list(iteration_result.get("response_rows") or [])
+            for row_index, row_meta in enumerate(response_rows):
+                response_name = _response_tracking_name(dict(row_meta), row_index + 1)
+                calculated = float(response_values[row_index])
+                target = float(target_values[row_index])
+                cursor.execute(
+                    """
+                    INSERT INTO t_mt_py_fem_response_difference
+                    (pid, batch_no, response_name, iteration, cal_result_value, test_result_value, response_diff)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        int(project_id),
+                        resolved_batch_no,
+                        response_name,
+                        iteration_no,
+                        calculated,
+                        target,
+                        _response_difference_percent(calculated, target),
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO t_mt_py_fem_tracking_value
+                    (pid, batch_no, tracking_type, tracking_name, iteration, track_value)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        int(project_id),
+                        resolved_batch_no,
+                        "Response",
+                        response_name,
+                        iteration_no,
+                        calculated,
+                    ),
+                )
+
+            updated_parameters = list(iteration_result.get("bayesian", {}).get("p_new") or [])
+            parameter_columns = list(iteration_result.get("parameter_columns") or [])
+            for column_index, column_meta in enumerate(parameter_columns):
+                parameter_name = _truncate_tracking_name(
+                    str(column_meta.get("parameter_name") or ""),
+                    default=f"parameter_{column_index + 1}",
+                )
+                parameter_value = float(updated_parameters[column_index])
+                cursor.execute(
+                    """
+                    INSERT INTO t_mt_py_fem_tracking_value
+                    (pid, batch_no, tracking_type, tracking_name, iteration, track_value)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        int(project_id),
+                        resolved_batch_no,
+                        "Parameter",
+                        parameter_name,
+                        iteration_no,
+                        parameter_value,
+                    ),
+                )
+
+        final_parameter_values = list(final_iteration.get("bayesian", {}).get("p_new") or [])
+        final_parameter_columns = list(final_iteration.get("parameter_columns") or [])
+        for column_index, column_meta in enumerate(final_parameter_columns):
+            parameter_name = _truncate_tracking_name(
+                str(column_meta.get("parameter_name") or ""),
+                default=f"parameter_{column_index + 1}",
+            )
+            ori_value = float(initial_parameter_values.get(parameter_name, column_meta.get("parameter_value") or 0.0))
+            result_value = float(final_parameter_values[column_index])
+            cursor.execute(
+                """
+                INSERT INTO t_mt_py_fem_parameter_variation
+                (pid, batch_no, parameter_name, parameter_hierarchy, parameter_type, parameter_scope,
+                 ori_value, result_value, parameter_variation)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(project_id),
+                    resolved_batch_no,
+                    parameter_name,
+                    "default",
+                    "default",
+                    _parameter_scope_value(dict(column_meta)),
+                    ori_value,
+                    result_value,
+                    result_value - ori_value,
+                ),
+            )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def _group_scoped_targets(targets: Sequence[object]) -> Dict[str, List[int]]:
     grouped: Dict[str, List[int]] = {}
     for item in targets:
@@ -271,15 +908,15 @@ def _group_scoped_targets(targets: Sequence[object]) -> Dict[str, List[int]]:
 
 
 def _parameter_element_mapping_entry(
-    *,
-    model,
-    source_field_name: str,
-    parameter_token: str,
-    mapped_parameter_name: str,
-    parameter_value: float,
-    target_rows: Sequence[dict],
-    mapping_mode: str,
-    scatter: float,
+        *,
+        model,
+        source_field_name: str,
+        parameter_token: str,
+        mapped_parameter_name: str,
+        parameter_value: float,
+        target_rows: Sequence[dict],
+        mapping_mode: str,
+        scatter: float,
 ) -> dict:
     # Persist the resolved parameter-to-element mapping used by this iteration so
     # a bad update (for example negative thickness) can be traced back to its target set.
@@ -393,10 +1030,10 @@ def _expand_scatter_vector(scatter: Any, expected_size: int, *, label: str) -> n
 
 
 def build_normalized_residual(
-    r_model: Any,
-    r_target: Any,
-    *,
-    eps: float = 1e-12,
+        r_model: Any,
+        r_target: Any,
+        *,
+        eps: float = 1e-12,
 ) -> np.ndarray:
     # Follow the FEMTools-style normalized residual used in Untitled-3.py:
     # y_i = (r_model_i - r_target_i) / |r_model_i|
@@ -412,18 +1049,18 @@ def build_normalized_residual(
             {"r_model_size": int(r_model_arr.size), "r_target_size": int(r_target_arr.size)},
         )
     return (
-        (r_model_arr - r_target_arr).reshape(-1, 1)
-        / np.maximum(np.abs(r_model_arr).reshape(-1, 1), float(eps))
+            (r_model_arr - r_target_arr).reshape(-1, 1)
+            / np.maximum(np.abs(r_model_arr).reshape(-1, 1), float(eps))
     )
 
 
 def _build_normalized_gain_matrix(
-    S_norm: Any,
-    p_scatter: Any,
-    r_scatter: Any,
-    *,
-    damping: float = 1e-8,
-    eps: float = 1e-12,
+        S_norm: Any,
+        p_scatter: Any,
+        r_scatter: Any,
+        *,
+        damping: float = 1e-8,
+        eps: float = 1e-12,
 ) -> dict:
     S_norm_arr = np.asarray(S_norm, dtype=np.float64)
     if S_norm_arr.ndim != 2:
@@ -466,17 +1103,17 @@ def _build_normalized_gain_matrix(
 
 
 def bayesian_update_normalized(
-    p_current,
-    r_model,
-    r_target,
-    S_norm,
-    p_scatter,
-    r_scatter,
-    damping: float = 1e-8,
-    step_scale: float = 1.0,
-    lower_bound=None,
-    upper_bound=None,
-    p_ref=None,
+        p_current,
+        r_model,
+        r_target,
+        S_norm,
+        p_scatter,
+        r_scatter,
+        damping: float = 1e-8,
+        step_scale: float = 1.0,
+        lower_bound=None,
+        upper_bound=None,
+        p_ref=None,
 ) -> dict:
     p_current = np.asarray(p_current, dtype=float).reshape(-1)
     r_model = np.asarray(r_model, dtype=float).reshape(-1)
@@ -556,10 +1193,10 @@ def bayesian_update_normalized(
 
 
 def update_parameter_section_values(
-    input_inp: str,
-    parameter_values: Dict[str, float],
-    *,
-    output_inp: Optional[str] = None,
+        input_inp: str,
+        parameter_values: Dict[str, float],
+        *,
+        output_inp: Optional[str] = None,
 ) -> dict:
     input_path = _solver._abs_file(input_inp, "input_inp")
     output_path = Path(output_inp).expanduser().resolve() if output_inp else input_path
@@ -617,25 +1254,25 @@ def update_parameter_section_values(
 
 
 def build_dsa_normalized_sensitivity_matrix(
-    *,
-    project_id: int,
-    odb_id: Optional[str] = None,
-    base_url: Optional[str] = None,
-    inp_path: Optional[str] = None,
-    workspace: Optional[str] = None,
-    odb_path: Optional[str] = None,
-    workspace_root: Optional[str] = None,
-    step: Optional[str] = None,
-    instances: Optional[List[str]] = None,
-    field_prefix: str = "d_U_",
-    response_component: Optional[str] = None,
-    position: Optional[str] = None,
-    aggregation: str = "max_abs",
-    frame: int = 0,
-    abaqus: str = "abaqus",
-    python3: Optional[str] = None,
-    keep_raw: bool = False,
-    timeout: int = 60,
+        *,
+        project_id: int,
+        odb_id: Optional[str] = None,
+        base_url: Optional[str] = None,
+        inp_path: Optional[str] = None,
+        workspace: Optional[str] = None,
+        odb_path: Optional[str] = None,
+        workspace_root: Optional[str] = None,
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
+        field_prefix: str = "d_U_",
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
 ) -> dict:
     if aggregation not in _sens._AGGREGATIONS and aggregation != "first":
         raise ValidationError(
@@ -913,9 +1550,9 @@ def build_dsa_normalized_sensitivity_matrix(
                 else chosen_response_spec.get("component")
             )
             if (
-                explicit_response is None
-                and resolved_response_component is None
-                and best_response_field_meta is not None
+                    explicit_response is None
+                    and resolved_response_component is None
+                    and best_response_field_meta is not None
             ):
                 (
                     best_sensitivity_map,
@@ -1089,18 +1726,18 @@ def _cleanup_iteration_solver_files(workdir: Path, job_name: str) -> List[str]:
 
 
 def _run_iteration_solver(
-    *,
-    inp_path: Path,
-    output_dir: Path,
-    iteration: int,
-    abaqus: str,
-    job_name: Optional[str],
-    cpus: Optional[int],
-    interactive: bool,
-    timeout_sec: Optional[int],
-    extra_args: Optional[List[str]],
-    python3: Optional[str],
-    keep_raw: bool,
+        *,
+        inp_path: Path,
+        output_dir: Path,
+        iteration: int,
+        abaqus: str,
+        job_name: Optional[str],
+        cpus: Optional[int],
+        interactive: bool,
+        timeout_sec: Optional[int],
+        extra_args: Optional[List[str]],
+        python3: Optional[str],
+        keep_raw: bool,
 ) -> dict:
     # Each Bayesian iteration solves the current INP first, then converts the new ODB
     # into a queryable workspace for sensitivity/result extraction.
@@ -1155,291 +1792,340 @@ def _run_iteration_solver(
 
 
 def run_bayesian_update_workflow(
-    *,
-    project_id: int,
-    input_inp: str,
-    target_responses: Any,
-    parameter_scatter: Any = None,
-    response_scatter: Any = None,
-    output_dir: Optional[str] = None,
-    odb_id: Optional[str] = None,
-    base_url: Optional[str] = None,
-    workspace: Optional[str] = None,
-    odb_path: Optional[str] = None,
-    step: Optional[str] = None,
-    instances: Optional[List[str]] = None,
-    field_prefix: str = "d_U_",
-    response_component: Optional[str] = None,
-    position: Optional[str] = None,
-    aggregation: str = "max_abs",
-    frame: int = 0,
-    iterations: int = 1,
-    damping: float = 1e-8,
-    step_scale: float = 1.0,
-    lower_bound: Any = None,
-    upper_bound: Any = None,
-    abaqus: str = "abaqus",
-    python3: Optional[str] = None,
-    keep_raw: bool = False,
-    timeout: int = 60,
-    job_name: Optional[str] = None,
-    cpus: Optional[int] = None,
-    interactive: bool = True,
-    run_solver: bool = False,
-    timeout_sec: Optional[int] = None,
-    extra_args: Optional[List[str]] = None,
+        *,
+        project_id: int,
+        batch_no: int = 1,
+        input_inp: str,
+        target_responses: Any,
+        parameter_scatter: Any = None,
+        response_scatter: Any = None,
+        output_dir: Optional[str] = None,
+        save_results: bool = True,
+        odb_id: Optional[str] = None,
+        base_url: Optional[str] = None,
+        workspace: Optional[str] = None,
+        odb_path: Optional[str] = None,
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
+        field_prefix: str = "d_U_",
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        iterations: int = 1,
+        exit_diff_percent: Optional[float] = None,
+        damping: float = 1e-8,
+        step_scale: float = 1.0,
+        lower_bound: Any = None,
+        upper_bound: Any = None,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
+        job_name: Optional[str] = None,
+        cpus: Optional[int] = None,
+        interactive: bool = True,
+        run_solver: bool = False,
+        timeout_sec: Optional[int] = None,
+        extra_args: Optional[List[str]] = None,
 ) -> dict:
     if int(iterations) <= 0:
         raise ValidationError("iterations must be > 0", {"iterations": iterations})
+    if exit_diff_percent is not None and float(exit_diff_percent) < 0:
+        raise ValidationError("exit_diff_percent must be >= 0", {"exit_diff_percent": exit_diff_percent})
+    resolved_batch_no = _normalize_batch_no(batch_no)
 
     input_path = _solver._abs_file(input_inp, "input_inp")
     input_base_stem = input_path.stem
-    root_dir = _solver._abs_dir(output_dir, input_path.parent / f"{input_path.stem}_bayesian")
-    current_inp = _copy_iteration_input(str(input_path), root_dir, 0, base_stem=input_base_stem)
+    cleanup_root_dir: Optional[Path] = None
+    if save_results:
+        root_dir = _solver._abs_dir(output_dir, input_path.parent / f"{input_path.stem}_bayesian")
+    else:
+        root_dir = Path(tempfile.mkdtemp(prefix=f"{input_path.stem}_bayesian_")).resolve()
+        cleanup_root_dir = root_dir
 
-    has_initial_source = bool(workspace or odb_path or odb_id)
-    if int(iterations) > 1 and not run_solver:
-        raise ValidationError(
-            "run_solver must be enabled when iterations > 1",
-            {"iterations": iterations, "run_solver": run_solver},
-        )
-    if not has_initial_source and not run_solver:
-        raise ValidationError(
-            "workspace, odb_path, or odb_id is required when run_solver is disabled",
-            {"workspace": workspace, "odb_path": odb_path, "odb_id": odb_id, "run_solver": run_solver},
-        )
+    try:
+        current_inp = _copy_iteration_input(str(input_path), root_dir, 0, base_stem=input_base_stem)
 
-    iteration_results = []
-    next_source = {
-        "workspace": _normalize_optional_path(workspace),
-        "odb_path": _normalize_optional_path(odb_path),
-        "odb_id": odb_id,
-        "base_url": base_url,
-    }
+        has_initial_source = bool(workspace or odb_path or odb_id)
+        if int(iterations) > 1 and not run_solver:
+            raise ValidationError(
+                "run_solver must be enabled when iterations > 1",
+                {"iterations": iterations, "run_solver": run_solver},
+            )
+        if not has_initial_source and not run_solver:
+            raise ValidationError(
+                "workspace, odb_path, or odb_id is required when run_solver is disabled",
+                {"workspace": workspace, "odb_path": odb_path, "odb_id": odb_id, "run_solver": run_solver},
+            )
 
-    for iteration_index in range(int(iterations)):
-        # If the caller did not provide an existing result source, iteration 0 must
-        # solve the copied INP before the sensitivity matrix can be assembled.
-        if iteration_index == 0 and not has_initial_source:
-            solver_payload = _run_iteration_solver(
-                inp_path=current_inp,
-                output_dir=root_dir,
-                iteration=iteration_index,
+        iteration_results = []
+        stopped_early = False
+        next_source = {
+            "workspace": _normalize_optional_path(workspace),
+            "odb_path": _normalize_optional_path(odb_path),
+            "odb_id": odb_id,
+            "base_url": base_url,
+        }
+
+        for iteration_index in range(int(iterations)):
+            if iteration_index == 0 and not has_initial_source:
+                solver_payload = _run_iteration_solver(
+                    inp_path=current_inp,
+                    output_dir=root_dir,
+                    iteration=iteration_index,
+                    abaqus=abaqus,
+                    job_name=f"{job_name}_iter{iteration_index}" if job_name else None,
+                    cpus=cpus,
+                    interactive=interactive,
+                    timeout_sec=timeout_sec,
+                    extra_args=extra_args,
+                    python3=python3,
+                    keep_raw=keep_raw,
+                )
+                next_source = {
+                    "workspace": solver_payload["workspace"]["workspace"],
+                    "odb_path": None,
+                    "odb_id": None,
+                    "base_url": None,
+                }
+            else:
+                solver_payload = None
+
+            matrix_payload = build_dsa_normalized_sensitivity_matrix(
+                project_id=project_id,
+                odb_id=next_source.get("odb_id"),
+                base_url=next_source.get("base_url"),
+                inp_path=str(current_inp),
+                workspace=next_source.get("workspace"),
+                odb_path=next_source.get("odb_path"),
+                workspace_root=str(root_dir),
+                step=step,
+                instances=instances,
+                field_prefix=field_prefix,
+                response_component=response_component,
+                position=position,
+                aggregation=aggregation,
+                frame=frame,
                 abaqus=abaqus,
-                job_name=f"{job_name}_iter{iteration_index}" if job_name else None,
-                cpus=cpus,
-                interactive=interactive,
-                timeout_sec=timeout_sec,
-                extra_args=extra_args,
                 python3=python3,
                 keep_raw=keep_raw,
+                timeout=timeout,
             )
-            next_source = {
-                "workspace": solver_payload["workspace"]["workspace"],
-                "odb_path": None,
-                "odb_id": None,
-                "base_url": None,
-            }
-        else:
-            solver_payload = None
 
-        # Matrix construction always uses the current iteration INP so parameter
-        # values and target-set mappings stay aligned with the file being updated.
-        matrix_payload = build_dsa_normalized_sensitivity_matrix(
-            project_id=project_id,
-            odb_id=next_source.get("odb_id"),
-            base_url=next_source.get("base_url"),
-            inp_path=str(current_inp),
-            workspace=next_source.get("workspace"),
-            odb_path=next_source.get("odb_path"),
-            workspace_root=str(root_dir),
-            step=step,
-            instances=instances,
-            field_prefix=field_prefix,
-            response_component=response_component,
-            position=position,
-            aggregation=aggregation,
-            frame=frame,
-            abaqus=abaqus,
-            python3=python3,
-            keep_raw=keep_raw,
-            timeout=timeout,
-        )
-
-        parameter_columns = list(matrix_payload["parameter_columns"])
-        response_rows = list(matrix_payload["response_rows"])
-        S_norm = np.asarray(matrix_payload["matrix"], dtype=np.float64)
-        p_current = np.asarray(matrix_payload["parameter_values"], dtype=np.float64)
-        r_model = np.asarray(matrix_payload["response_values"], dtype=np.float64)
-        r_target = np.asarray(
-            _vector_from_input(
-                target_responses,
+            parameter_columns = list(matrix_payload["parameter_columns"])
+            response_rows = list(matrix_payload["response_rows"])
+            S_norm = np.asarray(matrix_payload["matrix"], dtype=np.float64)
+            p_current = np.asarray(matrix_payload["parameter_values"], dtype=np.float64)
+            r_model = np.asarray(matrix_payload["response_values"], dtype=np.float64)
+            r_target = np.asarray(
+                _vector_from_input(
+                    target_responses,
+                    response_rows,
+                    label="target_responses",
+                    key_candidates=("row_key", "response_label"),
+                ),
+                dtype=np.float64,
+            )
+            p_scatter = _resolve_scatter_vector(
+                parameter_scatter,
+                parameter_columns,
+                label="parameter_scatter",
+                key_candidates=("parameter_name", "field", "parameter_token"),
+                default_value=_sens._DEFAULT_PARAMETER_SCATTER,
+                metadata_key="scatter",
+            )
+            r_scatter = _resolve_scatter_vector(
+                response_scatter,
                 response_rows,
-                label="target_responses",
+                label="response_scatter",
                 key_candidates=("row_key", "response_label"),
-            ),
-            dtype=np.float64,
-        )
-        p_scatter = _resolve_scatter_vector(
-            parameter_scatter,
-            parameter_columns,
-            label="parameter_scatter",
-            key_candidates=("parameter_name", "field", "parameter_token"),
-            default_value=_sens._DEFAULT_PARAMETER_SCATTER,
-            metadata_key="scatter",
-        )
-        r_scatter = _resolve_scatter_vector(
-            response_scatter,
-            response_rows,
-            label="response_scatter",
-            key_candidates=("row_key", "response_label"),
-            default_value=_sens._DEFAULT_RESPONSE_SCATTER,
-        )
-        lower_bound_values = None
-        if lower_bound is not None:
-            lower_bound_values = np.asarray(
-                _vector_from_input(
-                    lower_bound,
-                    parameter_columns,
-                    label="lower_bound",
-                    key_candidates=("parameter_name", "field", "parameter_token"),
-                ),
-                dtype=np.float64,
-            )
-        upper_bound_values = None
-        if upper_bound is not None:
-            upper_bound_values = np.asarray(
-                _vector_from_input(
-                    upper_bound,
-                    parameter_columns,
-                    label="upper_bound",
-                    key_candidates=("parameter_name", "field", "parameter_token"),
-                ),
-                dtype=np.float64,
+                default_value=_sens._DEFAULT_RESPONSE_SCATTER,
             )
 
-        update_payload = bayesian_update_normalized(
-            p_current=p_current,
-            r_model=r_model,
-            r_target=r_target,
-            S_norm=S_norm,
-            p_scatter=p_scatter,
-            r_scatter=r_scatter,
-            damping=damping,
-            step_scale=step_scale,
-            lower_bound=lower_bound_values,
-            upper_bound=upper_bound_values,
-            p_ref=p_current,
-        )
+            lower_bound_values = None
+            if lower_bound is not None:
+                lower_bound_values = np.asarray(
+                    _vector_from_input(
+                        lower_bound,
+                        parameter_columns,
+                        label="lower_bound",
+                        key_candidates=("parameter_name", "field", "parameter_token"),
+                    ),
+                    dtype=np.float64,
+                )
 
-        parameter_updates = {
-            str(column["parameter_name"]): float(update_payload["p_new"][col_idx])
-            for col_idx, column in enumerate(parameter_columns)
+            upper_bound_values = None
+            if upper_bound is not None:
+                upper_bound_values = np.asarray(
+                    _vector_from_input(
+                        upper_bound,
+                        parameter_columns,
+                        label="upper_bound",
+                        key_candidates=("parameter_name", "field", "parameter_token"),
+                    ),
+                    dtype=np.float64,
+                )
+
+            exit_check = _evaluate_exit_condition(
+                r_model.tolist(),
+                r_target.tolist(),
+                exit_diff_percent=exit_diff_percent,
+            )
+            effective_step_scale = 0.0 if exit_check and bool(exit_check.get("converged")) else float(step_scale)
+            update_payload = bayesian_update_normalized(
+                p_current=p_current,
+                r_model=r_model,
+                r_target=r_target,
+                S_norm=S_norm,
+                p_scatter=p_scatter,
+                r_scatter=r_scatter,
+                damping=damping,
+                step_scale=effective_step_scale,
+                lower_bound=lower_bound_values,
+                upper_bound=upper_bound_values,
+                p_ref=p_current,
+            )
+
+            parameter_updates = {
+                str(column["parameter_name"]): float(update_payload["p_new"][col_idx])
+                for col_idx, column in enumerate(parameter_columns)
+            }
+            parameter_element_mapping = []
+            for col_idx, column in enumerate(parameter_columns):
+                mapping_entry = _clone_jsonable(column.get("element_mapping") or {})
+                mapping_entry["updated_parameter_value"] = float(update_payload["p_new"][col_idx])
+                parameter_element_mapping.append(mapping_entry)
+
+            next_inp = _copy_iteration_input(
+                str(current_inp),
+                root_dir,
+                iteration_index + 1,
+                base_stem=input_base_stem,
+            )
+            update_parameter_section_values(
+                str(next_inp),
+                parameter_updates,
+                output_inp=str(next_inp),
+            )
+
+            iteration_result = {
+                "iteration": iteration_index + 1,
+                "input_inp": str(current_inp) if save_results else None,
+                "source": {
+                    "workspace": matrix_payload.get("workspace") if save_results else None,
+                    "source_mode": matrix_payload.get("source_mode"),
+                    "workspace_built": matrix_payload.get("workspace_built"),
+                    "odb_id": matrix_payload.get("odb_id"),
+                },
+                "sensitivity_matrix": matrix_payload["matrix"],
+                "response_values": matrix_payload["response_values"],
+                "target_responses": r_target.tolist(),
+                "parameter_values": matrix_payload["parameter_values"],
+                "parameter_scatter": p_scatter.tolist(),
+                "response_scatter": r_scatter.tolist(),
+                "parameter_columns": parameter_columns,
+                "parameter_element_mapping": parameter_element_mapping,
+                "response_rows": response_rows,
+                "bayesian": _clone_jsonable(update_payload),
+                "exit_check": _clone_jsonable(exit_check),
+                "updated_inp": str(next_inp) if save_results else None,
+                "solver": solver_payload if save_results else None,
+            }
+
+            current_inp = next_inp
+            next_source = {"workspace": None, "odb_path": None, "odb_id": None, "base_url": None}
+            if exit_check and bool(exit_check.get("converged")):
+                stopped_early = True
+            elif iteration_index < int(iterations) - 1:
+                rerun_payload = _run_iteration_solver(
+                    inp_path=current_inp,
+                    output_dir=root_dir,
+                    iteration=iteration_index + 1,
+                    abaqus=abaqus,
+                    job_name=f"{job_name}_iter{iteration_index + 1}" if job_name else None,
+                    cpus=cpus,
+                    interactive=interactive,
+                    timeout_sec=timeout_sec,
+                    extra_args=extra_args,
+                    python3=python3,
+                    keep_raw=keep_raw,
+                )
+                if save_results:
+                    iteration_result["next_iteration_solver"] = rerun_payload
+                next_source["workspace"] = rerun_payload["workspace"]["workspace"]
+
+            if save_results:
+                iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)
+            iteration_results.append(iteration_result)
+            if stopped_early:
+                break
+
+        final_iteration = iteration_results[-1]
+        _persist_bayesian_tracking_results(
+            project_id=project_id,
+            batch_no=resolved_batch_no,
+            iteration_results=iteration_results,
+        )
+        saved_artifacts = (
+            _save_bayesian_history_artifacts(
+                root_dir=root_dir,
+                project_id=project_id,
+                batch_no=resolved_batch_no,
+                iteration_results=iteration_results,
+            )
+            if save_results
+            else {}
+        )
+        return {
+            "project_id": project_id,
+            "batch_no": resolved_batch_no,
+            "input_inp": str(input_path),
+            "output_dir": str(root_dir) if save_results else None,
+            "save_results": bool(save_results),
+            "iterations": len(iteration_results),
+            "requested_iterations": int(iterations),
+            "stopped_early": bool(stopped_early),
+            "exit_diff_percent": None if exit_diff_percent is None else float(exit_diff_percent),
+            "field_prefix": field_prefix,
+            "response_component": response_component,
+            "step": step,
+            "instances": [str(item) for item in (instances or [])],
+            "final_updated_inp": final_iteration["updated_inp"] if save_results else None,
+            "final_parameter_values": final_iteration["bayesian"]["p_new"],
+            "parameter_columns": final_iteration["parameter_columns"],
+            "response_rows": final_iteration["response_rows"],
+            "iteration_results": iteration_results,
+            "saved_artifacts": saved_artifacts,
         }
-        parameter_element_mapping = []
-        for col_idx, column in enumerate(parameter_columns):
-            mapping_entry = _clone_jsonable(column.get("element_mapping") or {})
-            mapping_entry["updated_parameter_value"] = float(update_payload["p_new"][col_idx])
-            parameter_element_mapping.append(mapping_entry)
-        next_inp = _copy_iteration_input(
-            str(current_inp),
-            root_dir,
-            iteration_index + 1,
-            base_stem=input_base_stem,
-        )
-        update_parameter_section_values(
-            str(next_inp),
-            parameter_updates,
-            output_inp=str(next_inp),
-        )
-
-        iteration_result = {
-            "iteration": iteration_index + 1,
-            "input_inp": str(current_inp),
-            "source": {
-                "workspace": matrix_payload.get("workspace"),
-                "source_mode": matrix_payload.get("source_mode"),
-                "workspace_built": matrix_payload.get("workspace_built"),
-                "odb_id": matrix_payload.get("odb_id"),
-            },
-            "sensitivity_matrix": matrix_payload["matrix"],
-            "response_values": matrix_payload["response_values"],
-            "target_responses": r_target.tolist(),
-            "parameter_values": matrix_payload["parameter_values"],
-            "parameter_scatter": p_scatter.tolist(),
-            "response_scatter": r_scatter.tolist(),
-            "parameter_columns": parameter_columns,
-            "parameter_element_mapping": parameter_element_mapping,
-            "response_rows": response_rows,
-            "bayesian": _clone_jsonable(update_payload),
-            "updated_inp": str(next_inp),
-            "solver": solver_payload,
-        }
-        iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)
-        iteration_results.append(iteration_result)
-
-        current_inp = next_inp
-        next_source = {"workspace": None, "odb_path": None, "odb_id": None, "base_url": None}
-        if iteration_index < int(iterations) - 1:
-            # For later iterations we always rerun the freshly updated INP instead of
-            # reusing the previous workspace.
-            rerun_payload = _run_iteration_solver(
-                inp_path=current_inp,
-                output_dir=root_dir,
-                iteration=iteration_index + 1,
-                abaqus=abaqus,
-                job_name=f"{job_name}_iter{iteration_index + 1}" if job_name else None,
-                cpus=cpus,
-                interactive=interactive,
-                timeout_sec=timeout_sec,
-                extra_args=extra_args,
-                python3=python3,
-                keep_raw=keep_raw,
-            )
-            iteration_result["next_iteration_solver"] = rerun_payload
-            next_source["workspace"] = rerun_payload["workspace"]["workspace"]
-
-    final_iteration = iteration_results[-1]
-    return {
-        "project_id": project_id,
-        "input_inp": str(input_path),
-        "output_dir": str(root_dir),
-        "iterations": int(iterations),
-        "field_prefix": field_prefix,
-        "response_component": response_component,
-        "step": step,
-        "instances": [str(item) for item in (instances or [])],
-        "final_updated_inp": final_iteration["updated_inp"],
-        "final_parameter_values": final_iteration["bayesian"]["p_new"],
-        "parameter_columns": final_iteration["parameter_columns"],
-        "response_rows": final_iteration["response_rows"],
-        "iteration_results": iteration_results,
-    }
+    finally:
+        if cleanup_root_dir is not None:
+            shutil.rmtree(cleanup_root_dir, ignore_errors=True)
 
 
 def run_bayesian_update_from_text(
-    *,
-    sensitivity_matrix_file: str,
-    sensitivity_row_start: int,
-    sensitivity_row_count: int,
-    sensitivity_col_start: int = 1,
-    model_response_file: str,
-    model_response_row: int,
-    model_response_col_start: int = 1,
-    target_response_file: str,
-    target_response_row: int,
-    target_response_col_start: int = 1,
-    parameter_names: List[str],
-    parameter_scatter: Any = None,
-    response_scatter: Any = None,
-    input_inp: Optional[str] = None,
-    parameter_values: Optional[Any] = None,
-    damping: float = 1e-8,
-    step_scale: float = 1.0,
-    lower_bound: Any = None,
-    upper_bound: Any = None,
-    output_dir: Optional[str] = None,
-    case_name: str = "bayesian_text_check",
+        *,
+        sensitivity_matrix_file: str,
+        sensitivity_row_start: int,
+        sensitivity_row_count: int,
+        sensitivity_col_start: int = 1,
+        model_response_file: str,
+        model_response_row: int,
+        model_response_col_start: int = 1,
+        target_response_file: str,
+        target_response_row: int,
+        target_response_col_start: int = 1,
+        parameter_names: List[str],
+        parameter_scatter: Any = None,
+        response_scatter: Any = None,
+        input_inp: Optional[str] = None,
+        parameter_values: Optional[Any] = None,
+        damping: float = 1e-8,
+        step_scale: float = 1.0,
+        lower_bound: Any = None,
+        upper_bound: Any = None,
+        output_dir: Optional[str] = None,
+        case_name: str = "bayesian_text_check",
 ) -> dict:
     S_norm = _read_text_matrix(
         sensitivity_matrix_file,

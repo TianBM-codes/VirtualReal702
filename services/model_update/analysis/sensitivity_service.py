@@ -4,12 +4,14 @@ import re
 import sqlite3
 import subprocess
 import sys
+from collections import Counter
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import h5py
 import numpy as np
 
-from db import get_connection
+from db import ensure_tables_exist, get_connection
 from src.inp import parse_inp
 from src.inp.parameter_mapping import build_parameter_target_map
 from src.l3.core.state import registry
@@ -17,6 +19,8 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.manifest_repo import ManifestRepo
 from src.l3.services.node_table_service import get_instance_fields
 from tools.odb_client import ODBClient, _select_component_values
+
+from .solver_service import run_abaqus_sensitivity_job
 
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
 _AGGREGATIONS = {"max_abs", "mean_abs", "max", "min", "mean"}
@@ -462,6 +466,503 @@ def build_sensitivity_table(
         }
     finally:
         conn.close()
+
+
+def _normalize_batch_no(batch_no: Optional[str]) -> str:
+    value = str(batch_no or "1").strip()
+    return value or "1"
+
+
+def _response_display_name(row_meta: dict) -> str:
+    row_key = str(row_meta.get("row_key") or "").strip()
+    if row_key:
+        return row_key
+    parts = [
+        str(row_meta.get("instance") or "").strip(),
+        str(row_meta.get("response_field") or "").strip(),
+        str(row_meta.get("response_component") or "").strip(),
+        str(row_meta.get("response_position") or "").strip(),
+        str(row_meta.get("response_label") or "").strip(),
+    ]
+    return "|".join(parts)
+
+
+def _parameter_display_names(parameter_columns: List[dict]) -> List[str]:
+    base_names = [
+        str(item.get("parameter_name") or item.get("field") or f"parameter_{index + 1}")
+        for index, item in enumerate(parameter_columns)
+    ]
+    totals = Counter(base_names)
+    seen: Dict[str, int] = {}
+    display_names: List[str] = []
+    for index, item in enumerate(parameter_columns):
+        base_name = base_names[index]
+        seen[base_name] = seen.get(base_name, 0) + 1
+        if totals[base_name] <= 1:
+            display_names.append(base_name)
+            continue
+        field_name = str(item.get("field") or "").strip()
+        suffix = field_name or str(seen[base_name])
+        display_names.append(f"{base_name}|{suffix}")
+    return display_names
+
+
+def _load_dsa_normalized_sensitivity_matrix(**kwargs) -> dict:
+    from .bayesian_service import build_dsa_normalized_sensitivity_matrix
+
+    return build_dsa_normalized_sensitivity_matrix(**kwargs)
+
+
+def _load_existing_analysis_run_ids(cursor, *, project_id: int, batch_no: str) -> List[int]:
+    cursor.execute(
+        """
+        SELECT id
+        FROM t_mt_py_fem_analysis_run
+        WHERE project_id = %s AND run_no = %s
+        ORDER BY id DESC
+        """,
+        (int(project_id), str(batch_no)),
+    )
+    return [int(row["id"]) for row in (cursor.fetchall() or [])]
+
+
+def _delete_sensitivity_children(cursor, analysis_run_ids: List[int]) -> None:
+    if not analysis_run_ids:
+        return
+    placeholders = ", ".join(["%s"] * len(analysis_run_ids))
+    params = tuple(int(item) for item in analysis_run_ids)
+    cursor.execute(
+        f"DELETE FROM t_mt_py_fem_sensitivity_result WHERE analysis_run_id IN ({placeholders})",
+        params,
+    )
+    cursor.execute(
+        f"DELETE FROM t_mt_py_fem_response_def WHERE analysis_run_id IN ({placeholders})",
+        params,
+    )
+    cursor.execute(
+        f"DELETE FROM t_mt_py_fem_parameter_def WHERE analysis_run_id IN ({placeholders})",
+        params,
+    )
+
+
+def _upsert_analysis_run(
+        cursor,
+        *,
+        project_id: int,
+        batch_no: str,
+        case_name: str,
+) -> int:
+    analysis_run_ids = _load_existing_analysis_run_ids(
+        cursor,
+        project_id=project_id,
+        batch_no=batch_no,
+    )
+    if analysis_run_ids:
+        keep_id = int(analysis_run_ids[0])
+        _delete_sensitivity_children(cursor, analysis_run_ids)
+        if len(analysis_run_ids) > 1:
+            placeholders = ", ".join(["%s"] * (len(analysis_run_ids) - 1))
+            cursor.execute(
+                f"DELETE FROM t_mt_py_fem_analysis_run WHERE id IN ({placeholders})",
+                tuple(int(item) for item in analysis_run_ids[1:]),
+            )
+        cursor.execute(
+            """
+            UPDATE t_mt_py_fem_analysis_run
+            SET case_name = %s
+            WHERE id = %s
+            """,
+            (str(case_name), keep_id),
+        )
+        return keep_id
+
+    cursor.execute(
+        """
+        INSERT INTO t_mt_py_fem_analysis_run (project_id, case_name, run_no)
+        VALUES (%s, %s, %s)
+        """,
+        (int(project_id), str(case_name), str(batch_no)),
+    )
+    return int(cursor.lastrowid)
+
+
+def _persist_sensitivity_matrix(
+        *,
+        project_id: int,
+        batch_no: str,
+        case_name: str,
+        matrix_payload: dict,
+) -> dict:
+    response_rows = list(matrix_payload.get("response_rows") or [])
+    parameter_columns = list(matrix_payload.get("parameter_columns") or [])
+    matrix = np.asarray(matrix_payload.get("matrix") or [], dtype=np.float64)
+
+    if matrix.shape != (len(response_rows), len(parameter_columns)):
+        raise ValidationError(
+            "normalized sensitivity matrix dimensions do not match row/column metadata",
+            {
+                "matrix_shape": list(matrix.shape),
+                "response_count": len(response_rows),
+                "parameter_count": len(parameter_columns),
+            },
+        )
+
+    response_names = [_response_display_name(item) for item in response_rows]
+    parameter_names = _parameter_display_names(parameter_columns)
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        analysis_run_id = _upsert_analysis_run(
+            cursor,
+            project_id=project_id,
+            batch_no=batch_no,
+            case_name=case_name,
+        )
+
+        response_ids: List[int] = []
+        for index, response_name in enumerate(response_names, start=1):
+            cursor.execute(
+                """
+                INSERT INTO t_mt_py_fem_response_def (
+                    analysis_run_id, response_code, response_name, unit, seq_no
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (analysis_run_id, f"R{index:04d}", str(response_name), None, index),
+            )
+            response_ids.append(int(cursor.lastrowid))
+
+        parameter_ids: List[int] = []
+        for index, parameter_name in enumerate(parameter_names, start=1):
+            cursor.execute(
+                """
+                INSERT INTO t_mt_py_fem_parameter_def (
+                    analysis_run_id, param_code, param_name, unit, seq_no
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (analysis_run_id, f"P{index:04d}", str(parameter_name), None, index),
+            )
+            parameter_ids.append(int(cursor.lastrowid))
+
+        for row_index, response_id in enumerate(response_ids):
+            for col_index, parameter_id in enumerate(parameter_ids):
+                cursor.execute(
+                    """
+                    INSERT INTO t_mt_py_fem_sensitivity_result (
+                        analysis_run_id, parameter_id, response_id, sensitivity_value
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        analysis_run_id,
+                        parameter_id,
+                        response_id,
+                        float(matrix[row_index, col_index]),
+                    ),
+                )
+
+        conn.commit()
+        return {
+            "analysis_run_id": analysis_run_id,
+            "project_id": int(project_id),
+            "batch_no": str(batch_no),
+            "case_name": str(case_name),
+            "response_names": response_names,
+            "parameter_names": parameter_names,
+            "response_count": len(response_names),
+            "parameter_count": len(parameter_names),
+            "point_count": int(matrix.size),
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) -> dict:
+    ensure_tables_exist()
+    normalized_batch_no = _normalize_batch_no(batch_no)
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT id, project_id, case_name, run_no, created_at
+            FROM t_mt_py_fem_analysis_run
+            WHERE project_id = %s AND run_no = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(project_id), normalized_batch_no),
+        )
+        analysis_run = cursor.fetchone()
+        if not analysis_run:
+            raise NotFoundError(
+                "stored sensitivity result not found",
+                {"project_id": int(project_id), "batch_no": normalized_batch_no},
+            )
+
+        analysis_run_id = int(analysis_run["id"])
+        cursor.execute(
+            """
+            SELECT id, response_code, response_name, seq_no
+            FROM t_mt_py_fem_response_def
+            WHERE analysis_run_id = %s
+            ORDER BY seq_no ASC, id ASC
+            """,
+            (analysis_run_id,),
+        )
+        response_rows = [dict(row) for row in (cursor.fetchall() or [])]
+
+        cursor.execute(
+            """
+            SELECT id, param_code, param_name, seq_no
+            FROM t_mt_py_fem_parameter_def
+            WHERE analysis_run_id = %s
+            ORDER BY seq_no ASC, id ASC
+            """,
+            (analysis_run_id,),
+        )
+        parameter_rows = [dict(row) for row in (cursor.fetchall() or [])]
+
+        cursor.execute(
+            """
+            SELECT parameter_id, response_id, sensitivity_value
+            FROM t_mt_py_fem_sensitivity_result
+            WHERE analysis_run_id = %s
+            """,
+            (analysis_run_id,),
+        )
+        result_rows = [dict(row) for row in (cursor.fetchall() or [])]
+    finally:
+        cursor.close()
+        conn.close()
+
+    response_index = {int(row["id"]): idx for idx, row in enumerate(response_rows)}
+    parameter_index = {int(row["id"]): idx for idx, row in enumerate(parameter_rows)}
+    matrix: List[List[Optional[float]]] = [
+        [None for _ in parameter_rows]
+        for _ in response_rows
+    ]
+    for row in result_rows:
+        row_idx = response_index.get(int(row["response_id"]))
+        col_idx = parameter_index.get(int(row["parameter_id"]))
+        if row_idx is None or col_idx is None:
+            continue
+        matrix[row_idx][col_idx] = float(row["sensitivity_value"])
+
+    row_names = [str(row["response_name"]) for row in response_rows]
+    col_names = [str(row["param_name"]) for row in parameter_rows]
+    return {
+        "analysis_run_id": analysis_run_id,
+        "project_id": int(analysis_run["project_id"]),
+        "batch_no": str(analysis_run["run_no"]),
+        "case_name": analysis_run.get("case_name"),
+        "created_at": analysis_run.get("created_at").isoformat() if analysis_run.get("created_at") else None,
+        "row_names": row_names,
+        "col_names": col_names,
+        "matrix": matrix,
+    }
+
+
+def store_dsa_sensitivity_results(
+        *,
+        project_id: int,
+        batch_no: Optional[str] = None,
+        input_inp: str,
+        output_dir: Optional[str] = None,
+        workspace: Optional[str] = None,
+        odb_path: Optional[str] = None,
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
+        field_prefix: str = "d_U_",
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        response_elset: Optional[str] = None,
+        response_nset: Optional[str] = None,
+        response_frequency: int = 1,
+        node_vars: Optional[List[str]] = None,
+        element_vars: Optional[List[str]] = None,
+        abaqus: str = "abaqus",
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
+        job_name: Optional[str] = None,
+        cpus: Optional[int] = None,
+        interactive: bool = True,
+        run_solver: bool = True,
+        timeout_sec: Optional[int] = None,
+        extra_args: Optional[List[str]] = None,
+) -> dict:
+    ensure_tables_exist()
+
+    input_inp_abs = os.path.abspath(input_inp)
+    if not os.path.exists(input_inp_abs):
+        raise NotFoundError("input_inp not found", {"input_inp": input_inp_abs})
+
+    normalized_batch_no = _normalize_batch_no(batch_no)
+    resolved_workspace = os.path.abspath(workspace) if workspace else None
+    resolved_odb_path = os.path.abspath(odb_path) if odb_path else None
+    solver_payload = None
+    analysis_inp_path = input_inp_abs
+
+    if run_solver or (not resolved_workspace and not resolved_odb_path):
+        solver_payload = run_abaqus_sensitivity_job(
+            input_inp=input_inp_abs,
+            output_dir=output_dir,
+            response_elset=response_elset,
+            response_nset=response_nset,
+            response_frequency=int(response_frequency),
+            node_vars=node_vars,
+            element_vars=element_vars,
+            abaqus=abaqus,
+            job_name=job_name,
+            cpus=cpus,
+            interactive=interactive,
+            run_solver=run_solver,
+            timeout_sec=timeout_sec,
+            extra_args=extra_args,
+        )
+        generated_files = solver_payload.get("generated_files") or {}
+        generated_analysis_inp = generated_files.get("analysis_inp")
+        if generated_analysis_inp:
+            analysis_inp_path = os.path.abspath(str(generated_analysis_inp))
+        if run_solver:
+            solver_result = solver_payload.get("solver") or {}
+            if not solver_result.get("ok"):
+                raise ValidationError(
+                    "abaqus sensitivity solver run failed",
+                    {
+                        "project_id": int(project_id),
+                        "batch_no": normalized_batch_no,
+                        "returncode": solver_result.get("returncode"),
+                        "stdout_tail": solver_result.get("stdout_tail"),
+                        "stderr_tail": solver_result.get("stderr_tail"),
+                    },
+                )
+            resolved_odb_path = (solver_result.get("artifacts") or {}).get("odb")
+            if not resolved_odb_path:
+                raise NotFoundError(
+                    "odb artifact not found after abaqus sensitivity run",
+                    {"project_id": int(project_id), "batch_no": normalized_batch_no},
+                )
+
+    if not run_solver and not resolved_workspace and not resolved_odb_path:
+        raise ValidationError(
+            "workspace or odb_path is required when run_solver is disabled",
+            {"workspace": workspace, "odb_path": odb_path, "run_solver": run_solver},
+        )
+
+    matrix_payload = _load_dsa_normalized_sensitivity_matrix(
+        project_id=project_id,
+        inp_path=analysis_inp_path,
+        workspace=resolved_workspace,
+        odb_path=resolved_odb_path,
+        workspace_root=output_dir,
+        step=step,
+        instances=instances,
+        field_prefix=field_prefix,
+        response_component=response_component,
+        position=position,
+        aggregation=aggregation,
+        frame=frame,
+        abaqus=abaqus,
+        python3=python3,
+        keep_raw=keep_raw,
+        timeout=timeout,
+    )
+
+    persisted = _persist_sensitivity_matrix(
+        project_id=project_id,
+        batch_no=normalized_batch_no,
+        case_name=Path(input_inp_abs).stem,
+        matrix_payload=matrix_payload,
+    )
+    return {
+        **persisted,
+        "input_inp": input_inp_abs,
+        "analysis_inp": analysis_inp_path,
+        "odb_path": os.path.abspath(resolved_odb_path) if resolved_odb_path else None,
+        "workspace": matrix_payload.get("workspace"),
+        "step": matrix_payload.get("step"),
+        "instances": matrix_payload.get("instances"),
+        "aggregation": matrix_payload.get("aggregation"),
+        "frame": matrix_payload.get("frame"),
+        "field_prefix": matrix_payload.get("field_prefix"),
+        "solver": solver_payload.get("solver") if solver_payload else None,
+        "generated_files": solver_payload.get("generated_files") if solver_payload else None,
+    }
+
+
+def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[str] = None) -> dict:
+    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    row_names = list(payload.get("row_names") or [])
+    col_names = list(payload.get("col_names") or [])
+    matrix = list(payload.get("matrix") or [])
+
+    points = []
+    for row_index, row_name in enumerate(row_names):
+        current_row = matrix[row_index] if row_index < len(matrix) else []
+        for col_index, col_name in enumerate(col_names):
+            value = current_row[col_index] if col_index < len(current_row) else None
+            points.append(
+                {
+                    "row_index": row_index,
+                    "col_index": col_index,
+                    "row_name": row_name,
+                    "col_name": col_name,
+                    "value": value,
+                }
+            )
+
+    return {
+        "analysis_run_id": payload.get("analysis_run_id"),
+        "project_id": payload.get("project_id"),
+        "batch_no": payload.get("batch_no"),
+        "case_name": payload.get("case_name"),
+        "created_at": payload.get("created_at"),
+        "row_names": row_names,
+        "col_names": col_names,
+        "points": points,
+        "summary": {
+            "response_count": len(row_names),
+            "parameter_count": len(col_names),
+            "point_count": len(points),
+        },
+    }
+
+
+def get_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional[str] = None) -> dict:
+    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    row_names = list(payload.get("row_names") or [])
+    col_names = list(payload.get("col_names") or [])
+    matrix = list(payload.get("matrix") or [])
+
+    rows = {
+        row_name: list(matrix[row_index] if row_index < len(matrix) else [])
+        for row_index, row_name in enumerate(row_names)
+    }
+    return {
+        "analysis_run_id": payload.get("analysis_run_id"),
+        "project_id": payload.get("project_id"),
+        "batch_no": payload.get("batch_no"),
+        "case_name": payload.get("case_name"),
+        "created_at": payload.get("created_at"),
+        "row_names": row_names,
+        "col_names": col_names,
+        "rows": rows,
+        "summary": {
+            "response_count": len(row_names),
+            "parameter_count": len(col_names),
+        },
+    }
 
 
 def _resolve_inp_path_from_project(project_id: int) -> str:

@@ -419,12 +419,19 @@ P2=2.0
         update_calls.append(kwargs)
         return updates[len(update_calls) - 1]
 
+    persisted = {}
+
+    def fake_persist(**kwargs):
+        persisted.update(kwargs)
+
     monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", fake_build_matrix)
     monkeypatch.setattr(bayesian_service, "_run_iteration_solver", fake_run_iteration_solver)
     monkeypatch.setattr(bayesian_service, "bayesian_update_normalized", fake_bayesian_update)
+    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", fake_persist)
 
     result = bayesian_service.run_bayesian_update_workflow(
         project_id=1,
+        batch_no=3,
         input_inp=str(inp_path),
         workspace=str(tmp_path / "initial_ws"),
         target_responses=[8.0, 16.0],
@@ -438,7 +445,11 @@ P2=2.0
     assert len(matrix_calls) == 2
     assert len(solver_calls) == 1
     assert len(update_calls) == 2
+    assert result["batch_no"] == 3
     assert result["final_parameter_values"] == [1.3, 2.6]
+    assert persisted["project_id"] == 1
+    assert persisted["batch_no"] == 3
+    assert len(persisted["iteration_results"]) == 2
 
     final_text = Path(result["final_updated_inp"]).read_text(encoding="utf-8")
     assert "P1=1.3" in final_text
@@ -452,6 +463,12 @@ P2=2.0
     mapping_json = Path(result["iteration_results"][0]["saved_artifacts"]["files"]["parameter_element_mapping_json"])
     assert mapping_json.exists()
     assert "\"targets_by_scope\"" in mapping_json.read_text(encoding="utf-8")
+    assert Path(result["saved_artifacts"]["files"]["parameter_history_csv"]).exists()
+    assert Path(result["saved_artifacts"]["files"]["response_history_csv"]).exists()
+    assert Path(result["saved_artifacts"]["files"]["overview_png"]).exists()
+    overview_html = Path(result["saved_artifacts"]["files"]["overview_html"])
+    assert overview_html.exists()
+    assert "Bayesian Optimization History" in overview_html.read_text(encoding="utf-8")
 
 
 def test_run_bayesian_update_workflow_uses_default_scatter_values(monkeypatch, tmp_path: Path):
@@ -499,6 +516,7 @@ P1=1.0
         }
 
     monkeypatch.setattr(bayesian_service, "bayesian_update_normalized", fake_bayesian_update)
+    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", lambda **kwargs: captured.update(kwargs))
 
     result = bayesian_service.run_bayesian_update_workflow(
         project_id=1,
@@ -512,8 +530,155 @@ P1=1.0
 
     assert captured["p_scatter"].tolist() == [0.25]
     assert captured["r_scatter"].tolist() == [0.01]
+    assert captured["batch_no"] == 1
     assert result["iteration_results"][0]["parameter_scatter"] == [0.25]
     assert result["iteration_results"][0]["response_scatter"] == [0.01]
+    assert Path(result["saved_artifacts"]["files"]["iteration_summary_csv"]).exists()
+    assert Path(result["saved_artifacts"]["files"]["response_diff_history_png"]).exists()
+
+
+def test_run_bayesian_update_workflow_stops_early_when_response_diff_within_threshold(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text(
+        """*Heading
+*PARAMETER
+P1=1.0
+*Step
+*Static
+*End Step
+""",
+        encoding="utf-8",
+    )
+
+    matrix_payload = {
+        "workspace": str(tmp_path / "initial_ws"),
+        "source_mode": "workspace",
+        "workspace_built": False,
+        "odb_id": None,
+        "matrix": [[1.0]],
+        "response_values": [10.5],
+        "parameter_values": [1.0],
+        "parameter_columns": [
+            {"field": "d_UR_P1", "parameter_name": "P1", "parameter_token": "P1", "parameter_value": 1.0}
+        ],
+        "response_rows": [
+            {"row_key": "r1", "response_label": "INST::10"}
+        ],
+    }
+    update_calls = []
+    solver_calls = []
+
+    monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", lambda **kwargs: matrix_payload)
+
+    def fake_bayesian_update(**kwargs):
+        update_calls.append(kwargs)
+        return {
+            "delta_r": np.array([[0.5]]),
+            "y": np.array([[0.047619]]),
+            "x": np.array([[0.0]]),
+            "dp": np.array([[0.0]]),
+            "p_new": np.array([1.0]),
+            "G_n": np.eye(1),
+        }
+
+    monkeypatch.setattr(bayesian_service, "bayesian_update_normalized", fake_bayesian_update)
+    monkeypatch.setattr(
+        bayesian_service,
+        "_run_iteration_solver",
+        lambda **kwargs: solver_calls.append(kwargs) or {"workspace": {"workspace": str(tmp_path / "rerun_ws")}},
+    )
+    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", lambda **kwargs: None)
+
+    result = bayesian_service.run_bayesian_update_workflow(
+        project_id=9,
+        input_inp=str(inp_path),
+        workspace=str(tmp_path / "initial_ws"),
+        target_responses=[10.0],
+        output_dir=str(tmp_path / "out"),
+        iterations=3,
+        exit_diff_percent=6.0,
+        run_solver=True,
+    )
+
+    assert len(update_calls) == 1
+    assert update_calls[0]["step_scale"] == 0.0
+    assert solver_calls == []
+    assert result["iterations"] == 1
+    assert result["requested_iterations"] == 3
+    assert result["stopped_early"] is True
+    assert result["final_parameter_values"] == [1.0]
+    assert result["iteration_results"][0]["exit_check"]["converged"] is True
+    assert result["iteration_results"][0]["exit_check"]["threshold"] == 6.0
+    assert "next_iteration_solver" not in result["iteration_results"][0]
+
+
+def test_run_bayesian_update_workflow_skips_file_outputs_when_save_results_false(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text(
+        """*Heading
+*PARAMETER
+P1=1.0
+*Step
+*Static
+*End Step
+""",
+        encoding="utf-8",
+    )
+
+    matrix_payload = {
+        "workspace": str(tmp_path / "initial_ws"),
+        "source_mode": "workspace",
+        "workspace_built": False,
+        "odb_id": None,
+        "matrix": [[1.0]],
+        "response_values": [10.0],
+        "parameter_values": [1.0],
+        "parameter_columns": [
+            {"field": "d_UR_P1", "parameter_name": "P1", "parameter_token": "P1", "parameter_value": 1.0}
+        ],
+        "response_rows": [
+            {"row_key": "r1", "response_label": "INST::10"}
+        ],
+    }
+
+    monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", lambda **kwargs: matrix_payload)
+    monkeypatch.setattr(
+        bayesian_service,
+        "bayesian_update_normalized",
+        lambda **kwargs: {
+            "delta_r": np.array([[1.0]]),
+            "y": np.array([[10.0]]),
+            "x": np.array([[0.1]]),
+            "dp": np.array([[0.1]]),
+            "p_new": np.array([1.1]),
+            "G_n": np.eye(1),
+        },
+    )
+    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", lambda **kwargs: None)
+
+    output_dir = tmp_path / "out"
+    result = bayesian_service.run_bayesian_update_workflow(
+        project_id=7,
+        input_inp=str(inp_path),
+        workspace=str(tmp_path / "initial_ws"),
+        target_responses=[8.0],
+        output_dir=str(output_dir),
+        save_results=False,
+        iterations=1,
+        run_solver=False,
+    )
+
+    assert result["save_results"] is False
+    assert result["output_dir"] is None
+    assert result["final_updated_inp"] is None
+    assert result["saved_artifacts"] == {}
+    assert output_dir.exists() is False
+    assert "saved_artifacts" not in result["iteration_results"][0]
+    assert result["iteration_results"][0]["input_inp"] is None
+    assert result["iteration_results"][0]["updated_inp"] is None
+    assert result["iteration_results"][0]["source"]["workspace"] is None
+    assert result["iteration_results"][0]["solver"] is None
+    assert result["final_parameter_values"] == [1.1]
 
 
 def test_run_bayesian_update_from_text_reads_external_matrix_and_responses(tmp_path: Path):
@@ -619,3 +784,69 @@ P1=1.0
 
     assert result["parameter_scatter"] == [0.25]
     assert result["response_scatter"] == [0.01]
+
+
+def test_persist_bayesian_tracking_results_overwrites_same_batch_and_writes_expected_rows(monkeypatch):
+    executed = []
+
+    class FakeCursor:
+        def execute(self, sql, params=None):
+            executed.append((" ".join(str(sql).split()), params))
+
+        def close(self):
+            return None
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_obj = FakeCursor()
+            self.committed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.cursor_obj
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
+
+    fake_conn = FakeConnection()
+    monkeypatch.setattr(bayesian_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(bayesian_service, "get_connection", lambda: fake_conn)
+
+    bayesian_service._persist_bayesian_tracking_results(
+        project_id=12,
+        batch_no=1,
+        iteration_results=[
+            {
+                "iteration": 1,
+                "response_values": [5.0],
+                "target_responses": [0.0],
+                "response_rows": [{"row_key": "row-1", "response_label": "R1"}],
+                "parameter_values": [1.0],
+                "parameter_columns": [
+                    {
+                        "parameter_name": "P1",
+                        "element_mapping": {"target_rows": [{"set_name": "SET1"}]},
+                    }
+                ],
+                "bayesian": {"p_new": [1.5]},
+            }
+        ],
+    )
+
+    delete_params = [params for sql, params in executed if sql.startswith("DELETE FROM")]
+    assert delete_params == [(12, 1), (12, 1), (12, 1), (12, 1)]
+
+    inserts = [(sql, params) for sql, params in executed if sql.startswith("INSERT INTO")]
+    assert inserts[0][1] == (12, 1, 1)
+    assert inserts[1][1] == (12, 1, "response_1", 1, 5.0, 0.0, 0.0)
+    assert inserts[2][1] == (12, 1, "Response", "response_1", 1, 5.0)
+    assert inserts[3][1] == (12, 1, "Parameter", "P1", 1, 1.5)
+    assert inserts[4][1] == (12, 1, "P1", "default", "default", "SET1", 1.0, 1.5, 0.5)
+    assert fake_conn.committed is True
+    assert fake_conn.rolled_back is False
