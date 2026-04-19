@@ -13,9 +13,11 @@ Use this script only if you want to run the runner as a separate process
 
 Shares only registry.db with the L3 web service.
 """
+import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -33,9 +35,10 @@ REPO_ROOT     = Path(__file__).resolve().parent.parent
 # python -m src.job_runner).
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-DUMP_SCRIPT   = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
-PACK_SCRIPT   = REPO_ROOT / "src" / "l1" / "l1_pack.py"
-INGEST_SCRIPT = REPO_ROOT / "src" / "l2" / "ingest.py"
+DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
+PACK_SCRIPT     = REPO_ROOT / "src" / "l1" / "l1_pack.py"
+INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
+INGEST_SCRIPT   = REPO_ROOT / "src" / "l2" / "ingest.py"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -333,6 +336,211 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     return True
 
 
+# ── Project / result_group helpers ───────────────────────────────────────────
+
+def _claim_pending_project() -> tuple:
+    """原子认领 geom_status='pending' project → 'running'。返回 (project_id, inp_path, workspace) 或全 None。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE projects SET geom_status='running', updated_at=?"
+            " WHERE project_id=("
+            "  SELECT project_id FROM projects WHERE geom_status='pending'"
+            "  ORDER BY created_at LIMIT 1"
+            ")",
+            (_now_iso(),),
+        )
+        if cur.rowcount == 0:
+            return None, None, None
+        row = conn.execute(
+            "SELECT project_id, workspace, inp_path FROM projects"
+            " WHERE geom_status='running' ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None, None, None
+        ws = row["workspace"]
+        if not (os.path.isabs(ws) or re.match(r'^[A-Za-z]:[/\\]', ws)):
+            ws = os.path.join(DATA_ROOT, row["project_id"])
+        return row["project_id"], row["inp_path"], ws
+
+
+def _update_project_geom_status(project_id: str, status: str,
+                                 error_message: str = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE projects SET geom_status=?, updated_at=? WHERE project_id=?",
+            (status, _now_iso(), project_id),
+        )
+        if status == "error" and error_message:
+            conn.execute(
+                "UPDATE result_groups SET status='error', error_message=?, updated_at=?"
+                " WHERE project_id=? AND status='pending'",
+                (error_message, _now_iso(), project_id),
+            )
+
+
+def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
+    if not inp_path:
+        msg = "No INP path stored for project {}".format(project_id)
+        logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    logger.info("[%s] Geom: inp_pack.py", project_id)
+    rc, tail = _run_streaming(
+        [sys.executable, str(INP_PACK_SCRIPT),
+         "--inp", inp_path, "--workspace", workspace],
+        project_id, "inp_pack",
+    )
+    if rc != 0:
+        msg = "inp_pack failed: " + tail
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    logger.info("[%s] Geom: ingest.py (L2)", project_id)
+    ret = subprocess.run(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    if ret.returncode != 0:
+        msg = "ingest failed: " + ret.stderr[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        logger.error("[%s] L2 failed (rc=%d)", project_id, ret.returncode)
+        return False
+
+    _update_project_geom_status(project_id, "ready")
+    logger.info("[%s] Geom ready", project_id)
+    return True
+
+
+def _claim_pending_result_group() -> tuple:
+    """认领一个 pending result_group（project geom_status='ready'）。返回 5-tuple 或全 None。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE result_groups SET status='running', updated_at=?"
+            " WHERE id=("
+            "  SELECT rg.id FROM result_groups rg"
+            "  JOIN projects p ON rg.project_id = p.project_id"
+            "  WHERE rg.status='pending' AND p.geom_status='ready'"
+            "  ORDER BY rg.created_at LIMIT 1"
+            ")",
+            (_now_iso(),),
+        )
+        if cur.rowcount == 0:
+            return None, None, None, None, None
+        row = conn.execute(
+            "SELECT rg.project_id, rg.result_group, rg.source_path,"
+            "       rg.parse_options, p.workspace"
+            " FROM result_groups rg"
+            " JOIN projects p ON rg.project_id = p.project_id"
+            " WHERE rg.status='running' ORDER BY rg.updated_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None, None, None, None, None
+        ws = row["workspace"]
+        if not (os.path.isabs(ws) or re.match(r'^[A-Za-z]:[/\\]', ws)):
+            ws = os.path.join(DATA_ROOT, row["project_id"])
+        return (row["project_id"], row["result_group"],
+                row["source_path"], row["parse_options"], ws)
+
+
+def _update_result_group_status(project_id: str, result_group: str,
+                                 status: str, error_message: str = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE result_groups SET status=?, error_message=?, updated_at=?"
+            " WHERE project_id=? AND result_group=?",
+            (status, error_message, _now_iso(), project_id, result_group),
+        )
+
+
+def _cleanup_result_group(workspace: str, result_group: str) -> None:
+    rg_safe = result_group.replace("/", "__").replace("\\", "__").replace(" ", "_")
+    for rel in [
+        os.path.join("l1", "results", rg_safe),
+        os.path.join("l1_raw", "consistency", rg_safe),
+        os.path.join("l1_raw", "rg_{}".format(rg_safe)),
+    ]:
+        p = os.path.join(workspace, rel)
+        if os.path.exists(p):
+            shutil.rmtree(p)
+            logger.info("Removed stale dir %s", p)
+
+    manifest = os.path.join(workspace, "manifest.db")
+    if os.path.exists(manifest):
+        with sqlite3.connect(manifest, timeout=5.0) as conn:
+            for table in ("steps", "frames", "result_files",
+                          "result_blocks", "result_group_meta"):
+                conn.execute(
+                    "DELETE FROM {} WHERE result_group=?".format(table),
+                    (result_group,),
+                )
+
+
+def _run_result_group(project_id: str, result_group: str,
+                      source_path: str, parse_options_json: str,
+                      workspace: str) -> bool:
+    label = "{}/{}".format(project_id, result_group)
+    parse_opts = {}
+    if parse_options_json:
+        try:
+            parse_opts = json.loads(parse_options_json)
+        except Exception:
+            pass
+
+    check_mode = parse_opts.get("consistency_check", "count-only")
+    display_name = parse_opts.get("display_name", result_group)
+    source_file = os.path.basename(source_path)
+
+    # Step 1: consistency check
+    logger.info("[%s] preflight (%s)", label, check_mode)
+    rc, tail = _run_streaming(
+        [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+         "--odb", source_path, "--out", workspace,
+         "--result-group", result_group,
+         "--mode", "consistency-check",
+         "--check-mode", check_mode],
+        label, "consistency_check",
+    )
+    if rc != 0:
+        msg = "consistency-check failed: " + tail
+        _update_result_group_status(project_id, result_group, "error", msg)
+        return False
+
+    # Step 2: extract results
+    logger.info("[%s] extract", label)
+    rc, tail = _run_streaming(
+        [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+         "--odb", source_path, "--out", workspace,
+         "--result-group", result_group,
+         "--mode", "extract"],
+        label, "extract",
+    )
+    if rc != 0:
+        msg = "extract failed: " + tail
+        _update_result_group_status(project_id, result_group, "error", msg)
+        return False
+
+    # Step 3: pack into HDF5
+    logger.info("[%s] l1_pack (result_group)", label)
+    rc, tail = _run_streaming(
+        [sys.executable, str(PACK_SCRIPT),
+         "--workspace", workspace,
+         "--result-group", result_group,
+         "--display-name", display_name,
+         "--consistency-check", check_mode,
+         "--source-file", source_file],
+        label, "l1_pack_rg",
+    )
+    if rc != 0:
+        msg = "l1_pack (result_group) failed: " + tail
+        _update_result_group_status(project_id, result_group, "error", msg)
+        return False
+
+    _update_result_group_status(project_id, result_group, "ready")
+    logger.info("[%s] ready", label)
+    return True
+
+
 # ── Main job runner ───────────────────────────────────────────────────────────
 
 def _run_job(odb_id: str, odb_path: str, workspace: str) -> None:
@@ -353,12 +561,51 @@ def main() -> None:
     t.start()
 
     while True:
+        did_work = False
+
+        # 1. Project geometry (INP)
+        project_id, inp_path, ws = _claim_pending_project()
+        if project_id is not None:
+            did_work = True
+            logger.info("Claimed project geom %s", project_id)
+            try:
+                _run_geom_project(project_id, inp_path, ws)
+            except Exception:
+                logger.exception("Error in project geom %s", project_id)
+                try:
+                    _update_project_geom_status(
+                        project_id, "error",
+                        "Unhandled runner exception — check server logs")
+                except Exception:
+                    pass
+
+        # 2. Result groups (ODB, requires project geom_status='ready')
+        project_id, rg, src, parse_opts, ws = _claim_pending_result_group()
+        if project_id is not None:
+            did_work = True
+            label = "{}/{}".format(project_id, rg)
+            logger.info("Claimed result_group %s", label)
+            try:
+                _cleanup_result_group(ws, rg)
+                _run_result_group(project_id, rg, src, parse_opts, ws)
+            except Exception:
+                logger.exception("Error in result_group %s", label)
+                try:
+                    _update_result_group_status(
+                        project_id, rg, "error",
+                        "Unhandled runner exception — check server logs")
+                except Exception:
+                    pass
+
+        # 3. Legacy ODB jobs
         odb_id, odb_path, workspace = _claim_submitted()
-        if odb_id is None:
+        if odb_id is not None:
+            did_work = True
+            logger.info("Claimed job %s", odb_id)
+            _run_job(odb_id, odb_path, workspace)
+
+        if not did_work:
             time.sleep(POLL_INTERVAL)
-            continue
-        logger.info("Claimed job %s", odb_id)
-        _run_job(odb_id, odb_path, workspace)
 
 
 if __name__ == "__main__":

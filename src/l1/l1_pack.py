@@ -29,6 +29,8 @@ import time
 import h5py
 import numpy as np
 
+from manifest_schema import MANIFEST_SCHEMA
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -37,6 +39,18 @@ def parse_args():
     p.add_argument('--workspace', required=True)
     p.add_argument('--keep-raw', action='store_true',
                    help='Do not delete l1_raw/ after packing')
+    # ── project-grouping params ──────────────────────────────────────────────
+    p.add_argument('--result-group', default=None,
+                   help='Result group name; enables append mode (only pack results, '
+                        'skip geometry/sets, output to l1/results/<result_group>/)')
+    p.add_argument('--display-name', default=None,
+                   help='Display name written to result_group_meta; '
+                        'defaults to --result-group value if not provided')
+    p.add_argument('--consistency-check', default='count-only',
+                   choices=['count-only', 'label-only'],
+                   help='Consistency check mode used for this result_group (recorded in meta)')
+    p.add_argument('--source-file', default=None,
+                   help='Original ODB filename (for audit/display, not execution)')
     return p.parse_args()
 
 
@@ -80,81 +94,7 @@ def init_manifest(workspace):
     db_path = os.path.join(workspace, 'manifest.db')
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA journal_mode=WAL')
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS instances (
-            instance_name  TEXT PRIMARY KEY,
-            part_name      TEXT,
-            geom_path      TEXT,
-            highorder_path TEXT,
-            node_count     INTEGER,
-            elem_count     INTEGER,
-            bbox_min       TEXT,
-            bbox_max       TEXT
-        );
-        CREATE TABLE IF NOT EXISTS element_type_dist (
-            instance_name  TEXT,
-            elem_type      TEXT,
-            count          INTEGER,
-            has_midnodes   INTEGER,
-            n_corner_nodes INTEGER,
-            n_faces        INTEGER,
-            PRIMARY KEY (instance_name, elem_type)
-        );
-        CREATE TABLE IF NOT EXISTS steps (
-            step_name   TEXT PRIMARY KEY,
-            step_number INTEGER,
-            procedure   TEXT,
-            num_frames  INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS frames (
-            step_name    TEXT,
-            frame_idx    INTEGER,
-            frame_value  REAL,
-            description  TEXT,
-            PRIMARY KEY (step_name, frame_idx)
-        );
-        CREATE TABLE IF NOT EXISTS result_files (
-            step_name    TEXT,
-            field_name   TEXT,
-            file_path    TEXT,
-            components   TEXT,
-            invariants   TEXT,
-            positions    TEXT,
-            has_section  INTEGER,
-            val_min      REAL,
-            val_max      REAL,
-            PRIMARY KEY (step_name, field_name)
-        );
-        CREATE TABLE IF NOT EXISTS result_blocks (
-            step_name     TEXT,
-            field_name    TEXT,
-            instance_name TEXT,
-            position      TEXT,
-            elem_type     TEXT,
-            h5_path       TEXT,
-            label_path    TEXT,
-            n_entities    INTEGER,
-            n_ip          INTEGER,
-            n_sp          INTEGER,
-            PRIMARY KEY (step_name, field_name, instance_name, position, elem_type)
-        );
-        CREATE TABLE IF NOT EXISTS node_sets (
-            set_name      TEXT,
-            set_scope     TEXT,
-            instance_name TEXT,
-            h5_path       TEXT,
-            node_count    INTEGER,
-            PRIMARY KEY (set_name, instance_name)
-        );
-        CREATE TABLE IF NOT EXISTS element_sets (
-            set_name      TEXT,
-            set_scope     TEXT,
-            instance_name TEXT,
-            h5_path       TEXT,
-            elem_count    INTEGER,
-            PRIMARY KEY (set_name, instance_name)
-        );
-    """)
+    conn.executescript(MANIFEST_SCHEMA)
     conn.commit()
     return conn
 
@@ -450,9 +390,19 @@ def pack_sets(raw_dir, workspace, meta, db_conn):
 
 # ─── Pack results ─────────────────────────────────────────────────────────────
 
-def pack_results(raw_dir, workspace, meta, db_conn):
+def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
+    """
+    Pack result npy files into HDF5 and write manifest rows.
+
+    result_group: if provided, output goes to l1/results/<result_group>/ and
+                  all manifest rows include result_group. None = legacy flat layout.
+    """
     results_raw = os.path.join(raw_dir, 'results')
-    results_dir = os.path.join(workspace, 'l1', 'results')
+    if result_group:
+        results_out = os.path.join(workspace, 'l1', 'results', safe(result_group))
+    else:
+        results_out = os.path.join(workspace, 'l1', 'results')
+    mkdirs(results_out)
 
     t_results = time.time()
     print("  results/ ...")
@@ -462,13 +412,14 @@ def pack_results(raw_dir, workspace, meta, db_conn):
     # Write steps and frames to manifest.db
     for step_name, sm in steps_meta.items():
         db_conn.execute(
-            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?)",
-            (step_name, sm['step_number'], sm['procedure'], sm['num_frames'])
+            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?)",
+            (result_group, step_name, sm['step_number'], sm['procedure'], sm['num_frames'])
         )
         for fm in sm['frames']:
             db_conn.execute(
-                "INSERT OR REPLACE INTO frames VALUES (?,?,?,?)",
-                (step_name, fm['frame_idx'], fm['frame_value'], fm['description'])
+                "INSERT OR REPLACE INTO frames VALUES (?,?,?,?,?)",
+                (result_group, step_name,
+                 fm['frame_idx'], fm['frame_value'], fm['description'])
             )
     db_conn.commit()
 
@@ -498,7 +449,10 @@ def pack_results(raw_dir, workspace, meta, db_conn):
         safe_step  = safe(step_name)
         safe_field = safe(field_name)
         h5_fname   = '{}__{}.h5'.format(safe_step, safe_field)
-        h5_rel     = os.path.join('l1', 'results', h5_fname)
+        if result_group:
+            h5_rel = os.path.join('l1', 'results', safe(result_group), h5_fname)
+        else:
+            h5_rel = os.path.join('l1', 'results', h5_fname)
         h5_abs     = os.path.join(workspace, h5_rel)
 
         positions_found = set()
@@ -633,8 +587,8 @@ def pack_results(raw_dir, workspace, meta, db_conn):
 
                 # manifest.db: result_blocks
                 db_conn.execute(
-                    "INSERT OR REPLACE INTO result_blocks VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (step_name, field_name, inst_name, position,
+                    "INSERT OR REPLACE INTO result_blocks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (result_group, step_name, field_name, inst_name, position,
                      elem_type,
                      grp_path,
                      grp_path + '/labels',
@@ -649,11 +603,11 @@ def pack_results(raw_dir, workspace, meta, db_conn):
 
         # manifest.db: result_files
         db_conn.execute(
-            "INSERT OR REPLACE INTO result_files VALUES (?,?,?,?,?,?,?,?,?)",
-            (step_name, field_name, h5_rel,
+            "INSERT OR REPLACE INTO result_files VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (result_group, step_name, field_name, h5_rel,
              json.dumps(components), json.dumps(invariants),
              json.dumps(sorted(positions_found)),
-             has_section, global_min, global_max)
+             has_section, global_min, global_max, 'odb')
         )
         db_conn.commit()
         print(f"      done. ({_fmt_t(time.time() - t_field)})")
@@ -706,7 +660,65 @@ def cleanup_raw(raw_dir):
 def main():
     args      = parse_args()
     workspace = os.path.abspath(args.workspace)
-    raw_dir   = os.path.join(workspace, 'l1_raw')
+    result_group = args.result_group
+
+    t_total = time.time()
+
+    if result_group:
+        # ── Append mode: pack results for one result_group, skip geometry ──
+        rg_safe = safe(result_group)
+        raw_dir = os.path.join(workspace, 'l1_raw', 'rg_{}'.format(rg_safe))
+        if not os.path.exists(raw_dir):
+            print("ERROR: {} not found. Run abaqus_dump.py --mode extract first.".format(raw_dir))
+            sys.exit(1)
+        meta_path = os.path.join(raw_dir, 'dump_meta.json')
+        if not os.path.exists(meta_path):
+            print("ERROR: dump_meta.json not found in {}.".format(raw_dir))
+            sys.exit(1)
+
+        display_name      = args.display_name or result_group
+        consistency_check = args.consistency_check
+        source_file       = args.source_file or ''
+
+        print("=== Layer 1 Phase 2 (append): result_group='{}' ===".format(result_group))
+        print("  Workspace: {}".format(workspace))
+
+        mkdirs(os.path.join(workspace, 'l1', 'results', rg_safe))
+
+        meta    = load_json(meta_path)
+        db_conn = init_manifest(workspace)
+
+        try:
+            pack_results(raw_dir, workspace, meta, db_conn, result_group=result_group)
+            # Upsert result_group_meta
+            import datetime as _dt
+            now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            db_conn.execute(
+                "INSERT OR REPLACE INTO result_group_meta"
+                " (result_group, display_name, source_file, consistency_check, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (result_group, display_name, source_file, consistency_check, now_iso),
+            )
+            db_conn.commit()
+        except Exception:
+            import traceback
+            print("\n!!! ERROR:")
+            traceback.print_exc()
+            db_conn.close()
+            sys.exit(1)
+
+        db_conn.close()
+
+        if not args.keep_raw:
+            print("Cleaning up {} ...".format(raw_dir))
+            cleanup_raw(raw_dir)
+
+        print("=== Append complete in {} ===".format(_fmt_t(time.time() - t_total)))
+        print("    result_group: {}".format(result_group))
+        return
+
+    # ── Full mode: geometry + sets + results (legacy flow) ──────────────────
+    raw_dir = os.path.join(workspace, 'l1_raw')
 
     if not os.path.exists(raw_dir):
         print("ERROR: l1_raw/ not found. Run abaqus_dump.py first.")
@@ -717,11 +729,9 @@ def main():
         print("ERROR: dump_meta.json not found in l1_raw/.")
         sys.exit(1)
 
-    t_total = time.time()
     print("=== Layer 1 Phase 2: npy → HDF5 ===")
     print("  Workspace: {}".format(workspace))
 
-    # Create output directories
     for d in ['l1/geometry', 'l1/sets', 'l1/results']:
         mkdirs(os.path.join(workspace, d))
 
@@ -747,7 +757,7 @@ def main():
         print("Cleaning up l1_raw/ ...")
         cleanup_raw(raw_dir)
 
-    print(f"=== Layer 1 Phase 2 complete in {_fmt_t(time.time() - t_total)} ===")
+    print("=== Layer 1 Phase 2 complete in {} ===".format(_fmt_t(time.time() - t_total)))
     print("    workspace: {}".format(workspace))
 
 

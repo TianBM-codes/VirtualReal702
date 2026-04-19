@@ -12,7 +12,7 @@ from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.hdf5_repo import HDF5Repo
 from ..infra.manifest_repo import ManifestRepo
-from ..schemas.query import PickOdbInfo, PickResponse, PickResultInfo, BBoxResponse, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse
+from ..schemas.query import PickOdbInfo, PickResponse, PickResultInfo, BBoxResponse, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse, RayPickRequest
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +130,25 @@ def _resolve_comp(
     )
 
 
-def _result_h5_path(workspace: str, step: str, field: str) -> str:
+def _result_h5_path(workspace: str, step: str, field: str,
+                    result_group: str = None) -> str:
     def safe(s):
         return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
-    return os.path.join(workspace, "l1", "results", f"{safe(step)}__{safe(field)}.h5")
+    fname = f"{safe(step)}__{safe(field)}.h5"
+    if result_group:
+        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
+    return os.path.join(workspace, "l1", "results", fname)
 
 
 def _read_u_displacement(
-    workspace: str, instance: str, node_row: int, frame_idx: int, step: str
+    workspace: str, instance: str, node_row: int, frame_idx: int, step: str,
+    result_group: str = None,
 ) -> Optional[List[float]]:
     """
     Read NODAL displacement [U1, U2, U3] for the given node at the given frame.
     Returns None if U field or NODAL dataset is unavailable.
     """
-    u_path = _result_h5_path(workspace, step, "U")
+    u_path = _result_h5_path(workspace, step, "U", result_group)
     if not os.path.exists(u_path):
         return None
     try:
@@ -164,6 +169,7 @@ def _read_u_displacement(
 def _compute_mises(
     workspace: str, instance: str, elem_row: int, etype_str: str,
     frame_idx: int, step: str,
+    result_group: str = None,
 ) -> Optional[float]:
     """
     Compute Von Mises stress for the hit element at the given frame.
@@ -173,7 +179,7 @@ def _compute_mises(
     Component order assumed: [S11, S22, S33, S12, S13, S23].
     Shell models store only 4 components [S11, S22, S33, S12]; S13/S23 are treated as 0.
     """
-    s_path = _result_h5_path(workspace, step, "S")
+    s_path = _result_h5_path(workspace, step, "S", result_group)
     if not os.path.exists(s_path):
         return None
     try:
@@ -238,6 +244,7 @@ def _read_pick_result(
     component_idx: Optional[int],
     pick_mode: str,
     selected_node_row: Optional[int] = None,  # node pick: the specific row chosen by node_idx
+    result_group: str = None,
 ) -> Optional[PickResultInfo]:
     """
     Read pick result values, trying NODAL → ELEMENT_NODAL → INTEGRATION_POINT.
@@ -257,7 +264,7 @@ def _read_pick_result(
             {"frame_idx": frame_idx},
         )
 
-    h5_path = _result_h5_path(workspace, step, field)
+    h5_path = _result_h5_path(workspace, step, field, result_group)
     if not os.path.exists(h5_path):
         return None
 
@@ -357,6 +364,7 @@ def pick(
     node_idx: Optional[int] = None,       # node pick only: which candidate node (0-2)
     include_coords: bool = False,         # when True: return orig_coords and def_coords
     deform_scale: float = 1.0,           # scale factor for def_coords = orig + U * scale
+    result_group: str = None,
 ) -> PickResponse:
     idx = _get_ready_index(registry, odb_id)
 
@@ -428,6 +436,7 @@ def pick(
             component_idx=component_idx,
             pick_mode=pick_mode,
             selected_node_row=selected_node_row,
+            result_group=result_group,
         )
 
     # ── Coords (orig + deformed) for node mode ──────────────────────────────
@@ -437,7 +446,8 @@ def pick(
         try:
             orig_coords = hdf5_repo.get_node_coords(instance, selected_node_row)
             if step and frame_idx is not None:
-                u = _read_u_displacement(idx.workspace, instance, selected_node_row, frame_idx, step)
+                u = _read_u_displacement(idx.workspace, instance, selected_node_row,
+                                         frame_idx, step, result_group)
                 if u is not None:
                     def_coords = [orig_coords[i] + u[i] * deform_scale for i in range(3)]
         except Exception:
@@ -446,7 +456,8 @@ def pick(
     # ── S,Mises (always computed from hit element if S field available) ──────
     mises: Optional[float] = None
     if step and frame_idx is not None:
-        mises = _compute_mises(idx.workspace, instance, elem_row, etype_str, frame_idx, step)
+        mises = _compute_mises(idx.workspace, instance, elem_row, etype_str,
+                               frame_idx, step, result_group)
 
     # ── Patch result with source_elem_label ──────────────────────────────────
     if result_info is not None:
@@ -864,6 +875,261 @@ def nearest_face(
         normal=normal.tolist(),
         closest_point=best_closest.tolist(),
         distance=d_min,
+    )
+
+
+def _unproject_ray(
+    screen_x: float,
+    screen_y: float,
+    viewport_width: float,
+    viewport_height: float,
+    vp_col_major: List[float],
+) -> tuple:
+    """
+    Reconstruct a world-space ray from screen pixel coordinates.
+
+    vp_col_major is the combined projection×view matrix sent by Three.js as
+    [...matrix.elements] (16 floats, column-major order).
+
+    NDC convention: X ∈ [-1,+1] left→right, Y ∈ [-1,+1] bottom→top (Y flipped
+    because screen Y grows downward).  Z = -1 at near plane, +1 at far plane.
+
+    Returns
+    -------
+    origin    : (3,) float64 — ray origin in world space (near-plane unproject)
+    direction : (3,) float64 — unit ray direction
+    """
+    ndc_x = 2.0 * screen_x / viewport_width - 1.0
+    ndc_y = 1.0 - 2.0 * screen_y / viewport_height   # flip Y
+
+    # Three.js elements[] is column-major.
+    # reshape(4,4) gives arr[i,j] = elements[i*4+j] = M[j][i], i.e. arr = M^T.
+    vp_col = np.array(vp_col_major, dtype=np.float64).reshape(4, 4)
+    VP = vp_col.T   # actual view-projection matrix (row-major)
+
+    try:
+        VP_inv = np.linalg.inv(VP)
+    except np.linalg.LinAlgError:
+        raise ValidationError(
+            "view_projection_matrix is singular and cannot be inverted",
+            {"matrix": vp_col_major},
+        )
+
+    def _unproj(z_ndc: float) -> np.ndarray:
+        clip = np.array([ndc_x, ndc_y, z_ndc, 1.0])
+        world = VP_inv @ clip
+        if abs(world[3]) < 1e-30:
+            world[3] = 1e-30
+        return world[:3] / world[3]
+
+    near = _unproj(-1.0)
+    far  = _unproj(1.0)
+
+    d = far - near
+    length = float(np.linalg.norm(d))
+    if length < 1e-30:
+        raise ValidationError(
+            "Degenerate ray: near and far unproject to the same point",
+            {"screen_x": screen_x, "screen_y": screen_y},
+        )
+    return near, d / length
+
+
+def _octree_ray_candidates(
+    octree: dict,
+    origin: np.ndarray,
+    direction: np.ndarray,
+) -> np.ndarray:
+    """
+    Traverse the octree and return render-face indices from all leaves whose
+    bounding box is intersected by the ray (origin, direction).
+    Uses the slab method (Smits' algorithm) for ray-AABB intersection.
+    """
+    node_bbox     = octree["node_bbox"]      # [N, 6] float32
+    node_children = octree["node_children"]  # [N, 8] int32
+    node_is_leaf  = octree["node_is_leaf"]   # [N]    uint8
+    face_indices  = octree["face_indices"]   # [F]    int32
+    leaf_offsets  = octree["leaf_offsets"]   # [N+1]  int32
+
+    # Inverse direction (safe: avoid /0 by substituting a large value)
+    inv_dir = np.where(
+        np.abs(direction) > 1e-30,
+        1.0 / direction,
+        np.sign(direction + 1e-30) * 1e30,
+    )
+
+    parts = []
+    stack = [0]
+    while stack:
+        nid = stack.pop()
+        bb  = node_bbox[nid].astype(np.float64)
+        lo, hi = bb[:3], bb[3:]
+
+        # Slab test: compute entry/exit t along each axis
+        t1 = (lo - origin) * inv_dir
+        t2 = (hi - origin) * inv_dir
+        t_enter = np.minimum(t1, t2).max()
+        t_exit  = np.maximum(t1, t2).min()
+
+        if t_exit < 0.0 or t_exit < t_enter:
+            continue   # ray misses this AABB
+
+        if node_is_leaf[nid]:
+            s = int(leaf_offsets[nid])
+            e = int(leaf_offsets[nid + 1])
+            if e > s:
+                parts.append(face_indices[s:e])
+        else:
+            for child in node_children[nid]:
+                if child != -1:
+                    stack.append(int(child))
+
+    if not parts:
+        return np.zeros(0, dtype=np.int32)
+    return np.unique(np.concatenate(parts))
+
+
+def _ray_triangle_intersect_batch(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    tris: np.ndarray,
+) -> np.ndarray:
+    """
+    Vectorized Möller–Trumbore ray-triangle intersection test.
+
+    Parameters
+    ----------
+    origin    : (3,) float64
+    direction : (3,) float64 — should be normalised
+    tris      : (N, 3, 3) float64 — N triangles, each [v0, v1, v2]
+
+    Returns
+    -------
+    t : (N,) float64 — ray parameter for each triangle.
+        inf  → no intersection (parallel, behind origin, or outside triangle).
+        > 0  → intersection at origin + t * direction.
+    """
+    EPSILON = 1e-9
+    v0 = tris[:, 0]   # (N, 3)
+    v1 = tris[:, 1]
+    v2 = tris[:, 2]
+
+    e1 = v1 - v0       # (N, 3) edge v0→v1
+    e2 = v2 - v0       # (N, 3) edge v0→v2
+
+    h = np.cross(direction, e2)          # (N, 3): direction × e2
+    a = (e1 * h).sum(axis=1)             # (N,)  determinant
+
+    valid = np.abs(a) > EPSILON          # (N,) non-degenerate / non-parallel
+
+    f = np.where(valid, 1.0 / a, 0.0)   # (N,)
+
+    s  = origin - v0                     # (N, 3)
+    u  = f * (s * h).sum(axis=1)        # (N,) first barycentric coordinate
+    valid &= (u >= -EPSILON) & (u <= 1.0 + EPSILON)
+
+    q  = np.cross(s, e1)                 # (N, 3)
+    v  = f * (q @ direction)             # (N,) second barycentric coordinate
+    valid &= (v >= -EPSILON) & (u + v <= 1.0 + EPSILON)
+
+    t = f * (e2 * q).sum(axis=1)        # (N,) ray parameter
+    valid &= t > EPSILON                 # intersection must be in front of origin
+
+    result = np.full(len(tris), np.inf, dtype=np.float64)
+    result[valid] = t[valid]
+    return result
+
+
+def ray_pick(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    screen_x: float,
+    screen_y: float,
+    viewport_width: float,
+    viewport_height: float,
+    vp_matrix_col_major: List[float],
+    pick_mode: str = "element",
+    node_idx: Optional[int] = None,
+    step: Optional[str] = None,
+    field: Optional[str] = None,
+    frame_idx: Optional[int] = None,
+    component_idx: Optional[int] = None,
+    include_coords: bool = False,
+    deform_scale: float = 1.0,
+) -> PickResponse:
+    """
+    Ray-cast pick: reconstruct a world-space ray from the camera view-projection
+    matrix and screen pixel coordinates, find the nearest surface triangle hit,
+    then delegate to the existing pick() for ODB result lookup.
+
+    Algorithm
+    ---------
+    1. Unproject (screen_x, screen_y) through VP_inv to get a world-space ray.
+    2. Traverse the octree with a ray-AABB slab test to collect candidate faces.
+       Falls back to full scan if no octree is loaded.
+    3. Exact Möller–Trumbore intersection on candidates → nearest t > 0.
+    4. Call pick() with the resolved render_face_idx.
+    """
+    idx = _get_ready_index(registry, odb_id)
+
+    coords    = idx.coords_global.get(instance)
+    node_rows = idx.source_node_rows.get(instance)
+    if coords is None or node_rows is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no L2 geometry in ODB '{odb_id}'",
+            {"instance": instance},
+        )
+
+    # ── Step 1: build world-space ray ────────────────────────────────────────
+    origin, direction = _unproject_ray(
+        screen_x, screen_y, viewport_width, viewport_height, vp_matrix_col_major
+    )
+
+    # ── Step 2: octree-accelerated candidate collection ──────────────────────
+    octree = idx.octree.get(instance)
+    if octree is not None:
+        candidates = _octree_ray_candidates(octree, origin, direction)
+    else:
+        logger.warning(
+            "ODB %s instance %s: no octree, full face scan for ray_pick", odb_id, instance
+        )
+        candidates = np.arange(len(node_rows), dtype=np.int32)
+
+    if len(candidates) == 0:
+        raise NotFoundError(
+            "Ray did not intersect any geometry — check that screen coordinates "
+            "are within the viewport and the model is visible",
+            {"screen_x": screen_x, "screen_y": screen_y},
+        )
+
+    # ── Step 3: exact Möller–Trumbore on candidates ──────────────────────────
+    cand_tris = coords[node_rows[candidates]].astype(np.float64)   # (C, 3, 3)
+    t_values  = _ray_triangle_intersect_batch(origin, direction, cand_tris)
+
+    best_local = int(np.argmin(t_values))
+    if t_values[best_local] == np.inf:
+        raise NotFoundError(
+            "Ray did not intersect any geometry",
+            {"screen_x": screen_x, "screen_y": screen_y},
+        )
+
+    best_face = int(candidates[best_local])
+
+    # ── Step 4: delegate to existing pick() ──────────────────────────────────
+    return pick(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        render_face_idx=best_face,
+        pick_mode=pick_mode,
+        step=step,
+        field=field,
+        frame_idx=frame_idx,
+        component_idx=component_idx,
+        node_idx=node_idx,
+        include_coords=include_coords,
+        deform_scale=deform_scale,
     )
 
 

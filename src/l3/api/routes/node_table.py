@@ -35,7 +35,7 @@ L3BE section layout
 See docs/l3/L3-Node-Field-Table-Requirement.md for full design rationale.
 """
 import json
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
@@ -56,8 +56,9 @@ async def list_fields(
     odb_id: str,
     instance: str = Query(..., description="Instance name"),
     step: str = Query(..., description="Step name"),
+    result_group: Optional[str] = Query(None, description="Result group (project mode)"),
 ):
-    fields = get_instance_fields(registry, odb_id, instance, step)
+    fields = get_instance_fields(registry, odb_id, instance, step, result_group)
     return ok({"instance": instance, "step": step, "fields": fields})
 
 
@@ -74,6 +75,7 @@ class NodeTableRequest(BaseModel):
     frame_idx: int
     node_labels: List[int]
     items: List[QueryItem]
+    result_group: Optional[str] = None
 
 
 @router.post("/results/node-table")
@@ -89,6 +91,7 @@ async def get_node_table_endpoint(
         frame_idx=body.frame_idx,
         node_labels=body.node_labels,
         items=[{"field": it.field, "component": it.component} for it in body.items],
+        result_group=body.result_group,
     )
 
     payload = l3be_build(sections)

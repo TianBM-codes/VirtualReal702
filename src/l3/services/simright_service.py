@@ -73,10 +73,13 @@ def _is_magnitude(comp: Optional[str]) -> bool:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _result_h5_path(workspace: str, step: str, field: str) -> str:
+def _result_h5_path(workspace: str, step: str, field: str,
+                    result_group: str = None) -> str:
     def safe(s):
         return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
     fname = f"{safe(step)}__{safe(field)}.h5"
+    if result_group:
+        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
     return os.path.join(workspace, "l1", "results", fname)
 
 

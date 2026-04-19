@@ -26,13 +26,20 @@ class ModelIndex:
         # O(1) array lookup for pick queries.
         self.render_source_elem_row: Dict[str, np.ndarray] = {}
 
-        # Smooth mode result slicing: instance_name -> [R, K] array mapping
-        # render_face_idx to source node rows in the L1 results file.
+        # Smooth mode result slicing: instance_name -> [Nt, 3] array mapping
+        # each triangle to its 3 node rows in the L1 results file.
+        # With indexed geometry, computed as vtx_node_row[indices].
         self.source_node_rows: Dict[str, np.ndarray] = {}
 
-        # Per-face element type string (b"S4R", b"C3D8R", ...): instance_name -> [R] S8 array.
+        # Per-face element type string (b"S4R", b"C3D8R", ...): instance_name -> [Nt] S8 array.
         # Used by hdf5_repo to build the correct L1 dataset path: elements/<etype>/labels.
         self.source_elem_etype: Dict[str, np.ndarray] = {}
+
+        # Indexed geometry extras (present when render.h5 uses indexed format).
+        # vtx_node_row [Nv]: FEM node row for each vertex in the indexed vertex buffer.
+        # vtx_tri_idx  [Nv]: first triangle index for each vertex (for element-level mapping).
+        self.vtx_node_row: Dict[str, np.ndarray] = {}
+        self.vtx_tri_idx:  Dict[str, np.ndarray] = {}
 
         # Octree for spatial coarse-filtering (bbox queries).
         # instance_name -> dict with keys:
@@ -70,6 +77,11 @@ class ModelIndex:
                         self.source_node_rows[inst_name] = f["render/source_node_rows"][:]
                     if "render/source_etype_str" in f:
                         self.source_elem_etype[inst_name] = f["render/source_etype_str"][:]
+                    # Indexed geometry extras
+                    if "render/vtx_node_row" in f:
+                        self.vtx_node_row[inst_name] = f["render/vtx_node_row"][:]
+                    if "render/vtx_tri_idx" in f:
+                        self.vtx_tri_idx[inst_name]  = f["render/vtx_tri_idx"][:]
                     if "octree/node_bbox" in f:
                         self.octree[inst_name] = {
                             "node_bbox":     f["octree/node_bbox"][:],

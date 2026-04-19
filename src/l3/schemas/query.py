@@ -112,3 +112,34 @@ class NearestFaceResponse(BaseModel):
     normal: List[float]           # unit outward normal [nx, ny, nz]
     closest_point: List[float]    # closest point ON the face to the query point [x, y, z]
     distance: float               # Euclidean distance from query point to closest_point
+
+
+class RayPickRequest(BaseModel):
+    """
+    Ray-cast pick request.  Frontend passes camera state + screen pixel coordinates;
+    backend reconstructs the world-space ray and finds the nearest intersected triangle.
+
+    view_projection_matrix
+        Combined projection × view matrix from Three.js:
+            const vp = new THREE.Matrix4().multiplyMatrices(
+                camera.projectionMatrix, camera.matrixWorldInverse
+            );
+            body.view_projection_matrix = [...vp.elements];   // 16 floats, column-major
+        The backend inverts this matrix to unproject screen coords to world space.
+    """
+    instance: str
+    screen_x: float                # pixel X (0 = left edge)
+    screen_y: float                # pixel Y (0 = top edge)
+    viewport_width: float = Field(..., gt=0)
+    viewport_height: float = Field(..., gt=0)
+    view_projection_matrix: List[float] = Field(..., min_length=16, max_length=16)
+
+    # ── same optional result-fetch params as GET /query/pick ──
+    pick_mode: Literal["element", "node"] = "element"
+    node_idx: Optional[int] = Field(default=None, ge=0, le=2)
+    step: Optional[str] = None
+    field: Optional[str] = None
+    frame_idx: Optional[int] = None
+    component_idx: Optional[int] = Field(default=None, ge=0)
+    include_coords: bool = False
+    deform_scale: float = Field(default=1.0, ge=0.0)

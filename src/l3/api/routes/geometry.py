@@ -1,35 +1,74 @@
 """
-GET /api/odb/{odb_id}/geometry/{instance}/render-buffers
-  → L3BE binary: positions [Rf*3, 3] float32
+GET  /api/odb/{odb_id}/geometry/{instance}/render-buffers
+POST /api/odb/{odb_id}/geometry/{instance}/render-buffers-subset
+  → L3BE binary: indexed geometry buffers
 
-Returns the Triangle Soup vertex positions for a given instance, ready to feed
-directly into a Three.js BufferGeometry position attribute.
+Section layout (indexed format):
+  - "positions": [Nv, 3] float32  — unique vertex XYZ
+  - "normals":   [Nv, 3] float32  — per-vertex normals (face normal shared within element face)
+  - "indices":   [Nt, 3] int32    — triangle index buffer
+
+Nv = unique vertex count; Nt = triangle count.
+Vertices are shared within an element face but not across element boundaries.
 """
 import os
+from typing import List, Optional
 
 import h5py
 import numpy as np
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
+from ...infra.manifest_repo import ManifestRepo
+from ...services.user_field_service import get_face_mask_for_elem_labels
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["geometry"])
 
 
-@router.get("/geometry/{instance}/render-buffers")
-async def get_render_buffers(odb_id: str, instance: str):
+class ElemSubsetRequest(BaseModel):
+    elem_labels: List[int]
+
+
+def _compact_by_render_rows(
+    positions: np.ndarray,
+    normals: Optional[np.ndarray],
+    indices: np.ndarray,
+    render_rows: np.ndarray,
+):
     """
-    Return the render vertex buffer for one instance as L3BE binary.
+    Filter an indexed geometry to a subset of triangles and compact the vertex buffer.
+
+    render_rows: int32 array of triangle indices to keep.
+    Returns (positions, normals, indices) with only the used vertices.
+    """
+    sub_indices = indices[render_rows]                                  # [Nt_sub, 3]
+    unique_verts, remapped = np.unique(sub_indices.ravel(), return_inverse=True)
+    pos_out = np.ascontiguousarray(positions[unique_verts])
+    nor_out = np.ascontiguousarray(normals[unique_verts]) if normals is not None else None
+    idx_out = remapped.reshape(-1, 3).astype(np.int32)
+    return pos_out, nor_out, idx_out
+
+
+@router.get("/geometry/{instance}/render-buffers")
+async def get_render_buffers(
+    odb_id: str,
+    instance: str,
+    set: Optional[str] = Query(default=None, description="User set name to filter geometry"),
+):
+    """
+    Return indexed render buffers for one instance as L3BE binary.
 
     Section layout:
-      - "positions": [Rf*3, 3] float32  — triangle soup vertex XYZ
-      - "normals":   [Rf*3, 3] float32  — per-vertex smooth normals (if available)
+      - "positions": [Nv, 3] float32  — unique vertex XYZ
+      - "normals":   [Nv, 3] float32  — per-vertex normals (if available)
+      - "indices":   [Nt, 3] int32    — triangle index buffer
 
-    Rf = number of surface triangles for this instance.
-    Each face has exactly 3 consecutive vertices (no index buffer).
+    Optional ?set=<name>: filter to only triangles belonging to the named user set.
+    Vertex buffer is compacted to only include vertices used by the subset.
     """
     idx = registry.get(odb_id)
     if idx is None:
@@ -43,22 +82,53 @@ async def get_render_buffers(odb_id: str, instance: str):
         )
 
     with h5py.File(render_h5, "r") as f:
-        positions_raw = f["render/positions"][:]   # [Rf, 3, 3] float32
-        normals_raw = f["render/normals"][:] if "render/normals" in f else None
+        positions = np.ascontiguousarray(f["render/positions"][:])   # [Nv, 3]
+        normals   = np.ascontiguousarray(f["render/normals"][:]) \
+                    if "render/normals" in f else None
+        indices   = np.ascontiguousarray(f["render/indices"][:]) \
+                    if "render/indices" in f else None
 
-    Rf = positions_raw.shape[0]
-    positions_flat = np.ascontiguousarray(positions_raw.reshape(Rf * 3, 3))
+    # ── Set filtering ──────────────────────────────────────────────────────
+    if set is not None and indices is not None:
+        manifest = ManifestRepo(idx.workspace)
+        render_rows = manifest.get_user_set_render_rows(set, instance)
+        if render_rows is None:
+            # Fallback: try INP/ODB element_sets by name
+            elem_labels = manifest.get_element_set_labels(set, instance)
+            if elem_labels is not None and len(elem_labels) > 0:
+                face_mask = get_face_mask_for_elem_labels(
+                    idx, instance, set(elem_labels.tolist())
+                )
+                render_rows = np.where(face_mask)[0].astype(np.int32)
+        if render_rows is not None and len(render_rows) > 0:
+            positions, normals, indices = _compact_by_render_rows(
+                positions, normals, indices, render_rows
+            )
 
-    sections = [("positions", positions_flat)]
-    if normals_raw is not None:
-        normals_flat = np.ascontiguousarray(normals_raw.reshape(Rf * 3, 3))
-        sections.append(("normals", normals_flat))
+    Nt = len(indices) if indices is not None else positions.shape[0] // 3
+
+    # Always expand to triangle soup (non-indexed).
+    # The colour-code service, pick service, and all downstream consumers expect
+    # Nv = Nt*3 (one unique vertex slot per triangle corner).  Indexed geometry
+    # (Nv < Nt*3) would cause "offset is out of bounds" in the frontend when
+    # applying per-face colours or per-vertex result values.
+    if indices is not None:
+        flat = indices.reshape(-1)          # [Nt*3]
+        positions = positions[flat]         # [Nt*3, 3]
+        if normals is not None:
+            normals = normals[flat]         # [Nt*3, 3]
+        indices = None
+
+    sections = [("positions", positions)]
+    if normals is not None:
+        sections.append(("normals", normals))
+    # indices intentionally omitted — always triangle soup
 
     payload = l3be_build(sections)
     return Response(
         content=payload,
         media_type="application/octet-stream",
-        headers={"X-Face-Count": str(Rf)},
+        headers={"X-Face-Count": str(Nt)},
     )
 
 
@@ -179,4 +249,76 @@ async def get_feature_edges(odb_id: str, instance: str):
         content=payload,
         media_type="application/octet-stream",
         headers={"X-Edge-Count": str(E)},
+    )
+
+
+@router.post("/geometry/{instance}/render-buffers-subset")
+async def get_render_buffers_subset(
+    odb_id: str,
+    instance: str,
+    body: ElemSubsetRequest,
+):
+    """
+    Return indexed render buffers for an arbitrary subset of elements.
+
+    Body: {"elem_labels": [1, 2, 3, ...]}
+
+    The caller is free to compute elem_labels by any means (value threshold,
+    element-type filter, spatial query, etc.).  The backend converts labels to
+    triangle indices and returns the same compacted indexed geometry as the
+    ?set= filter.
+
+    Section layout: same as GET render-buffers.
+    Header: X-Face-Count — number of triangles in the subset.
+    Returns 200 with empty geometry if no labels match.
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        raise NotFoundError(
+            f"Render data not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    # ── label → face mask via registry source arrays ──────────────────────
+    labels_set = set(body.elem_labels)
+    face_mask = get_face_mask_for_elem_labels(idx, instance, labels_set)
+    render_rows = np.where(face_mask)[0].astype(np.int32)
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:])
+        normals   = np.ascontiguousarray(f["render/normals"][:]) \
+                    if "render/normals" in f else None
+        indices   = np.ascontiguousarray(f["render/indices"][:]) \
+                    if "render/indices" in f else None
+
+    if len(render_rows) == 0 or indices is None:
+        # No matching triangles — return empty geometry
+        empty_pos = np.zeros((0, 3), dtype=np.float32)
+        empty_idx = np.zeros((0, 3), dtype=np.int32)
+        payload = l3be_build([("positions", empty_pos), ("indices", empty_idx)])
+        return Response(
+            content=payload,
+            media_type="application/octet-stream",
+            headers={"X-Face-Count": "0"},
+        )
+
+    positions, normals, indices = _compact_by_render_rows(
+        positions, normals, indices, render_rows
+    )
+
+    Nt = len(indices)
+    sections = [("positions", positions)]
+    if normals is not None:
+        sections.append(("normals", normals))
+    sections.append(("indices", indices))
+
+    payload = l3be_build(sections)
+    return Response(
+        content=payload,
+        media_type="application/octet-stream",
+        headers={"X-Face-Count": str(Nt)},
     )

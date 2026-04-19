@@ -35,6 +35,7 @@ import h5py
 import numpy as np
 
 from .model import InpModel, Instance, Part
+from src.l1.manifest_schema import MANIFEST_SCHEMA
 
 # ---------------------------------------------------------------------------
 # Face definitions  (mirrors FACE_DEFS in abaqus_dump.py exactly)
@@ -397,86 +398,7 @@ def _init_manifest(workspace: str) -> sqlite3.Connection:
     db_path = os.path.join(workspace, "manifest.db")
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS instances (
-            instance_name  TEXT PRIMARY KEY,
-            part_name      TEXT,
-            geom_path      TEXT,
-            highorder_path TEXT,
-            node_count     INTEGER,
-            elem_count     INTEGER,
-            bbox_min       TEXT,
-            bbox_max       TEXT
-        );
-        CREATE TABLE IF NOT EXISTS element_type_dist (
-            instance_name  TEXT,
-            elem_type      TEXT,
-            count          INTEGER,
-            has_midnodes   INTEGER,
-            n_corner_nodes INTEGER,
-            n_faces        INTEGER,
-            PRIMARY KEY (instance_name, elem_type)
-        );
-        CREATE TABLE IF NOT EXISTS steps (
-            step_name   TEXT PRIMARY KEY,
-            step_number INTEGER,
-            procedure   TEXT,
-            num_frames  INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS frames (
-            step_name    TEXT,
-            frame_idx    INTEGER,
-            frame_value  REAL,
-            description  TEXT,
-            PRIMARY KEY (step_name, frame_idx)
-        );
-        CREATE TABLE IF NOT EXISTS result_files (
-            step_name    TEXT,
-            field_name   TEXT,
-            file_path    TEXT,
-            components   TEXT,
-            invariants   TEXT,
-            positions    TEXT,
-            has_section  INTEGER,
-            val_min      REAL,
-            val_max      REAL,
-            PRIMARY KEY (step_name, field_name)
-        );
-        CREATE TABLE IF NOT EXISTS result_blocks (
-            step_name     TEXT,
-            field_name    TEXT,
-            instance_name TEXT,
-            position      TEXT,
-            elem_type     TEXT,
-            h5_path       TEXT,
-            label_path    TEXT,
-            n_entities    INTEGER,
-            n_ip          INTEGER,
-            n_sp          INTEGER,
-            PRIMARY KEY (step_name, field_name, instance_name, position, elem_type)
-        );
-        CREATE TABLE IF NOT EXISTS node_sets (
-            set_name      TEXT,
-            set_scope     TEXT,
-            instance_name TEXT,
-            h5_path       TEXT,
-            node_count    INTEGER,
-            PRIMARY KEY (set_name, instance_name)
-        );
-        CREATE TABLE IF NOT EXISTS element_sets (
-            set_name      TEXT,
-            set_scope     TEXT,
-            instance_name TEXT,
-            h5_path       TEXT,
-            elem_count    INTEGER,
-            PRIMARY KEY (set_name, instance_name)
-        );
-        CREATE TABLE IF NOT EXISTS user_sets (
-            set_name            TEXT PRIMARY KEY,
-            set_scope           TEXT,
-            user_set_instances  BLOB
-        );
-    """)
+    conn.executescript(MANIFEST_SCHEMA)
     conn.commit()
     return conn
 

@@ -22,10 +22,14 @@ from ..core.state import OdbRegistry
 POSITIONS = {"NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT"}
 
 
-def _result_h5_path(workspace: str, step: str, field: str) -> str:
+def _result_h5_path(workspace: str, step: str, field: str,
+                    result_group: str = None) -> str:
     def safe(s):
         return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
-    return os.path.join(workspace, "l1", "results", f"{safe(step)}__{safe(field)}.h5")
+    fname = f"{safe(step)}__{safe(field)}.h5"
+    if result_group:
+        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
+    return os.path.join(workspace, "l1", "results", fname)
 
 
 def _geom_h5_path(workspace: str, instance: str) -> str:
@@ -72,6 +76,7 @@ def get_raw_values(
     field: str,
     frame_idx: int,
     position: str,
+    result_group: str = None,
 ) -> Tuple[List[Tuple[str, np.ndarray]], List[str], List[str]]:
     """
     Extract numerical result values from L1 HDF5 for one frame.
@@ -113,7 +118,7 @@ def get_raw_values(
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
 
-    h5_path = _result_h5_path(idx.workspace, step, field)
+    h5_path = _result_h5_path(idx.workspace, step, field, result_group)
     if not os.path.exists(h5_path):
         raise NotFoundError(
             f"No result file for step='{step}' field='{field}'",

@@ -25,10 +25,14 @@ from ..infra.manifest_repo import ManifestRepo
 
 # ── path helpers (mirrors raw_result_service convention) ───────────────────────
 
-def _result_h5_path(workspace: str, step: str, field: str) -> str:
+def _result_h5_path(workspace: str, step: str, field: str,
+                    result_group: str = None) -> str:
     def safe(s):
         return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
-    return os.path.join(workspace, "l1", "results", f"{safe(step)}__{safe(field)}.h5")
+    fname = f"{safe(step)}__{safe(field)}.h5"
+    if result_group:
+        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
+    return os.path.join(workspace, "l1", "results", fname)
 
 
 # ── public API ─────────────────────────────────────────────────────────────────
@@ -38,6 +42,7 @@ def get_instance_fields(
     odb_id: str,
     instance: str,
     step: str,
+    result_group: str = None,
 ) -> List[dict]:
     """
     Return the fields available for (instance, step) in the given ODB.
@@ -61,13 +66,13 @@ def get_instance_fields(
             f"Instance '{instance}' not found in ODB '{odb_id}'",
             {"instance": instance},
         )
-    if repo.get_step_info(step) is None:
+    if repo.get_step_info(step, result_group) is None:
         raise NotFoundError(
             f"Step '{step}' not found in ODB '{odb_id}'",
             {"step": step},
         )
 
-    rows = repo.get_fields_by_instance(step, instance)
+    rows = repo.get_fields_by_instance(step, instance, result_group)
 
     result = []
     for row in rows:
@@ -93,6 +98,7 @@ def get_node_table(
     frame_idx: int,
     node_labels: List[int],
     items: List[dict],
+    result_group: str = None,
 ) -> Tuple[List[Tuple[str, np.ndarray]], List[dict]]:
     """
     Batch-query NODAL result values for the given node labels.
@@ -130,7 +136,7 @@ def get_node_table(
             f"Instance '{instance}' not found in ODB '{odb_id}'",
             {"instance": instance},
         )
-    if repo.get_step_info(step) is None:
+    if repo.get_step_info(step, result_group) is None:
         raise NotFoundError(
             f"Step '{step}' not found in ODB '{odb_id}'",
             {"step": step},
@@ -144,13 +150,13 @@ def get_node_table(
         component = item["component"]
 
         if field not in field_meta:
-            if not repo.has_nodal_block(step, field, instance):
+            if not repo.has_nodal_block(step, field, instance, result_group):
                 raise ValidationError(
                     f"Field '{field}' does not have NODAL position "
                     f"for instance '{instance}' in step '{step}'",
                     {"field": field, "instance": instance, "step": step},
                 )
-            rf = repo.get_result_file(step, field)
+            rf = repo.get_result_file(step, field, result_group)
             try:
                 components = json.loads(rf["components"]) if rf and rf["components"] else []
             except Exception:
@@ -178,7 +184,7 @@ def get_node_table(
         field_cols.setdefault(item["field"], []).append((col_idx, item["component"]))
 
     for field, col_list in field_cols.items():
-        h5_path = _result_h5_path(idx.workspace, step, field)
+        h5_path = _result_h5_path(idx.workspace, step, field, result_group)
         if not os.path.exists(h5_path):
             continue  # leave NaN
 

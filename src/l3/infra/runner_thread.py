@@ -11,9 +11,11 @@ Multi-worker safety (Gunicorn):
   Other workers check every poll cycle; they steal the lock if the
   heartbeat is older than _LOCK_TTL seconds (runner died silently).
 """
+import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -335,6 +337,310 @@ class EmbeddedRunner:
         logger.info("[%s] ready", odb_id)
         return True
 
+    # ── Project / result_group helpers ────────────────────────────────────────
+
+    def _claim_pending_project(self):
+        """原子认领一个 geom_status='pending' 的 project → 'running'。
+        返回 (project_id, inp_path, workspace) 或 (None, None, None)。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE projects SET geom_status='running', updated_at=?"
+                " WHERE project_id=("
+                "  SELECT project_id FROM projects WHERE geom_status='pending'"
+                "  ORDER BY created_at LIMIT 1"
+                ")",
+                (_now_iso(),),
+            )
+            if cur.rowcount == 0:
+                return None, None, None
+            row = conn.execute(
+                "SELECT project_id, workspace, inp_path FROM projects"
+                " WHERE geom_status='running'"
+                " ORDER BY updated_at DESC LIMIT 1",
+            ).fetchone()
+            if row is None:
+                return None, None, None
+            ws = row["workspace"]
+            if not os.path.isabs(ws):
+                ws = os.path.join(self.data_root, row["project_id"])
+            return row["project_id"], row["inp_path"], ws
+
+    def _update_project_geom_status(self, project_id: str, status: str,
+                                    error_message: str = None):
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET geom_status=?, updated_at=? WHERE project_id=?",
+                (status, _now_iso(), project_id),
+            )
+            if status == "error" and error_message:
+                conn.execute(
+                    "UPDATE result_groups SET status='error', error_message=?, updated_at=?"
+                    " WHERE project_id=? AND status='pending'",
+                    (error_message, _now_iso(), project_id),
+                )
+
+    def _claim_pending_result_group(self):
+        """认领一个 pending result_group（要求其 project geom_status='ready'）。
+        返回 (project_id, result_group, source_path, parse_options_json, workspace) 或全 None。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE result_groups SET status='running', updated_at=?"
+                " WHERE id=("
+                "  SELECT rg.id FROM result_groups rg"
+                "  JOIN projects p ON rg.project_id = p.project_id"
+                "  WHERE rg.status='pending' AND p.geom_status='ready'"
+                "  ORDER BY rg.created_at LIMIT 1"
+                ")",
+                (_now_iso(),),
+            )
+            if cur.rowcount == 0:
+                return None, None, None, None, None
+            row = conn.execute(
+                "SELECT rg.project_id, rg.result_group, rg.source_path,"
+                "       rg.parse_options, p.workspace"
+                " FROM result_groups rg"
+                " JOIN projects p ON rg.project_id = p.project_id"
+                " WHERE rg.status='running'"
+                " ORDER BY rg.updated_at DESC LIMIT 1",
+            ).fetchone()
+            if row is None:
+                return None, None, None, None, None
+            ws = row["workspace"]
+            if not os.path.isabs(ws):
+                ws = os.path.join(self.data_root, row["project_id"])
+            return (row["project_id"], row["result_group"],
+                    row["source_path"], row["parse_options"], ws)
+
+    def _update_result_group_status(self, project_id: str, result_group: str,
+                                    status: str, error_message: str = None):
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE result_groups SET status=?, error_message=?, updated_at=?"
+                " WHERE project_id=? AND result_group=?",
+                (status, error_message, _now_iso(), project_id, result_group),
+            )
+
+    def _cleanup_result_group(self, workspace: str, result_group: str):
+        """重试前清理旧文件和旧 manifest rows，防止幽灵元数据。"""
+        rg_safe = result_group.replace("/", "__").replace("\\", "__").replace(" ", "_")
+        for rel in [
+            os.path.join("l1", "results", rg_safe),
+            os.path.join("l1_raw", "consistency", rg_safe),
+            os.path.join("l1_raw", "rg_{}".format(rg_safe)),
+        ]:
+            p = os.path.join(workspace, rel)
+            if os.path.exists(p):
+                shutil.rmtree(p)
+                logger.info("Runner: removed stale dir %s", p)
+
+        manifest = os.path.join(workspace, "manifest.db")
+        if os.path.exists(manifest):
+            with sqlite3.connect(manifest, timeout=5.0) as conn:
+                for table in ("steps", "frames", "result_files",
+                              "result_blocks", "result_group_meta"):
+                    conn.execute(
+                        "DELETE FROM {} WHERE result_group=?".format(table),
+                        (result_group,),
+                    )
+            logger.info("Runner: cleaned manifest rows for result_group=%s", result_group)
+
+    # ── Project geometry pipeline ─────────────────────────────────────────────
+
+    def _run_geom_project(self, project_id: str, inp_path: str,
+                          workspace: str) -> bool:
+        if not inp_path:
+            msg = "No INP path stored for project {}".format(project_id)
+            logger.error("Runner: %s", msg)
+            self._update_project_geom_status(project_id, "error", msg)
+            return False
+
+        logger.info("[%s] Geom: inp_pack.py", project_id)
+        rc, tail = self._run_streaming(
+            [sys.executable, str(_INP_PACK_SCRIPT),
+             "--inp", inp_path, "--workspace", workspace],
+            project_id, "inp_pack",
+        )
+        if rc != 0:
+            msg = "inp_pack failed: " + tail
+            self._update_project_geom_status(project_id, "error", msg)
+            return False
+
+        logger.info("[%s] Geom: ingest.py (L2)", project_id)
+        ret = subprocess.run(
+            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
+            capture_output=True, encoding="utf-8", errors="replace",
+        )
+        if ret.returncode != 0:
+            msg = "ingest failed: " + ret.stderr[-2000:]
+            self._update_project_geom_status(project_id, "error", msg)
+            logger.error("[%s] L2 failed (rc=%d)", project_id, ret.returncode)
+            return False
+
+        self._update_project_geom_status(project_id, "ready")
+        logger.info("[%s] Geom ready", project_id)
+        return True
+
+    # ── Result group pipeline ─────────────────────────────────────────────────
+
+    def _verify_consistency(self, workspace: str, result_group: str,
+                            check_json_path: str) -> tuple:
+        """
+        比对 check.json 与 manifest.db instances 表。
+        返回 (ok: bool, message: str)。
+        """
+        try:
+            import numpy as np
+            import h5py as _h5py
+        except ImportError as e:
+            return False, "Missing dependency: {}".format(e)
+
+        try:
+            with open(check_json_path) as f:
+                check = json.load(f)
+        except Exception as e:
+            return False, "Cannot read check.json: {}".format(e)
+
+        mode     = check.get("mode", "count-only")
+        odb_inst = check.get("instances", {})
+
+        manifest = os.path.join(workspace, "manifest.db")
+        with sqlite3.connect(manifest, timeout=5.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT instance_name, node_count, elem_count, geom_path FROM instances"
+            ).fetchall()
+        inp_inst = {r["instance_name"]: dict(r) for r in rows}
+
+        if set(inp_inst) != set(odb_inst):
+            return False, "实例列表不匹配: INP={} ODB={}".format(
+                sorted(inp_inst), sorted(odb_inst))
+
+        mismatches = []
+        for inst, inp in inp_inst.items():
+            odb = odb_inst[inst]
+            if inp["node_count"] != odb["node_count"]:
+                mismatches.append("{}: 节点数 INP={} ODB={}".format(
+                    inst, inp["node_count"], odb["node_count"]))
+            if inp["elem_count"] != odb["elem_count"]:
+                mismatches.append("{}: 单元数 INP={} ODB={}".format(
+                    inst, inp["elem_count"], odb["elem_count"]))
+        if mismatches:
+            return False, "数量校验失败:\n" + "\n".join(mismatches)
+
+        if mode == "count-only":
+            return True, "OK (count-only)"
+
+        # label-only: read from geometry H5
+        for inst, inp in inp_inst.items():
+            geom_h5 = os.path.join(workspace, inp["geom_path"])
+            odb_info = odb_inst[inst]
+            try:
+                with _h5py.File(geom_h5, "r") as f:
+                    inp_nodes = f["nodes/labels"][:]
+            except Exception as e:
+                return False, "{}: cannot read geometry H5: {}".format(inst, e)
+
+            nl_path = odb_info.get("node_labels_path")
+            if not nl_path:
+                return False, "{}: check.json missing node_labels_path".format(inst)
+            odb_nodes = np.load(os.path.join(workspace, nl_path))
+            if not np.array_equal(inp_nodes, odb_nodes):
+                return False, "{}: node labels 不一致".format(inst)
+
+            inp_etypes = set()
+            with _h5py.File(geom_h5, "r") as f:
+                if "elements" in f:
+                    inp_etypes = set(f["elements"].keys())
+            odb_etypes = set(odb_info.get("element_labels", {}).keys())
+            if inp_etypes != odb_etypes:
+                return False, "{}: 单元类型不匹配 INP={} ODB={}".format(
+                    inst, sorted(inp_etypes), sorted(odb_etypes))
+
+            for etype, odb_npy_rel in odb_info.get("element_labels", {}).items():
+                with _h5py.File(geom_h5, "r") as f:
+                    inp_elems = f["elements/{}/labels".format(etype)][:]
+                odb_elems = np.load(os.path.join(workspace, odb_npy_rel))
+                if not np.array_equal(inp_elems, odb_elems):
+                    return False, "{}/{}: element labels 不一致".format(inst, etype)
+
+        return True, "OK (label-only)"
+
+    def _run_result_group(self, project_id: str, result_group: str,
+                          source_path: str, parse_options_json: str,
+                          workspace: str) -> bool:
+        label = "{}/{}".format(project_id, result_group)
+        parse_opts = {}
+        if parse_options_json:
+            try:
+                parse_opts = json.loads(parse_options_json)
+            except Exception:
+                pass
+
+        check_mode = parse_opts.get("consistency_check", "count-only")
+        display_name = parse_opts.get("display_name", result_group)
+        source_file = os.path.basename(source_path)
+
+        # ── Step 1: preflight consistency check ──────────────────────────────
+        logger.info("[%s] preflight (%s)", label, check_mode)
+        rc, tail = self._run_streaming(
+            [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
+             "--odb", source_path,
+             "--out", workspace,
+             "--result-group", result_group,
+             "--mode", "consistency-check",
+             "--check-mode", check_mode],
+            label, "consistency_check",
+        )
+        if rc != 0:
+            msg = "consistency-check subprocess failed: " + tail
+            self._update_result_group_status(project_id, result_group, "error", msg)
+            return False
+
+        rg_safe = result_group.replace("/", "__").replace("\\", "__").replace(" ", "_")
+        check_json = os.path.join(workspace, "l1_raw", "consistency",
+                                  rg_safe, "check.json")
+        ok, msg = self._verify_consistency(workspace, result_group, check_json)
+        if not ok:
+            self._update_result_group_status(project_id, result_group, "error", msg)
+            logger.warning("[%s] consistency check failed: %s", label, msg)
+            return False
+        logger.info("[%s] consistency check passed: %s", label, msg)
+
+        # ── Step 2: extract results ───────────────────────────────────────────
+        logger.info("[%s] extract", label)
+        rc, tail = self._run_streaming(
+            [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
+             "--odb", source_path,
+             "--out", workspace,
+             "--result-group", result_group,
+             "--mode", "extract"],
+            label, "extract",
+        )
+        if rc != 0:
+            msg = "extract failed: " + tail
+            self._update_result_group_status(project_id, result_group, "error", msg)
+            return False
+
+        # ── Step 3: pack results into HDF5 ────────────────────────────────────
+        logger.info("[%s] l1_pack (result_group)", label)
+        rc, tail = self._run_streaming(
+            [sys.executable, str(_PACK_SCRIPT),
+             "--workspace", workspace,
+             "--result-group", result_group,
+             "--display-name", display_name,
+             "--consistency-check", check_mode,
+             "--source-file", source_file],
+            label, "l1_pack_rg",
+        )
+        if rc != 0:
+            msg = "l1_pack (result_group) failed: " + tail
+            self._update_result_group_status(project_id, result_group, "error", msg)
+            return False
+
+        self._update_result_group_status(project_id, result_group, "ready")
+        logger.info("[%s] ready", label)
+        return True
+
     # ── Main loop ──────────────────────────────────────────────────────────────
 
     def run(self) -> None:
@@ -352,23 +658,62 @@ class EmbeddedRunner:
                 self._refresh_lock()
                 last_hb = now
 
-            odb_id, odb_path, workspace = self._claim_submitted()
-            if odb_id is None:
-                time.sleep(self.poll_interval)
-                continue
+            did_work = False
 
-            logger.info("Runner claimed job %s", odb_id)
-            try:
-                ok = self._run_l1(odb_id, odb_path, workspace)
-                if ok:
-                    self._run_l2(odb_id, workspace)
-            except Exception:
-                logger.exception("Runner: unhandled error processing %s", odb_id)
+            # ── 1. Project geometry tasks (INP) ──────────────────────────────
+            project_id, inp_path, ws = self._claim_pending_project()
+            if project_id is not None:
+                did_work = True
+                logger.info("Runner claimed project geom %s", project_id)
                 try:
-                    self._update_status(odb_id, "error",
-                        error_msg="Unhandled runner exception — check server logs")
+                    self._run_geom_project(project_id, inp_path, ws)
                 except Exception:
-                    pass
+                    logger.exception("Runner: error in project geom %s", project_id)
+                    try:
+                        self._update_project_geom_status(
+                            project_id, "error",
+                            "Unhandled runner exception — check server logs")
+                    except Exception:
+                        pass
+
+            # ── 2. Result group tasks (ODB) ───────────────────────────────────
+            project_id, rg, src, parse_opts, ws = self._claim_pending_result_group()
+            if project_id is not None:
+                did_work = True
+                label = "{}/{}".format(project_id, rg)
+                logger.info("Runner claimed result_group %s", label)
+                try:
+                    # error 重试：先清理旧产物
+                    self._cleanup_result_group(ws, rg)
+                    self._run_result_group(project_id, rg, src, parse_opts, ws)
+                except Exception:
+                    logger.exception("Runner: error in result_group %s", label)
+                    try:
+                        self._update_result_group_status(
+                            project_id, rg, "error",
+                            "Unhandled runner exception — check server logs")
+                    except Exception:
+                        pass
+
+            # ── 3. Legacy ODB jobs ────────────────────────────────────────────
+            odb_id, odb_path, workspace = self._claim_submitted()
+            if odb_id is not None:
+                did_work = True
+                logger.info("Runner claimed job %s", odb_id)
+                try:
+                    ok = self._run_l1(odb_id, odb_path, workspace)
+                    if ok:
+                        self._run_l2(odb_id, workspace)
+                except Exception:
+                    logger.exception("Runner: unhandled error processing %s", odb_id)
+                    try:
+                        self._update_status(odb_id, "error",
+                            error_msg="Unhandled runner exception — check server logs")
+                    except Exception:
+                        pass
+
+            if not did_work:
+                time.sleep(self.poll_interval)
 
 
 # ── Public entry point ────────────────────────────────────────────────────────

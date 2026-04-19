@@ -44,7 +44,7 @@ ELEMENT_NODAL / INTEGRATION_POINT (one group per element type present):
   Section names are truncated to 32 chars (the L3BE limit).
 """
 import json
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, Response
@@ -69,6 +69,7 @@ async def get_raw_result_values(
     frame: int = Query(0, ge=0, description="Frame index (0-based)"),
     position: Position = Query(..., description="NODAL | ELEMENT_NODAL | INTEGRATION_POINT"),
     format: RawValuesFormat = Query("json", description="Response format: json | l3be"),
+    result_group: Optional[str] = Query(None, description="Result group (project mode)"),
 ):
     sections, components, etype_groups = get_raw_values(
         registry=registry,
@@ -78,6 +79,7 @@ async def get_raw_result_values(
         field=field,
         frame_idx=frame,
         position=position,
+        result_group=result_group,
     )
 
     if format == "json":

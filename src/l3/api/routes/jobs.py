@@ -13,7 +13,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from ...core.config import settings
 from ...core.errors import NotFoundError
@@ -38,7 +38,16 @@ def _row_to_summary(row) -> dict:
 
 class SubmitJobRequest(BaseModel):
     odb_path: str
-    display_name: str
+    display_name: Optional[str] = None
+    name: Optional[str] = None  # alias accepted for backwards compat
+
+    @model_validator(mode="after")
+    def _resolve_display_name(self):
+        if not self.display_name:
+            self.display_name = self.name
+        if not self.display_name:
+            raise ValueError("display_name (or name) is required")
+        return self
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────

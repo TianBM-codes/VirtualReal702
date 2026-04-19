@@ -14,9 +14,15 @@ class ManifestRepo:
         # timeout=5.0 is essential for SQLite concurrency under load.
         conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        
-        # Crucial for concurrent Gunicorn workers writing to SQLite
         conn.execute("PRAGMA journal_mode=WAL;")
+        # Migration: add source column if this db was created before the feature
+        try:
+            conn.execute(
+                "ALTER TABLE result_files ADD COLUMN source TEXT NOT NULL DEFAULT 'odb'"
+            )
+            conn.commit()
+        except Exception:
+            pass
         return conn
 
     def get_instance_info(self, instance_name: str):
@@ -28,50 +34,78 @@ class ManifestRepo:
         except Exception:
             return None
 
-    def get_result_block(self, step: str, field: str, instance: str, position: str, elem_type: str = None):
-        query = """
-            SELECT * FROM result_blocks 
-            WHERE step_name=? AND field_name=? AND instance_name=? AND position=?
+    @staticmethod
+    def _rg_clause(result_group, prefix=""):
+        """生成 result_group 过滤子句和参数。
+        result_group=None → IS NULL（旧数据兼容）；否则 =?。
+        prefix: 表别名前缀，如 'rb.'。
         """
-        params = [step, field, instance, position]
+        col = "{}result_group".format(prefix)
+        if result_group is None:
+            return "{} IS NULL".format(col), []
+        return "{} = ?".format(col), [result_group]
+
+    def get_result_block(self, step: str, field: str, instance: str,
+                         position: str, elem_type: str = None,
+                         result_group: str = None):
+        rg_clause, rg_params = self._rg_clause(result_group)
+        query = (
+            "SELECT * FROM result_blocks"
+            " WHERE step_name=? AND field_name=? AND instance_name=?"
+            " AND position=? AND {}".format(rg_clause)
+        )
+        params = [step, field, instance, position] + rg_params
         if elem_type:
             query += " AND elem_type=?"
             params.append(elem_type)
         else:
             query += " AND elem_type IS NULL"
-            
         with self._get_conn() as conn:
             return conn.execute(query, params).fetchone()
-            
-    def has_nodal_block(self, step: str, field: str, instance: str) -> bool:
+
+    def has_nodal_block(self, step: str, field: str, instance: str,
+                        result_group: str = None) -> bool:
         """Return True if result_blocks has a NODAL entry for (step, field, instance)."""
+        rg_clause, rg_params = self._rg_clause(result_group)
         with self._get_conn() as conn:
             row = conn.execute(
-                """
-                SELECT 1 FROM result_blocks
-                WHERE step_name=? AND field_name=? AND instance_name=? AND position='NODAL'
-                LIMIT 1
-                """,
-                (step, field, instance),
+                "SELECT 1 FROM result_blocks"
+                " WHERE step_name=? AND field_name=? AND instance_name=?"
+                " AND position='NODAL' AND {} LIMIT 1".format(rg_clause),
+                [step, field, instance] + rg_params,
             ).fetchone()
         return row is not None
 
-    def get_step_info(self, step_name: str):
-        """Return the steps row for step_name, or None."""
+    def get_step_info(self, step_name: str, result_group: str = None):
+        """Return the steps row for (result_group, step_name), or None."""
+        rg_clause, rg_params = self._rg_clause(result_group)
         try:
             with self._get_conn() as conn:
                 return conn.execute(
-                    "SELECT * FROM steps WHERE step_name=?", (step_name,)
+                    "SELECT * FROM steps WHERE step_name=? AND {}".format(rg_clause),
+                    [step_name] + rg_params,
                 ).fetchone()
         except Exception:
             return None
 
-    def get_fields_by_instance(self, step: str, instance: str):
+    def get_frames(self, step_name: str, result_group: str = None) -> list:
+        """Return all frame rows for (result_group, step_name), ordered by frame_idx."""
+        rg_clause, rg_params = self._rg_clause(result_group)
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM frames WHERE step_name=? AND {}"
+                " ORDER BY frame_idx".format(rg_clause),
+                [step_name] + rg_params,
+            ).fetchall()
+
+    def get_fields_by_instance(self, step: str, instance: str,
+                               result_group: str = None):
         """
-        Return fields available for a specific (step, instance) combination.
-        Joins result_blocks (instance-level positions) with result_files (components).
-        Returns rows with columns: field_name, positions (comma-separated), components (JSON).
+        Return fields available for a specific (result_group, step, instance).
+        Joins result_blocks with result_files (both scoped by result_group).
         """
+        rg_rb, rg_rb_p = self._rg_clause(result_group, prefix="rb.")
+        rg_rf, rg_rf_p = self._rg_clause(result_group, prefix="rf.")
         with self._get_conn() as conn:
             return conn.execute(
                 """
@@ -80,40 +114,86 @@ class ManifestRepo:
                        rf.components
                 FROM result_blocks rb
                 JOIN result_files rf
-                  ON rb.step_name = rf.step_name AND rb.field_name = rf.field_name
+                  ON rb.result_group IS rf.result_group
+                  AND rb.step_name = rf.step_name
+                  AND rb.field_name = rf.field_name
                 WHERE rb.step_name = ? AND rb.instance_name = ?
+                  AND {} AND {}
                 GROUP BY rb.field_name
                 ORDER BY rb.field_name
-                """,
-                (step, instance),
+                """.format(rg_rb, rg_rf),
+                [step, instance] + rg_rb_p + rg_rf_p,
             ).fetchall()
 
-    def get_result_file(self, step: str, field: str):
-        """Return the result_files row for (step, field), or None."""
+    def get_result_file(self, step: str, field: str, result_group: str = None):
+        """Return the result_files row for (result_group, step, field), or None."""
+        rg_clause, rg_params = self._rg_clause(result_group)
         with self._get_conn() as conn:
             return conn.execute(
-                "SELECT * FROM result_files WHERE step_name=? AND field_name=?",
-                (step, field),
+                "SELECT * FROM result_files"
+                " WHERE step_name=? AND field_name=? AND {}".format(rg_clause),
+                [step, field] + rg_params,
             ).fetchone()
 
-    def get_overview(self):
+    def list_result_groups(self) -> list:
+        """Return all result_group names present in result_group_meta."""
+        try:
+            with self._get_conn() as conn:
+                return [r["result_group"] for r in conn.execute(
+                    "SELECT result_group FROM result_group_meta ORDER BY created_at"
+                ).fetchall()]
+        except Exception:
+            return []
+
+    def get_result_group_meta(self, result_group: str):
+        """Return result_group_meta row, or None."""
+        try:
+            with self._get_conn() as conn:
+                return conn.execute(
+                    "SELECT * FROM result_group_meta WHERE result_group=?",
+                    (result_group,),
+                ).fetchone()
+        except Exception:
+            return None
+
+    def update_result_group_meta_display_name(self, result_group: str,
+                                               display_name: str) -> None:
+        """Update display_name in result_group_meta. No-op if row doesn't exist."""
+        try:
+            with self._get_conn() as conn:
+                conn.execute(
+                    "UPDATE result_group_meta SET display_name=? WHERE result_group=?",
+                    (display_name, result_group),
+                )
+        except Exception:
+            pass
+
+    def get_overview(self, result_group: str = None):
         """
-        Returns instances, steps, and available fields for meta/overview.
-        Gracefully returns empty lists if the manifest schema is not yet
-        initialised (e.g. workspace exists but L1 packing never completed).
+        Returns instances, steps (scoped by result_group), and fields.
+        result_group=None → returns geometry info + legacy flat results.
+        Pass a result_group to get steps/fields scoped to that group.
         """
-        def _safe_query(conn, sql):
+        def _safe(conn, sql, params=()):
             try:
-                return [dict(r) for r in conn.execute(sql).fetchall()]
+                return [dict(r) for r in conn.execute(sql, params).fetchall()]
             except Exception:
                 return []
 
+        rg_clause, rg_params = self._rg_clause(result_group)
+
         with self._get_conn() as conn:
-            instances = _safe_query(conn, "SELECT * FROM instances")
-            steps     = _safe_query(conn, "SELECT * FROM steps")
-            fields    = _safe_query(
+            instances = _safe(conn, "SELECT * FROM instances")
+            steps = _safe(
                 conn,
-                "SELECT DISTINCT field_name, components, positions FROM result_files",
+                "SELECT * FROM steps WHERE {}".format(rg_clause),
+                rg_params,
+            )
+            fields = _safe(
+                conn,
+                "SELECT DISTINCT field_name, components, positions, source FROM result_files"
+                " WHERE {}".format(rg_clause),
+                rg_params,
             )
         return {"instances": instances, "steps": steps, "fields": fields}
 
@@ -188,6 +268,28 @@ class ManifestRepo:
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+
+    def get_user_set_render_rows(self, set_name: str, instance_name: str):
+        """
+        Return render_rows (int32 ndarray) for a user set + instance, or None if not found.
+        render_rows: triangle indices into the render buffer that belong to this set.
+        """
+        conn = self._get_conn()
+        try:
+            self._ensure_user_tables(conn)
+            row = conn.execute(
+                """
+                SELECT usi.render_rows FROM user_set_instances usi
+                JOIN user_sets us ON us.id = usi.us_id
+                WHERE us.name = ? AND usi.instance_name = ?
+                """,
+                (set_name, instance_name),
+            ).fetchone()
+            if row is None or row["render_rows"] is None:
+                return None
+            return np.frombuffer(zlib.decompress(row["render_rows"]), dtype=np.int32).copy()
         finally:
             conn.close()
 
@@ -312,6 +414,53 @@ class ManifestRepo:
         finally:
             conn.close()
 
+    def register_external_result(
+        self,
+        result_group: str,
+        step_name: str,
+        field_name: str,
+        file_path: str,
+        components: list,
+        positions: list,
+        instance_name: str,
+        position: str,
+    ) -> None:
+        """
+        Insert/replace a result_files row and matching result_blocks row for an
+        external (non-ODB) result written by ExternalResultWriter.
+        """
+        import json as _json
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO result_files
+                    (result_group, step_name, field_name, file_path,
+                     components, invariants, positions, has_section,
+                     val_min, val_max, source)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    result_group, step_name, field_name, file_path,
+                    _json.dumps(components), _json.dumps([]),
+                    _json.dumps(positions), 0,
+                    None, None, "external",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO result_blocks
+                    (result_group, step_name, field_name, instance_name,
+                     position, elem_type, h5_path, label_path,
+                     n_entities, n_ip, n_sp)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    result_group, step_name, field_name, instance_name,
+                    position, None, file_path, None,
+                    0, 1, 1,
+                ),
+            )
+
     # ── Simright adapter helpers ───────────────────────────────────────────────
 
     def list_steps(self):
@@ -373,6 +522,47 @@ class ManifestRepo:
                 ).fetchall()]
         except Exception:
             return []
+
+    def get_element_set_labels(self, set_name: str, instance_name: str):
+        """
+        Return sorted int32 label array for a named element set, or None if not found.
+
+        h5_path formats stored by different parsers:
+          INP (exporter.py): "l1/sets/sets.h5"
+              → dataset = "element_sets/{instance}/{set_name}"
+          ODB (l1_pack.py):  "l1/assembly.h5:assembly_sets/SET/INST/elem_labels"
+              → split on ':' to get file and dataset path
+        """
+        import h5py as _h5py
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT h5_path FROM element_sets"
+                    " WHERE set_name=? AND instance_name=?",
+                    (set_name, instance_name),
+                ).fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+
+        h5_path_raw = row["h5_path"]
+        if ":" in h5_path_raw:
+            file_rel, ds_path = h5_path_raw.split(":", 1)
+        else:
+            file_rel = h5_path_raw
+            ds_path = "element_sets/{}/{}".format(instance_name, set_name)
+
+        abs_path = os.path.join(os.path.dirname(self.db_path), file_rel)
+        if not os.path.exists(abs_path):
+            return None
+        try:
+            with _h5py.File(abs_path, "r") as f:
+                if ds_path not in f:
+                    return None
+                return f[ds_path][:].astype(np.int32)
+        except Exception:
+            return None
 
     def list_element_sets(self):
         """Return all element sets."""

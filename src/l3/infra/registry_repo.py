@@ -28,6 +28,30 @@ CREATE TABLE IF NOT EXISTS odb_jobs (
     node_count       INTEGER,
     instance_count   INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS projects (
+    project_id   TEXT PRIMARY KEY,
+    workspace    TEXT NOT NULL,
+    inp_path     TEXT,
+    geom_status  TEXT NOT NULL DEFAULT 'pending',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS result_groups (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT NOT NULL REFERENCES projects(project_id),
+    result_group    TEXT NOT NULL,
+    display_name    TEXT,
+    source_path     TEXT NOT NULL,
+    source_file     TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    parse_options   TEXT,
+    error_message   TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE(project_id, result_group)
+);
 """
 
 _ALLOWED_UPDATE_FIELDS = frozenset({
@@ -233,3 +257,160 @@ class RegistryRepo:
                 "SELECT odb_id, workspace, status FROM odb_jobs "
                 "WHERE status IN ('ready', 'l1_done')"
             ).fetchall()
+
+    # ── projects ─────────────────────────────────────────────────────────────
+
+    def create_project(self, project_id: str, workspace: str,
+                       inp_path: str = None) -> None:
+        now = _now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO projects"
+                " (project_id, workspace, inp_path, geom_status, created_at, updated_at)"
+                " VALUES (?,?,?,'pending',?,?)",
+                (project_id, workspace, inp_path, now, now),
+            )
+
+    def list_projects(self) -> list:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM projects ORDER BY created_at DESC"
+            ).fetchall()
+
+    def get_project(self, project_id: str) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM projects WHERE project_id=?", (project_id,)
+            ).fetchone()
+
+    def update_project_geom_status(self, project_id: str, status: str,
+                                   error_message: Optional[str] = None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET geom_status=?, updated_at=? WHERE project_id=?",
+                (status, _now_iso(), project_id),
+            )
+            if status == "error" and error_message is not None:
+                # 批量把该 project 下所有 pending result_groups 置为 error
+                conn.execute(
+                    "UPDATE result_groups SET status='error', error_message=?, updated_at=?"
+                    " WHERE project_id=? AND status='pending'",
+                    (error_message, _now_iso(), project_id),
+                )
+
+    def claim_pending_project(self) -> Optional[str]:
+        """原子认领一个 geom_status='pending' 的 project → 'running'。返回 project_id 或 None。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE projects SET geom_status='running', updated_at=?"
+                " WHERE project_id=("
+                "  SELECT project_id FROM projects WHERE geom_status='pending'"
+                "  ORDER BY created_at LIMIT 1"
+                ")",
+                (_now_iso(),),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT project_id FROM projects WHERE geom_status='running'"
+                " ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            return row["project_id"] if row else None
+
+    def delete_project(self, project_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM result_groups WHERE project_id=?", (project_id,))
+            conn.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
+
+    # ── result_groups ────────────────────────────────────────────────────────
+
+    def create_result_group(self, project_id: str, result_group: str,
+                            display_name: str, source_path: str,
+                            source_file: str, parse_options: str) -> None:
+        """插入新 result_group，status='pending'。parse_options 为 JSON 字符串。"""
+        now = _now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO result_groups"
+                " (project_id, result_group, display_name, source_path,"
+                "  source_file, status, parse_options, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,'pending',?,?,?)",
+                (project_id, result_group, display_name, source_path,
+                 source_file, parse_options, now, now),
+            )
+
+    def get_result_group(self, project_id: str,
+                         result_group: str) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM result_groups WHERE project_id=? AND result_group=?",
+                (project_id, result_group),
+            ).fetchone()
+
+    def list_result_groups(self, project_id: str) -> list:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM result_groups WHERE project_id=? ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+
+    def update_result_group_status(self, project_id: str, result_group: str,
+                                   status: str,
+                                   error_message: Optional[str] = None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE result_groups SET status=?, error_message=?, updated_at=?"
+                " WHERE project_id=? AND result_group=?",
+                (status, error_message, _now_iso(), project_id, result_group),
+            )
+
+    def update_result_group_display_name(self, project_id: str, result_group: str,
+                                         display_name: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE result_groups SET display_name=?, updated_at=?"
+                " WHERE project_id=? AND result_group=?",
+                (display_name, _now_iso(), project_id, result_group),
+            )
+
+    def reset_result_group_for_retry(self, project_id: str,
+                                     result_group: str) -> None:
+        """将 error 状态的 result_group 重置为 pending（重新提交时调用）。"""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE result_groups SET status='pending', error_message=NULL, updated_at=?"
+                " WHERE project_id=? AND result_group=? AND status='error'",
+                (_now_iso(), project_id, result_group),
+            )
+
+    def claim_pending_result_group(self, project_id: str) -> Optional[sqlite3.Row]:
+        """
+        原子认领 project 下一个 pending result_group → running。
+        仅在 project.geom_status='ready' 时调用。
+        返回完整 row 或 None。
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE result_groups SET status='running', updated_at=?"
+                " WHERE id=("
+                "  SELECT id FROM result_groups"
+                "  WHERE project_id=? AND status='pending'"
+                "  ORDER BY created_at LIMIT 1"
+                ")",
+                (_now_iso(), project_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            return conn.execute(
+                "SELECT * FROM result_groups"
+                " WHERE project_id=? AND status='running'"
+                " ORDER BY updated_at DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+
+    def delete_result_group(self, project_id: str, result_group: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM result_groups WHERE project_id=? AND result_group=?",
+                (project_id, result_group),
+            )

@@ -1,7 +1,7 @@
 from typing import List, Literal, Optional
 from fastapi import APIRouter, Query
 from ...core.state import registry
-from ...schemas.query import BBoxRequest, PickResponse, BBoxResponse, RenderFacesRequest, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse
+from ...schemas.query import BBoxRequest, PickResponse, BBoxResponse, RenderFacesRequest, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse, RayPickRequest
 from ...services import query_service
 from ..response import ok
 
@@ -28,6 +28,7 @@ async def pick(
     include_coords: bool = Query(False),
     # deformation scale factor for def_coords = orig + U * deform_scale
     deform_scale: float = Query(1.0, ge=0.0),
+    result_group: Optional[str] = Query(None, description="Result group (project mode)"),
 ):
     result = query_service.pick(
         registry=registry,
@@ -43,6 +44,48 @@ async def pick(
         node_idx=node_idx,
         include_coords=include_coords,
         deform_scale=deform_scale,
+        result_group=result_group,
+    )
+    return ok(result.model_dump())
+
+
+@router.post("/query/ray-pick")
+async def ray_pick(odb_id: str, body: RayPickRequest):
+    """
+    Ray-cast pick: frontend sends camera state + screen pixel coordinates,
+    backend reconstructs the world-space ray and finds the nearest triangle.
+
+    view_projection_matrix is the combined projection × view matrix.
+    In Three.js:
+
+        const vp = new THREE.Matrix4().multiplyMatrices(
+            camera.projectionMatrix,
+            camera.matrixWorldInverse
+        );
+        body.view_projection_matrix = [...vp.elements];   // 16 floats, column-major
+
+    screen_x / screen_y are pixel coordinates with (0, 0) at the top-left corner,
+    matching the DOM / canvas coordinate system.
+
+    Returns the same PickResponse as GET /query/pick.
+    """
+    result = query_service.ray_pick(
+        registry=registry,
+        odb_id=odb_id,
+        instance=body.instance,
+        screen_x=body.screen_x,
+        screen_y=body.screen_y,
+        viewport_width=body.viewport_width,
+        viewport_height=body.viewport_height,
+        vp_matrix_col_major=body.view_projection_matrix,
+        pick_mode=body.pick_mode,
+        node_idx=body.node_idx,
+        step=body.step,
+        field=body.field,
+        frame_idx=body.frame_idx,
+        component_idx=body.component_idx,
+        include_coords=body.include_coords,
+        deform_scale=body.deform_scale,
     )
     return ok(result.model_dump())
 

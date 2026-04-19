@@ -26,7 +26,7 @@ def _geom_h5_path(workspace: str, instance: str) -> str:
     return os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
 
 
-def _elem_labels_to_face_mask(
+def get_face_mask_for_elem_labels(
     idx,
     instance: str,
     user_labels_set: set,
@@ -200,7 +200,7 @@ def get_user_field_colors(
     user_labels_set = set(element_labels.tolist())
 
     # Build per-face mask [Rf]
-    face_mask = _elem_labels_to_face_mask(idx, instance, user_labels_set)
+    face_mask = get_face_mask_for_elem_labels(idx, instance, user_labels_set)
     if face_mask.size == 0:
         Rf = src_node_rows.shape[0]
         face_mask = np.zeros(Rf, dtype=bool)

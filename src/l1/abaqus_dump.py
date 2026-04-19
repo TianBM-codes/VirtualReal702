@@ -110,10 +110,24 @@ def parse_args():
     p = argparse.ArgumentParser(description='ODB → npy dump (Phase 1)')
     p.add_argument('--odb', required=True)
     p.add_argument('--out', required=True, help='workspace directory')
-    p.add_argument('--mode', choices=['full', 'preflight', 'results-worker'],
+    p.add_argument('--mode',
+                   choices=['full', 'preflight', 'results-worker',
+                            'consistency-check', 'extract'],
                    default='full',
-                   help='full=serial (default); preflight=geometry+meta only; '
-                        'results-worker=dump subset of fields (parallel worker)')
+                   help=(
+                       'full=serial dump (default); '
+                       'preflight=geometry+meta only; '
+                       'results-worker=parallel worker; '
+                       'consistency-check=preflight validation against INP geometry; '
+                       'extract=results-only dump for a named result_group'
+                   ))
+    # ── new project-grouping params ──────────────────────────────────────────
+    p.add_argument('--result-group', default=None,
+                   help='Result group name; required for consistency-check and extract modes')
+    p.add_argument('--check-mode', choices=['count-only', 'label-only'],
+                   default='count-only',
+                   help='Consistency check depth (consistency-check mode only)')
+    # ── legacy parallel-worker params ────────────────────────────────────────
     p.add_argument('--step',   default=None,
                    help='Step name (results-worker mode only)')
     p.add_argument('--fields', default=None,
@@ -239,6 +253,7 @@ def compute_face_data(etype_code, conn_corner, node_coords):
         to_face       = face_centroid - elem_centroids
         flip          = (normals * to_face).sum(axis=1) < 0
         normals[flip] = -normals[flip]
+        face_rows[flip] = face_rows[flip, ::-1]   # 同步翻转绕序，确保叉积方向朝外
 
         fnc = np.full((M, max_fn), -1, dtype=np.int32)
         fnc[:, :n_fn] = face_rows
@@ -1032,6 +1047,14 @@ def main():
     t_total = time.time()
     mode = args.mode
 
+    if mode == 'consistency-check':
+        _run_consistency_check(args, odb_path, workspace)
+        return
+
+    if mode == 'extract':
+        _run_extract(args, odb_path, workspace)
+        return
+
     if mode == 'results-worker':
         # Parallel worker: only dump a subset of fields for one step.
         # Assembly/geom/sets must already exist (written by preflight run).
@@ -1098,6 +1121,129 @@ def main():
     else:
         print("=== Phase 1 complete in {}. Run l1_pack.py next. ===".format(
             _fmt_t(time.time() - t_total)))
+
+
+# ─── New project-grouping modes ───────────────────────────────────────────────
+
+def _run_consistency_check(args, odb_path, workspace):
+    """
+    --mode consistency-check: preflight 校验，不提取结果。
+    输出: <workspace>/l1_raw/consistency/<result_group>/check.json
+          (label-only 模式还会写 node_labels.npy 和 <etype>_elem_labels.npy)
+    """
+    result_group = args.result_group
+    check_mode   = args.check_mode  # 'count-only' | 'label-only'
+
+    if not result_group:
+        print("ERROR: --result-group required for --mode consistency-check")
+        sys.exit(1)
+
+    out_dir = os.path.join(workspace, 'l1_raw', 'consistency', safe(result_group))
+    mkdirs(out_dir)
+
+    print("=== consistency-check ({}) result_group='{}' ===".format(
+        check_mode, result_group))
+    print("  ODB: {}".format(odb_path))
+
+    t0 = time.time()
+    odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+    print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
+
+    assembly = odb.rootAssembly
+    instances_out = {}
+
+    for inst_name, instance in assembly.instances.items():
+        node_count = len(instance.nodes)
+        # count total elements across all types
+        elem_count = len(instance.elements)
+
+        inst_entry = {
+            'node_count': node_count,
+            'elem_count': elem_count,
+        }
+
+        if check_mode == 'label-only':
+            # node labels (sorted ascending — same order as geometry H5)
+            raw_labels = np.array(
+                [n.label for n in instance.nodes], dtype=np.int32)
+            node_labels = np.sort(raw_labels)
+            nl_path = os.path.join(out_dir,
+                                   '{}_node_labels.npy'.format(safe(inst_name)))
+            npsave(nl_path, node_labels)
+            inst_entry['node_labels_path'] = os.path.relpath(nl_path, workspace)
+
+            # element labels per type (sorted ascending)
+            elem_by_type = {}
+            for elem in instance.elements:
+                t = elem.type
+                if t not in elem_by_type:
+                    elem_by_type[t] = []
+                elem_by_type[t].append(elem.label)
+
+            elem_labels_paths = {}
+            for etype, labels in elem_by_type.items():
+                el = np.array(sorted(labels), dtype=np.int32)
+                el_path = os.path.join(
+                    out_dir,
+                    '{}_{}_elem_labels.npy'.format(safe(inst_name), safe(etype)))
+                npsave(el_path, el)
+                elem_labels_paths[etype] = os.path.relpath(el_path, workspace)
+            inst_entry['element_labels'] = elem_labels_paths
+
+        instances_out[inst_name] = inst_entry
+        print("  {}: nodes={} elems={}".format(inst_name, node_count, elem_count))
+
+    odb.close()
+
+    check = {
+        'mode':    check_mode,
+        'warning': (
+            'Count-only validation does not verify label or row mapping. '
+            'Mismatched labels with matching counts will not be detected.'
+        ),
+        'instances': instances_out,
+    }
+    check_json = os.path.join(out_dir, 'check.json')
+    jdump(check_json, check)
+    print("  check.json written to {}".format(check_json))
+    print("=== consistency-check done in {}. ===".format(
+        _fmt_t(time.time() - t0)))
+
+
+def _run_extract(args, odb_path, workspace):
+    """
+    --mode extract: 只提取结果，跳过几何/assembly/sets。
+    输出: <workspace>/l1_raw/rg_<result_group>/ （供 l1_pack.py --result-group 读取）
+    """
+    result_group = args.result_group
+    if not result_group:
+        print("ERROR: --result-group required for --mode extract")
+        sys.exit(1)
+
+    # 独立的 raw_dir，l1_pack.py --result-group 会来这里读
+    raw_dir = os.path.join(workspace, 'l1_raw', 'rg_{}'.format(safe(result_group)))
+    mkdirs(raw_dir)
+
+    print("=== extract result_group='{}' ===".format(result_group))
+    print("  ODB:    {}".format(odb_path))
+    print("  raw_dir: {}".format(raw_dir))
+
+    t0 = time.time()
+    odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+    print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
+
+    meta = {}
+    try:
+        dump_results(odb, raw_dir, meta)
+    except Exception:
+        traceback.print_exc()
+        odb.close()
+        sys.exit(1)
+
+    odb.close()
+    jdump(os.path.join(raw_dir, 'dump_meta.json'), meta)
+    print("=== extract done in {}. Run l1_pack.py --result-group next. ===".format(
+        _fmt_t(time.time() - t0)))
 
 
 if __name__ == '__main__':

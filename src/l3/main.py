@@ -39,6 +39,25 @@ _POLL_INTERVAL = 10          # seconds between registry.db polls
 _HEARTBEAT_TIMEOUT = 10      # minutes before a running job is declared stuck
 
 
+def _resolve_project_workspace(stored: str, project_id: str) -> str:
+    """
+    Resolve the workspace path for a project row.
+    New-style: stored == bare project_id → data_root/project_id.
+    Old-style: stored == full path (abs or rel) → use directly.
+    Avoids the double-join bug from passing a relative path through resolve_workspace.
+    """
+    import re as _re
+    is_abs = os.path.isabs(stored) or bool(_re.match(r'^[A-Za-z]:[/\\]', stored))
+    has_sep = os.sep in stored or '/' in stored
+    if is_abs:
+        return stored
+    if has_sep:
+        # Relative path already includes data_root prefix — use as-is (relative to CWD)
+        return stored
+    # Bare identifier (just project_id)
+    return os.path.join(settings.data_root, stored)
+
+
 def _bootstrap_registry() -> None:
     """
     Pre-fork: ensure schema exists, recover stuck jobs, then load all
@@ -77,12 +96,25 @@ def _bootstrap_registry() -> None:
         except Exception:
             logger.exception("Failed to load ODB %s", odb_id)
 
+    # Load ready projects (geometry parsed, mesh viewable even without result_groups)
+    for row in repo.list_projects():
+        if row["geom_status"] != "ready":
+            continue
+        project_id = row["project_id"]
+        workspace  = _resolve_project_workspace(row["workspace"], project_id)
+        try:
+            registry.load(project_id, workspace, "ready")
+            logger.info("Loaded project %s", project_id)
+        except Exception:
+            logger.exception("Failed to load project %s", project_id)
+
 
 def _poll_registry_once(repo: RegistryRepo) -> None:
     """
     Check registry.db for changes:
     - New ready/l1_done ODB not yet in memory → load it.
     - Existing ODB upgraded from l1_done to ready → supplement with L2 data.
+    - New ready projects not yet in memory → load them.
     """
     for row in repo.list_ready_or_l1done():
         odb_id = row["odb_id"]
@@ -95,6 +127,15 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         elif status == "ready" and not existing.is_render_ready:
             registry.upgrade(odb_id)
             logger.info("Poll: upgraded ODB %s to render-ready", odb_id)
+
+    for row in repo.list_projects():
+        if row["geom_status"] != "ready":
+            continue
+        project_id = row["project_id"]
+        if registry.get(project_id) is None:
+            workspace = _resolve_project_workspace(row["workspace"], project_id)
+            registry.load(project_id, workspace, "ready")
+            logger.info("Poll: hot-loaded project %s", project_id)
 
 
 def _poll_loop(repo: RegistryRepo) -> None:
@@ -162,7 +203,7 @@ if settings.enable_gzip:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=[
         "X-Val-Min", "X-Val-Max", "X-Component", "X-Frame",
