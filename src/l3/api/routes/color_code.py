@@ -57,7 +57,8 @@ async def get_color_code(
         idx, instance, scheme, parsed_sets or None
     )
 
-    Rf = colors.shape[0] // 3
+    etype_arr = idx.source_elem_etype.get(instance)
+    Rf = len(etype_arr) if etype_arr is not None else 0
     payload = l3be_build([("color_per_vertex", colors)])
 
     return Response(

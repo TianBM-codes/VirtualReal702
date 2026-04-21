@@ -7,8 +7,8 @@ Exposes a single endpoint mirroring the simright 3DLite API:
   Body: {"name": "<handler>", "args": {...}}
 
 Response envelope:
-  {"code": 0, "data": <any>, "message": "success"}
-  {"code": <non-zero>, "data": null, "message": "<error description>"}
+  {"code": 200, "data": <any>, "message": ""}
+  {"code": 4xx/5xx, "data": null, "message": "<error description>"}
 
 Supported name values:
   loadcases    — list load cases (steps)
@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 from ...core.errors import AppError
 from ...core.state import registry
 from ...services import simright_service
+from ..response import err, ok
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +41,6 @@ class SimrightRequest(BaseModel):
     args: Dict[str, Any] = {}
 
 
-def _ok(data: Any) -> Dict:
-    return {"code": 200, "data": data, "message": ""}
-
-
-def _err(code: int, message: str) -> Dict:
-    return {"code": code, "data": None, "message": message}
-
-
 @router.post("/applications/3dlite/api/v1/query")
 async def simright_query(body: SimrightRequest):
     """
@@ -56,10 +49,10 @@ async def simright_query(body: SimrightRequest):
     """
     try:
         data = simright_service.dispatch(body.name, body.args, registry)
-        return _ok(data)
+        return ok(data)
     except AppError as e:
         logger.warning("simright query '%s' error: %s", body.name, e.message)
-        return _err(400, e.message)
+        return err(e.status_code, e.message)
     except Exception as e:
         logger.exception("simright query '%s' unexpected error", body.name)
-        return _err(500, str(e))
+        return err(500, str(e))

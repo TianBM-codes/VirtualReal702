@@ -2,22 +2,27 @@
 POST /api/odb/{odb_id}/results/external-field
 
 Write custom nodal or element results into the ODB workspace HDF5 store.
-The field appears in overview immediately and is readable by frame-colors/
-frame-scalars without any other changes.
+Supports multiple instances in a single request. The field appears in overview
+immediately and is readable by frame-colors/frame-scalars without any changes.
 
 Request body (JSON):
 {
   "step_name":    "opt_step",
   "field_name":   "RHO",
   "components":   ["RHO"],
-  "result_group": "sag-run1",
-  "instance":     "PART-1-1",
+  "result_group": "run1",
   "type":         "nodal" | "element",
-  "frames": [
+  "instances": [
     {
-      "frame_idx":   0,
-      "frame_value": 0.0,
-      "data": [{"label": 1, "values": [0.8]}, ...]
+      "instance": "PART-1-1",
+      "frames": [
+        {"frame_idx": 0, "frame_value": 0.0,
+         "data": [{"label": 1, "values": [0.8]}, ...]}
+      ]
+    },
+    {
+      "instance": "PART-2-1",
+      "frames": [...]
     }
   ]
 }
@@ -28,9 +33,10 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from typing import List, Literal
 
-from ...core.errors import NotFoundError, AppError
+from ...core.errors import NotFoundError, ValidationError
 from ...core.state import registry
 from ...services.external_result_writer import ExternalResultWriter
+from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["external-results"])
 
@@ -46,14 +52,18 @@ class FrameData(BaseModel):
     data: List[FrameEntry]
 
 
+class InstanceData(BaseModel):
+    instance: str
+    frames: List[FrameData]
+
+
 class ExternalFieldRequest(BaseModel):
     step_name: str
     field_name: str
     components: List[str]
     result_group: str
-    instance: str
     type: Literal["nodal", "element"]
-    frames: List[FrameData]
+    instances: List[InstanceData]
 
 
 @router.post("/results/external-field")
@@ -62,46 +72,45 @@ async def write_external_field(odb_id: str, body: ExternalFieldRequest):
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
 
-    frames_raw = [
-        {
-            "frame_idx":   f.frame_idx,
-            "frame_value": f.frame_value,
-            "data":        [{"label": e.label, "values": e.values} for e in f.data],
-        }
-        for f in body.frames
-    ]
-
     writer = ExternalResultWriter(idx.workspace, body.result_group)
+    total_frames = 0
 
     try:
-        if body.type == "nodal":
-            n = writer.write_nodal(
-                instance=body.instance,
-                step=body.step_name,
-                field=body.field_name,
-                components=body.components,
-                frames=frames_raw,
-            )
-        else:
-            n = writer.write_element(
-                instance=body.instance,
-                step=body.step_name,
-                field=body.field_name,
-                components=body.components,
-                frames=frames_raw,
-            )
+        for inst_data in body.instances:
+            frames_raw = [
+                {
+                    "frame_idx":   f.frame_idx,
+                    "frame_value": f.frame_value,
+                    "data":        [{"label": e.label, "values": e.values} for e in f.data],
+                }
+                for f in inst_data.frames
+            ]
+            if body.type == "nodal":
+                n = writer.write_nodal(
+                    instance=inst_data.instance,
+                    step=body.step_name,
+                    field=body.field_name,
+                    components=body.components,
+                    frames=frames_raw,
+                )
+            else:
+                n = writer.write_element(
+                    instance=inst_data.instance,
+                    step=body.step_name,
+                    field=body.field_name,
+                    components=body.components,
+                    frames=frames_raw,
+                )
+            total_frames = max(total_frames, n)
     except FileNotFoundError as exc:
-        raise AppError(404, str(exc), {}) from exc
+        raise NotFoundError(str(exc)) from exc
     except KeyError as exc:
-        raise AppError(400, str(exc), {}) from exc
+        raise ValidationError(str(exc)) from exc
 
-    return {
-        "code": 0,
-        "data": {
-            "field_name":     body.field_name,
-            "step_name":      body.step_name,
-            "instance":       body.instance,
-            "frames_written": n,
-            "source":         "external",
-        },
-    }
+    return ok({
+        "field_name":        body.field_name,
+        "step_name":         body.step_name,
+        "instances_written": len(body.instances),
+        "frames_written":    total_frames,
+        "source":            "external",
+    })

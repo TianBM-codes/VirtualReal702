@@ -5,14 +5,14 @@ POST /api/odb/{odb_id}/geometry/{instance}/render-buffers-subset
 
 Section layout (indexed format):
   - "positions": [Nv, 3] float32  — unique vertex XYZ
-  - "normals":   [Nv, 3] float32  — per-vertex normals (face normal shared within element face)
   - "indices":   [Nt, 3] int32    — triangle index buffer
 
 Nv = unique vertex count; Nt = triangle count.
 Vertices are shared within an element face but not across element boundaries.
+Normals are NOT stored — frontend calls geometry.computeVertexNormals() after load.
 """
 import os
-from typing import List, Optional
+from typing import List, Optional  # Optional kept for Query defaults
 
 import h5py
 import numpy as np
@@ -35,7 +35,6 @@ class ElemSubsetRequest(BaseModel):
 
 def _compact_by_render_rows(
     positions: np.ndarray,
-    normals: Optional[np.ndarray],
     indices: np.ndarray,
     render_rows: np.ndarray,
 ):
@@ -43,14 +42,13 @@ def _compact_by_render_rows(
     Filter an indexed geometry to a subset of triangles and compact the vertex buffer.
 
     render_rows: int32 array of triangle indices to keep.
-    Returns (positions, normals, indices) with only the used vertices.
+    Returns (positions, indices) with only the used vertices.
     """
     sub_indices = indices[render_rows]                                  # [Nt_sub, 3]
     unique_verts, remapped = np.unique(sub_indices.ravel(), return_inverse=True)
     pos_out = np.ascontiguousarray(positions[unique_verts])
-    nor_out = np.ascontiguousarray(normals[unique_verts]) if normals is not None else None
     idx_out = remapped.reshape(-1, 3).astype(np.int32)
-    return pos_out, nor_out, idx_out
+    return pos_out, idx_out
 
 
 @router.get("/geometry/{instance}/render-buffers")
@@ -83,8 +81,6 @@ async def get_render_buffers(
 
     with h5py.File(render_h5, "r") as f:
         positions = np.ascontiguousarray(f["render/positions"][:])   # [Nv, 3]
-        normals   = np.ascontiguousarray(f["render/normals"][:]) \
-                    if "render/normals" in f else None
         indices   = np.ascontiguousarray(f["render/indices"][:]) \
                     if "render/indices" in f else None
 
@@ -101,28 +97,15 @@ async def get_render_buffers(
                 )
                 render_rows = np.where(face_mask)[0].astype(np.int32)
         if render_rows is not None and len(render_rows) > 0:
-            positions, normals, indices = _compact_by_render_rows(
-                positions, normals, indices, render_rows
+            positions, indices = _compact_by_render_rows(
+                positions, indices, render_rows
             )
 
-    Nt = len(indices) if indices is not None else positions.shape[0] // 3
-
-    # Always expand to triangle soup (non-indexed).
-    # The colour-code service, pick service, and all downstream consumers expect
-    # Nv = Nt*3 (one unique vertex slot per triangle corner).  Indexed geometry
-    # (Nv < Nt*3) would cause "offset is out of bounds" in the frontend when
-    # applying per-face colours or per-vertex result values.
-    if indices is not None:
-        flat = indices.reshape(-1)          # [Nt*3]
-        positions = positions[flat]         # [Nt*3, 3]
-        if normals is not None:
-            normals = normals[flat]         # [Nt*3, 3]
-        indices = None
+    Nt = len(indices) if indices is not None else 0
 
     sections = [("positions", positions)]
-    if normals is not None:
-        sections.append(("normals", normals))
-    # indices intentionally omitted — always triangle soup
+    if indices is not None:
+        sections.append(("indices", indices))
 
     payload = l3be_build(sections)
     return Response(
@@ -290,8 +273,6 @@ async def get_render_buffers_subset(
 
     with h5py.File(render_h5, "r") as f:
         positions = np.ascontiguousarray(f["render/positions"][:])
-        normals   = np.ascontiguousarray(f["render/normals"][:]) \
-                    if "render/normals" in f else None
         indices   = np.ascontiguousarray(f["render/indices"][:]) \
                     if "render/indices" in f else None
 
@@ -306,15 +287,12 @@ async def get_render_buffers_subset(
             headers={"X-Face-Count": "0"},
         )
 
-    positions, normals, indices = _compact_by_render_rows(
-        positions, normals, indices, render_rows
+    positions, indices = _compact_by_render_rows(
+        positions, indices, render_rows
     )
 
     Nt = len(indices)
-    sections = [("positions", positions)]
-    if normals is not None:
-        sections.append(("normals", normals))
-    sections.append(("indices", indices))
+    sections = [("positions", positions), ("indices", indices)]
 
     payload = l3be_build(sections)
     return Response(

@@ -18,13 +18,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .core.config import settings
 from .core.errors import AppError
-from .core.exception_handlers import app_error_handler, unhandled_error_handler
+from .core.exception_handlers import (
+    app_error_handler,
+    request_validation_error_handler,
+    unhandled_error_handler,
+)
 from .core.state import registry
 from .infra.registry_repo import RegistryRepo
 from .api.router import router
@@ -219,6 +224,7 @@ app.add_middleware(
 )
 
 app.add_exception_handler(AppError, app_error_handler)
+app.add_exception_handler(RequestValidationError, request_validation_error_handler)
 app.add_exception_handler(Exception, unhandled_error_handler)
 
 app.include_router(router)

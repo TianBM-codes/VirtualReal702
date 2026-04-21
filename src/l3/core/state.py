@@ -38,8 +38,20 @@ class ModelIndex:
         # Indexed geometry extras (present when render.h5 uses indexed format).
         # vtx_node_row [Nv]: FEM node row for each vertex in the indexed vertex buffer.
         # vtx_tri_idx  [Nv]: first triangle index for each vertex (for element-level mapping).
-        self.vtx_node_row: Dict[str, np.ndarray] = {}
-        self.vtx_tri_idx:  Dict[str, np.ndarray] = {}
+        self.vtx_node_row:    Dict[str, np.ndarray] = {}
+        self.vtx_tri_idx:     Dict[str, np.ndarray] = {}
+        # render_indices [Nt, 3] int32: vertex indices per triangle
+        self.render_indices:  Dict[str, np.ndarray] = {}
+
+        # source_local_node_idx [Nt, 3] int16: local node index within the source
+        # element's conn array for each triangle corner. Used for ELEMENT_NODAL lookup.
+        self.source_local_node_idx: Dict[str, np.ndarray] = {}
+
+        # Averaging domain data loaded from render.h5 averaging/ group.
+        # Keys per instance: elem_etype, elem_row, elem_section_id, elem_kind,
+        #   default_domain_id, default_feature_angle_deg,
+        #   adj_src, adj_dst, adj_angle_deg  (may be absent if no adjacency)
+        self.averaging_data: Dict[str, dict] = {}
 
         # Octree for spatial coarse-filtering (bbox queries).
         # instance_name -> dict with keys:
@@ -82,6 +94,32 @@ class ModelIndex:
                         self.vtx_node_row[inst_name] = f["render/vtx_node_row"][:]
                     if "render/vtx_tri_idx" in f:
                         self.vtx_tri_idx[inst_name]  = f["render/vtx_tri_idx"][:]
+                    if "render/indices" in f:
+                        self.render_indices[inst_name] = f["render/indices"][:]
+                    if "render/source_local_node_idx" in f:
+                        self.source_local_node_idx[inst_name] = \
+                            f["render/source_local_node_idx"][:]
+                    # Averaging domain data
+                    if "averaging/elem_etype" in f:
+                        ag = f["averaging"]
+                        avd = {
+                            "elem_etype":      ag["elem_etype"][:],
+                            "elem_row":        ag["elem_row"][:],
+                            "elem_section_id": ag["elem_section_id"][:],
+                            "elem_kind":       ag["elem_kind"][:],
+                            "default_domain_id": ag["default_domain_id"][:],
+                            "default_feature_angle_deg": float(
+                                ag.attrs.get("default_feature_angle_deg", 20.0)),
+                        }
+                        if "adj_src" in ag:
+                            avd["adj_src"]       = ag["adj_src"][:]
+                            avd["adj_dst"]       = ag["adj_dst"][:]
+                            avd["adj_angle_deg"] = ag["adj_angle_deg"][:]
+                        else:
+                            avd["adj_src"]       = np.zeros(0, dtype=np.int32)
+                            avd["adj_dst"]       = np.zeros(0, dtype=np.int32)
+                            avd["adj_angle_deg"] = np.zeros(0, dtype=np.float32)
+                        self.averaging_data[inst_name] = avd
                     if "octree/node_bbox" in f:
                         self.octree[inst_name] = {
                             "node_bbox":     f["octree/node_bbox"][:],

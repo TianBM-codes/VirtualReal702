@@ -11,12 +11,12 @@ import json
 import os
 import shutil
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
 
 from ...core.config import settings
-from ...core.errors import NotFoundError
+from ...core.errors import ConflictError, NotFoundError, ValidationError
 from ...infra.registry_repo import RegistryRepo
 from ...infra.manifest_repo import ManifestRepo
 from ..response import ok
@@ -131,13 +131,11 @@ async def create_project(body: CreateProjectRequest):
     调用方（Java 后端）提供 project_id（UUID），避免 L3 自己生成。
     """
     if not os.path.isfile(body.source_path):
-        raise HTTPException(status_code=400,
-                            detail=f"File not found on server: {body.source_path}")
+        raise ValidationError(f"File not found on server: {body.source_path}")
 
     repo = _repo()
     if repo.get_project(body.project_id) is not None:
-        raise HTTPException(status_code=409,
-                            detail=f"Project '{body.project_id}' already exists")
+        raise ConflictError(f"Project '{body.project_id}' already exists")
 
     workspace = _workspace(body.project_id)
     os.makedirs(workspace, exist_ok=True)
@@ -167,12 +165,10 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
 
     proj = repo.get_project(project_id)
     if proj is None:
-        raise HTTPException(status_code=404,
-                            detail=f"Project '{project_id}' not found")
+        raise NotFoundError(f"Project '{project_id}' not found")
 
     if not os.path.isfile(body.source_path):
-        raise HTTPException(status_code=400,
-                            detail=f"File not found on server: {body.source_path}")
+        raise ValidationError(f"File not found on server: {body.source_path}")
 
     display_name = body.display_name or body.result_group
     parse_options_json = json.dumps(body.parse_options) if body.parse_options else None
@@ -181,10 +177,9 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
     existing = repo.get_result_group(project_id, body.result_group)
     if existing is not None:
         if existing["status"] in ("ready", "running"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"result_group '{body.result_group}' already exists "
-                       f"with status='{existing['status']}'",
+            raise ConflictError(
+                f"result_group '{body.result_group}' already exists "
+                f"with status='{existing['status']}'"
             )
         # status == 'error' → reset for retry
         repo.reset_result_group_for_retry(project_id, body.result_group)
@@ -214,8 +209,7 @@ async def get_project(project_id: str):
     repo = _repo()
     proj = repo.get_project(project_id)
     if proj is None:
-        raise HTTPException(status_code=404,
-                            detail=f"Project '{project_id}' not found")
+        raise NotFoundError(f"Project '{project_id}' not found")
     return ok(_build_project_response(proj, repo))
 
 
@@ -233,14 +227,13 @@ async def rename_result_group(project_id: str, result_group: str,
 
     proj = repo.get_project(project_id)
     if proj is None:
-        raise HTTPException(status_code=404,
-                            detail=f"Project '{project_id}' not found")
+        raise NotFoundError(f"Project '{project_id}' not found")
 
     rg = repo.get_result_group(project_id, result_group)
     if rg is None:
-        raise HTTPException(status_code=404,
-                            detail=f"result_group '{result_group}' not found "
-                                   f"in project '{project_id}'")
+        raise NotFoundError(
+            f"result_group '{result_group}' not found in project '{project_id}'"
+        )
 
     # Update registry
     repo.update_result_group_display_name(project_id, result_group, body.display_name)
@@ -272,8 +265,7 @@ async def delete_project(project_id: str):
 
     proj = repo.get_project(project_id)
     if proj is None:
-        raise HTTPException(status_code=404,
-                            detail=f"Project '{project_id}' not found")
+        raise NotFoundError(f"Project '{project_id}' not found")
 
     workspace = _resolve_workspace(proj["workspace"], project_id)
 

@@ -171,7 +171,6 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                         ('face_elem_idx.npy', 'face_elem_idx'),
                         ('face_seq.npy',      'face_seq'),
                         ('face_node_conn.npy','face_node_conn'),
-                        ('face_normals.npy',  'face_normals'),
                     ]:
                         p = os.path.join(td, fname)
                         if os.path.exists(p):
@@ -486,16 +485,22 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
 
                 positions_found.add(position)
 
+                sp_num = binfo.get('sp_num')  # int or None
+
                 # HDF5 group path (no /data suffix — matches manifest.db convention)
                 grp_path = '/{}/{}'.format(position, inst_name)
                 if elem_type:
                     grp_path += '/{}'.format(elem_type)
+                if sp_num is not None:
+                    grp_path += '/sp{}'.format(sp_num)
                 grp = f.require_group(grp_path)
 
                 # Block directory
                 bd_parts = [field_dir, safe(inst_name), position]
                 if elem_type:
                     bd_parts.append(safe(elem_type))
+                if sp_num is not None:
+                    bd_parts.append('sp{}'.format(sp_num))
                 bd = os.path.join(*bd_parts)
 
                 # Labels + aux arrays

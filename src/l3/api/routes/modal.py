@@ -13,11 +13,12 @@ GET  /api/modal/{model_id}/colormap                  选定分量的云图数据
 """
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+from ...core.errors import NotFoundError, ValidationError
 from ...services import modal_service
 from ..response import ok
 
@@ -28,10 +29,7 @@ router = APIRouter(prefix="/api/modal", tags=["modal"])
 
 def _check(model_id: str):
     if not modal_service.is_registered(model_id):
-        raise HTTPException(
-            status_code=404,
-            detail=f"model_id '{model_id}' 未注册。请先调用 POST /api/modal/load。",
-        )
+        raise NotFoundError(f"model_id '{model_id}' 未注册。请先调用 POST /api/modal/load。")
 
 
 # ── 接口 1：注册 JSON 文件 ─────────────────────────────────────────────────
@@ -48,9 +46,9 @@ async def load_model(req: LoadRequest):
     try:
         model_id = modal_service.register(req.path)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise NotFoundError(str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"注册失败: {e}")
+        raise ValidationError(f"注册失败: {e}") from e
 
     return ok({"model_id": model_id})
 
@@ -64,11 +62,7 @@ async def get_geometry(model_id: str):
     前端用这两个建 Three.js indexed BufferGeometry。
     """
     _check(model_id)
-    try:
-        return ok(modal_service.get_geometry(model_id))
-    except Exception as e:
-        logger.exception("get_geometry failed for %s", model_id)
-        raise HTTPException(status_code=500, detail=str(e))
+    return ok(modal_service.get_geometry(model_id))
 
 
 # ── 接口 3：模态阶次列表 ───────────────────────────────────────────────────
@@ -79,10 +73,7 @@ async def get_modes(model_id: str):
     返回模态阶次下拉列表：[{label: "EMA 1 - 12.3 Hz", value: 1}, ...]
     """
     _check(model_id)
-    try:
-        return ok(modal_service.get_modes(model_id))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ok(modal_service.get_modes(model_id))
 
 
 # ── 接口 4：分量列表（固定，不依赖数据）──────────────────────────────────
@@ -116,9 +107,7 @@ async def get_deformed(
     try:
         return ok(modal_service.get_deformed(model_id, order, max_scalar_size, coefficient))
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise NotFoundError(str(e)) from e
 
 
 # ── 接口 6：动画数据 ───────────────────────────────────────────────────────
@@ -133,9 +122,7 @@ async def get_animation(model_id: str, order: int):
     try:
         return ok(modal_service.get_animation(model_id, order))
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise NotFoundError(str(e)) from e
 
 
 # ── 接口 7：云图数据 ───────────────────────────────────────────────────────
@@ -158,6 +145,4 @@ async def get_colormap(
     try:
         return ok(modal_service.get_colormap(model_id, order, component, max_scalar_size, coefficient))
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise NotFoundError(str(e)) from e

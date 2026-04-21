@@ -461,6 +461,23 @@ class ManifestRepo:
                 ),
             )
 
+    def delete_external_result(
+        self,
+        result_group: str,
+        step_name: str,
+        field_name: str,
+    ) -> None:
+        """Remove all manifest rows for one external field (overwrite preparation)."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM result_blocks WHERE result_group=? AND step_name=? AND field_name=?",
+                (result_group, step_name, field_name),
+            )
+            conn.execute(
+                "DELETE FROM result_files WHERE result_group=? AND step_name=? AND field_name=? AND source='external'",
+                (result_group, step_name, field_name),
+            )
+
     # ── Simright adapter helpers ───────────────────────────────────────────────
 
     def list_steps(self):

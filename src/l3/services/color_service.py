@@ -159,8 +159,13 @@ def get_color_code(
 
     pal_arr     = np.array([(e["r"], e["g"], e["b"]) for e in legend], dtype=np.float32)
     face_codes  = np.array([val_to_id[v] for v in labels], dtype=np.int32)
-    face_colors = pal_arr[face_codes]
-    colors      = np.repeat(face_colors, 3, axis=0)
+    face_colors = pal_arr[face_codes]   # [Rf, 3]
+
+    vtx_ti = idx.vtx_tri_idx.get(instance)
+    if vtx_ti is not None:
+        colors = face_colors[vtx_ti]            # [Nv, 3] indexed geometry
+    else:
+        colors = np.repeat(face_colors, 3, axis=0)  # [Rf*3, 3] Triangle Soup
     return colors, legend
 
 

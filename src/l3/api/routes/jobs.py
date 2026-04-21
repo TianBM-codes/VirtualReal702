@@ -12,11 +12,11 @@ import shutil
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, model_validator
 
 from ...core.config import settings
-from ...core.errors import NotFoundError
+from ...core.errors import ConflictError, NotFoundError, ValidationError
 from ...core.state import registry
 from ...infra.registry_repo import RegistryRepo
 from ..response import ok
@@ -57,16 +57,14 @@ async def submit_job(body: SubmitJobRequest):
     """Submit a new ODB file for L1+L2 processing."""
     # Validate path exists on the server
     if not os.path.isfile(body.odb_path):
-        raise HTTPException(status_code=400,
-                            detail=f"File not found on server: {body.odb_path}")
+        raise ValidationError(f"File not found on server: {body.odb_path}")
 
     # Optional path-traversal guard
     if settings.raw_odb_root:
         raw_root = os.path.realpath(settings.raw_odb_root)
         req_path = os.path.realpath(body.odb_path)
         if not req_path.startswith(raw_root + os.sep):
-            raise HTTPException(status_code=400,
-                                detail="odb_path is outside the allowed root directory")
+            raise ValidationError("odb_path is outside the allowed root directory")
 
     odb_id    = str(uuid.uuid4())
     workspace = os.path.join(settings.data_root, odb_id)
@@ -116,7 +114,7 @@ async def get_job(odb_id: str):
     """Return full detail for a single job."""
     row = _repo().get_job(odb_id)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"Job '{odb_id}' not found")
+        raise NotFoundError(f"Job '{odb_id}' not found")
     return ok(_row_to_summary(row))
 
 
@@ -134,10 +132,9 @@ async def delete_job(
     repo = _repo()
     row  = repo.get_job(odb_id)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"Job '{odb_id}' not found")
+        raise NotFoundError(f"Job '{odb_id}' not found")
     if row["status"] in ("l1_running", "l2_running"):
-        raise HTTPException(status_code=409,
-                            detail="Cannot delete a job that is currently running")
+        raise ConflictError("Cannot delete a job that is currently running")
 
     workspace = repo.resolve_workspace(row["workspace"], settings.data_root)
 
@@ -160,11 +157,11 @@ async def retry_job(odb_id: str):
     repo = _repo()
     row  = repo.get_job(odb_id)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"Job '{odb_id}' not found")
+        raise NotFoundError(f"Job '{odb_id}' not found")
     if row["status"] != "error":
-        raise HTTPException(status_code=409,
-                            detail=f"Cannot retry job with status '{row['status']}' "
-                                   f"(only 'error' jobs can be retried)")
+        raise ConflictError(
+            f"Cannot retry job with status '{row['status']}' (only 'error' jobs can be retried)"
+        )
 
     repo.update_status(odb_id, "submitted", error_msg=None)
     return ok({"id": odb_id, "odb_id": odb_id, "status": "submitted"})

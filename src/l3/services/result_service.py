@@ -5,8 +5,10 @@ Frame-color / frame-scalar computation:
 Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT
 """
 import logging
+import math
 import os
-from typing import Literal, Optional, Tuple
+from collections import defaultdict
+from typing import Dict, Literal, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -85,15 +87,29 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
 
     for etype_bytes in np.unique(src_etype):
         etype_str = etype_bytes.decode("ascii").rstrip("\x00")
-        ds_path = f"/{position}/{instance}/{etype_str}/data"
-        if ds_path not in f:
+        etype_grp_path = f"/{position}/{instance}/{etype_str}"
+        if etype_grp_path not in f:
             continue
 
-        ds = f[ds_path]
-        if num_frames is None:
-            num_frames = ds.shape[0]
+        etype_grp = f[etype_grp_path]
 
-        frame_data = ds[frame_idx]   # [N_elem, ...extra..., ncomp]
+        # Solid elements: data is directly at etype_grp/data
+        # Shell elements: data is in sp{n} subgroups; average across section points
+        if "data" in etype_grp:
+            sp_datasets = [etype_grp["data"]]
+        else:
+            sp_keys = sorted(k for k in etype_grp.keys() if k.startswith("sp"))
+            sp_datasets = [etype_grp[k]["data"] for k in sp_keys
+                           if "data" in etype_grp[k]]
+        if not sp_datasets:
+            continue
+
+        if num_frames is None:
+            num_frames = sp_datasets[0].shape[0]
+
+        # Read and average across section points
+        sp_frames = [ds[frame_idx] for ds in sp_datasets]
+        frame_data = np.mean(np.stack(sp_frames, axis=0), axis=0) if len(sp_frames) > 1 else sp_frames[0]
 
         # Average over middle dimensions (local_nodes or ips) until [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:
@@ -171,15 +187,28 @@ def _scalar_from_element_position(f, position: str, instance: str,
     unique_etypes = np.unique(src_etype)
     for etype_bytes in unique_etypes:
         etype_str = etype_bytes.decode("ascii").rstrip("\x00")
-        ds_path = f"/{position}/{instance}/{etype_str}/data"
-        if ds_path not in f:
+        etype_grp_path = f"/{position}/{instance}/{etype_str}"
+        if etype_grp_path not in f:
             continue
 
-        ds = f[ds_path]
-        if num_frames is None:
-            num_frames = ds.shape[0]
+        etype_grp = f[etype_grp_path]
 
-        frame_data = ds[frame_idx]   # [N_elem, ...extra..., ncomp]
+        # Solid elements: data directly; shell elements: sp{n} subgroups → average
+        if "data" in etype_grp:
+            sp_datasets = [etype_grp["data"]]
+        else:
+            sp_keys = sorted(k for k in etype_grp.keys() if k.startswith("sp"))
+            sp_datasets = [etype_grp[k]["data"] for k in sp_keys
+                           if "data" in etype_grp[k]]
+        if not sp_datasets:
+            continue
+
+        if num_frames is None:
+            num_frames = sp_datasets[0].shape[0]
+
+        sp_frames = [ds[frame_idx] for ds in sp_datasets]
+        frame_data = (np.mean(np.stack(sp_frames, axis=0), axis=0)
+                      if len(sp_frames) > 1 else sp_frames[0])
 
         # Average over all middle dimensions until shape is [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:
@@ -376,22 +405,25 @@ def frame_scalars(
     render_mode: str = "smooth",
     result_group: str = None,
     set_name: str = None,
+    feature_angle: Optional[float] = 20.0,
+    average_threshold: float = 0.75,
+    use_geometry_split: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, str]:
     """
     Returns (u_per_vertex [Nv] float32, legend_range [2] float32, result_position str).
 
     u_per_vertex: normalized scalar t ∈ [0, 1] for each render vertex.
     legend_range: [val_min, val_max] in original field units.
-    result_position: 'NODAL' | 'ELEMENT_NODAL_FLAT' | 'INTEGRATION_POINT_FLAT'
+    result_position: 'NODAL' | 'ELEMENT_NODAL' | 'ELEMENT_NODAL_FLAT' |
+                     'INTEGRATION_POINT_FLAT'
 
     component_idx=None → magnitude (L2 norm).
     component_idx=0,1,2,... → direct index into the result component axis.
 
-    Position fallback: NODAL → ELEMENT_NODAL → INTEGRATION_POINT.
-    For ELEMENT_NODAL / INTEGRATION_POINT the "flat" strategy is used:
-    intermediate local-node / ip axes are averaged before component extraction,
-    yielding one scalar per element face (not per local node).
-    Full per-local-node averaging requires L2 source_local_node_idx (future work).
+    Position fallback: NODAL → ELEMENT_NODAL (averaged) → INTEGRATION_POINT (flat).
+    feature_angle: degrees for shell/membrane geometric splitting; None = section-only.
+    use_geometry_split: False = ignore feature_angle, use section-only domains.
+    average_threshold: 75% threshold for conditional node averaging.
     """
     if frame_idx < 0:
         raise ValidationError(
@@ -421,6 +453,13 @@ def frame_scalars(
             f"Result file not found for step='{step}' field='{field}'",
             {"step": step, "field": field},
         )
+
+    # Indexed geometry arrays — present only when L2 produced an index buffer.
+    # vtx_nr [Nv]: L1 node row for each unique vertex
+    # vtx_ti [Nv]: representative triangle index per vertex (for flat/element-level scatter)
+    # When None, geometry is Triangle Soup and results are returned as [Nt*3].
+    vtx_nr = idx.vtx_node_row.get(instance)
+    vtx_ti = idx.vtx_tri_idx.get(instance)
 
     scalar_vertex = None
     num_frames = None
@@ -457,20 +496,51 @@ def frame_scalars(
                 np.add.at(elem_sum, inverse, face_vals)
                 elem_cnt = np.bincount(inverse, minlength=n_groups).astype(np.float64)
                 elem_mean = (elem_sum / np.where(elem_cnt > 0, elem_cnt, 1)).astype(np.float32)
-                scalar_vertex = np.repeat(elem_mean[inverse], 3)  # [Nt*3]
+                if vtx_ti is not None:
+                    scalar_vertex = elem_mean[inverse[vtx_ti]]  # [Nv] indexed
+                else:
+                    scalar_vertex = np.repeat(elem_mean[inverse], 3)  # [Nt*3] soup
+            elif vtx_nr is not None:
+                scalar_vertex = scalar_node[vtx_nr]            # [Nv] indexed smooth
             else:
-                scalar_vertex = scalar_node[src_node_rows.ravel()]  # [Nt*3]
+                scalar_vertex = scalar_node[src_node_rows.ravel()]  # [Nt*3] soup smooth
 
-        # ── ELEMENT_NODAL (flat fallback) ─────────────────────────────────
+        # ── ELEMENT_NODAL (per-local-node with domain averaging) ─────────
         if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
-            result = _scalar_elem_pos_by_idx(
-                f, "ELEMENT_NODAL", instance, frame_idx, component_idx,
-                src_etype, src_elem_row,
-            )
-            if result is not None:
-                scalar_face, num_frames = result
-                result_position = "ELEMENT_NODAL_FLAT"
-                scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3]
+            local_node_idx = idx.source_local_node_idx.get(instance)
+            render_idx     = idx.render_indices.get(instance)
+            avd            = idx.averaging_data.get(instance)
+
+            if (local_node_idx is not None and render_idx is not None
+                    and avd is not None and vtx_nr is not None):
+                fa = feature_angle if use_geometry_split else None
+                domain_id = _get_domain_ids(idx, instance, fa)
+                if domain_id is not None:
+                    en_result = _en_per_vertex_averaged(
+                        f, instance, frame_idx, component_idx,
+                        src_etype, src_elem_row,
+                        local_node_idx, vtx_nr, render_idx,
+                        domain_id,
+                        avd["elem_etype"], avd["elem_row"],
+                        average_threshold=average_threshold,
+                    )
+                    if en_result is not None:
+                        scalar_vertex, num_frames = en_result
+                        result_position = "ELEMENT_NODAL"
+
+            # Flat fallback if averaging data not available
+            if scalar_vertex is None:
+                result = _scalar_elem_pos_by_idx(
+                    f, "ELEMENT_NODAL", instance, frame_idx, component_idx,
+                    src_etype, src_elem_row,
+                )
+                if result is not None:
+                    scalar_face, num_frames = result
+                    result_position = "ELEMENT_NODAL_FLAT"
+                    if vtx_ti is not None:
+                        scalar_vertex = scalar_face[vtx_ti]     # [Nv] indexed
+                    else:
+                        scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
         # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
         if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
@@ -481,7 +551,10 @@ def frame_scalars(
             if result is not None:
                 scalar_face, num_frames = result
                 result_position = "INTEGRATION_POINT_FLAT"
-                scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3]
+                if vtx_ti is not None:
+                    scalar_vertex = scalar_face[vtx_ti]         # [Nv] indexed
+                else:
+                    scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
     if scalar_vertex is None:
         raise NotFoundError(
@@ -527,3 +600,352 @@ def frame_scalars(
         ).astype(np.float32)
 
     return u_per_vertex, legend_range, result_position
+
+
+# ─── Averaging domain helpers ─────────────────────────────────────────────────
+
+_ELEM_KIND_SOLID    = 0
+_ELEM_KIND_SHELL    = 1
+_ELEM_KIND_MEMBRANE = 2
+
+
+def _union_find_domains(section_id, elem_kind, adj_src, adj_dst, adj_angle_deg,
+                        feature_angle_deg=20.0):
+    """Union-Find domain partition (mirrors L2 build_domain_ids)."""
+    E      = len(section_id)
+    parent = np.arange(E, dtype=np.int32)
+    rank   = np.zeros(E, dtype=np.int32)
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if rank[ra] < rank[rb]:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        if rank[ra] == rank[rb]:
+            rank[ra] += 1
+
+    cos_thr = math.cos(math.radians(feature_angle_deg))
+
+    for i in range(len(adj_src)):
+        ea, eb = int(adj_src[i]), int(adj_dst[i])
+        if section_id[ea] != section_id[eb]:
+            continue
+        ka, kb = int(elem_kind[ea]), int(elem_kind[eb])
+        if ka == _ELEM_KIND_SOLID and kb == _ELEM_KIND_SOLID:
+            union(ea, eb)
+        elif ka in (_ELEM_KIND_SHELL, _ELEM_KIND_MEMBRANE) and \
+             kb in (_ELEM_KIND_SHELL, _ELEM_KIND_MEMBRANE):
+            if math.cos(math.radians(float(adj_angle_deg[i]))) >= cos_thr:
+                union(ea, eb)
+
+    root_to_did = {}
+    domain_id   = np.empty(E, dtype=np.int32)
+    did_counter = 0
+    for ei in range(E):
+        root = find(ei)
+        key  = (int(section_id[ei]), root)
+        if key not in root_to_did:
+            root_to_did[key] = did_counter
+            did_counter += 1
+        domain_id[ei] = root_to_did[key]
+    return domain_id
+
+
+# Module-level LRU-style cache: key → domain_id array
+# keyed by (odb_id, instance, feature_angle_rounded_or_None)
+_DOMAIN_ID_CACHE: Dict[tuple, np.ndarray] = {}
+_DOMAIN_CACHE_MAX = 16
+
+
+def _get_domain_ids(idx, instance: str,
+                    feature_angle: Optional[float]) -> Optional[np.ndarray]:
+    """
+    Return domain_id [E] int32 for unique surface elements.
+
+    feature_angle=None  → section-only partition (no angle split)
+    feature_angle=20.0  → default (reads precomputed default_domain_id)
+    otherwise           → recompute with union-find using adj_angle_deg
+    """
+    avd = idx.averaging_data.get(instance)
+    if avd is None:
+        return None
+
+    default_angle = avd["default_feature_angle_deg"]
+    fa_key = None if feature_angle is None else round(float(feature_angle), 4)
+    cache_key = (idx.odb_id, instance, fa_key)
+
+    if cache_key in _DOMAIN_ID_CACHE:
+        return _DOMAIN_ID_CACHE[cache_key]
+
+    if feature_angle is None:
+        # Section-only: each section = one domain, no angle splitting
+        sec_id = avd["elem_section_id"]
+        _, inv = np.unique(sec_id, return_inverse=True)
+        result = inv.astype(np.int32)
+
+    elif fa_key == round(default_angle, 4):
+        result = avd["default_domain_id"]
+
+    else:
+        # Recompute union-find with new feature_angle (inline)
+        result = _union_find_domains(
+            avd["elem_section_id"], avd["elem_kind"],
+            avd["adj_src"], avd["adj_dst"], avd["adj_angle_deg"],
+            feature_angle_deg=float(feature_angle),
+        )
+
+    if len(_DOMAIN_ID_CACHE) >= _DOMAIN_CACHE_MAX:
+        _DOMAIN_ID_CACHE.pop(next(iter(_DOMAIN_ID_CACHE)))
+    _DOMAIN_ID_CACHE[cache_key] = result
+    return result
+
+
+def _en_per_vertex_averaged(
+    f_h5, instance: str, frame_idx: int, component_idx: Optional[int],
+    src_etype: np.ndarray, src_elem_row: np.ndarray,
+    src_local_node_idx: np.ndarray,
+    vtx_node_row: np.ndarray, render_indices: np.ndarray,
+    domain_id: np.ndarray,
+    avg_elem_etype: np.ndarray, avg_elem_row: np.ndarray,
+    average_threshold: float = 0.75,
+) -> Optional[Tuple[np.ndarray, int]]:
+    """
+    Read ELEMENT_NODAL data and apply per-domain 75% conditional averaging.
+
+    Returns (scalar_vertex [Nv] float32, num_frames) or None if no EN data found.
+
+    Per domain:
+      1. Collect node_row → [values from all elements sharing that node]
+      2. domain_range = max(all domain values) - min(all domain values)
+      3. For each node: spread > threshold * domain_range → keep original per-elem value
+                        else → replace with mean
+    """
+    Nv = len(vtx_node_row)
+    Nt = len(src_elem_row)
+
+    # Build (etype_bytes, elem_row) → global_elem_idx
+    elem_to_gidx: Dict[tuple, int] = {
+        (avg_elem_etype[i].tobytes(), int(avg_elem_row[i])): i
+        for i in range(len(avg_elem_row))
+    }
+
+    # Step 1: read raw EN scalars per etype → scalar_en_by_etype[etype_str] = [N_elem, n_local]
+    scalar_en_by_etype: Dict[bytes, np.ndarray] = {}
+    num_frames = None
+
+    for etype_bytes in np.unique(src_etype):
+        etype_str = etype_bytes.decode("ascii").rstrip("\x00")
+        grp_path  = f"/ELEMENT_NODAL/{instance}/{etype_str}"
+        if grp_path not in f_h5:
+            continue
+        grp = f_h5[grp_path]
+
+        if "data" in grp:
+            ds = grp["data"]
+        else:
+            sp_keys = sorted(k for k in grp.keys() if k.startswith("sp"))
+            if not sp_keys:
+                continue
+            sp_key = "sp1" if "sp1" in grp else sp_keys[0]
+            ds = grp[sp_key]["data"]
+
+        if num_frames is None:
+            num_frames = int(ds.shape[0])
+
+        fd = ds[frame_idx]              # [N_elem, n_local, ncomp?]
+        while fd.ndim > 3:
+            fd = fd.mean(axis=2)
+        if fd.ndim == 3:
+            sc = _extract_component(
+                fd.reshape(-1, fd.shape[-1]), component_idx
+            ).reshape(fd.shape[0], fd.shape[1])
+        else:
+            sc = fd.astype(np.float32)
+        scalar_en_by_etype[etype_bytes] = sc
+
+    if not scalar_en_by_etype or num_frames is None:
+        return None
+
+    # Step 2: for each triangle corner, look up raw value → build domain samples
+    # domain_node_vals[did][node_row] = list of (tri_corner_flat_idx, raw_value)
+    # tri_corner_flat_idx = tri * 3 + corner; lets us scatter back to vertices
+    domain_node_vals: Dict[int, Dict[int, list]] = defaultdict(lambda: defaultdict(list))
+    # vtx_corner_val[vtx] = raw scalar for the specific (er, li) of that vertex
+    vtx_corner_val = np.full(Nv, np.nan, dtype=np.float32)
+
+    for tri in range(Nt):
+        eb  = src_etype[tri]
+        er  = int(src_elem_row[tri])
+        sc  = scalar_en_by_etype.get(eb)
+        if sc is None:
+            continue
+        gidx = elem_to_gidx.get((eb.tobytes(), er))
+        did  = int(domain_id[gidx]) if (gidx is not None and gidx < len(domain_id)) else -1
+
+        for corner in range(3):
+            vtx = int(render_indices[tri, corner])
+            li  = int(src_local_node_idx[tri, corner])
+            if er >= sc.shape[0] or li >= sc.shape[1]:
+                continue
+            val = float(sc[er, li])
+            vtx_corner_val[vtx] = val          # same val for same vertex regardless of tri
+            if did >= 0:
+                nr = int(vtx_node_row[vtx])
+                domain_node_vals[did][nr].append(val)
+
+    # Step 3: per-domain 75% conditional averaging → node_row → averaged scalar
+    node_averaged: Dict[tuple, float] = {}   # (did, node_row) → value
+
+    for did, node_dict in domain_node_vals.items():
+        all_v = [v for lst in node_dict.values() for v in lst]
+        d_range = max(all_v) - min(all_v) if all_v else 0.0
+        for nr, lst in node_dict.items():
+            spread = max(lst) - min(lst)
+            if d_range < 1e-12 or spread <= average_threshold * d_range:
+                node_averaged[(did, nr)] = float(sum(lst) / len(lst))
+            # else: keep per-element original (handled via vtx_corner_val below)
+
+    # Step 4: assemble scalar_vertex
+    scalar_vertex = vtx_corner_val.copy()   # default: original per-elem values
+
+    for tri in range(Nt):
+        eb   = src_etype[tri]
+        er   = int(src_elem_row[tri])
+        gidx = elem_to_gidx.get((eb.tobytes(), er))
+        did  = int(domain_id[gidx]) if (gidx is not None and gidx < len(domain_id)) else -1
+        if did < 0:
+            continue
+        for corner in range(3):
+            vtx = int(render_indices[tri, corner])
+            nr  = int(vtx_node_row[vtx])
+            avg = node_averaged.get((did, nr))
+            if avg is not None:
+                scalar_vertex[vtx] = avg
+
+
+# ─── frame_deformed_positions ─────────────────────────────────────────────────
+
+def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """
+    Compute per-vertex normals from deformed positions and triangle index buffer.
+
+    positions : [Nv, 3] float32
+    indices   : [Nt, 3] int32
+    Returns     [Nv, 3] float32  (unit normals)
+    """
+    v0 = positions[indices[:, 0]]
+    v1 = positions[indices[:, 1]]
+    v2 = positions[indices[:, 2]]
+    face_normals = np.cross(v1 - v0, v2 - v0)          # [Nt, 3]
+
+    normals = np.zeros_like(positions, dtype=np.float64)
+    np.add.at(normals, indices[:, 0], face_normals)
+    np.add.at(normals, indices[:, 1], face_normals)
+    np.add.at(normals, indices[:, 2], face_normals)
+
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    lengths  = np.where(lengths < 1e-12, 1.0, lengths)
+    return (normals / lengths).astype(np.float32)
+
+
+def frame_deformed_positions(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    scale: float = 1.0,
+    result_group: str = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Return (deformed_positions [Nv, 3], normals [Nv, 3]) float32.
+
+    Deformed = original_positions + scale * U_per_vertex
+    Normals are recomputed from the deformed geometry (server-side, avoids
+    expensive JS computeVertexNormals on weak-CPU frontends).
+
+    Requires indexed geometry (vtx_node_row present in ModelIndex).
+    """
+    if frame_idx < 0:
+        raise ValidationError(
+            f"frame_idx must be >= 0, got {frame_idx}",
+            {"frame_idx": frame_idx},
+        )
+
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
+
+    vtx_nr = idx.vtx_node_row.get(instance)
+    if vtx_nr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no vtx_node_row; indexed geometry required for deformed shape",
+            {"instance": instance},
+        )
+
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        raise NotFoundError(
+            f"Render H5 not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
+        indices   = np.ascontiguousarray(f["render/indices"][:],   dtype=np.int32) \
+                    if "render/indices" in f else None
+
+    h5_path = _result_h5_path(idx.workspace, step, "U", result_group)
+    if not os.path.exists(h5_path):
+        raise NotFoundError(
+            f"U field not found for step='{step}'",
+            {"step": step, "field": "U"},
+        )
+
+    with h5py.File(h5_path, "r") as f:
+        ds_path = f"/NODAL/{instance}/data"
+        if ds_path not in f:
+            raise NotFoundError(
+                f"No NODAL U data for instance '{instance}'",
+                {"instance": instance},
+            )
+        ds = f[ds_path]
+        num_frames = ds.shape[0]
+        if frame_idx >= num_frames:
+            raise ValidationError(
+                f"frame_idx {frame_idx} out of range [0, {num_frames})",
+                {"frame_idx": frame_idx},
+            )
+        disp_node = ds[frame_idx].astype(np.float32)   # [N_nodes, 3]
+
+    if disp_node.ndim == 1:
+        raise ValidationError(
+            "U field is scalar; expected 3-component vector",
+            {"instance": instance},
+        )
+
+    # Map node displacement to render vertices, pad if sparse
+    n_nodes = disp_node.shape[0]
+    max_nr  = int(vtx_nr.max())
+    if max_nr >= n_nodes:
+        padded = np.zeros((max_nr + 1, disp_node.shape[1]), dtype=np.float32)
+        padded[:n_nodes] = disp_node
+        disp_node = padded
+
+    disp_vertex = disp_node[vtx_nr]                             # [Nv, 3]
+    deformed    = (positions + np.float32(scale) * disp_vertex).astype(np.float32)
+
+    normals = _compute_vertex_normals(deformed, indices) if indices is not None \
+              else np.zeros_like(deformed)
+
+    return deformed, normals

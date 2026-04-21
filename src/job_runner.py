@@ -75,6 +75,8 @@ DATA_ROOT        = _cfg(_svc_cfg, "APP_DATA_ROOT", _DEFAULT_MODEL)
 POLL_INTERVAL    = int(_cfg(_svc_cfg, "JOB_RUNNER_POLL_INTERVAL", "10"))    # seconds
 HEARTBEAT_INTERVAL = 60   # seconds between heartbeat updates
 ABAQUS_CMD       = _cfg(_svc_cfg, "APP_ABAQUS_CMD", "abaqus")  # override if not in PATH
+# "full" → pass --invariants full to abaqus_dump.py; "none" → skip (default)
+INVARIANTS_MODE  = _cfg(_svc_cfg, "APP_INVARIANTS", "none")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -236,10 +238,10 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
       Phase 2 — l1_pack.py      (standard Python 3)
     """
     logger.info("[%s] L1 phase 1: abaqus_dump.py", odb_id)
-    rc1, tail1 = _run_streaming(
-        [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace],
-        odb_id, "abaqus_dump",
-    )
+    dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
+    if INVARIANTS_MODE == "full":
+        dump_cmd += ["--invariants", "full"]
+    rc1, tail1 = _run_streaming(dump_cmd, odb_id, "abaqus_dump")
     if rc1 != 0:
         log_hint = f"\n[Check {workspace}/abaqus.log for full Abaqus output]"
         _update_status(odb_id, "error", error_msg="abaqus_dump failed: " + tail1 + log_hint)
@@ -508,13 +510,14 @@ def _run_result_group(project_id: str, result_group: str,
 
     # Step 2: extract results
     logger.info("[%s] extract", label)
-    rc, tail = _run_streaming(
-        [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
-         "--odb", source_path, "--out", workspace,
-         "--result-group", result_group,
-         "--mode", "extract"],
-        label, "extract",
-    )
+    inv_mode = parse_opts.get("invariants", INVARIANTS_MODE)
+    extract_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+                   "--odb", source_path, "--out", workspace,
+                   "--result-group", result_group,
+                   "--mode", "extract"]
+    if inv_mode == "full":
+        extract_cmd += ["--invariants", "full"]
+    rc, tail = _run_streaming(extract_cmd, label, "extract")
     if rc != 0:
         msg = "extract failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)

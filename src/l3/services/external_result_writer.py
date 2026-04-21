@@ -43,6 +43,13 @@ class ExternalResultWriter:
             "l1", "results", self.result_group, f"external__{step}__{field}.h5"
         )
 
+    def clear_field(self, step: str, field: str) -> None:
+        """Delete existing HDF5 file and manifest rows for this (result_group, step, field)."""
+        h5 = self._out_h5(step, field)
+        if os.path.exists(h5):
+            os.remove(h5)
+        self._manifest.delete_external_result(self.result_group, step, field)
+
     # ── public API ────────────────────────────────────────────────────────────
 
     def write_nodal(
@@ -82,11 +89,11 @@ class ExternalResultWriter:
                     data[fi, row, :] = entry["values"][:ncomp]
 
         out = self._out_h5(step, field)
-        with h5py.File(out, "w") as hf:
-            hf.create_dataset(
-                f"/NODAL/{instance}/data",
-                data=data, compression="gzip", compression_opts=4,
-            )
+        with h5py.File(out, "a") as hf:
+            path = f"/NODAL/{instance}/data"
+            if path in hf:
+                del hf[path]
+            hf.create_dataset(path, data=data, compression="gzip", compression_opts=4)
             hf[f"/NODAL/{instance}"].attrs["components"] = json.dumps(components)
 
         self._manifest.register_external_result(
@@ -150,12 +157,12 @@ class ExternalResultWriter:
                 etype_data[etype][fi, row, 0, :] = entry["values"][:ncomp]
 
         out = self._out_h5(step, field)
-        with h5py.File(out, "w") as hf:
+        with h5py.File(out, "a") as hf:
             for etype, arr in etype_data.items():
-                hf.create_dataset(
-                    f"/ELEMENT_NODAL/{instance}/{etype}/data",
-                    data=arr, compression="gzip", compression_opts=4,
-                )
+                path = f"/ELEMENT_NODAL/{instance}/{etype}/data"
+                if path in hf:
+                    del hf[path]
+                hf.create_dataset(path, data=arr, compression="gzip", compression_opts=4)
             hf[f"/ELEMENT_NODAL/{instance}"].attrs["components"] = json.dumps(components)
 
         self._manifest.register_external_result(

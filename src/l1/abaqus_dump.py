@@ -45,6 +45,16 @@ except Exception:
     except Exception:
         pass  # getSubset() extrapolation will be skipped if constant unavailable
 
+# NODAL constant — needed for getSubset(position=NODAL) invariant extraction.
+_NODAL_CONST = None
+try:
+    from abaqusConstants import NODAL as _NODAL_CONST  # noqa: F401
+except Exception:
+    try:
+        _NODAL_CONST = odbAccess.NODAL
+    except Exception:
+        pass
+
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -103,6 +113,23 @@ PROCEDURE_MAP = {
     'BUCKLE':                   'BUCKLE',
 }
 
+# Mapping from Abaqus validInvariants string → FieldValue attribute name.
+# Naming convention for synthetic invariant fields: {field_name}_{INV_KEY}
+# e.g. field "S" + "MISES" → synthetic field "S_MISES"
+# Component fields (if ever split) use full componentLabel: "S_S11", "E_E11"
+INV_ATTR_MAP = {
+    'MISES':                  'mises',
+    'TRESCA':                 'tresca',
+    'PRESS':                  'press',
+    'INV3':                   'inv3',
+    'MAX_PRINCIPAL':          'maxPrincipal',
+    'MID_PRINCIPAL':          'midPrincipal',
+    'MIN_PRINCIPAL':          'minPrincipal',
+    'MAX_IN_PLANE_PRINCIPAL': 'maxInPlanePrincipal',
+    'MIN_IN_PLANE_PRINCIPAL': 'minInPlanePrincipal',
+    'OUT_OF_PLANE_PRINCIPAL': 'outOfPlanePrincipal',
+}
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -127,6 +154,10 @@ def parse_args():
     p.add_argument('--check-mode', choices=['count-only', 'label-only'],
                    default='count-only',
                    help='Consistency check depth (consistency-check mode only)')
+    p.add_argument('--invariants', choices=['none', 'full'], default='none',
+                   help=('none=skip invariants (fast, default); '
+                         'full=extract all validInvariants via .values iteration '
+                         '(slower, creates synthetic NODAL scalar fields)'))
     # ── legacy parallel-worker params ────────────────────────────────────────
     p.add_argument('--step',   default=None,
                    help='Step name (results-worker mode only)')
@@ -204,70 +235,42 @@ def get_instance_transform(instance):
 
 # ─── Face computation ─────────────────────────────────────────────────────────
 
-def _newell_normal_batch(face_coords):
-    """[M, n_fn, 3] → [M, 3] unit normals via Newell's method."""
-    M, n_fn, _ = face_coords.shape
-    normals = np.zeros((M, 3), dtype=np.float64)
-    for i in range(n_fn):
-        c  = face_coords[:, i,              :]
-        nc = face_coords[:, (i + 1) % n_fn, :]
-        normals[:, 0] += (c[:, 1] - nc[:, 1]) * (c[:, 2] + nc[:, 2])
-        normals[:, 1] += (c[:, 2] - nc[:, 2]) * (c[:, 0] + nc[:, 0])
-        normals[:, 2] += (c[:, 0] - nc[:, 0]) * (c[:, 1] + nc[:, 1])
-    norms = np.linalg.norm(normals, axis=1, keepdims=True)
-    return normals / np.where(norms > 1e-12, norms, 1.0)
-
-
-def compute_face_data(etype_code, conn_corner, node_coords):
+def compute_face_data(etype_code, conn_corner):
     """
-    Vectorized face data for all elements of one type.
+    Build face index/seq/conn arrays from FACE_DEFS.
 
-    conn_corner : [M, n_corner] int32  row indices into node_coords
-    node_coords : [N, 3] float64
+    conn_corner : [M, n_corner] int32  row indices into node array
 
-    Returns (face_elem_idx, face_seq, face_node_conn, face_normals)
+    Returns (face_elem_idx, face_seq, face_node_conn)
+    Node ordering follows FACE_DEFS directly — no flip needed because
+    FACE_DEFS already encodes the correct winding, and getNormal returns
+    normals consistent with that ordering.
     """
     face_defs = FACE_DEFS.get(etype_code, [])
     if not face_defs:
         return (np.zeros(0, dtype=np.int32),
                 np.zeros(0, dtype=np.uint8),
-                np.zeros((0, 1), dtype=np.int32),
-                np.zeros((0, 3), dtype=np.float32))
+                np.zeros((0, 1), dtype=np.int32))
 
     M      = conn_corner.shape[0]
     max_fn = max(len(fd) for fd in face_defs)
 
-    elem_coords    = node_coords[conn_corner]     # [M, n_corner, 3]
-    elem_centroids = elem_coords.mean(axis=1)     # [M, 3]
-
-    all_eidx, all_seq, all_fnc, all_nrm = [], [], [], []
+    all_eidx, all_seq, all_fnc = [], [], []
 
     for seq0, fd in enumerate(face_defs):
-        n_fn       = len(fd)
-        fd_arr     = np.array(fd, dtype=np.int32)
-        face_rows  = conn_corner[:, fd_arr]       # [M, n_fn]
-        face_coords = node_coords[face_rows]      # [M, n_fn, 3]
-
-        normals       = _newell_normal_batch(face_coords)
-        face_centroid = face_coords.mean(axis=1)
-        to_face       = face_centroid - elem_centroids
-        flip          = (normals * to_face).sum(axis=1) < 0
-        normals[flip] = -normals[flip]
-        face_rows[flip] = face_rows[flip, ::-1]   # 同步翻转绕序，确保叉积方向朝外
-
-        fnc = np.full((M, max_fn), -1, dtype=np.int32)
-        fnc[:, :n_fn] = face_rows
+        n_fn   = len(fd)
+        fd_arr = np.array(fd, dtype=np.int32)
+        fnc    = np.full((M, max_fn), -1, dtype=np.int32)
+        fnc[:, :n_fn] = conn_corner[:, fd_arr]
 
         all_eidx.append(np.arange(M, dtype=np.int32))
         all_seq.append(np.full(M, seq0 + 1, dtype=np.uint8))
         all_fnc.append(fnc)
-        all_nrm.append(normals.astype(np.float32))
 
     return (
         np.concatenate(all_eidx),
         np.concatenate(all_seq),
-        np.concatenate(all_fnc,  axis=0),
-        np.concatenate(all_nrm,  axis=0),
+        np.concatenate(all_fnc, axis=0),
     )
 
 
@@ -277,64 +280,50 @@ def reshape_ip_block(block):
     """
     Reshape flat IP block into structured arrays.
 
+    Abaqus FieldBulkData API (correct attributes):
+      block.integrationPoints  — int array [total_rows], IP number per row
+      block.sectionPoint       — single SectionPoint object (or None) for the
+                                  entire block; .number gives the SP number
+
+    Each bulkDataBlock covers exactly ONE section point (or no SP for solids).
+    Shell fields produce multiple blocks per (instance, etype): one per SP.
+
     Returns
     -------
-    u_elems  [M]                int32
-    u_ips    [n_ip]             int32
-    u_sps    [n_sp]             int32  (empty array if no section points)
-    data_nd                     float32
-        (M, n_ip, ncomp)        solid
-        (M, n_sp, n_ip, ncomp)  shell with section points
+    u_elems  [M]           int32   unique element labels
+    u_ips    [n_ip]        int32   unique IP numbers in this block
+    sp_num   int | None            section-point number (None = solid / no SP)
+    data_nd  [M, n_ip, ncomp]  float32
     """
     labels_flat = np.array(block.elementLabels, dtype=np.int32)
     data_flat   = np.array(block.data,          dtype=np.float32)
+    ncomp       = data_flat.shape[1]
 
-    # Abaqus 2024 可能改名或不暴露 integrationPointLabels，尝试多个属性名
-    ip_raw = (getattr(block, 'integrationPointLabels', None)
-              or getattr(block, 'ipLabels', None))
+    # integrationPoints: per-row IP number array (correct attribute name)
+    ip_raw = getattr(block, 'integrationPoints', None)
     if ip_raw is not None:
         ip_flat = np.array(ip_raw, dtype=np.int32)
     else:
-        # 从数据推断：总行数 / 单元数 = 每单元积分点数
+        # Fallback: infer from total rows / unique elements
         n_total   = len(labels_flat)
         n_u_elems = len(np.unique(labels_flat))
         n_ip_inf  = n_total // n_u_elems if n_u_elems else 1
         ip_flat   = np.tile(np.arange(1, n_ip_inf + 1, dtype=np.int32), n_u_elems)
-    ncomp       = data_flat.shape[1]
 
-    # Attempt to read section-point labels (Blocker A)
-    sp_flat = None
-    for attr in ('sectionPointNumber', 'sectionPoint', 'sectionPointNumbers'):
-        val = getattr(block, attr, None)
-        if val is not None:
-            try:
-                arr = np.array(val, dtype=np.int32)
-                if arr.shape == labels_flat.shape:
-                    sp_flat = arr
-            except Exception:
-                pass
-            break
+    # sectionPoint: single SectionPoint object for the whole block (or None)
+    sp_obj = getattr(block, 'sectionPoint', None)
+    sp_num = int(sp_obj.number) if sp_obj is not None else None
 
     u_elems = np.unique(labels_flat)
     u_ips   = np.unique(ip_flat)
     M, n_ip = len(u_elems), len(u_ips)
 
-    if sp_flat is not None:
-        u_sps  = np.unique(sp_flat)
-        n_sp   = len(u_sps)
-        e_idx  = np.searchsorted(u_elems, labels_flat)
-        sp_idx = np.searchsorted(u_sps,   sp_flat)
-        ip_idx = np.searchsorted(u_ips,   ip_flat)
-        data_nd = np.zeros((M, n_sp, n_ip, ncomp), dtype=np.float32)
-        data_nd[e_idx, sp_idx, ip_idx] = data_flat
-        return u_elems, u_ips, u_sps, data_nd
-    else:
-        u_sps  = np.array([], dtype=np.int32)
-        e_idx  = np.searchsorted(u_elems, labels_flat)
-        ip_idx = np.searchsorted(u_ips,   ip_flat)
-        data_nd = np.zeros((M, n_ip, ncomp), dtype=np.float32)
-        data_nd[e_idx, ip_idx] = data_flat
-        return u_elems, u_ips, u_sps, data_nd
+    e_idx  = np.searchsorted(u_elems, labels_flat)
+    ip_idx = np.searchsorted(u_ips,   ip_flat)
+    data_nd = np.zeros((M, n_ip, ncomp), dtype=np.float32)
+    data_nd[e_idx, ip_idx] = data_flat
+
+    return u_elems, u_ips, sp_num, data_nd
 
 
 def reshape_element_nodal_block(block):
@@ -514,12 +503,10 @@ def dump_geometry(odb, raw_dir, meta):
             npsave(os.path.join(td, 'conn.npy'),   conn_rows)
 
             if n_faces > 0:
-                fei, fseq, fnc, fnrm = compute_face_data(
-                    etype_code, conn_rows, node_coords)
+                fei, fseq, fnc = compute_face_data(etype_code, conn_rows)
                 npsave(os.path.join(td, 'face_elem_idx.npy'),  fei)
                 npsave(os.path.join(td, 'face_seq.npy'),       fseq)
                 npsave(os.path.join(td, 'face_node_conn.npy'), fnc)
-                npsave(os.path.join(td, 'face_normals.npy'),   fnrm)
 
             if is_ho:
                 has_highorder = True
@@ -728,13 +715,168 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
     print("  fields_manifest.json written.")
 
 
-def dump_results(odb, raw_dir, meta, field_filter=None):
+def _extract_ip_invariants(step, step_name, field_name, first_field,
+                           invariants, results_dir, safe_step, safe_field,
+                           block_struct, odb_instances):
+    """Extract scalar invariant fields from IP-level FieldValue iteration.
+
+    Preserves the etype block structure of the parent field so that L3's
+    /{position}/{instance}/{etype}/data lookup and src_elem_row indexing still work.
+    Averages all IP/SP values per element; writes [N_etype_elem, 1, 1] per block.
+    """
+    active_invs = [(inv, INV_ATTR_MAP[inv]) for inv in invariants if inv in INV_ATTR_MAP]
+    if not active_invs:
+        return
+
+    # Load canonical elem-label arrays from the parent field's IP blocks.
+    # ip_blocks: {(iname, etype): sorted int32 labels array}
+    ip_blocks = {}
+    parent_field_dir = os.path.join(results_dir,
+                                    '{}_{}'.format(safe_step, safe_field))
+    for (iname, pos, etype, sp_num_key) in list(block_struct.keys()):
+        if pos != 'INTEGRATION_POINT':
+            continue
+        bd_parts = [parent_field_dir, safe(iname), pos]
+        if etype:
+            bd_parts.append(safe(etype))
+        if sp_num_key is not None:
+            bd_parts.append('sp{}'.format(sp_num_key))
+        lbl_path = os.path.join(os.path.join(*bd_parts), 'labels.npy')
+        if not os.path.exists(lbl_path):
+            continue
+        ip_blocks[(iname, etype, sp_num_key)] = np.load(lbl_path)  # already sorted
+
+    if not ip_blocks:
+        print("    [inv] no IP blocks found, skipping invariant extraction")
+        return
+
+    insts = list({k[0] for k in ip_blocks})
+
+    # Create synthetic field dirs + write static files per (inv, inst, etype, sp)
+    inv_field_dirs = {}
+    for inv_name, _ in active_invs:
+        syn_field = '{}_{}'.format(field_name, inv_name)
+        fdir = os.path.join(results_dir, '{}_{}'.format(safe_step, safe(syn_field)))
+        mkdirs(fdir)
+        inv_field_dirs[inv_name] = fdir
+        for (iname, etype, sp_num_key), canon in ip_blocks.items():
+            bd_parts = [fdir, safe(iname), 'INTEGRATION_POINT']
+            if etype:
+                bd_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_parts.append('sp{}'.format(sp_num_key))
+            bd = os.path.join(*bd_parts)
+            mkdirs(bd)
+            npsave(os.path.join(bd, 'labels.npy'),    canon)
+            npsave(os.path.join(bd, 'ip_labels.npy'), np.array([1], dtype=np.int32))
+            sp_arr = (np.array([sp_num_key], dtype=np.int32)
+                      if sp_num_key is not None
+                      else np.array([], dtype=np.int32))
+            npsave(os.path.join(bd, 'sp_labels.npy'), sp_arr)
+
+    # Per-frame: one .values pass per instance → scatter into per-etype arrays
+    for frame_idx, frame in enumerate(step.frames):
+        if field_name not in frame.fieldOutputs:
+            continue
+        fout = frame.fieldOutputs[field_name]
+
+        for iname in insts:
+            if iname not in odb_instances:
+                continue
+            try:
+                inst_fo = fout.getSubset(region=odb_instances[iname])
+            except Exception:
+                continue
+
+            # Accumulate: {elbl: {inv_name: [val, ...]}}
+            accum = {}
+            for fv in inst_fo.values:
+                elbl = fv.elementLabel
+                if elbl not in accum:
+                    accum[elbl] = {inv_name: [] for inv_name, _ in active_invs}
+                for inv_name, attr in active_invs:
+                    val = getattr(fv, attr, None)
+                    if val is not None:
+                        accum[elbl][inv_name].append(float(val))
+
+            if not accum:
+                continue
+
+            # Pre-average per element across all IPs/SPs
+            # avg: {elbl: {inv_name: float}}
+            avg = {}
+            for elbl, inv_vals in accum.items():
+                avg[elbl] = {}
+                for inv_name, _ in active_invs:
+                    vals = inv_vals[inv_name]
+                    avg[elbl][inv_name] = (float(sum(vals)) / float(len(vals))
+                                          if vals else float('nan'))
+
+            # Build numpy arrays for vectorised scatter into each etype block
+            elbl_arr = np.array(list(avg.keys()), dtype=np.int32)
+            inv_avg_arrs = {}
+            for inv_name, _ in active_invs:
+                inv_avg_arrs[inv_name] = np.array(
+                    [avg[int(e)][inv_name] for e in elbl_arr], dtype=np.float32)
+
+            for (blk_iname, etype, sp_num_key), canon in ip_blocks.items():
+                if blk_iname != iname:
+                    continue
+                rows = np.searchsorted(canon, elbl_arr)
+                safe_rows = np.clip(rows, 0, len(canon) - 1)
+                valid = (rows < len(canon)) & (canon[safe_rows] == elbl_arr)
+                for inv_name, _ in active_invs:
+                    out = np.full(len(canon), np.nan, dtype=np.float32)
+                    out[rows[valid]] = inv_avg_arrs[inv_name][valid]
+                    bd_parts = [inv_field_dirs[inv_name], safe(iname), 'INTEGRATION_POINT']
+                    if etype:
+                        bd_parts.append(safe(etype))
+                    if sp_num_key is not None:
+                        bd_parts.append('sp{}'.format(sp_num_key))
+                    bd = os.path.join(*bd_parts)
+                    npsave(os.path.join(bd, 'f{:04d}.npy'.format(frame_idx)),
+                           out.reshape(-1, 1, 1))
+
+    # Write meta.json for each synthetic invariant field
+    for inv_name, _ in active_invs:
+        fdir      = inv_field_dirs[inv_name]
+        syn_field = '{}_{}'.format(field_name, inv_name)
+        jdump(os.path.join(fdir, 'meta.json'), {
+            'step_name':   step_name,
+            'field_name':  syn_field,
+            'components':  [],
+            'invariants':  [],
+            'has_section': 0,
+            'blocks': [
+                {
+                    'inst_name':  iname,
+                    'position':   'INTEGRATION_POINT',
+                    'elem_type':  etype,
+                    'sp_num':     sp_num_key,
+                    'ncomp':      1,
+                    'n_entities': len(canon),
+                    'n_ip':       1,
+                    'n_sp':       0,
+                }
+                for (iname, etype, sp_num_key), canon in ip_blocks.items()
+            ],
+        })
+
+    print("    [inv] extracted {} invariant(s): {}".format(
+        len(active_invs), ', '.join(inv for inv, _ in active_invs)))
+
+
+def dump_results(odb, raw_dir, meta, field_filter=None, extract_invariants=False):
     """Write per-frame result arrays to l1_raw/results/<step>__<field>/<inst>/<pos>/[<etype>/]
 
     field_filter: optional dict {step_name: set_of_field_names}.
       If provided, only those (step, field) combinations are dumped.
       Steps/fields absent from field_filter are silently skipped.
       If None, all fields in all steps are dumped (original behaviour).
+
+    extract_invariants: if True, also extract validInvariants as synthetic NODAL scalar
+      fields named {field}_{INV_NAME} (e.g. S_MISES, S_MAX_PRINCIPAL).
+      Uses .values iteration (slower than bulkDataBlocks).
     """
     results_dir = os.path.join(raw_dir, 'results')
     mkdirs(results_dir)
@@ -813,13 +955,20 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
             # key = (inst_name, position, elem_type)
             block_struct = {}   # key → info dict (written to meta.json)
 
-            def get_block_dir(inst_name, position, elem_type):
+            def get_block_dir(inst_name, position, elem_type, sp_num=None):
                 parts = [field_dir, safe(inst_name), position]
                 if elem_type:
                     parts.append(safe(elem_type))
+                if sp_num is not None:
+                    parts.append('sp{}'.format(sp_num))
                 d = os.path.join(*parts)
                 mkdirs(d)
                 return d
+
+            def _block_sp_num(blk):
+                """Return the section-point number for a bulkDataBlock, or None."""
+                sp_obj = getattr(blk, 'sectionPoint', None)
+                return int(sp_obj.number) if sp_obj is not None else None
 
             # Discover structure + write canonical labels from first frame
             for block in first_field.bulkDataBlocks:
@@ -836,11 +985,12 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                     _n = len(getattr(block, 'elementLabels',
                              getattr(block, 'nodeLabels', [])))
                     elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                key       = (inst_name, position, elem_type)
+                sp_num    = _block_sp_num(block) if position == 'INTEGRATION_POINT' else None
+                key       = (inst_name, position, elem_type, sp_num)
                 if key in block_struct:
                     continue  # already discovered
 
-                bd = get_block_dir(inst_name, position, elem_type)
+                bd = get_block_dir(inst_name, position, elem_type, sp_num)
                 ncomp = np.array(block.data).shape[1]
                 info  = {
                     'inst_name': inst_name,
@@ -855,13 +1005,17 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                     info['n_entities'] = len(labels)
 
                 elif position == 'INTEGRATION_POINT':
-                    u_elems, u_ips, u_sps, _ = reshape_ip_block(block)
+                    u_elems, u_ips, blk_sp_num, _ = reshape_ip_block(block)
+                    sp_arr = (np.array([blk_sp_num], dtype=np.int32)
+                              if blk_sp_num is not None
+                              else np.array([], dtype=np.int32))
                     npsave(os.path.join(bd, 'labels.npy'),    u_elems)
                     npsave(os.path.join(bd, 'ip_labels.npy'), u_ips)
-                    npsave(os.path.join(bd, 'sp_labels.npy'), u_sps)
+                    npsave(os.path.join(bd, 'sp_labels.npy'), sp_arr)
                     info['n_entities'] = len(u_elems)
                     info['n_ip']       = len(u_ips)
-                    info['n_sp']       = len(u_sps)
+                    info['n_sp']       = 0          # no SP axis in per-block data
+                    info['sp_num']     = blk_sp_num # None for solids, int for shells
 
                 elif position == 'ELEMENT_NODAL':
                     u_elems, data_nd = reshape_element_nodal_block(block)
@@ -902,7 +1056,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                             _n = len(getattr(block, 'elementLabels', []))
                             elem_type = '_auto_{}x{}'.format(
                                 _n, _d.shape[1] if _d.ndim > 1 else 1)
-                        key = (inst_name, position, elem_type)
+                        key = (inst_name, position, elem_type, None)
                         if key in block_struct:
                             continue
                         bd = get_block_dir(inst_name, position, elem_type)
@@ -942,11 +1096,13 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                         _n = len(getattr(block, 'elementLabels',
                                  getattr(block, 'nodeLabels', [])))
                         elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                    key       = (inst_name, position, elem_type)
+                    fr_sp_num = (_block_sp_num(block)
+                                 if position == 'INTEGRATION_POINT' else None)
+                    key       = (inst_name, position, elem_type, fr_sp_num)
                     if key not in block_struct:
                         continue
 
-                    bd       = get_block_dir(inst_name, position, elem_type)
+                    bd       = get_block_dir(inst_name, position, elem_type, fr_sp_num)
                     fr_path  = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
 
                     if position == 'NODAL':
@@ -960,8 +1116,8 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                         npsave(fr_path, out)
 
                     elif position == 'INTEGRATION_POINT':
-                        _, _, u_sps, data_nd = reshape_ip_block(block)
-                        if len(u_sps) > 0:
+                        _, _, blk_sp_num, data_nd = reshape_ip_block(block)
+                        if blk_sp_num is not None:
                             has_section = 1
                         npsave(fr_path, data_nd)
 
@@ -997,7 +1153,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                                 _n = len(getattr(block, 'elementLabels', []))
                                 elem_type = '_auto_{}x{}'.format(
                                     _n, _d.shape[1] if _d.ndim > 1 else 1)
-                            key = (inst_name, position, elem_type)
+                            key = (inst_name, position, elem_type, None)
                             if key not in block_struct:
                                 continue
                             bd      = get_block_dir(inst_name, position, elem_type)
@@ -1016,7 +1172,8 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
                 'has_section': has_section,
                 'blocks':      [
                     dict(
-                        {'inst_name': k[0], 'position': k[1], 'elem_type': k[2]},
+                        {'inst_name': k[0], 'position': k[1],
+                         'elem_type': k[2], 'sp_num': k[3]},
                         **v
                     )
                     for k, v in block_struct.items()
@@ -1024,6 +1181,14 @@ def dump_results(odb, raw_dir, meta, field_filter=None):
             })
             print("      done ({} blocks, {})".format(
                 len(block_struct), _fmt_t(time.time() - t_field)))
+
+            # ── Invariant extraction (--invariants full only) ──────────────────
+            if extract_invariants and invariants:
+                _extract_ip_invariants(
+                    step, step_name, field_name, first_field,
+                    invariants, results_dir, safe_step, safe_field,
+                    block_struct, odb.rootAssembly.instances,
+                )
         print("  Step '{}' done. ({})".format(step_name, _fmt_t(time.time() - t_step)))
 
     meta['steps'] = steps_meta
@@ -1073,7 +1238,8 @@ def main():
         print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
         try:
             meta = {}
-            dump_results(odb, raw_dir, meta, field_filter=field_filter)
+            dump_results(odb, raw_dir, meta, field_filter=field_filter,
+                         extract_invariants=(args.invariants == 'full'))
         except Exception:
             print("\n!!! ERROR (worker {}):".format(wid))
             traceback.print_exc()
@@ -1104,7 +1270,8 @@ def main():
             dump_steps_meta_scan(odb, raw_dir, meta)
         else:
             # full: serial dump of all results (original behaviour)
-            dump_results(odb, raw_dir, meta)
+            dump_results(odb, raw_dir, meta,
+                         extract_invariants=(args.invariants == 'full'))
     except Exception:
         print("\n!!! ERROR:")
         traceback.print_exc()
@@ -1234,7 +1401,8 @@ def _run_extract(args, odb_path, workspace):
 
     meta = {}
     try:
-        dump_results(odb, raw_dir, meta)
+        dump_results(odb, raw_dir, meta,
+                     extract_invariants=(args.invariants == 'full'))
     except Exception:
         traceback.print_exc()
         odb.close()

@@ -201,18 +201,37 @@ class RegistryRepo:
             → remapped to data_root/<basename> otherwise (cross-platform move).
         """
         import os, re
-        # Detect absolute paths: Unix (/...) or Windows (C:\... / C:/...)
-        is_abs = os.path.isabs(stored) or bool(re.match(r'^[A-Za-z]:[/\\]', stored))
+
+        def _join_with_root_style(root: str, leaf: str) -> str:
+            """
+            Join using the style implied by data_root rather than the current OS.
+            This keeps '/data/...' stable in tests even on Windows, while still
+            producing native-looking paths for Windows absolute roots.
+            """
+            if re.match(r'^[A-Za-z]:[/\\]', root):
+                return root.rstrip('/\\') + '\\' + leaf
+            if root.startswith('/'):
+                return root.rstrip('/\\') + '/' + leaf
+            return os.path.join(root, leaf)
+
+        # Detect absolute paths in a cross-platform way:
+        #   - Unix style: /data/...
+        #   - Windows style: C:\... or C:/...
+        is_abs = (
+            os.path.isabs(stored)
+            or stored.startswith('/')
+            or bool(re.match(r'^[A-Za-z]:[/\\]', stored))
+        )
         if not is_abs:
             # New-style: relative identifier (just odb_id)
-            return os.path.join(data_root, stored)
+            return _join_with_root_style(data_root, stored)
         # Old-style: absolute path — use directly if it exists on this machine
         if os.path.exists(stored):
             return stored
         # Cross-platform migration: remap using only the last path component
         # e.g. "E:\code\model\7a5f..." → data_root + "7a5f..."
         basename = re.split(r'[/\\]', stored.rstrip('/\\'))[-1]
-        return os.path.join(data_root, basename)
+        return _join_with_root_style(data_root, basename)
 
     def is_runner_alive(self, ttl_seconds: int = 30) -> bool:
         """

@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -82,7 +83,6 @@ def collect_faces(geom_h5):
         etype_codes  [Tf]         uint8   element type code
         etype_strs   [Tf]         S8      element type string
         is_surface   [Tf]         bool    True if face owned by exactly one element
-        face_normals [Tf, 3]      float32 outward face normals from L1 (via Newell+flip)
     """
     keys_list  = []   # sorted node rows → canonical face key
     fnc_list   = []   # original face_node_conn rows
@@ -90,7 +90,6 @@ def collect_faces(geom_h5):
     fs_list    = []   # face_seq per face
     ec_list    = []   # etype_code per face
     es_list    = []   # etype_str per face
-    nrm_list   = []   # face normals from L1
     max_fn     = 0
 
     for etype_str in geom_h5.get("elements", {}):
@@ -106,12 +105,6 @@ def collect_faces(geom_h5):
         fsq = grp["face_seq"][:]         # [Mf]
         Mf, w = fnc.shape
 
-        # L1 face normals (outward, Newell+flip corrected)
-        if "face_normals" in grp:
-            nrm = grp["face_normals"][:].astype(np.float32)  # [Mf, 3]
-        else:
-            nrm = np.zeros((Mf, 3), dtype=np.float32)
-
         # Sort rows (replace -1 with INT32_MAX so they sort to the end)
         SENT = np.iinfo(np.int32).max
         k = fnc.copy()
@@ -124,14 +117,13 @@ def collect_faces(geom_h5):
         fs_list.append(fsq)
         ec_list.append(np.full(Mf, etype_code, dtype=np.uint8))
         es_list.append(np.array([etype_str.encode("ascii")] * Mf, dtype="S8"))
-        nrm_list.append(nrm)
         max_fn = max(max_fn, w)
 
     if not keys_list:
         empty = np.zeros(0, dtype=np.int32)
         return (np.zeros((0, 1), dtype=np.int32), empty, empty,
                 np.zeros(0, dtype=np.uint8), np.zeros(0, dtype="S8"),
-                np.zeros(0, dtype=bool), np.zeros((0, 3), dtype=np.float32))
+                np.zeros(0, dtype=bool))
 
     SENT = np.iinfo(np.int32).max
 
@@ -147,7 +139,6 @@ def collect_faces(geom_h5):
     fs    = np.concatenate(fs_list)
     ec    = np.concatenate(ec_list)
     es    = np.concatenate(es_list)
-    nrm   = np.vstack(nrm_list)
 
     # Each face's canonical key = its sorted node row vector
     # Encode as bytes for np.unique
@@ -157,7 +148,7 @@ def collect_faces(geom_h5):
     _, inv, counts = np.unique(keys_bytes, return_inverse=True, return_counts=True)
     is_surface = counts[inv] == 1
 
-    return fnc, er, fs, ec, es, is_surface, nrm
+    return fnc, er, fs, ec, es, is_surface
 
 
 # ─── Triangulation (vectorized for tri + quad, loop for higher) ───────────────
@@ -231,15 +222,15 @@ def triangulate(fnc, elem_rows, face_seqs, etype_codes, etype_strs, is_surface):
 
 # ─── Indexed geometry (vectorized by face size) ───────────────────────────────
 
-def build_indexed_geometry(coords_global, surf_fnc, surf_face_normals,
+def build_indexed_geometry(coords_global, surf_fnc,
                             surf_elem_rows, surf_face_seqs,
                             surf_etype_codes, surf_etype_strs):
     """
     Build indexed render buffer.  Vertices are shared within an element face
     but NOT across different faces (element boundaries remain hard edges).
+    Normals are NOT stored — frontend calls computeVertexNormals() instead.
 
     surf_fnc:           [Sf, W]   int32   surface face node rows (-1 = pad)
-    surf_face_normals:  [Sf, 3]   float32 outward face normals from L1
     surf_elem_rows:     [Sf]      int32
     surf_face_seqs:     [Sf]      uint8
     surf_etype_codes:   [Sf]      uint8
@@ -247,7 +238,6 @@ def build_indexed_geometry(coords_global, surf_fnc, surf_face_normals,
 
     Returns:
         positions:    [Nv, 3]  float32
-        normals:      [Nv, 3]  float32  (all verts of a face share the face normal)
         indices:      [Nt, 3]  int32
         vtx_node_row: [Nv]     int32    FEM node row for each vertex
         vtx_tri_idx:  [Nv]     int32    first triangle index for each vertex
@@ -277,7 +267,6 @@ def build_indexed_geometry(coords_global, surf_fnc, surf_face_normals,
     Nt = int(tri_starts[-1])
 
     positions     = np.empty((Nv, 3), dtype=np.float32)
-    normals       = np.empty((Nv, 3), dtype=np.float32)
     indices       = np.empty((Nt, 3), dtype=np.int32)
     vtx_node_row  = np.empty(Nv, dtype=np.int32)
     vtx_tri_idx   = np.empty(Nv, dtype=np.int32)
@@ -294,7 +283,6 @@ def build_indexed_geometry(coords_global, surf_fnc, surf_face_normals,
         n_tris   = n - 2
 
         fnc_n  = surf_fnc[face_idx][:, :n]         # [K, n] node rows
-        nrm_n  = surf_face_normals[face_idx]        # [K, 3]
 
         vs = vtx_starts[face_idx]                   # [K] vertex buffer starts
         ts = tri_starts[face_idx]                   # [K] triangle buffer starts
@@ -304,7 +292,6 @@ def build_indexed_geometry(coords_global, surf_fnc, surf_face_normals,
         node_rows = fnc_n.ravel().astype(np.int32)
 
         positions[flat_vtx]    = coords_global[node_rows]
-        normals[flat_vtx]      = np.repeat(nrm_n, n, axis=0)
         vtx_node_row[flat_vtx] = node_rows
         # All verts of face f get the first triangle of f as their tri reference
         vtx_tri_idx[flat_vtx]  = np.repeat(ts.astype(np.int32), n)
@@ -326,9 +313,292 @@ def build_indexed_geometry(coords_global, surf_fnc, surf_face_normals,
             tri_etype_code[flat_tri] = np.repeat(surf_etype_codes[face_idx], n_tris)
             tri_etype_str[flat_tri]  = np.repeat(surf_etype_strs[face_idx],  n_tris)
 
-    return (positions, normals, indices,
+    return (positions, indices,
             vtx_node_row, vtx_tri_idx,
             tri_elem_row, tri_face_seq, tri_etype_code, tri_etype_str)
+
+
+# ─── Averaging domain helpers ────────────────────────────────────────────────
+
+# elem_kind codes
+ELEM_KIND_SOLID    = np.uint8(0)
+ELEM_KIND_SHELL    = np.uint8(1)
+ELEM_KIND_MEMBRANE = np.uint8(2)
+
+# etype prefix → elem_kind
+def classify_elem_kind(etype_str):
+    """Return ELEM_KIND_* for a given etype string."""
+    if etype_str.startswith(("S3", "S4", "S6", "S8", "STRI", "SC")):
+        return ELEM_KIND_SHELL
+    if etype_str.startswith(("M3D", "MCL")):
+        return ELEM_KIND_MEMBRANE
+    return ELEM_KIND_SOLID
+
+
+def compute_section_ids(geom_h5, surf_global_elem_idx,
+                        surf_unique_etypes, surf_unique_erows,
+                        etype_labels_cache):
+    """
+    Assign a section_id (1-based int32) to each unique surface element.
+
+    surf_unique_etypes [E]  S8    etype string per unique surface element
+    surf_unique_erows  [E]  int32 elem_row per unique surface element
+    etype_labels_cache       dict  etype_str -> labels [N_elem] int32
+
+    Returns:
+        section_id   [E]  int32     0 = unassigned
+        section_names     list[str] index+1 = section_id (1-based)
+    """
+    E = len(surf_unique_erows)
+    section_id = np.zeros(E, dtype=np.int32)
+
+    if "sections" not in geom_h5:
+        return section_id, []
+
+    # Build label → section_id map across all sections
+    section_names = []          # 0-based; section_id = index + 1
+    label_to_sid  = {}
+
+    for sec_name in geom_h5["sections"]:
+        grp   = geom_h5["sections/{}".format(sec_name)]
+        eset  = grp.attrs.get("element_set", "")
+        key   = "instance_sets/element_sets/{}".format(eset)
+        if not eset or key not in geom_h5:
+            continue
+        sid = len(section_names) + 1       # 1-based
+        section_names.append(sec_name)
+        for lbl in geom_h5[key][:]:
+            label_to_sid[int(lbl)] = sid
+
+    if not label_to_sid:
+        return section_id, section_names
+
+    # Map each unique surface element to its label, then look up section_id
+    for ei in range(E):
+        etype_bytes = surf_unique_etypes[ei]
+        etype_str   = etype_bytes.decode("ascii").rstrip("\x00")
+        labels      = etype_labels_cache.get(etype_str)
+        if labels is None:
+            continue
+        erow = int(surf_unique_erows[ei])
+        if erow < len(labels):
+            lbl = int(labels[erow])
+            section_id[ei] = label_to_sid.get(lbl, 0)
+
+    return section_id, section_names
+
+
+def build_domain_ids(section_id, elem_kind, adj_src, adj_dst, adj_angle_deg,
+                     feature_angle_deg=20.0):
+    """
+    Compute averaging domain IDs for surface elements using Union-Find.
+
+    Step 1: Each (section_id group) starts as seed.
+    Step 2: For shell/membrane elements within the same section,
+            union adjacent elements whose face-normal angle <= feature_angle_deg.
+            Solid elements are not further split by angle.
+
+    Returns:
+        domain_id [E] int32   globally unique domain IDs (0-based)
+    """
+    E = len(section_id)
+    parent = np.arange(E, dtype=np.int32)
+    rank   = np.zeros(E, dtype=np.int32)
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]   # path compression
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if rank[ra] < rank[rb]:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        if rank[ra] == rank[rb]:
+            rank[ra] += 1
+
+    cos_thr = math.cos(math.radians(feature_angle_deg))
+
+    # Only connect shell/membrane elements within same section
+    for i in range(len(adj_src)):
+        ea, eb = int(adj_src[i]), int(adj_dst[i])
+        if section_id[ea] != section_id[eb]:
+            continue
+        ka, kb = int(elem_kind[ea]), int(elem_kind[eb])
+        # Solid elements: same section = same domain (union regardless of angle)
+        if ka == ELEM_KIND_SOLID and kb == ELEM_KIND_SOLID:
+            union(ea, eb)
+        # Shell/membrane: union only if angle within threshold
+        elif (ka in (ELEM_KIND_SHELL, ELEM_KIND_MEMBRANE) and
+              kb in (ELEM_KIND_SHELL, ELEM_KIND_MEMBRANE)):
+            angle = float(adj_angle_deg[i])
+            if math.cos(math.radians(angle)) >= cos_thr:
+                union(ea, eb)
+        # Mixed solid/shell: don't connect (different structural semantics)
+
+    # Assign global domain IDs: (section_id, root) -> domain_id
+    root_to_did = {}
+    domain_id   = np.empty(E, dtype=np.int32)
+    did_counter = 0
+
+    for ei in range(E):
+        root = find(ei)
+        # Include section_id in key: elements from different sections
+        # might share the same union-find root if section_id==0 (unassigned)
+        key = (int(section_id[ei]), root)
+        if key not in root_to_did:
+            root_to_did[key] = did_counter
+            did_counter += 1
+        domain_id[ei] = root_to_did[key]
+
+    return domain_id
+
+
+def compute_elem_adjacency(surf_fnc, surf_global_elem_idx, coords_global):
+    """
+    Build surface element adjacency graph with dihedral angles.
+
+    For each pair of surface elements sharing a face edge:
+      - record (global_elem_idx_a, global_elem_idx_b)
+      - record the angle in degrees between their face normals
+
+    surf_fnc             [Sf, W]  int32  face node rows (-1 = pad)
+    surf_global_elem_idx [Sf]     int32  global element index per surface face
+    coords_global        [N, 3]   float32
+
+    Returns:
+        adj_src       [A]  int32    global_elem_idx of element a
+        adj_dst       [A]  int32    global_elem_idx of element b
+        adj_angle_deg [A]  float32  angle between face normals (degrees)
+    """
+    Sf = len(surf_fnc)
+    if Sf == 0:
+        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
+                np.zeros(0, np.float32))
+
+    # Compute face normals from first 3 nodes of each face
+    n0 = coords_global[surf_fnc[:, 0]].astype(np.float64)
+    n1 = coords_global[surf_fnc[:, 1]].astype(np.float64)
+    n2 = coords_global[surf_fnc[:, 2]].astype(np.float64)
+    face_normals = np.cross(n1 - n0, n2 - n0)           # [Sf, 3]
+    nrm = np.linalg.norm(face_normals, axis=1, keepdims=True)
+    face_normals /= np.where(nrm > 1e-12, nrm, 1.0)     # unit normals
+
+    # Enumerate all face edges (sorted node pairs) with face index
+    valid = surf_fnc != -1
+    n_per_face = valid.sum(axis=1)                       # [Sf]
+    max_n = int(n_per_face.max()) if Sf > 0 else 0
+
+    edge_fa = []   # face index
+    edge_n1 = []   # node a (smaller)
+    edge_n2 = []   # node b (larger)
+
+    for fi in range(Sf):
+        n = int(n_per_face[fi])
+        nodes = surf_fnc[fi, :n]
+        for j in range(n):
+            a = int(nodes[j])
+            b = int(nodes[(j + 1) % n])
+            if a > b:
+                a, b = b, a
+            edge_fa.append(fi)
+            edge_n1.append(a)
+            edge_n2.append(b)
+
+    edge_fa = np.array(edge_fa, dtype=np.int32)
+    edge_n1 = np.array(edge_n1, dtype=np.int32)
+    edge_n2 = np.array(edge_n2, dtype=np.int32)
+
+    # Sort by (n1, n2) to group shared edges
+    order   = np.lexsort((edge_n2, edge_n1))
+    edge_fa = edge_fa[order]
+    edge_n1 = edge_n1[order]
+    edge_n2 = edge_n2[order]
+
+    adj_src_list   = []
+    adj_dst_list   = []
+    adj_angle_list = []
+
+    i = 0
+    total = len(edge_fa)
+    while i < total:
+        j = i + 1
+        while (j < total and edge_n1[j] == edge_n1[i]
+               and edge_n2[j] == edge_n2[i]):
+            j += 1
+        # faces i..j-1 share this edge
+        if j - i >= 2:
+            for a in range(i, j):
+                fa = int(edge_fa[a])
+                ea = int(surf_global_elem_idx[fa])
+                for b in range(a + 1, j):
+                    fb = int(edge_fa[b])
+                    eb = int(surf_global_elem_idx[fb])
+                    if ea == eb:
+                        continue   # same element (e.g. solid with two surface tris sharing an edge)
+                    dot = float(np.clip(
+                        face_normals[fa] @ face_normals[fb], -1.0, 1.0))
+                    angle = math.degrees(math.acos(dot))
+                    adj_src_list.append(ea)
+                    adj_dst_list.append(eb)
+                    adj_angle_list.append(angle)
+        i = j
+
+    if not adj_src_list:
+        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
+                np.zeros(0, np.float32))
+
+    return (np.array(adj_src_list, dtype=np.int32),
+            np.array(adj_dst_list, dtype=np.int32),
+            np.array(adj_angle_list, dtype=np.float32))
+
+
+# ─── source_local_node_idx ────────────────────────────────────────────────────
+
+def compute_source_local_node_idx(tri_etype_str, tri_elem_row,
+                                   vtx_node_row, render_indices,
+                                   conn_by_etype):
+    """
+    For each render triangle and each of its 3 corners, find the local node
+    index of that corner within the source element's connectivity array.
+
+    conn_by_etype: dict  etype_str -> [N_elem, n_corner] int32
+
+    Returns:
+        source_local_node_idx [Nt, 3] int16
+    """
+    Nt = len(tri_elem_row)
+    out = np.zeros((Nt, 3), dtype=np.int16)
+    if Nt == 0:
+        return out
+
+    # node rows for every triangle corner: [Nt, 3]
+    tri_node_rows = vtx_node_row[render_indices]   # [Nt, 3]
+
+    for etype_bytes in np.unique(tri_etype_str):
+        etype_str = etype_bytes.decode("ascii").rstrip("\x00")
+        conn = conn_by_etype.get(etype_str)
+        if conn is None:
+            continue
+
+        mask  = tri_etype_str == etype_bytes        # [Nt] bool
+        t_idx = np.where(mask)[0]                   # triangle rows for this etype
+        if len(t_idx) == 0:
+            continue
+
+        e_rows = tri_elem_row[t_idx]                # [T_e]
+        n_rows = tri_node_rows[t_idx]               # [T_e, 3]
+        e_conn = conn[e_rows]                        # [T_e, n_corner]
+
+        # [T_e, 3, n_corner] broadcast equality → argmax gives first matching col
+        match  = (n_rows[:, :, None] == e_conn[:, None, :])   # [T_e, 3, n_corner]
+        out[t_idx] = np.argmax(match, axis=2).astype(np.int16)
+
+    return out
 
 
 # ─── Feature edges (vectorized) ───────────────────────────────────────────────
@@ -568,24 +838,29 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         coords_global = compute_global_coords(local_coords, transform)
 
         # 2. Face collection + surface detection (vectorized)
-        fnc, elem_rows, face_seqs, etype_codes, etype_strs, is_surface, face_normals = \
+        fnc, elem_rows, face_seqs, etype_codes, etype_strs, is_surface = \
             collect_faces(f_in)
 
+        # Load conn arrays for source_local_node_idx computation (task #6)
+        conn_by_etype = {}
+        for et in f_in.get("elements", {}):
+            if "conn" in f_in["elements/{}".format(et)]:
+                conn_by_etype[et] = f_in["elements/{}/conn".format(et)][:]
+
     # 3. Filter to surface faces (face-level, before triangulation)
-    surf_fnc          = fnc[is_surface]
-    surf_face_normals = face_normals[is_surface]
-    surf_elem_rows    = elem_rows[is_surface]
+    surf_fnc       = fnc[is_surface]
+    surf_elem_rows = elem_rows[is_surface]
     surf_face_seqs    = face_seqs[is_surface]
     surf_etype_codes  = etype_codes[is_surface]
     surf_etype_strs   = etype_strs[is_surface]
     Sf_faces = len(surf_fnc)
     logger.info("  {} surface faces".format(Sf_faces))
 
-    # 4. Indexed geometry (positions/normals [Nv,3] + indices [Nt,3])
-    (render_positions, render_normals, render_indices,
+    # 4. Indexed geometry (positions [Nv,3] + indices [Nt,3]; normals computed by frontend)
+    (render_positions, render_indices,
      vtx_node_row, vtx_tri_idx,
      tri_elem_row, tri_face_seq, tri_etype_code, tri_etype_str) = \
-        build_indexed_geometry(coords_global, surf_fnc, surf_face_normals,
+        build_indexed_geometry(coords_global, surf_fnc,
                                surf_elem_rows, surf_face_seqs,
                                surf_etype_codes, surf_etype_strs)
 
@@ -595,6 +870,77 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
 
     # surf_tri_nodes [Nt, 3]: node rows per triangle, needed for edge detection
     surf_tri_nodes = vtx_node_row[render_indices] if Nt > 0 else np.zeros((0, 3), np.int32)
+
+    # 4b. source_local_node_idx [Nt, 3]: local index of each triangle corner
+    #     within its source element's connectivity array (for EN per-node lookup)
+    source_local_node_idx = compute_source_local_node_idx(
+        tri_etype_str, tri_elem_row, vtx_node_row, render_indices, conn_by_etype
+    )
+
+    # 4c. Averaging domain data ────────────────────────────────────────────────
+    # Unique surface elements: deduplicate (etype, elem_row) pairs from surf_fnc
+    # (a solid element can contribute multiple surface faces)
+    surf_etype_elem_pairs = np.stack(
+        [surf_etype_strs.view(np.uint64),
+         surf_elem_rows.astype(np.int64).view(np.uint64)], axis=1
+    )
+    _, uniq_idx = np.unique(surf_etype_elem_pairs.view(
+        np.dtype((np.void, surf_etype_elem_pairs.dtype.itemsize * 2))
+    ).ravel(), return_index=True)
+    uniq_idx = np.sort(uniq_idx)   # preserve order
+
+    surf_uniq_etypes = surf_etype_strs[uniq_idx]    # [E] S8
+    surf_uniq_erows  = surf_elem_rows[uniq_idx]      # [E] int32
+    E = len(uniq_idx)
+
+    # Build face → global_elem_idx map for adjacency computation
+    pair_bytes = surf_etype_elem_pairs.view(
+        np.dtype((np.void, surf_etype_elem_pairs.dtype.itemsize * 2))
+    ).ravel()
+    uniq_pairs_bytes = pair_bytes[uniq_idx]
+    # searchsorted needs sorted uniq_pairs_bytes
+    sort_order = np.argsort(uniq_pairs_bytes)
+    sorted_uniq_bytes = uniq_pairs_bytes[sort_order]
+    pos_in_sorted = np.searchsorted(sorted_uniq_bytes, pair_bytes)
+    surf_global_elem_idx = sort_order[pos_in_sorted].astype(np.int32)  # [Sf]
+
+    # elem_kind per unique surface element
+    avg_elem_kind = np.array(
+        [classify_elem_kind(eb.decode("ascii").rstrip("\x00"))
+         for eb in surf_uniq_etypes],
+        dtype=np.uint8
+    )
+
+    # section_id per unique surface element (needs labels from geom H5)
+    etype_labels_cache = {}
+    with h5py.File(geom_path, "r") as f_in:
+        for et in f_in.get("elements", {}):
+            if "labels" in f_in["elements/{}".format(et)]:
+                etype_labels_cache[et] = f_in["elements/{}/labels".format(et)][:]
+        avg_section_id, section_names = compute_section_ids(
+            f_in, surf_global_elem_idx,
+            surf_uniq_etypes, surf_uniq_erows,
+            etype_labels_cache
+        )
+    section_names_arr = np.array(
+        [s.encode("utf-8") for s in section_names], dtype="S128"
+    ) if section_names else np.zeros(0, dtype="S128")
+
+    # adjacency graph (face-level edges → element-level)
+    adj_src, adj_dst, adj_angle_deg = compute_elem_adjacency(
+        surf_fnc, surf_global_elem_idx, coords_global
+    )
+
+    # default domain IDs with feature_angle=20°
+    DEFAULT_FEATURE_ANGLE = 20.0
+    avg_domain_id = build_domain_ids(
+        avg_section_id, avg_elem_kind,
+        adj_src, adj_dst, adj_angle_deg,
+        feature_angle_deg=DEFAULT_FEATURE_ANGLE
+    )
+
+    logger.info("  {} surface elements, {} domains, {} adjacency edges".format(
+        E, int(avg_domain_id.max()) + 1 if E > 0 else 0, len(adj_src)))
 
     # 5. Feature edges (use triangulated surface topology)
     edge_nodes, edge_types = compute_feature_edges(surf_tri_nodes, coords_global)
@@ -634,18 +980,32 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         chunk_t = (min(Nt, 4096), 3) if Nt > 0 else True
         rg.create_dataset("positions",     data=render_positions,
                           chunks=chunk_v, compression="lzf")
-        rg.create_dataset("normals",       data=render_normals,
-                          chunks=chunk_v, compression="lzf")
         rg.create_dataset("indices",       data=render_indices,
                           chunks=chunk_t, compression="lzf")
         rg.create_dataset("vtx_node_row",  data=vtx_node_row)
         rg.create_dataset("vtx_tri_idx",   data=vtx_tri_idx)
         rg.create_dataset("render_face_idx", data=render_face_idx)
         if Nt > 0:
-            rg.create_dataset("source_elem_row",  data=tri_elem_row)
-            rg.create_dataset("source_node_rows", data=surf_tri_nodes)   # [Nt,3] backward compat
-            rg.create_dataset("source_etype_code",data=tri_etype_code)
-            rg.create_dataset("source_etype_str", data=tri_etype_str)
+            rg.create_dataset("source_elem_row",       data=tri_elem_row)
+            rg.create_dataset("source_node_rows",      data=surf_tri_nodes)   # [Nt,3] backward compat
+            rg.create_dataset("source_etype_code",     data=tri_etype_code)
+            rg.create_dataset("source_etype_str",      data=tri_etype_str)
+            rg.create_dataset("source_local_node_idx", data=source_local_node_idx)
+
+        # averaging domain data
+        ag = f.create_group("averaging")
+        ag.create_dataset("elem_etype",      data=surf_uniq_etypes)
+        ag.create_dataset("elem_row",        data=surf_uniq_erows)
+        ag.create_dataset("elem_section_id", data=avg_section_id)
+        ag.create_dataset("elem_kind",       data=avg_elem_kind)
+        ag.create_dataset("default_domain_id", data=avg_domain_id)
+        ag.attrs["default_feature_angle_deg"] = DEFAULT_FEATURE_ANGLE
+        if len(section_names_arr) > 0:
+            ag.create_dataset("section_names", data=section_names_arr)
+        if len(adj_src) > 0:
+            ag.create_dataset("adj_src",       data=adj_src)
+            ag.create_dataset("adj_dst",       data=adj_dst)
+            ag.create_dataset("adj_angle_deg", data=adj_angle_deg)
 
         og = f.create_group("octree")
         og.create_dataset("node_bbox",     data=octree["node_bbox"])
