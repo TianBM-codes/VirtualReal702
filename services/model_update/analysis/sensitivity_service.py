@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import shutil
 import sys
 from collections import Counter
 from pathlib import Path
@@ -49,6 +50,16 @@ def _workspace_path(workspace: str) -> str:
     if not os.path.exists(manifest):
         raise NotFoundError(f"manifest.db not found under workspace '{path}'", {"workspace": path})
     return path
+
+
+def _assert_safe_workspace_rebuild_path(workspace: str) -> None:
+    normalized = os.path.normpath(os.path.abspath(workspace))
+    drive, tail = os.path.splitdrive(normalized)
+    if normalized in {drive + os.sep, os.sep} or not os.path.basename(normalized):
+        raise ValidationError(
+            "workspace path is too broad to rebuild safely",
+            {"workspace": normalized},
+        )
 
 
 def _manifest_conn(workspace: str) -> sqlite3.Connection:
@@ -154,6 +165,12 @@ def build_workspace_from_odb(
         raise NotFoundError(f"odb file not found: {odb_abs}", {"odb_path": odb_abs})
 
     workspace_abs = os.path.abspath(workspace)
+    _assert_safe_workspace_rebuild_path(workspace_abs)
+    if os.path.isdir(workspace_abs):
+        # Rebuild the workspace from scratch so stale manifest.db schemas from
+        # previous runs do not leak into the current ODB conversion.
+        shutil.rmtree(workspace_abs, ignore_errors=True)
+    os.makedirs(os.path.dirname(workspace_abs) or workspace_abs, exist_ok=True)
     cmd = [
         python3 or sys.executable,
         os.path.join(_repo_root(), "tools", "run_l1.py"),
