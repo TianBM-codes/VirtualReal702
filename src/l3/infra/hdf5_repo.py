@@ -9,12 +9,30 @@ import h5py
 import os
 
 
+def _safe_instance_name(name: str) -> str:
+    """Replicate l1_pack.safe() for fallback path construction."""
+    return name.replace("/", "__").replace("\\", "__").replace(" ", "_")
+
+
 class HDF5Repo:
     def __init__(self, workspace: str):
+        self.workspace = workspace
         self.l1_geom_dir = os.path.join(workspace, "l1", "geometry")
 
     def _geom_path(self, instance_name: str) -> str:
-        return os.path.join(self.l1_geom_dir, f"{instance_name}.h5")
+        """Resolve geometry path via manifest; fall back to safe-name construction."""
+        try:
+            import sqlite3
+            with sqlite3.connect(os.path.join(self.workspace, "manifest.db")) as conn:
+                row = conn.execute(
+                    "SELECT geom_path FROM instances WHERE instance_name=?",
+                    (instance_name,),
+                ).fetchone()
+                if row and row[0]:
+                    return os.path.join(self.workspace, row[0])
+        except Exception:
+            pass
+        return os.path.join(self.l1_geom_dir, f"{_safe_instance_name(instance_name)}.h5")
 
     def get_elem_label(self, instance_name: str, etype_str: str, elem_row: int) -> int:
         """Return the element label for the given etype group and row index."""

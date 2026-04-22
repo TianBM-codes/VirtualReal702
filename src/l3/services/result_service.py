@@ -569,7 +569,7 @@ def frame_scalars(
             {"frame_idx": frame_idx},
         )
 
-    # Apply set filter: keep only triangles belonging to the named set
+    # Apply set filter: keep only vertices belonging to the named set
     if set_name is not None:
         manifest = ManifestRepo(idx.workspace)
         render_rows = manifest.get_user_set_render_rows(set_name, instance)
@@ -582,8 +582,15 @@ def frame_scalars(
                 )
                 render_rows = np.where(face_mask)[0].astype(np.int32)
         if render_rows is not None and len(render_rows) > 0:
-            vtx_idx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
-            scalar_vertex = scalar_vertex[vtx_idx]
+            render_idx = idx.render_indices.get(instance)
+            if render_idx is not None:
+                # indexed geometry: compact to unique vertices of the selected triangles
+                used_vtx = np.unique(render_idx[render_rows].ravel())
+                scalar_vertex = scalar_vertex[used_vtx]
+            else:
+                # soup geometry: each triangle occupies 3 contiguous vertices
+                vtx_idx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
+                scalar_vertex = scalar_vertex[vtx_idx]
 
     scalar_vertex = np.nan_to_num(scalar_vertex, nan=0.0)
 

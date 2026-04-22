@@ -211,7 +211,8 @@ def get_node_table(
                 result_labels = rf[labels_path][:].astype(np.int32)
             else:
                 # Fallback to geometry HDF5 (should be the same ordering)
-                geom_path = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+                geom_path = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+                            os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
                 if not os.path.exists(geom_path):
                     continue
                 with h5py.File(geom_path, "r") as gf:

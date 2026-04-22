@@ -119,8 +119,16 @@ def export_l1(model: InpModel, workspace: str) -> None:
     # --- geometry/<inst>.h5 + sets.h5 + manifest.db ---
     db_conn = _init_manifest(workspace)
     try:
-        for inst_name, inst in (model.assembly.instances.items()
-                                if model.assembly else {}.items()):
+        if model.assembly is not None:
+            inst_iter = model.assembly.instances.items()
+        elif "__root__" in model.parts:
+            # Flat-format INP: synthesize a single instance with identity transform
+            _synthetic = Instance(name="__root__", part_name="__root__")
+            inst_iter = [("__root__", _synthetic)]
+        else:
+            inst_iter = []
+
+        for inst_name, inst in inst_iter:
             part = model.parts.get(inst.part_name)
             if part is None:
                 continue
@@ -144,12 +152,15 @@ def _write_assembly_h5(model: InpModel, workspace: str) -> None:
     h5_path = os.path.join(workspace, "l1", "assembly.h5")
     with h5py.File(h5_path, "w") as f:
         asm = model.assembly
-        if asm is None:
-            return
-        for inst_name, inst in asm.instances.items():
-            grp = f.require_group("instances/{}".format(inst_name))
-            mat = _build_transform_matrix(inst)
-            grp.create_dataset("transform", data=mat)
+        if asm is not None:
+            for inst_name, inst in asm.instances.items():
+                grp = f.require_group("instances/{}".format(inst_name))
+                mat = _build_transform_matrix(inst)
+                grp.create_dataset("transform", data=mat)
+        elif "__root__" in model.parts:
+            # Flat-format INP: no Assembly — write identity transform for the synthetic instance
+            grp = f.require_group("instances/__root__")
+            grp.create_dataset("transform", data=np.eye(4, dtype=np.float64))
 
 
 def _build_transform_matrix(inst) -> np.ndarray:

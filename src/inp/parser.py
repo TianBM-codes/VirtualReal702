@@ -428,7 +428,9 @@ class InpParser:
         else:
             part = self._current_part
             if part is None:
-                return
+                if "__root__" not in self._model.parts:
+                    self._model.parts["__root__"] = Part(name="__root__")
+                part = self._model.parts["__root__"]
             if name not in part.nsets:
                 part.nsets[name] = Nset(name=name)
             target = part.nsets[name]
@@ -458,7 +460,9 @@ class InpParser:
         else:
             part = self._current_part
             if part is None:
-                return
+                if "__root__" not in self._model.parts:
+                    self._model.parts["__root__"] = Part(name="__root__")
+                part = self._model.parts["__root__"]
             if name not in part.elsets:
                 part.elsets[name] = Elset(name=name)
             target = part.elsets[name]

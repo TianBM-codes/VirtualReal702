@@ -126,32 +126,33 @@ def _claim_submitted() -> tuple:
     Returns (odb_id, odb_path, workspace) or (None, None, None).
     """
     with _connect() as conn:
+        candidate = conn.execute(
+            "SELECT odb_id FROM odb_jobs WHERE status='submitted' ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if candidate is None:
+            return None, None, None
+        odb_id = candidate["odb_id"]
         cur = conn.execute(
-            """UPDATE odb_jobs
-               SET status='l1_running', l1_started_at=?
-               WHERE odb_id = (
-                 SELECT odb_id FROM odb_jobs
-                 WHERE status='submitted'
-                 ORDER BY created_at LIMIT 1
-               )""",
-            (_now_iso(),),
+            "UPDATE odb_jobs SET status='l1_running', l1_started_at=?"
+            " WHERE odb_id=? AND status='submitted'",
+            (_now_iso(), odb_id),
         )
         if cur.rowcount == 0:
-            return None, None, None
+            return None, None, None  # race: another process claimed it first
         row = conn.execute(
-            "SELECT odb_id, odb_path, workspace FROM odb_jobs WHERE status='l1_running'"
+            "SELECT odb_id, odb_path, workspace FROM odb_jobs WHERE odb_id=?", (odb_id,)
         ).fetchone()
-        if row is None:
-            return None, None, None
-        stored_ws = row["workspace"]
-        # Resolve to absolute path using DATA_ROOT — the DB stores a bare
-        # odb_id (portable) which must be joined with DATA_ROOT before use.
-        # Old-style absolute paths (pre-fix) are returned as-is.
-        is_abs = os.path.isabs(stored_ws) or bool(
-            re.match(r'^[A-Za-z]:[/\\]', stored_ws)
-        )
-        workspace_abs = stored_ws if is_abs else os.path.join(DATA_ROOT, stored_ws)
-        return row["odb_id"], row["odb_path"], workspace_abs
+    if row is None:
+        return None, None, None
+    stored_ws = row["workspace"]
+    # Resolve to absolute path using DATA_ROOT — the DB stores a bare
+    # odb_id (portable) which must be joined with DATA_ROOT before use.
+    # Old-style absolute paths (pre-fix) are returned as-is.
+    is_abs = os.path.isabs(stored_ws) or bool(
+        re.match(r'^[A-Za-z]:[/\\]', stored_ws)
+    )
+    workspace_abs = stored_ws if is_abs else os.path.join(DATA_ROOT, stored_ws)
+    return row["odb_id"], row["odb_path"], workspace_abs
 
 
 def _read_l1_stats(workspace: str) -> tuple:
@@ -327,9 +328,8 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
         capture_output=True, text=True,
     )
     if ret.returncode != 0:
-        # Roll back to l1_done so L1 data remains accessible and job can be retried
-        _update_status(odb_id, "l1_done",
-            error_msg="ingest failed: " + ret.stderr[-2000:])
+        _update_status(odb_id, "error",
+            error_msg="[L2] ingest failed: " + ret.stderr[-2000:])
         logger.error("[%s] L2 failed (rc=%d)", odb_id, ret.returncode)
         return False
 
@@ -387,17 +387,31 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         _update_project_geom_status(project_id, "error", msg)
         return False
 
-    logger.info("[%s] Geom: inp_pack.py", project_id)
-    rc, tail = _run_streaming(
-        [sys.executable, str(INP_PACK_SCRIPT),
-         "--inp", inp_path, "--workspace", workspace],
-        project_id, "inp_pack",
-    )
-    if rc != 0:
-        msg = "inp_pack failed: " + tail
+    # --- L1: parse INP once, export geometry HDF5 + run catalog import ---
+    logger.info("[%s] Geom: parsing INP %s", project_id, inp_path)
+    try:
+        from src.inp import parse_inp
+        from src.inp.exporter import export_l1
+        model = parse_inp(inp_path)
+        export_l1(model, workspace)
+    except Exception as exc:
+        msg = "INP parse/export failed: {}".format(exc)
+        logger.exception("[%s] %s", project_id, msg)
         _update_project_geom_status(project_id, "error", msg)
         return False
 
+    # --- Catalog import (optional: only available in combined deployment) ---
+    try:
+        from services.model_update.analysis.inp_service import import_inp_catalog
+        logger.info("[%s] Geom: importing INP catalog", project_id)
+        import_inp_catalog(inp_path, project_id, model=model)
+        logger.info("[%s] Geom: catalog import done", project_id)
+    except ImportError:
+        logger.debug("[%s] services.model_update not available — skipping catalog import", project_id)
+    except Exception as exc:
+        logger.warning("[%s] Catalog import failed (non-fatal): %s", project_id, exc)
+
+    # --- L2: ingest (subprocess, keeps numpy/HDF5 isolated) ---
     logger.info("[%s] Geom: ingest.py (L2)", project_id)
     ret = subprocess.run(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],

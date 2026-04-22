@@ -120,6 +120,7 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
     - New ready/l1_done ODB not yet in memory → load it.
     - Existing ODB upgraded from l1_done to ready → supplement with L2 data.
     - New ready projects not yet in memory → load them.
+    - Existing ready projects without L2 render data → supplement with L2 data.
     """
     for row in repo.list_ready_or_l1done():
         odb_id = row["odb_id"]
@@ -137,10 +138,14 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         if row["geom_status"] != "ready":
             continue
         project_id = row["project_id"]
-        if registry.get(project_id) is None:
+        existing = registry.get(project_id)
+        if existing is None:
             workspace = _resolve_project_workspace(row["workspace"], project_id)
             registry.load(project_id, workspace, "ready")
             logger.info("Poll: hot-loaded project %s", project_id)
+        elif not existing.is_render_ready:
+            registry.upgrade(project_id)
+            logger.info("Poll: upgraded project %s to render-ready", project_id)
 
 
 def _poll_loop(repo: RegistryRepo) -> None:

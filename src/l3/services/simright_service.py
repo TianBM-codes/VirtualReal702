@@ -7,7 +7,7 @@ Implements the dispatch logic for:
 
 Each handler returns a plain Python dict that becomes the "data" field
 in the standard simright response envelope:
-  {"code": 0, "data": <dict>, "message": "success"}
+  {"code": 200, "data": <dict>, "message": ""}
 
 filename → odb_id resolution:
   Try exact match → strip leading "/" → basename without extension.
@@ -84,7 +84,19 @@ def _result_h5_path(workspace: str, step: str, field: str,
 
 
 def _geom_h5_path(workspace: str, instance_name: str) -> str:
-    return os.path.join(workspace, "l1", "geometry", f"{instance_name}.h5")
+    """Resolve L1 geometry path via manifest; fall back to safe-name construction."""
+    try:
+        import sqlite3
+        with sqlite3.connect(os.path.join(workspace, "manifest.db")) as conn:
+            row = conn.execute(
+                "SELECT geom_path FROM instances WHERE instance_name=?", (instance_name,)
+            ).fetchone()
+            if row and row[0]:
+                return os.path.join(workspace, row[0])
+    except Exception:
+        pass
+    def _safe(s): return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
+    return os.path.join(workspace, "l1", "geometry", f"{_safe(instance_name)}.h5")
 
 
 def parse_var_name(var_name: str) -> Tuple[str, Optional[str]]:

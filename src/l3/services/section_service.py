@@ -177,7 +177,9 @@ def compute_section(
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{odb_id}' is not render-ready", {"odb_id": odb_id})
 
-    geom_path = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    from ..infra.manifest_repo import ManifestRepo
+    geom_path = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+                os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
     if not os.path.exists(geom_path):
         raise NotFoundError(
             f"Geometry file not found for instance '{instance}'",
