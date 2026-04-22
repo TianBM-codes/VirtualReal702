@@ -19,6 +19,7 @@ from src.inp.parameter_mapping import build_parameter_target_map
 from src.l3.core.errors import NotFoundError, ValidationError
 from tools.odb_client import ODBClientError
 
+from . import inp_service as _inp
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
 
@@ -2028,6 +2029,262 @@ def _run_iteration_solver(
     }
 
 
+def _safe_float_or_none(value):
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return None
+        return float(value.reshape(-1)[0])
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        return float(value[0])
+    return float(value)
+
+
+def _collect_workspace_static_displacement_rows(
+        *,
+        workspace: str,
+        step: Optional[str],
+        instances: Optional[List[str]],
+        frame: int,
+        aggregation: str,
+) -> dict:
+    workspace_abs = _sens._workspace_path(workspace)
+    conn = _sens._manifest_conn(workspace_abs)
+    try:
+        step_rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT step_name, step_number FROM steps ORDER BY step_number, step_name"
+            ).fetchall()
+        ]
+        chosen_step = step or _sens._default_step_from_rows(step_rows)
+        if not chosen_step:
+            available = [str(row.get("step_name")) for row in step_rows if row.get("step_name") is not None]
+            raise ValidationError("step is required because multiple steps are available", {"available": available})
+
+        available_instances = [
+            str(row["instance_name"])
+            for row in conn.execute(
+                """
+                SELECT DISTINCT instance_name
+                FROM result_blocks
+                WHERE step_name = ? AND field_name = 'U' AND position = 'NODAL'
+                ORDER BY instance_name
+                """,
+                (chosen_step,),
+            ).fetchall()
+        ]
+        if not available_instances:
+            raise NotFoundError(
+                "nodal displacement field 'U' not found in workspace",
+                {"workspace": workspace_abs, "step": chosen_step},
+            )
+
+        if instances:
+            chosen_instances = [str(item) for item in instances]
+            missing = [item for item in chosen_instances if item not in available_instances]
+            if missing:
+                raise NotFoundError(
+                    "some instances are not available in the selected workspace result",
+                    {"missing_instances": missing, "available_instances": available_instances},
+                )
+        else:
+            chosen_instances = available_instances
+
+        part_name_map = {}
+        try:
+            for row in conn.execute(
+                "SELECT instance_name, part_name FROM instances ORDER BY instance_name"
+            ).fetchall():
+                part_name_map[str(row["instance_name"])] = row["part_name"]
+        except Exception:
+            part_name_map = {}
+    finally:
+        conn.close()
+
+    rows = []
+    for instance_name in chosen_instances:
+        comp_maps = {
+            "U1": _sens._workspace_result_label_map(
+                workspace_abs,
+                step=chosen_step,
+                field="U",
+                instance=instance_name,
+                position="NODAL",
+                frame=frame,
+                aggregation=aggregation,
+                component="U1",
+            ),
+            "U2": _sens._workspace_result_label_map(
+                workspace_abs,
+                step=chosen_step,
+                field="U",
+                instance=instance_name,
+                position="NODAL",
+                frame=frame,
+                aggregation=aggregation,
+                component="U2",
+            ),
+            "U3": _sens._workspace_result_label_map(
+                workspace_abs,
+                step=chosen_step,
+                field="U",
+                instance=instance_name,
+                position="NODAL",
+                frame=frame,
+                aggregation=aggregation,
+                component="U3",
+            ),
+        }
+        scoped_labels = sorted(
+            set(comp_maps["U1"].keys()) | set(comp_maps["U2"].keys()) | set(comp_maps["U3"].keys()),
+            key=lambda item: int(str(item).split("::", 1)[-1]),
+        )
+        for scoped_label in scoped_labels:
+            label_text = str(scoped_label).split("::", 1)[-1]
+            rows.append(
+                {
+                    "instance_name": instance_name,
+                    "part_name": part_name_map.get(instance_name),
+                    "fem_node_label": int(label_text),
+                    "u1": _safe_float_or_none(comp_maps["U1"].get(scoped_label)),
+                    "u2": _safe_float_or_none(comp_maps["U2"].get(scoped_label)),
+                    "u3": _safe_float_or_none(comp_maps["U3"].get(scoped_label)),
+                    "extra_json": {"step_name": chosen_step, "frame_idx": int(frame)},
+                }
+            )
+
+    return {
+        "workspace": workspace_abs,
+        "step_name": chosen_step,
+        "frame_idx": int(frame),
+        "instances": chosen_instances,
+        "rows": rows,
+    }
+
+
+def _persist_model_update_static_results(
+        *,
+        project_id: int,
+        batch_no: int,
+        static_payload: dict,
+) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM t_mt_py_fem_model_update_static_result WHERE pid = %s AND batch_no = %s",
+            (int(project_id), str(batch_no)),
+        )
+        insert_sql = """
+            INSERT INTO t_mt_py_fem_model_update_static_result
+            (pid, batch_no, step_name, frame_idx, instance_name, part_name, fem_node_label, u1, u2, u3, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                step_name = VALUES(step_name),
+                part_name = VALUES(part_name),
+                u1 = VALUES(u1),
+                u2 = VALUES(u2),
+                u3 = VALUES(u3),
+                extra_json = VALUES(extra_json),
+                created_at = CURRENT_TIMESTAMP
+        """
+        preview = []
+        for row in static_payload["rows"]:
+            cursor.execute(
+                insert_sql,
+                (
+                    int(project_id),
+                    str(batch_no),
+                    static_payload.get("step_name"),
+                    int(static_payload.get("frame_idx", 0)),
+                    row.get("instance_name"),
+                    row.get("part_name"),
+                    int(row["fem_node_label"]),
+                    row.get("u1"),
+                    row.get("u2"),
+                    row.get("u3"),
+                    json.dumps(row.get("extra_json") or {}, ensure_ascii=False),
+                ),
+            )
+            if len(preview) < 20:
+                preview.append(
+                    {
+                        "instance_name": row.get("instance_name"),
+                        "part_name": row.get("part_name"),
+                        "fem_node_label": int(row["fem_node_label"]),
+                        "u1": row.get("u1"),
+                        "u2": row.get("u2"),
+                        "u3": row.get("u3"),
+                    }
+                )
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "batch_no": str(batch_no),
+            "step_name": static_payload.get("step_name"),
+            "frame_idx": int(static_payload.get("frame_idx", 0)),
+            "row_count": len(static_payload["rows"]),
+            "rows_preview": preview,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _persist_final_iteration_static_outputs(
+        *,
+        project_id: int,
+        batch_no: int,
+        workspace: Optional[str],
+        step: Optional[str],
+        instances: Optional[List[str]],
+        frame: int,
+        aggregation: str,
+) -> dict:
+    if not workspace:
+        return {"skipped": True, "reason": "workspace_not_available"}
+
+    static_payload = _collect_workspace_static_displacement_rows(
+        workspace=workspace,
+        step=step,
+        instances=instances,
+        frame=frame,
+        aggregation=aggregation,
+    )
+    stored_result = _persist_model_update_static_results(
+        project_id=project_id,
+        batch_no=batch_no,
+        static_payload=static_payload,
+    )
+
+    analysis_error_result = None
+    try:
+        analysis_error_result = _inp.store_updated_static_analysis_error(
+            project_id=project_id,
+            fem_rows=static_payload["rows"],
+            components=["UX", "UY", "UZ"],
+            include_rotations=False,
+        )
+    except Exception as exc:
+        analysis_error_result = {
+            "skipped": True,
+            "reason": str(exc),
+        }
+
+    return {
+        "static_result": stored_result,
+        "analysis_error": analysis_error_result,
+    }
+
+
 def run_bayesian_update_workflow(
         *,
         project_id: int,
@@ -2355,6 +2612,22 @@ def run_bayesian_update_workflow(
             if save_results
             else {}
         )
+        final_static_output = None
+        try:
+            final_static_output = _persist_final_iteration_static_outputs(
+                project_id=project_id,
+                batch_no=resolved_batch_no,
+                workspace=last_resolved_workspace,
+                step=step,
+                instances=instances,
+                frame=frame,
+                aggregation=aggregation,
+            )
+        except Exception as exc:
+            final_static_output = {
+                "skipped": True,
+                "reason": str(exc),
+            }
         return {
             "project_id": project_id,
             "batch_no": resolved_batch_no,
@@ -2376,6 +2649,7 @@ def run_bayesian_update_workflow(
             "iteration_results": iteration_results,
             "saved_artifacts": saved_artifacts,
             "cloud_result": cloud_result,
+            "final_static_output": final_static_output,
         }
     finally:
         if cleanup_root_dir is not None:

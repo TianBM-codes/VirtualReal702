@@ -9,7 +9,7 @@ from src.inp.parameter_mapping import (
     extract_parameter_target_rows,
 )
 from db import get_connection, ensure_tables_exist, clear_fem_tables
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -684,207 +684,275 @@ def _extract_legacy_boundary_rows(model):
     return rows
 
 
-def _extract_candidates(model):
-    candidates = []
+_DEFAULT_PARAMETER_SCATTER = 0.25
+_SUPPORTED_CORRECTION_QUANTITIES = (
+    {"quantity_code": "E", "quantity_name": "Young's Modulus", "unit": None, "enabled": 1, "sort_no": 1},
+    {"quantity_code": "H", "quantity_name": "Thickness", "unit": None, "enabled": 1, "sort_no": 2},
+)
+
+
+def _normalize_quantity_code(quantity_code: str) -> str:
+    value = str(quantity_code or "").strip().upper()
+    if value not in {"E", "H"}:
+        raise ValueError("quantity_code must be one of: E, H")
+    return value
+
+
+def _normalize_selection_mode(selection_mode: str) -> str:
+    value = str(selection_mode or "").strip().upper()
+    if value not in {"GLOBAL", "LOCAL"}:
+        raise ValueError("selection_mode must be GLOBAL or LOCAL")
+    return value
+
+
+def _derive_quantity_code_from_candidate(candidate_code: Optional[str]) -> Optional[str]:
+    token = str(candidate_code or "").strip().upper()
+    if not token:
+        return None
+    if token.endswith(":THICKNESS"):
+        return "H"
+    if token.endswith(":E"):
+        return "E"
+    return None
+
+
+def _element_family_from_abaqus_type(abaqus_type: Optional[str]) -> str:
+    token = str(abaqus_type or "").strip().upper()
+    if token.startswith(("S", "SC", "M3D")):
+        return "SHELL"
+    if token.startswith(("CPS", "CPE", "CAX")):
+        return "SHELL"
+    if token.startswith("C3D"):
+        return "SOLID"
+    if token.startswith(("B", "T3D", "PIPE", "CONN")):
+        return "BEAM"
+    return "OTHER"
+
+
+def _resolve_material_elastic_modulus(material) -> Optional[float]:
+    elastic = getattr(material, "elastic", None)
+    data = list(getattr(elastic, "data", []) or [])
+    if not data:
+        return None
+    row0 = list(data[0] or [])
+    if not row0:
+        return None
+    return _safe_float(row0[0])
+
+
+def _resolve_section_thickness(section, parameter_defs: Dict[str, dict]) -> Optional[float]:
+    if getattr(section, "thickness", None) is not None:
+        return _safe_float(section.thickness)
+    parameter_name = getattr(section, "thickness_parameter", None)
+    if parameter_name:
+        row = parameter_defs.get(str(parameter_name))
+        if row is not None:
+            return _safe_float(row.get("scalar_value"))
+    return None
+
+
+def _target_keys_for_scope(set_scope: str, part_name: Optional[str], instance_name: Optional[str], labels: Sequence[int]) -> List[str]:
+    if str(set_scope).upper() == "ASSEMBLY":
+        prefix = f"INST::{str(instance_name or '').strip()}"
+    else:
+        prefix = f"PART::{str(part_name or '').strip()}"
+    return [f"{prefix}::{int(label)}" for label in labels]
+
+
+def _build_section_parameter_maps(model, parameter_defs: Dict[str, dict]):
+    quantity_maps = {"E": {}, "H": {}}
+    property_sets = {}
+
+    for part_name, part in model.parts.items():
+        for section in list(getattr(part, "sections", []) or []):
+            elset_name = str(getattr(section, "elset_name", "") or "")
+            elset = part.elsets.get(elset_name)
+            labels = sorted(set(int(label) for label in (getattr(elset, "elem_labels", []) or [])))
+            if not labels:
+                continue
+
+            section_type = str(getattr(section, "section_type", "") or "").upper()
+            material_name = str(getattr(section, "material_name", "") or "").strip() or None
+            h_value = _resolve_section_thickness(section, parameter_defs) if section_type in {"SHELL", "MEMBRANE"} else None
+            material = model.materials.get(material_name) if material_name else None
+            e_value = _resolve_material_elastic_modulus(material) if material is not None else None
+            families = {
+                _element_family_from_abaqus_type(getattr(part.elements.get(int(label)), "abaqus_type", None))
+                for label in labels
+                if int(label) in part.elements
+            }
+            property_sets[(part_name, elset_name)] = {
+                "set_role": "PROPERTY_SET",
+                "section_type": section_type or None,
+                "material_name": material_name,
+                "element_family": next(iter(families)) if len(families) == 1 else "MIXED",
+                "labels": labels,
+                "quantity_values": {
+                    "E": e_value,
+                    "H": h_value,
+                },
+            }
+
+            for label in labels:
+                key = (str(part_name), int(label))
+                if e_value is not None:
+                    quantity_maps["E"][key] = float(e_value)
+                if h_value is not None:
+                    quantity_maps["H"][key] = float(h_value)
+
+    return quantity_maps, property_sets
+
+
+def _iter_elset_entries(model) -> List[dict]:
+    entries = []
+    for part_name, part in model.parts.items():
+        for set_name, elset in part.elsets.items():
+            labels = sorted(set(int(label) for label in (elset.elem_labels or [])))
+            if not labels:
+                continue
+            entries.append(
+                {
+                    "set_name": str(set_name),
+                    "set_type": "ELSET",
+                    "set_scope": "PART",
+                    "instance_name": None,
+                    "part_name": str(part_name),
+                    "element_labels": labels,
+                    "member_count": len(labels),
+                }
+            )
+
+    if model.assembly:
+        for set_name, elset in model.assembly.elsets.items():
+            labels = sorted(set(int(label) for label in (elset.elem_labels or [])))
+            if not labels:
+                continue
+            inst_name = getattr(elset, "instance_name", None)
+            part_name = None
+            if inst_name and inst_name in model.assembly.instances:
+                part_name = model.assembly.instances[inst_name].part_name
+            entries.append(
+                {
+                    "set_name": str(set_name),
+                    "set_type": "ELSET",
+                    "set_scope": "ASSEMBLY",
+                    "instance_name": str(inst_name) if inst_name else None,
+                    "part_name": str(part_name) if part_name else None,
+                    "element_labels": labels,
+                    "member_count": len(labels),
+                }
+            )
+    return entries
+
+
+def _extract_quantity_set_capabilities(model) -> List[dict]:
     parameter_defs = {
         str(item["parameter_name"]): item for item in extract_parameter_definition_rows(model)
     }
+    quantity_maps, property_sets = _build_section_parameter_maps(model, parameter_defs)
+    capability_rows = []
 
-    def add_candidate(candidate_code: str, candidate_name: str, keyword_name: str,
-                      source_scope: str, source_name: str, source_path: str,
-                      scalar_value, unit=None, extra=None):
-        candidates.append({
-            "candidate_code": candidate_code,
-            "candidate_name": candidate_name,
-            "keyword_name": keyword_name,
-            "source_scope": source_scope,
-            "source_name": source_name,
-            "source_path": source_path,
-            "scalar_value": _safe_float(scalar_value),
-            "scatter": _DEFAULT_PARAMETER_SCATTER,
-            "unit": unit,
-            "extra_json": extra or {},
-        })
+    for set_entry in _iter_elset_entries(model):
+        part_name = str(set_entry.get("part_name") or "")
+        labels = [int(label) for label in set_entry["element_labels"]]
+        part = model.parts.get(part_name)
+        if part is None:
+            continue
+        families = {
+            _element_family_from_abaqus_type(getattr(part.elements.get(int(label)), "abaqus_type", None))
+            for label in labels
+            if int(label) in part.elements
+        }
+        element_family = next(iter(families)) if len(families) == 1 else "MIXED"
+        property_info = property_sets.get((part_name, str(set_entry["set_name"])))
 
-    for item in sorted(parameter_defs.values(), key=lambda row: str(row["parameter_name"])):
-        add_candidate(
-            f"PARAM:{item['parameter_name']}",
-            f"parameter {item['parameter_name']}",
-            "PARAMETER",
-            "PARAMETER",
-            str(item["parameter_name"]),
-            f"parameters/{item['parameter_name']}",
-            item.get("scalar_value"),
-            extra={
-                "expression": item.get("expression"),
-                "is_design_parameter": bool(item.get("is_design_parameter")),
-                "design_order": item.get("design_order"),
-                **dict(item.get("extra_json") or {}),
-            },
-        )
+        for quantity in _SUPPORTED_CORRECTION_QUANTITIES:
+            quantity_code = str(quantity["quantity_code"])
+            values_by_label = {
+                str(label): quantity_maps[quantity_code][(part_name, int(label))]
+                for label in labels
+                if (part_name, int(label)) in quantity_maps[quantity_code]
+            }
+            supports_global = False
+            supports_local = False
+            set_role = "HETEROGENEOUS_SET"
+            section_type = None
+            material_name = None
 
-    for mat_name, material in model.materials.items():
-        if material.density_data:
-            add_candidate(
-                f"MAT:{mat_name}:DENSITY",
-                f"{mat_name} density",
-                "DENSITY",
-                "MATERIAL",
-                mat_name,
-                f"materials/{mat_name}/density/0/0",
-                material.density_data[0][0],
-                extra={"material_name": mat_name},
+            if property_info is not None:
+                set_role = "PROPERTY_SET"
+                section_type = property_info.get("section_type")
+                material_name = property_info.get("material_name")
+                if quantity_code == "H":
+                    if property_info["quantity_values"].get("H") is not None and element_family == "SHELL":
+                        supports_global = True
+                        supports_local = True
+                elif quantity_code == "E":
+                    if property_info["quantity_values"].get("E") is not None and element_family in {"SHELL", "SOLID", "BEAM"}:
+                        supports_global = True
+                        supports_local = True
+            elif element_family in {"SHELL", "SOLID", "BEAM"}:
+                set_role = "HOMOGENEOUS_TYPE_SET"
+                if quantity_code == "H":
+                    supports_local = element_family == "SHELL" and len(values_by_label) == len(labels)
+                elif quantity_code == "E":
+                    supports_local = len(values_by_label) == len(labels)
+
+            if not supports_global and not supports_local:
+                continue
+
+            distinct_values = sorted({float(value) for value in values_by_label.values()})
+            current_value = distinct_values[0] if len(distinct_values) == 1 else None
+            target_keys = _target_keys_for_scope(
+                set_scope=str(set_entry["set_scope"]),
+                part_name=set_entry.get("part_name"),
+                instance_name=set_entry.get("instance_name"),
+                labels=labels,
+            )
+            capability_rows.append(
+                {
+                    "quantity_code": quantity_code,
+                    "set_name": str(set_entry["set_name"]),
+                    "set_type": str(set_entry["set_type"]),
+                    "set_scope": str(set_entry["set_scope"]),
+                    "instance_name": set_entry.get("instance_name"),
+                    "part_name": set_entry.get("part_name"),
+                    "set_role": set_role,
+                    "element_family": element_family,
+                    "section_type": section_type,
+                    "material_name": material_name,
+                    "member_count": int(set_entry["member_count"]),
+                    "supports_global": bool(supports_global),
+                    "supports_local": bool(supports_local),
+                    "current_value": current_value,
+                    "extra_json": {
+                        "element_labels": labels,
+                        "target_keys": target_keys,
+                        "target_keys_by_label": {
+                            str(label): _target_keys_for_scope(
+                                set_scope=str(set_entry["set_scope"]),
+                                part_name=set_entry.get("part_name"),
+                                instance_name=set_entry.get("instance_name"),
+                                labels=[int(label)],
+                            )
+                            for label in labels
+                        },
+                        "element_values": values_by_label,
+                    },
+                }
             )
 
-        elastic = material.elastic
-        if elastic and elastic.data:
-            row0 = elastic.data[0]
-            if elastic.elastic_type == "ISOTROPIC":
-                if len(row0) >= 1:
-                    add_candidate(
-                        f"MAT:{mat_name}:E",
-                        f"{mat_name} elastic modulus",
-                        "ELASTIC",
-                        "MATERIAL",
-                        mat_name,
-                        f"materials/{mat_name}/elastic/0/0",
-                        row0[0],
-                        extra={"material_name": mat_name, "elastic_type": elastic.elastic_type},
-                    )
-                if len(row0) >= 2:
-                    add_candidate(
-                        f"MAT:{mat_name}:NU",
-                        f"{mat_name} poisson ratio",
-                        "ELASTIC",
-                        "MATERIAL",
-                        mat_name,
-                        f"materials/{mat_name}/elastic/0/1",
-                        row0[1],
-                        extra={"material_name": mat_name, "elastic_type": elastic.elastic_type},
-                    )
-            else:
-                for idx, value in enumerate(row0, start=1):
-                    add_candidate(
-                        f"MAT:{mat_name}:ELASTIC_{idx}",
-                        f"{mat_name} elastic {idx}",
-                        "ELASTIC",
-                        "MATERIAL",
-                        mat_name,
-                        f"materials/{mat_name}/elastic/0/{idx - 1}",
-                        value,
-                        extra={"material_name": mat_name, "elastic_type": elastic.elastic_type},
-                    )
-
-    for part_name, part in model.parts.items():
-        for sec_idx, section in enumerate(part.sections):
-            if section.section_type in ("SHELL", "MEMBRANE") and (
-                section.thickness is not None or getattr(section, "thickness_parameter", None)
-            ):
-                parameter_name = getattr(section, "thickness_parameter", None)
-                parameter_row = parameter_defs.get(str(parameter_name)) if parameter_name else None
-                scalar_value = section.thickness
-                if scalar_value is None and parameter_row is not None:
-                    scalar_value = parameter_row.get("scalar_value")
-                add_candidate(
-                    f"SEC:{part_name}:{section.elset_name}:THICKNESS",
-                    f"{part_name}/{section.elset_name} thickness",
-                    f"{section.section_type} SECTION",
-                    "SECTION",
-                    section.elset_name,
-                    f"parts/{part_name}/sections/{sec_idx}/thickness",
-                    scalar_value,
-                    extra={
-                        "part_name": part_name,
-                        "material_name": section.material_name,
-                        "parameter_name": parameter_name,
-                        "expression": getattr(section, "thickness_expression", None),
-                    },
-                )
-
-            if section.section_type == "BEAM":
-                dim_values = list(section.extra.get("dims", []) or [])
-                dim_parameters = list(section.extra.get("dim_parameters", []) or [])
-                dim_expressions = list(section.extra.get("dim_expressions", []) or [])
-                max_dim_count = max(len(dim_values), len(dim_parameters))
-                for dim_idx in range(1, max_dim_count + 1):
-                    parameter_name = dim_parameters[dim_idx - 1] if dim_idx - 1 < len(dim_parameters) else None
-                    parameter_row = parameter_defs.get(str(parameter_name)) if parameter_name else None
-                    value = dim_values[dim_idx - 1] if dim_idx - 1 < len(dim_values) else None
-                    if parameter_name and parameter_row is not None:
-                        value = parameter_row.get("scalar_value", value)
-                    add_candidate(
-                        f"SEC:{part_name}:{section.elset_name}:DIM{dim_idx}",
-                        f"{part_name}/{section.elset_name} beam dim {dim_idx}",
-                        "BEAM SECTION",
-                        "SECTION",
-                        section.elset_name,
-                        f"parts/{part_name}/sections/{sec_idx}/dims/{dim_idx - 1}",
-                        value,
-                        extra={
-                            "part_name": part_name,
-                            "material_name": section.material_name,
-                            "parameter_name": parameter_name,
-                            "expression": dim_expressions[dim_idx - 1] if dim_idx - 1 < len(dim_expressions) else None,
-                        },
-                    )
-
-    return candidates
-
-
-def _extract_sets(model):
-    sets = []
-    for part_name, part in model.parts.items():
-        for set_name, nset in part.nsets.items():
-            sets.append({
-                "set_name": set_name,
-                "set_type": "NSET",
-                "set_scope": "PART",
-                "instance_name": None,
-                "part_name": part_name,
-                "member_count": len(nset.node_labels),
-                "extra_json": {"member_kind": "NODE"},
-            })
-        for set_name, elset in part.elsets.items():
-            sets.append({
-                "set_name": set_name,
-                "set_type": "ELSET",
-                "set_scope": "PART",
-                "instance_name": None,
-                "part_name": part_name,
-                "member_count": len(elset.elem_labels),
-                "extra_json": {"member_kind": "ELEMENT"},
-            })
-
-    if model.assembly:
-        for set_name, nset in model.assembly.nsets.items():
-            inst_name = getattr(nset, "instance_name", None)
-            part_name = model.assembly.instances[inst_name].part_name if inst_name and inst_name in model.assembly.instances else None
-            sets.append({
-                "set_name": set_name,
-                "set_type": "NSET",
-                "set_scope": "ASSEMBLY",
-                "instance_name": inst_name,
-                "part_name": part_name,
-                "member_count": len(nset.node_labels),
-                "extra_json": {"member_kind": "NODE"},
-            })
-        for set_name, elset in model.assembly.elsets.items():
-            inst_name = getattr(elset, "instance_name", None)
-            part_name = model.assembly.instances[inst_name].part_name if inst_name and inst_name in model.assembly.instances else None
-            sets.append({
-                "set_name": set_name,
-                "set_type": "ELSET",
-                "set_scope": "ASSEMBLY",
-                "instance_name": inst_name,
-                "part_name": part_name,
-                "member_count": len(elset.elem_labels),
-                "extra_json": {"member_kind": "ELEMENT"},
-            })
-
-    return sets
-
-
-_DEFAULT_PARAMETER_SCATTER = 0.25
+    capability_rows.sort(
+        key=lambda item: (
+            str(item["quantity_code"]),
+            str(item["set_scope"]),
+            str(item["set_type"]),
+            str(item["set_name"]),
+            str(item.get("instance_name") or ""),
+            str(item.get("part_name") or ""),
+        )
+    )
+    return capability_rows
 
 
 def import_inp_catalog(file_path, project_id, clear_before_insert=True,
@@ -903,8 +971,8 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
     parameter_definitions = extract_parameter_definition_rows(model)
     parameter_targets = extract_parameter_target_rows(model)
     design_responses = extract_design_response_rows(model)
-    candidates = _extract_candidates(model)
-    sets = _extract_sets(model)
+    supported_quantities = list(_SUPPORTED_CORRECTION_QUANTITIES)
+    quantity_set_capabilities = _extract_quantity_set_capabilities(model)
     node_data = _collect_global_nodes(model)
     cache_path = _save_octree_cache(
         project_id=project_id,
@@ -926,6 +994,8 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             cursor.execute("DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_parameter_target WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_quantity_set_capability WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_selected_parameter WHERE pid = %s", (project_id,))
 
         material_overview_sql = """
         INSERT INTO t_mt_py_fem_material_overview (Id, pid, Type)
@@ -1103,61 +1173,61 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 _json_dumps(item.get("extra_json") or {}),
             ))
 
-        candidate_sql = """
-        INSERT INTO t_mt_py_fem_parameter_candidate
-        (pid, candidate_code, candidate_name, keyword_name, source_scope, source_name,
-         source_path, scalar_value, scatter, unit, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        quantity_sql = """
+        INSERT INTO t_mt_py_fem_supported_quantity
+        (quantity_code, quantity_name, unit, enabled, sort_no)
+        VALUES (%s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            candidate_name = VALUES(candidate_name),
-            keyword_name = VALUES(keyword_name),
-            source_scope = VALUES(source_scope),
-            source_name = VALUES(source_name),
-            source_path = VALUES(source_path),
-            scalar_value = VALUES(scalar_value),
-            scatter = VALUES(scatter),
+            quantity_name = VALUES(quantity_name),
             unit = VALUES(unit),
-            extra_json = VALUES(extra_json)
+            enabled = VALUES(enabled),
+            sort_no = VALUES(sort_no)
         """
-        for item in candidates:
-            cursor.execute(candidate_sql, (
-                project_id,
-                item["candidate_code"],
-                item["candidate_name"],
-                item["keyword_name"],
-                item["source_scope"],
-                item["source_name"],
-                item["source_path"],
-                item["scalar_value"],
-                float(item.get("scatter", _DEFAULT_PARAMETER_SCATTER)),
-                item["unit"],
-                _json_dumps(item["extra_json"]),
+        for item in supported_quantities:
+            cursor.execute(quantity_sql, (
+                item["quantity_code"],
+                item["quantity_name"],
+                item.get("unit"),
+                int(item.get("enabled", 1)),
+                int(item.get("sort_no", 0)),
             ))
 
-        set_catalog_sql = """
-        INSERT INTO t_mt_py_fem_set_catalog
-        (pid, set_name, set_type, set_scope, instance_name, part_name, member_count, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        capability_sql = """
+        INSERT INTO t_mt_py_fem_quantity_set_capability
+        (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name,
+         set_role, element_family, section_type, material_name, member_count,
+         supports_global, supports_local, current_value, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
+            set_role = VALUES(set_role),
+            element_family = VALUES(element_family),
+            section_type = VALUES(section_type),
+            material_name = VALUES(material_name),
             member_count = VALUES(member_count),
+            supports_global = VALUES(supports_global),
+            supports_local = VALUES(supports_local),
+            current_value = VALUES(current_value),
             extra_json = VALUES(extra_json)
         """
-        legacy_set_sql = """
-        INSERT IGNORE INTO t_mt_py_fem_sets (pid, set_name, set_type)
-        VALUES (%s, %s, %s)
-        """
-        for item in sets:
-            cursor.execute(set_catalog_sql, (
+        for item in quantity_set_capabilities:
+            cursor.execute(capability_sql, (
                 project_id,
+                item["quantity_code"],
                 item["set_name"],
                 item["set_type"],
                 item["set_scope"],
-                item["instance_name"],
-                item["part_name"],
-                item["member_count"],
-                _json_dumps(item["extra_json"]),
+                item.get("instance_name"),
+                item.get("part_name"),
+                item["set_role"],
+                item.get("element_family"),
+                item.get("section_type"),
+                item.get("material_name"),
+                int(item["member_count"]),
+                1 if item.get("supports_global") else 0,
+                1 if item.get("supports_local") else 0,
+                item.get("current_value"),
+                _json_dumps(item.get("extra_json") or {}),
             ))
-            cursor.execute(legacy_set_sql, (project_id, item["set_name"][:32], item["set_type"]))
 
         if cache_path:
             octree_sql = """
@@ -1195,8 +1265,8 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "parameter_definition_count": len(parameter_definitions),
             "parameter_target_count": len(parameter_targets),
             "design_response_count": len(design_responses),
-            "candidate_count": len(candidates),
-            "set_count": len(sets),
+            "supported_quantity_count": len(supported_quantities),
+            "quantity_set_capability_count": len(quantity_set_capabilities),
             "instance_count": len(node_data["entries"]),
             "node_count": int(len(node_data["point_labels"])),
             "octree_cache_path": os.path.abspath(cache_path) if cache_path else None,
@@ -1204,8 +1274,8 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "parameter_definitions_preview": parameter_definitions[:10],
             "parameter_targets_preview": parameter_targets[:10],
             "design_responses_preview": design_responses[:10],
-            "candidates_preview": candidates[:10],
-            "sets_preview": sets[:10],
+            "supported_quantities_preview": supported_quantities[:10],
+            "quantity_set_capabilities_preview": quantity_set_capabilities[:10],
         }
     except Exception:
         conn.rollback()
@@ -1245,26 +1315,27 @@ def get_inp_catalog(project_id):
         design_responses = cursor.fetchall()
 
         cursor.execute("""
-            SELECT candidate_code, candidate_name, keyword_name, source_scope, source_name,
-                   source_path, scalar_value, scatter, unit, extra_json
-            FROM t_mt_py_fem_parameter_candidate
-            WHERE pid = %s
-            ORDER BY keyword_name, candidate_code
-        """, (project_id,))
-        candidates = cursor.fetchall()
+            SELECT quantity_code, quantity_name, unit, enabled, sort_no
+            FROM t_mt_py_fem_supported_quantity
+            WHERE enabled = 1
+            ORDER BY sort_no, quantity_code
+        """)
+        supported_quantities = cursor.fetchall()
 
         cursor.execute("""
-            SELECT set_name, set_type, set_scope, instance_name, part_name, member_count, extra_json
-            FROM t_mt_py_fem_set_catalog
+            SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
+                   set_role, element_family, section_type, material_name, member_count,
+                   supports_global, supports_local, current_value, extra_json
+            FROM t_mt_py_fem_quantity_set_capability
             WHERE pid = %s
-            ORDER BY set_scope, set_type, set_name
+            ORDER BY quantity_code, set_scope, set_type, set_name, instance_name, part_name
         """, (project_id,))
-        sets = cursor.fetchall()
+        quantity_set_capabilities = cursor.fetchall()
 
         cursor.execute("""
-            SELECT parameter_name, candidate_code, set_name, set_type, set_scope,
-                   instance_name, part_name, scatter, description, created_at
-            FROM t_mt_py_fem_optimization_parameter
+            SELECT parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
+                   instance_name, part_name, element_label, current_value, scatter, description, extra_json, created_at
+            FROM t_mt_py_fem_selected_parameter
             WHERE pid = %s
             ORDER BY created_at DESC, parameter_name
         """, (project_id,))
@@ -1313,11 +1384,13 @@ def get_inp_catalog(project_id):
             "parameter_definition_count": len(parameter_definitions),
             "parameter_target_count": len(parameter_targets),
             "design_response_count": len(design_responses),
+            "supported_quantity_count": len(supported_quantities),
+            "quantity_set_capability_count": len(quantity_set_capabilities),
             "parameter_definitions": parameter_definitions,
             "parameter_targets": parameter_targets,
             "design_responses": design_responses,
-            "candidates": candidates,
-            "sets": sets,
+            "supported_quantities": supported_quantities,
+            "quantity_set_capabilities": quantity_set_capabilities,
             "optimization_parameters": opt_params,
             "octree_cache": octree,
             "node_match_count": node_match_count,
@@ -1331,7 +1404,29 @@ def get_inp_catalog(project_id):
         conn.close()
 
 
-def create_optimization_parameter(project_id, candidate_code, set_name, parameter_name=None,
+def _default_parameter_group_name(quantity_code: str, set_name: str) -> str:
+    return f"{str(quantity_code).upper()}@{str(set_name)}"
+
+
+def _extract_target_keys(extra_json) -> set:
+    payload = _json_loads(extra_json) or {}
+    return {str(item) for item in (payload.get("target_keys") or [])}
+
+
+def _resolve_selection_mode_from_capability(capability_row: dict, requested_mode: Optional[str]) -> str:
+    if requested_mode:
+        mode = _normalize_selection_mode(requested_mode)
+    else:
+        mode = "GLOBAL" if capability_row.get("supports_global") else "LOCAL"
+
+    if mode == "GLOBAL" and not capability_row.get("supports_global"):
+        raise ValueError("the selected set does not support GLOBAL for this quantity")
+    if mode == "LOCAL" and not capability_row.get("supports_local"):
+        raise ValueError("the selected set does not support LOCAL for this quantity")
+    return mode
+
+
+def create_optimization_parameter(project_id, candidate_code=None, quantity_code=None, selection_mode=None, set_name=None, parameter_name=None,
                                   scatter=None,
                                   description="", set_type=None, set_scope=None,
                                   instance_name=None, part_name=None):
@@ -1341,21 +1436,20 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("""
-            SELECT candidate_code, candidate_name, scatter
-            FROM t_mt_py_fem_parameter_candidate
-            WHERE pid = %s AND candidate_code = %s
-        """, (project_id, candidate_code))
-        candidate = cursor.fetchone()
-        if not candidate:
-            raise ValueError(f"candidate_code not found: {candidate_code}")
+        resolved_quantity_code = _normalize_quantity_code(
+            quantity_code or _derive_quantity_code_from_candidate(candidate_code)
+        )
+        if not set_name:
+            raise ValueError("set_name is required")
 
         query = """
-            SELECT set_name, set_type, set_scope, instance_name, part_name
-            FROM t_mt_py_fem_set_catalog
-            WHERE pid = %s AND set_name = %s
+            SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
+                   set_role, element_family, section_type, material_name, member_count,
+                   supports_global, supports_local, current_value, extra_json
+            FROM t_mt_py_fem_quantity_set_capability
+            WHERE pid = %s AND quantity_code = %s AND set_name = %s
         """
-        params = [project_id, set_name]
+        params = [project_id, resolved_quantity_code, set_name]
         if set_type:
             query += " AND set_type = %s"
             params.append(set_type)
@@ -1368,62 +1462,135 @@ def create_optimization_parameter(project_id, candidate_code, set_name, paramete
         if part_name:
             query += " AND part_name = %s"
             params.append(part_name)
-        query += " ORDER BY set_scope, set_type LIMIT 1"
+        query += " ORDER BY set_scope, set_type, instance_name, part_name"
 
         cursor.execute(query, tuple(params))
-        set_row = cursor.fetchone()
-        if not set_row:
-            raise ValueError(f"set not found: {set_name}")
+        capability_rows = cursor.fetchall() or []
+        if not capability_rows:
+            raise ValueError(f"quantity/set capability not found: {resolved_quantity_code} @ {set_name}")
+        if len(capability_rows) > 1:
+            raise ValueError(
+                "multiple quantity/set capabilities matched; specify set_scope/set_type/instance_name/part_name"
+            )
+        capability_row = capability_rows[0]
 
-        if not parameter_name:
-            # Default names keep the originating candidate and target set visible
-            # in later debugging output and database inspection.
-            parameter_name = f"{candidate_code}@{set_row['set_name']}"
+        resolved_mode = _resolve_selection_mode_from_capability(capability_row, selection_mode)
+        parameter_group_name = str(parameter_name or _default_parameter_group_name(resolved_quantity_code, capability_row["set_name"]))
 
         resolved_scatter = float(
-            candidate.get("scatter", _DEFAULT_PARAMETER_SCATTER)
-            if scatter is None
-            else scatter
+            _DEFAULT_PARAMETER_SCATTER if scatter is None else scatter
         )
         if resolved_scatter <= 0:
             raise ValueError("scatter must be > 0")
 
-        cursor.execute("""
-        INSERT INTO t_mt_py_fem_optimization_parameter
-        (pid, parameter_name, candidate_code, set_name, set_type, set_scope, instance_name, part_name, scatter, description)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            project_id,
-            parameter_name,
-            candidate_code,
-            set_row["set_name"],
-            set_row["set_type"],
-            set_row["set_scope"],
-            set_row["instance_name"],
-            set_row["part_name"],
-            resolved_scatter,
-            description or "",
-        ))
+        capability_extra = _json_loads(capability_row.get("extra_json")) or {}
+        element_labels = [int(item) for item in (capability_extra.get("element_labels") or [])]
+        target_keys = [str(item) for item in (capability_extra.get("target_keys") or [])]
+        target_keys_by_label = {
+            str(key): [str(item) for item in (value or [])]
+            for key, value in dict(capability_extra.get("target_keys_by_label") or {}).items()
+        }
+        element_values = {
+            str(key): _safe_float(value)
+            for key, value in dict(capability_extra.get("element_values") or {}).items()
+        }
+        if not element_labels or not target_keys:
+            raise ValueError("selected capability row does not contain target element information")
 
         cursor.execute("""
-        INSERT INTO t_mt_py_fem_parameters (pid, parameter, description)
-        VALUES (%s, %s, %s)
-        ON DUPLICATE KEY UPDATE description = VALUES(description)
-        """, (project_id, parameter_name[:32], description or ""))
+            SELECT quantity_code, extra_json
+            FROM t_mt_py_fem_selected_parameter
+            WHERE pid = %s AND quantity_code = %s
+        """, (project_id, resolved_quantity_code))
+        incoming_overlap_keys = set(target_keys)
+        for row in cursor.fetchall() or []:
+            if incoming_overlap_keys & _extract_target_keys(row.get("extra_json")):
+                raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
+
+        insert_sql = """
+        INSERT INTO t_mt_py_fem_selected_parameter
+        (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
+         instance_name, part_name, element_label, current_value, scatter, description, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        created_parameters = []
+        if resolved_mode == "GLOBAL":
+            resolved_parameter_name = parameter_group_name
+            cursor.execute(insert_sql, (
+                project_id,
+                parameter_group_name,
+                resolved_parameter_name,
+                resolved_quantity_code,
+                resolved_mode,
+                capability_row["set_name"],
+                capability_row["set_type"],
+                capability_row["set_scope"],
+                capability_row["instance_name"],
+                capability_row["part_name"],
+                None,
+                capability_row.get("current_value"),
+                resolved_scatter,
+                description or "",
+                _json_dumps({
+                    "target_keys": target_keys,
+                    "element_labels": element_labels,
+                }),
+            ))
+            created_parameters.append(
+                {
+                    "parameter_name": resolved_parameter_name,
+                    "element_label": None,
+                    "current_value": capability_row.get("current_value"),
+                }
+            )
+        else:
+            for element_label in element_labels:
+                resolved_parameter_name = f"{parameter_group_name}#{int(element_label)}"
+                row_target_keys = target_keys_by_label.get(str(element_label)) or []
+                current_value = element_values.get(str(element_label), capability_row.get("current_value"))
+                cursor.execute(insert_sql, (
+                    project_id,
+                    parameter_group_name,
+                    resolved_parameter_name,
+                    resolved_quantity_code,
+                    resolved_mode,
+                    capability_row["set_name"],
+                    capability_row["set_type"],
+                    capability_row["set_scope"],
+                    capability_row["instance_name"],
+                    capability_row["part_name"],
+                    int(element_label),
+                    current_value,
+                    resolved_scatter,
+                    description or "",
+                    _json_dumps({
+                        "target_keys": row_target_keys,
+                        "element_labels": [int(element_label)],
+                    }),
+                ))
+                created_parameters.append(
+                    {
+                        "parameter_name": resolved_parameter_name,
+                        "element_label": int(element_label),
+                        "current_value": current_value,
+                    }
+                )
         conn.commit()
 
         return {
             "project_id": project_id,
-            "parameter_name": parameter_name,
-            "candidate_code": candidate_code,
-            "candidate_name": candidate["candidate_name"],
-            "set_name": set_row["set_name"],
-            "set_type": set_row["set_type"],
-            "set_scope": set_row["set_scope"],
-            "instance_name": set_row["instance_name"],
-            "part_name": set_row["part_name"],
+            "parameter_group_name": parameter_group_name,
+            "quantity_code": resolved_quantity_code,
+            "selection_mode": resolved_mode,
+            "set_name": capability_row["set_name"],
+            "set_type": capability_row["set_type"],
+            "set_scope": capability_row["set_scope"],
+            "instance_name": capability_row["instance_name"],
+            "part_name": capability_row["part_name"],
             "scatter": resolved_scatter,
             "description": description or "",
+            "created_parameter_count": len(created_parameters),
+            "created_parameters_preview": created_parameters[:20],
         }
     except Exception:
         conn.rollback()
@@ -2476,6 +2643,191 @@ def _build_static_alignment(test_rows, fem_rows, node_matches):
     return aligned
 
 
+def _relative_error_percent(node_value: float, point_value: float) -> float:
+    point = float(point_value)
+    node = float(node_value)
+    if abs(point) <= 1e-12:
+        return 0.0
+    return float((node - point) / point * 100.0)
+
+
+def _analysis_error_node_no(fem_row: dict) -> str:
+    instance_name = str(fem_row.get("instance_name") or "").strip()
+    fem_node_label = int(fem_row["fem_node_label"])
+    if instance_name:
+        return f"{instance_name}::{fem_node_label}"
+    return str(fem_node_label)
+
+
+def _build_static_analysis_error_rows(
+    *,
+    aligned_rows,
+    component_names,
+    load_case_no: int,
+    result_no: int,
+    value_prefix: str,
+) -> List[dict]:
+    rows: List[dict] = []
+    for test_row, fem_row, _match in aligned_rows:
+        point_no = str(test_row["point"])
+        node_no = _analysis_error_node_no(fem_row)
+        for component_name in component_names:
+            test_col, fem_col = STATIC_COMPONENT_MAP[component_name]
+            point_value = test_row.get(test_col)
+            node_value = fem_row.get(fem_col)
+            if point_value is None or node_value is None:
+                continue
+            node_value = float(node_value)
+            point_value = float(point_value)
+            rows.append(
+                {
+                    "load_case_no": int(load_case_no),
+                    "result_no": int(result_no),
+                    "point_no": point_no,
+                    "node_no": node_no,
+                    "component_name": str(component_name),
+                    "point_value": point_value,
+                    f"{value_prefix}_node_value": node_value,
+                    f"{value_prefix}_relative_error": _relative_error_percent(node_value, point_value),
+                    f"{value_prefix}_abs_error": float(abs(node_value - point_value)),
+                    "sensor_type_id": None,
+                }
+            )
+    return rows
+
+
+def _upsert_analysis_error_rows(cursor, project_id: int, rows: Sequence[dict], *, value_prefix: str) -> None:
+    if value_prefix not in {"initial", "updated"}:
+        raise ValueError("value_prefix must be initial or updated")
+    point_value_update_sql = "point_value = VALUES(point_value)," if value_prefix == "initial" else ""
+    insert_sql = f"""
+        INSERT INTO t_mt_py_fem_analysis_error
+        (pid, load_case_no, result_no, point_no, node_no, component_name, point_value,
+         {value_prefix}_node_value, {value_prefix}_relative_error, {value_prefix}_abs_error, sensor_type_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            node_no = VALUES(node_no),
+            {point_value_update_sql}
+            {value_prefix}_node_value = VALUES({value_prefix}_node_value),
+            {value_prefix}_relative_error = VALUES({value_prefix}_relative_error),
+            {value_prefix}_abs_error = VALUES({value_prefix}_abs_error),
+            sensor_type_id = VALUES(sensor_type_id)
+    """
+    for row in rows:
+        cursor.execute(
+            insert_sql,
+            (
+                int(project_id),
+                int(row["load_case_no"]),
+                int(row["result_no"]),
+                str(row["point_no"]),
+                str(row["node_no"]),
+                str(row["component_name"]),
+                row.get("point_value"),
+                row.get(f"{value_prefix}_node_value"),
+                row.get(f"{value_prefix}_relative_error"),
+                row.get(f"{value_prefix}_abs_error"),
+                row.get("sensor_type_id"),
+            ),
+        )
+
+
+def store_updated_static_analysis_error(
+    *,
+    project_id: int,
+    fem_rows: Sequence[dict],
+    load_case_no=None,
+    result_no=None,
+    components=None,
+    include_rotations: bool = False,
+):
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT DISTINCT load_case_no, result_no
+            FROM t_mt_py_test_static_result
+            WHERE pid = %s
+            ORDER BY load_case_no, result_no
+        """, (project_id,))
+        test_pairs = cursor.fetchall()
+        if not test_pairs:
+            raise ValueError("test static results not found")
+
+        test_case_to_results = {}
+        for row in test_pairs:
+            test_case_to_results.setdefault(int(row["load_case_no"]), []).append(int(row["result_no"]))
+
+        if load_case_no is None:
+            chosen_load_case_no = int(sorted(test_case_to_results.keys())[0])
+        else:
+            chosen_load_case_no = int(load_case_no)
+            if chosen_load_case_no not in test_case_to_results:
+                raise ValueError(f"test static load_case_no not found: {chosen_load_case_no}")
+
+        result_candidates = sorted(test_case_to_results[chosen_load_case_no])
+        if result_no is None:
+            chosen_result_no = int(result_candidates[0])
+        else:
+            chosen_result_no = int(result_no)
+            if chosen_result_no not in result_candidates:
+                raise ValueError(
+                    f"test static result_no not found for load_case_no={chosen_load_case_no}: {chosen_result_no}"
+                )
+
+        component_names = _resolve_static_components(
+            components=components,
+            include_rotations=include_rotations,
+        )
+        cursor.execute("""
+            SELECT point, ux, uy, uz, rx, ry, rz, load_factor, extra_json
+            FROM t_mt_py_test_static_result
+            WHERE pid = %s AND load_case_no = %s AND result_no = %s
+            ORDER BY point
+        """, (project_id, chosen_load_case_no, chosen_result_no))
+        test_rows_raw = cursor.fetchall()
+        if not test_rows_raw:
+            raise ValueError("selected test static result rows not found")
+        test_rows = {str(row["point"]): row for row in test_rows_raw}
+
+        cursor.execute("""
+            SELECT test_node_id, instance_name, fem_node_label
+            FROM t_mt_py_fem_node_match
+            WHERE pid = %s
+            ORDER BY test_node_id
+        """, (project_id,))
+        node_matches = cursor.fetchall()
+
+        aligned_rows = _build_static_alignment(test_rows, list(fem_rows or []), node_matches)
+        if not aligned_rows:
+            raise ValueError("no aligned static rows found between test and updated fem results")
+
+        error_rows = _build_static_analysis_error_rows(
+            aligned_rows=aligned_rows,
+            component_names=component_names,
+            load_case_no=chosen_load_case_no,
+            result_no=chosen_result_no,
+            value_prefix="updated",
+        )
+        _upsert_analysis_error_rows(cursor, project_id, error_rows, value_prefix="updated")
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "load_case_no": int(chosen_load_case_no),
+            "result_no": int(chosen_result_no),
+            "components": component_names,
+            "analysis_error_row_count": len(error_rows),
+            "analysis_error_preview": error_rows[:20],
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def compute_static_correlation(
     project_id,
     load_case_no=None,
@@ -2537,6 +2889,7 @@ def compute_static_correlation(
         fem_values = []
         anchors = []
         component_counts = {name: 0 for name in component_names}
+        analysis_error_rows = []
 
         for test_row, fem_row, match in aligned_rows:
             # Each aligned point can contribute multiple scalar channels
@@ -2550,6 +2903,20 @@ def compute_static_correlation(
                 test_values.append(complex(float(test_val), 0.0))
                 fem_values.append(complex(float(fem_val), 0.0))
                 component_counts[comp_name] += 1
+                analysis_error_rows.append(
+                    {
+                        "load_case_no": int(chosen_load_case_no),
+                        "result_no": int(chosen_result_no),
+                        "point_no": str(test_row["point"]),
+                        "node_no": _analysis_error_node_no(fem_row),
+                        "component_name": comp_name,
+                        "point_value": float(test_val),
+                        "initial_node_value": float(fem_val),
+                        "initial_relative_error": _relative_error_percent(float(fem_val), float(test_val)),
+                        "initial_abs_error": float(abs(float(fem_val) - float(test_val))),
+                        "sensor_type_id": None,
+                    }
+                )
                 if len(anchors) < 50:
                     anchors.append({
                         "test_point": str(test_row["point"]),
@@ -2577,8 +2944,11 @@ def compute_static_correlation(
             "aligned_point_count": len(aligned_rows),
             "value_count": len(test_values),
             "component_value_counts": component_counts,
+            "analysis_error_row_count": len(analysis_error_rows),
+            "analysis_error_preview": analysis_error_rows[:20],
             "dac": metrics["dac"],
             "dsf": metrics["dsf"],
+            "_analysis_error_rows": analysis_error_rows,
             "extra": {
                 "scale_real": metrics["scale_real"],
                 "scale_imag": metrics["scale_imag"],
@@ -2613,6 +2983,7 @@ def evaluate_static_correlation(
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        analysis_error_rows = list(result.get("_analysis_error_rows") or [])
         cursor.execute("""
             INSERT INTO t_mt_py_fem_dac_dsf (pid, dac, dsf)
             VALUES (%s, %s, %s)
@@ -2624,6 +2995,7 @@ def evaluate_static_correlation(
             float(result["dac"]),
             float(result["dsf"]),
         ))
+        _upsert_analysis_error_rows(cursor, project_id, analysis_error_rows, value_prefix="initial")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2632,6 +3004,7 @@ def evaluate_static_correlation(
         cursor.close()
         conn.close()
 
+    result.pop("_analysis_error_rows", None)
     return result
 
 

@@ -62,7 +62,9 @@ class InpTreeRequest(BaseModel):
 
 class CreateOptimizationParameterRequest(BaseModel):
     project_id: int
-    candidate_code: str
+    candidate_code: Optional[str] = None
+    quantity_code: Optional[str] = None
+    selection_mode: Optional[str] = None
     set_name: str
     parameter_name: Optional[str] = None
     scatter: Optional[float] = None
@@ -71,6 +73,23 @@ class CreateOptimizationParameterRequest(BaseModel):
     set_scope: Optional[str] = None
     instance_name: Optional[str] = None
     part_name: Optional[str] = None
+
+
+class AddParameterRequest(BaseModel):
+    project_id: int
+    parameter: str
+    type: str
+    scatter: float
+    upper: Optional[float] = None
+    lower: Optional[float] = None
+
+
+class AddResponseRequest(BaseModel):
+    project_id: int
+    type: str
+    scatter: float
+    dof: str
+    step: Optional[str] = None
 
 
 class BayesianModelUpdateRequest(BaseModel):

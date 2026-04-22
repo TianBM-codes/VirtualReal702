@@ -30,6 +30,7 @@ router = APIRouter(tags=["sensitivity"])
 
 
 @router.post("/sensitivity/store/dsa")
+@router.post("/sensitivity/calculate")
 async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaRequest):
     await log_request(request, model_to_dict(body))
     try:

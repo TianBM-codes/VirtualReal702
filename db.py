@@ -244,78 +244,64 @@ CREATE_TABLE_SQL_LIST = [
     ) COMMENT='有限元静力振型配对表'
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameters (
-        pid INT NOT NULL COMMENT '工程ID',
-        parameter VARCHAR(32) NOT NULL COMMENT '参数名称',
-        description VARCHAR(255) NOT NULL DEFAULT '' COMMENT '参数描述',
-        PRIMARY KEY (pid, parameter)
-    ) COMMENT='有限元参数配置表'
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_supported_quantity (
+        quantity_code VARCHAR(32) NOT NULL COMMENT 'quantity code',
+        quantity_name VARCHAR(200) NOT NULL COMMENT 'quantity name',
+        unit VARCHAR(50) NULL COMMENT 'unit',
+        enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT 'enabled',
+        sort_no INT NOT NULL DEFAULT 0 COMMENT 'sort no',
+        PRIMARY KEY (quantity_code)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='supported correction quantities';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_sets (
-        pid INT NOT NULL COMMENT '工程ID',
-        set_name VARCHAR(32) NOT NULL COMMENT '集合名称',
-        set_type VARCHAR(32) NOT NULL COMMENT '集合类型',
-        PRIMARY KEY (pid, set_name)
-    ) COMMENT='有限元集合信息表'
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_candidate (
-        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
-        pid BIGINT NOT NULL COMMENT '项目ID',
-        candidate_code VARCHAR(200) NOT NULL COMMENT '候选参数编码',
-        candidate_name VARCHAR(200) NOT NULL COMMENT '候选参数名称',
-        keyword_name VARCHAR(100) NOT NULL COMMENT '来源关键字',
-        source_scope VARCHAR(50) NOT NULL COMMENT '来源作用域',
-        source_name VARCHAR(200) NOT NULL COMMENT '来源名称',
-        source_path VARCHAR(255) NOT NULL COMMENT '解析路径',
-        scalar_value DOUBLE NULL COMMENT '当前数值',
-        scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '默认离散度',
-        unit VARCHAR(50) NULL COMMENT '单位',
-        extra_json JSON NULL COMMENT '扩展信息',
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_quantity_set_capability (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        quantity_code VARCHAR(32) NOT NULL COMMENT 'quantity code',
+        set_name VARCHAR(200) NOT NULL COMMENT 'set name',
+        set_type VARCHAR(32) NOT NULL COMMENT 'set type',
+        set_scope VARCHAR(32) NOT NULL COMMENT 'set scope',
+        instance_name VARCHAR(200) NULL COMMENT 'instance name',
+        part_name VARCHAR(200) NULL COMMENT 'part name',
+        set_role VARCHAR(64) NOT NULL COMMENT 'set role',
+        element_family VARCHAR(32) NULL COMMENT 'element family',
+        section_type VARCHAR(64) NULL COMMENT 'section type',
+        material_name VARCHAR(200) NULL COMMENT 'material name',
+        member_count INT NOT NULL DEFAULT 0 COMMENT 'member count',
+        supports_global TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'supports global',
+        supports_local TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'supports local',
+        current_value DOUBLE NULL COMMENT 'shared current value',
+        extra_json JSON NULL COMMENT 'extra json',
         PRIMARY KEY (id),
-        UNIQUE KEY uk_pid_candidate_code (pid, candidate_code),
-        KEY idx_pid_keyword (pid, keyword_name)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='INP可选优化参数目录';
+        UNIQUE KEY uk_pid_quantity_set_capability (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name),
+        KEY idx_pid_quantity_code (pid, quantity_code),
+        KEY idx_pid_set_name (pid, set_name, set_type, set_scope)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='quantity-set capability catalog';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_set_catalog (
-        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
-        pid BIGINT NOT NULL COMMENT '项目ID',
-        set_name VARCHAR(200) NOT NULL COMMENT '集合名称',
-        set_type VARCHAR(32) NOT NULL COMMENT '集合类型',
-        set_scope VARCHAR(32) NOT NULL COMMENT '集合作用域',
-        instance_name VARCHAR(200) NULL COMMENT '实例名称',
-        part_name VARCHAR(200) NULL COMMENT '零件名称',
-        member_count INT NOT NULL DEFAULT 0 COMMENT '成员数量',
-        extra_json JSON NULL COMMENT '扩展信息',
-        PRIMARY KEY (id),
-        UNIQUE KEY uk_pid_set_scope_name (pid, set_scope, set_type, set_name, instance_name, part_name),
-        KEY idx_pid_set_type (pid, set_type)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='INP集合目录';
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_optimization_parameter (
-        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
-        pid BIGINT NOT NULL COMMENT '项目ID',
-        parameter_name VARCHAR(200) NOT NULL COMMENT '优化参数名称',
-        candidate_code VARCHAR(200) NOT NULL COMMENT '候选参数编码',
-        set_name VARCHAR(200) NOT NULL COMMENT '集合名称',
-        set_type VARCHAR(32) NOT NULL COMMENT '集合类型',
-        set_scope VARCHAR(32) NOT NULL COMMENT '集合作用域',
-        instance_name VARCHAR(200) NULL COMMENT '实例名称',
-        part_name VARCHAR(200) NULL COMMENT '零件名称',
-        scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '离散度',
-        lower_bound DOUBLE NULL COMMENT '优化下界',
-        upper_bound DOUBLE NULL COMMENT '优化上界',
-        value DOUBLE NULL COMMENT '当前值',
-        pdf INT NULL COMMENT '概率密度值',
-        description VARCHAR(255) NOT NULL DEFAULT '' COMMENT '描述',
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_selected_parameter (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'id',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        parameter_group_name VARCHAR(200) NOT NULL COMMENT 'parameter group name',
+        parameter_name VARCHAR(200) NOT NULL COMMENT 'parameter name',
+        quantity_code VARCHAR(32) NOT NULL COMMENT 'quantity code',
+        selection_mode VARCHAR(32) NOT NULL COMMENT 'selection mode',
+        set_name VARCHAR(200) NOT NULL COMMENT 'set name',
+        set_type VARCHAR(32) NOT NULL COMMENT 'set type',
+        set_scope VARCHAR(32) NOT NULL COMMENT 'set scope',
+        instance_name VARCHAR(200) NULL COMMENT 'instance name',
+        part_name VARCHAR(200) NULL COMMENT 'part name',
+        element_label BIGINT NULL COMMENT 'element label',
+        current_value DOUBLE NULL COMMENT 'current value',
+        scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT 'scatter',
+        description VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'description',
+        extra_json JSON NULL COMMENT 'extra json',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created at',
         PRIMARY KEY (id),
         UNIQUE KEY uk_pid_parameter_name (pid, parameter_name),
-        KEY idx_pid_candidate (pid, candidate_code)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户创建的优化参数';
+        KEY idx_pid_group_name (pid, parameter_group_name),
+        KEY idx_pid_quantity_mode (pid, quantity_code, selection_mode)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='selected correction parameters';
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_definition (
@@ -672,19 +658,78 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='相关性散点图表';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_error_analyse (
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_analysis_error (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
-        node_no VARCHAR(64) COMMENT '节点号',
-        point_no VARCHAR(64) COMMENT '测点号',
-        node_value FLOAT COMMENT '节点值',
+        load_case_no INT NOT NULL DEFAULT 1 COMMENT '载荷工况号',
+        result_no INT NOT NULL DEFAULT 1 COMMENT '结果序号',
+        point_no VARCHAR(64) NOT NULL COMMENT '测点号',
+        node_no VARCHAR(128) NULL COMMENT '节点号',
+        component_name VARCHAR(32) NOT NULL COMMENT '分量名称',
         point_value FLOAT COMMENT '测点值',
-        relative_error FLOAT COMMENT '相对误差',
-        abs_error REAL COMMENT '绝对误差',
+        initial_node_value FLOAT COMMENT '初始节点值',
+        initial_relative_error FLOAT COMMENT '初始相对误差',
+        initial_abs_error REAL COMMENT '初始绝对误差',
+        updated_node_value FLOAT COMMENT '修正后节点值',
+        updated_relative_error FLOAT COMMENT '修正后相对误差',
+        updated_abs_error REAL COMMENT '修正后绝对误差',
         sensor_type_id BIGINT COMMENT '传感器类型ID',
         PRIMARY KEY (id),
-        KEY idx_pid (pid)
+        UNIQUE KEY uk_pid_case_result_point_component (pid, load_case_no, result_no, point_no, component_name),
+        KEY idx_pid (pid),
+        KEY idx_pid_point (pid, point_no)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='误差分析表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_model_update_static_result (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        batch_no VARCHAR(32) NOT NULL COMMENT '批次号',
+        step_name VARCHAR(200) NULL COMMENT '分析步名称',
+        frame_idx INT NOT NULL DEFAULT 0 COMMENT '帧序号',
+        instance_name VARCHAR(200) NULL COMMENT '实例名称',
+        part_name VARCHAR(200) NULL COMMENT '零件名称',
+        fem_node_label BIGINT NOT NULL COMMENT '有限元节点号',
+        u1 DOUBLE NULL COMMENT 'X向位移',
+        u2 DOUBLE NULL COMMENT 'Y向位移',
+        u3 DOUBLE NULL COMMENT 'Z向位移',
+        extra_json JSON NULL COMMENT '扩展信息',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_batch_frame_node (pid, batch_no, frame_idx, instance_name, fem_node_label),
+        KEY idx_pid_batch (pid, batch_no)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模型修正最终位移结果表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_manual_parameter (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        parameter_name VARCHAR(100) NOT NULL COMMENT '参数名称',
+        parameter_type VARCHAR(32) NOT NULL COMMENT '参数类型',
+        scatter FLOAT NOT NULL COMMENT '离散度',
+        upper_bound FLOAT NULL COMMENT '上限',
+        lower_bound FLOAT NULL COMMENT '下限',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_parameter_name (pid, parameter_name),
+        KEY idx_pid_parameter_type (pid, parameter_type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手工录入参数表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_manual_response (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        response_type VARCHAR(32) NOT NULL COMMENT '响应类型',
+        step_name VARCHAR(100) NOT NULL DEFAULT '' COMMENT '分析步名称',
+        dof VARCHAR(32) NOT NULL COMMENT '自由度',
+        scatter FLOAT NOT NULL COMMENT '离散度',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_response_step_dof (pid, response_type, step_name, dof),
+        KEY idx_pid_response_type (pid, response_type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手工录入响应表';
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_dac_dsf (
@@ -754,7 +799,6 @@ CREATE_TABLE_SQL_LIST = [
     """
 ]
 
-
 def get_connection():
     return mysql.connector.connect(
         host=DB_CONFIG["host"],
@@ -773,10 +817,6 @@ def ensure_tables_exist():
     try:
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
-        cursor.execute(
-            "ALTER TABLE t_mt_py_fem_optimization_parameter "
-            "MODIFY COLUMN scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '离散度'"
-        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -813,11 +853,8 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_transform_operation WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_static_shape_pairs WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_parameters WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_sets WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_candidate WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_set_catalog WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_optimization_parameter WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_quantity_set_capability WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_selected_parameter WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_target WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = {pid}")
@@ -832,5 +869,8 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_variation WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_tracking_iteration WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_tracking_value WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_error_analyse WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_analysis_error WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_model_update_static_result WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_manual_parameter WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_manual_response WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dac_dsf WHERE pid = {pid}")

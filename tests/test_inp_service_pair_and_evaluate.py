@@ -114,6 +114,55 @@ def test_evaluate_static_correlation_stores_dac_dsf(monkeypatch):
     ]
 
 
+def test_evaluate_static_correlation_stores_analysis_error_rows(monkeypatch):
+    fake_conn = _WriteConnection()
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(
+        inp_service,
+        "compute_static_correlation",
+        lambda **kwargs: {
+            "project_id": 101,
+            "load_case_no": 1,
+            "result_no": 1,
+            "components": ["UX"],
+            "dac": 98.5,
+            "dsf": 1.02,
+            "_analysis_error_rows": [
+                {
+                    "load_case_no": 1,
+                    "result_no": 1,
+                    "point_no": "WY1",
+                    "node_no": "PART-1-1::1001",
+                    "component_name": "UX",
+                    "point_value": 1.0,
+                    "initial_node_value": 1.1,
+                    "initial_relative_error": 10.0,
+                    "initial_abs_error": 0.1,
+                    "sensor_type_id": None,
+                }
+            ],
+        },
+    )
+
+    result = inp_service.evaluate_static_correlation(project_id=101, components=["UX"])
+
+    assert result["dac"] == 98.5
+    assert "_analysis_error_rows" not in result
+    assert fake_conn.committed is True
+    assert fake_conn.rolled_back is False
+    assert fake_conn.cursor_obj.executed == [
+        (
+            "INSERT INTO t_mt_py_fem_dac_dsf (pid, dac, dsf) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE dac = VALUES(dac), dsf = VALUES(dsf)",
+            (101, 98.5, 1.02),
+        ),
+        (
+            "INSERT INTO t_mt_py_fem_analysis_error (pid, load_case_no, result_no, point_no, node_no, component_name, point_value, initial_node_value, initial_relative_error, initial_abs_error, sensor_type_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE node_no = VALUES(node_no), point_value = VALUES(point_value), initial_node_value = VALUES(initial_node_value), initial_relative_error = VALUES(initial_relative_error), initial_abs_error = VALUES(initial_abs_error), sensor_type_id = VALUES(sensor_type_id)",
+            (101, 1, 1, "WY1", "PART-1-1::1001", "UX", 1.0, 1.1, 10.0, 0.1, None),
+        ),
+    ]
+
+
 def test_get_pair_node_point_result_keeps_sensor_and_node_order(monkeypatch):
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: _QueryConnection())

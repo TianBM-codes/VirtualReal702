@@ -1,0 +1,110 @@
+from pathlib import Path
+
+from services.model_update.analysis import model_update_meta_service
+
+
+class _WriteCursor:
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((" ".join(sql.split()), params))
+
+    def close(self):
+        return None
+
+
+class _WriteConnection:
+    def __init__(self):
+        self.cursor_obj = _WriteCursor()
+        self.committed = False
+        self.rolled_back = False
+
+    def cursor(self, dictionary=False):
+        return self.cursor_obj
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        return None
+
+
+def test_get_abaqus_config_reads_service_config(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "service_config.json"
+    config_path.write_text(
+        '{"APP_ABAQUS_CMD": "C:/SIMULIA/Commands/abaqus.bat"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_update_meta_service, "_service_config_path", lambda: config_path)
+
+    result = model_update_meta_service.get_abaqus_config()
+
+    assert result == {
+        "abaqus_cmd": "C:/SIMULIA/Commands/abaqus.bat",
+        "configured": True,
+        "source_file": str(config_path),
+    }
+
+
+def test_add_manual_parameter_upserts_row(monkeypatch):
+    fake_conn = _WriteConnection()
+    monkeypatch.setattr(model_update_meta_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(model_update_meta_service, "get_connection", lambda: fake_conn)
+
+    result = model_update_meta_service.add_manual_parameter(
+        project_id=7,
+        parameter="E_PANEL",
+        parameter_type="E",
+        scatter=0.15,
+        upper=2.0,
+        lower=1.0,
+    )
+
+    assert result == {
+        "project_id": 7,
+        "parameter": "E_PANEL",
+        "type": "E",
+        "scatter": 0.15,
+        "upper": 2.0,
+        "lower": 1.0,
+    }
+    assert fake_conn.committed is True
+    assert fake_conn.cursor_obj.executed == [
+        (
+            "INSERT INTO t_mt_py_fem_manual_parameter (pid, parameter_name, parameter_type, scatter, upper_bound, lower_bound) VALUES (%s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE parameter_type = VALUES(parameter_type), scatter = VALUES(scatter), upper_bound = VALUES(upper_bound), lower_bound = VALUES(lower_bound), updated_at = CURRENT_TIMESTAMP",
+            (7, "E_PANEL", "E", 0.15, 2.0, 1.0),
+        )
+    ]
+
+
+def test_add_manual_response_upserts_row(monkeypatch):
+    fake_conn = _WriteConnection()
+    monkeypatch.setattr(model_update_meta_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(model_update_meta_service, "get_connection", lambda: fake_conn)
+
+    result = model_update_meta_service.add_manual_response(
+        project_id=7,
+        response_type="DISPLACEMENT",
+        scatter=0.05,
+        dof="UX",
+        step="Step-1",
+    )
+
+    assert result == {
+        "project_id": 7,
+        "type": "DISPLACEMENT",
+        "step": "Step-1",
+        "dof": "UX",
+        "scatter": 0.05,
+    }
+    assert fake_conn.committed is True
+    assert fake_conn.cursor_obj.executed == [
+        (
+            "INSERT INTO t_mt_py_fem_manual_response (pid, response_type, step_name, dof, scatter) VALUES (%s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE scatter = VALUES(scatter), updated_at = CURRENT_TIMESTAMP",
+            (7, "DISPLACEMENT", "Step-1", "UX", 0.05),
+        )
+    ]

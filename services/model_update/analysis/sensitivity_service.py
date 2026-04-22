@@ -1567,13 +1567,12 @@ def _load_project_optimization_parameters(project_id: int) -> List[dict]:
     try:
         cursor.execute(
             """
-            SELECT op.id, op.parameter_name, op.candidate_code, op.set_name, op.set_type, op.set_scope,
-                   op.instance_name, op.part_name, op.scatter, cand.scalar_value
-            FROM t_mt_py_fem_optimization_parameter op
-            LEFT JOIN t_mt_py_fem_parameter_candidate cand
-              ON cand.pid = op.pid AND cand.candidate_code = op.candidate_code
-            WHERE op.pid = %s
-            ORDER BY op.created_at ASC, op.id ASC
+            SELECT id, parameter_group_name, parameter_name, quantity_code, selection_mode,
+                   set_name, set_type, set_scope, instance_name, part_name,
+                   element_label, scatter, current_value AS scalar_value, extra_json
+            FROM t_mt_py_fem_selected_parameter
+            WHERE pid = %s
+            ORDER BY created_at ASC, id ASC
             """,
             (project_id,),
         )
@@ -1846,6 +1845,26 @@ def _parameter_target_labels(model, parameter_row: dict) -> tuple[str, List[obje
     set_scope = str(parameter_row.get("set_scope") or "").upper()
     instance_name = parameter_row.get("instance_name")
     part_name = parameter_row.get("part_name")
+    element_label = parameter_row.get("element_label")
+
+    if element_label is not None:
+        resolved_label = int(element_label)
+        if set_scope == "PART":
+            if model.assembly and model.assembly.instances and part_name:
+                matched_instances = [
+                    inst_name
+                    for inst_name, inst in model.assembly.instances.items()
+                    if str(inst.part_name) == str(part_name)
+                ]
+                if matched_instances:
+                    scoped = []
+                    for inst_name in matched_instances:
+                        scoped.extend(_scoped_labels(inst_name, [resolved_label]))
+                    return "cell", scoped
+            return "cell", _scoped_labels(str(part_name) if part_name else None, [resolved_label])
+
+        if set_scope == "ASSEMBLY":
+            return "cell", _scoped_labels(str(instance_name) if instance_name else None, [resolved_label])
 
     if set_type == "NSET":
         target_kind = "point"

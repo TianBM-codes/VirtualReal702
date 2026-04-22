@@ -114,6 +114,33 @@ def test_compute_static_correlation_reuses_dac_dsf_with_node_matches(monkeypatch
     assert result["dac"] == 100.0
     assert result["dsf"] == 1.0
     assert result["component_value_counts"] == {"UX": 2}
+    assert result["analysis_error_row_count"] == 2
+    assert result["analysis_error_preview"] == [
+        {
+            "load_case_no": 1,
+            "result_no": 1,
+            "point_no": "501",
+            "node_no": "PART-1-1::1001",
+            "component_name": "UX",
+            "point_value": 1.0,
+            "initial_node_value": 1.0,
+            "initial_relative_error": 0.0,
+            "initial_abs_error": 0.0,
+            "sensor_type_id": None,
+        },
+        {
+            "load_case_no": 1,
+            "result_no": 1,
+            "point_no": "502",
+            "node_no": "PART-1-1::1002",
+            "component_name": "UX",
+            "point_value": 2.0,
+            "initial_node_value": 2.0,
+            "initial_relative_error": 0.0,
+            "initial_abs_error": 0.0,
+            "sensor_type_id": None,
+        },
+    ]
 
 
 def test_compute_static_correlation_defaults_to_translations_only(monkeypatch):
