@@ -19,7 +19,7 @@ from src.l3.core.state import registry
 from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.manifest_repo import ManifestRepo
 from src.l3.services.node_table_service import get_instance_fields
-from tools.odb_client import ODBClient, _select_component_values
+from tools.odb_client import ODBClient, ODBClientError, _select_component_values
 
 from .solver_service import run_abaqus_sensitivity_job
 
@@ -530,6 +530,205 @@ def _load_dsa_normalized_sensitivity_matrix(**kwargs) -> dict:
     return build_dsa_normalized_sensitivity_matrix(**kwargs)
 
 
+def _resolve_loaded_odb_id_for_workspace(workspace: Optional[str]) -> Optional[str]:
+    if not workspace:
+        return None
+    try:
+        normalized_workspace = os.path.normcase(os.path.abspath(workspace))
+    except Exception:
+        return None
+
+    loaded = getattr(registry, "loaded", {})
+    for loaded_odb_id, model_index in dict(loaded).items():
+        candidate_workspace = getattr(model_index, "workspace", None)
+        if not candidate_workspace:
+            continue
+        if os.path.normcase(os.path.abspath(candidate_workspace)) == normalized_workspace:
+            return str(loaded_odb_id)
+    return None
+
+
+def _build_sensitivity_cloud_request(
+        *,
+        batch_no: str,
+        matrix_payload: dict,
+        result_group: Optional[str] = None,
+        step_name: str = "Sensitivity",
+        field_name: str = "SENSITIVITY_CLOUD",
+) -> tuple[dict, dict]:
+    parameter_columns = list(matrix_payload.get("parameter_columns") or [])
+    response_rows = list(matrix_payload.get("response_rows") or [])
+    matrix = np.asarray(matrix_payload.get("matrix") or [], dtype=np.float64)
+
+    if not parameter_columns:
+        raise ValidationError("parameter_columns are required for sensitivity cloud export")
+    if not response_rows:
+        raise ValidationError("response_rows are required for sensitivity cloud export")
+    if matrix.ndim != 2:
+        raise ValidationError(
+            "sensitivity matrix must be a 2D array for cloud export",
+            {"shape": list(matrix.shape)},
+        )
+    if matrix.shape != (len(response_rows), len(parameter_columns)):
+        raise ValidationError(
+            "sensitivity matrix dimensions do not match row/column metadata for cloud export",
+            {
+                "matrix_shape": list(matrix.shape),
+                "response_count": len(response_rows),
+                "parameter_count": len(parameter_columns),
+            },
+        )
+
+    components = _parameter_display_names(parameter_columns)
+    resolved_result_group = str(result_group or f"sensitivity_batch_{batch_no}")
+    resolved_step_name = str(step_name or "Sensitivity").strip() or "Sensitivity"
+    resolved_field_name = str(field_name or "SENSITIVITY_CLOUD").strip() or "SENSITIVITY_CLOUD"
+
+    instance_frames: Dict[str, List[dict]] = {}
+    instance_counts: Dict[str, List[int]] = {}
+
+    for frame_index, row_meta in enumerate(response_rows):
+        per_instance_labels: Dict[str, Dict[int, List[float]]] = {}
+        for component_index, column_meta in enumerate(parameter_columns):
+            mapping = dict(column_meta.get("element_mapping") or {})
+            target_kind = str(mapping.get("target_kind") or "").lower()
+            if target_kind not in {"cell", ""}:
+                raise ValidationError(
+                    "sensitivity cloud export currently supports element targets only",
+                    {
+                        "target_kind": mapping.get("target_kind"),
+                        "parameter_name": column_meta.get("parameter_name"),
+                        "field": column_meta.get("field"),
+                    },
+                )
+
+            scalar_value = float(matrix[frame_index, component_index])
+            for scope_name, labels in dict(mapping.get("targets_by_scope") or {}).items():
+                instance_name = str(scope_name or "").strip()
+                if not instance_name:
+                    continue
+                label_map = per_instance_labels.setdefault(instance_name, {})
+                for label in labels or []:
+                    element_label = int(label)
+                    values = label_map.setdefault(
+                        element_label,
+                        [float("nan")] * len(components),
+                    )
+                    values[component_index] = scalar_value
+
+        for instance_name, label_map in sorted(per_instance_labels.items()):
+            instance_frame_entry = {
+                "frame_idx": frame_index,
+                "frame_value": float(frame_index + 1),
+                "data": [
+                    {"label": int(label), "values": values}
+                    for label, values in sorted(label_map.items())
+                ],
+            }
+            instance_frames.setdefault(instance_name, []).append(instance_frame_entry)
+            instance_counts.setdefault(instance_name, []).append(len(instance_frame_entry["data"]))
+
+    if not instance_frames:
+        raise ValidationError("no element targets were resolved for sensitivity cloud export")
+
+    instances_payload = [
+        {"instance": instance_name, "frames": frames}
+        for instance_name, frames in sorted(instance_frames.items())
+    ]
+    response_frames = [
+        {
+            "frame_idx": index,
+            "frame_value": float(index + 1),
+            "description": _response_display_name(dict(row_meta)),
+            "response": dict(row_meta),
+        }
+        for index, row_meta in enumerate(response_rows)
+    ]
+
+    request_body = {
+        "step_name": resolved_step_name,
+        "field_name": resolved_field_name,
+        "components": components,
+        "result_group": resolved_result_group,
+        "type": "element",
+        "instances": instances_payload,
+    }
+    metadata = {
+        "result_group": resolved_result_group,
+        "step": resolved_step_name,
+        "field": resolved_field_name,
+        "position": "ELEMENT_NODAL",
+        "frame_count": len(response_rows),
+        "frames": response_frames,
+        "components": components,
+        "instances": [str(item["instance"]) for item in instances_payload],
+        "instance_element_counts": {
+            instance_name: [int(count) for count in counts]
+            for instance_name, counts in sorted(instance_counts.items())
+        },
+    }
+    return request_body, metadata
+
+
+def _write_sensitivity_cloud_result(
+        *,
+        odb_id: str,
+        base_url: Optional[str],
+        batch_no: str,
+        matrix_payload: dict,
+        result_group: Optional[str] = None,
+        step_name: str = "Sensitivity",
+        field_name: str = "SENSITIVITY_CLOUD",
+        timeout: int = 60,
+) -> dict:
+    resolved_odb_id = str(odb_id or "").strip()
+    if not resolved_odb_id:
+        raise ValidationError("odb_id is required for cloud export via external-field api")
+
+    request_body, metadata = _build_sensitivity_cloud_request(
+        batch_no=batch_no,
+        matrix_payload=matrix_payload,
+        result_group=result_group,
+        step_name=step_name,
+        field_name=field_name,
+    )
+    resolved_base_url = base_url or "http://127.0.0.1:18765"
+    client = ODBClient(base_url=resolved_base_url, timeout=timeout)
+    try:
+        write_response = client.post_external_field(resolved_odb_id, request_body)
+    except ODBClientError as exc:
+        details = {
+            "odb_id": resolved_odb_id,
+            "base_url": resolved_base_url,
+            "status_code": exc.status_code,
+        }
+        if exc.status_code == 404:
+            raise NotFoundError("external-field api target odb was not found", details) from exc
+        raise ValidationError(
+            "external-field api request failed",
+            {**details, "detail": exc.detail},
+        ) from exc
+
+    result = dict(metadata)
+    result.update(
+        {
+            "odb_id": resolved_odb_id,
+            "base_url": resolved_base_url,
+            "write_response": write_response,
+            "query_hint": {
+                "endpoint": "/api/odb/{odb_id}/results/frame-scalars",
+                "odb_id": resolved_odb_id,
+                "result_group": metadata["result_group"],
+                "step": metadata["step"],
+                "field": metadata["field"],
+                "frame": 0,
+                "component_idx": 0,
+            },
+        }
+    )
+    return result
+
+
 def _load_existing_analysis_run_ids(cursor, *, project_id: int, batch_no: str) -> List[int]:
     cursor.execute(
         """
@@ -793,6 +992,8 @@ def store_dsa_sensitivity_results(
         batch_no: Optional[str] = None,
         input_inp: str,
         output_dir: Optional[str] = None,
+        odb_id: Optional[str] = None,
+        base_url: Optional[str] = None,
         workspace: Optional[str] = None,
         odb_path: Optional[str] = None,
         step: Optional[str] = None,
@@ -817,6 +1018,10 @@ def store_dsa_sensitivity_results(
         run_solver: bool = True,
         timeout_sec: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
+        write_cloud_result: bool = False,
+        cloud_result_group: Optional[str] = None,
+        cloud_step_name: str = "Sensitivity",
+        cloud_field_name: str = "SENSITIVITY_CLOUD",
 ) -> dict:
     ensure_tables_exist()
 
@@ -879,6 +1084,8 @@ def store_dsa_sensitivity_results(
 
     matrix_payload = _load_dsa_normalized_sensitivity_matrix(
         project_id=project_id,
+        odb_id=odb_id,
+        base_url=base_url,
         inp_path=analysis_inp_path,
         workspace=resolved_workspace,
         odb_path=resolved_odb_path,
@@ -902,6 +1109,29 @@ def store_dsa_sensitivity_results(
         case_name=Path(input_inp_abs).stem,
         matrix_payload=matrix_payload,
     )
+    cloud_result = None
+    if write_cloud_result:
+        resolved_cloud_odb_id = str(odb_id or "").strip() or _resolve_loaded_odb_id_for_workspace(matrix_payload.get("workspace"))
+        if not resolved_cloud_odb_id:
+            raise ValidationError(
+                "cloud export via external-field api requires odb_id or a workspace already loaded in the L3 registry",
+                {
+                    "project_id": int(project_id),
+                    "batch_no": normalized_batch_no,
+                    "odb_id": odb_id,
+                    "workspace": matrix_payload.get("workspace"),
+                },
+            )
+        cloud_result = _write_sensitivity_cloud_result(
+            odb_id=resolved_cloud_odb_id,
+            base_url=base_url or matrix_payload.get("base_url"),
+            batch_no=normalized_batch_no,
+            matrix_payload=matrix_payload,
+            result_group=cloud_result_group,
+            step_name=cloud_step_name,
+            field_name=cloud_field_name,
+            timeout=timeout,
+        )
     return {
         **persisted,
         "input_inp": input_inp_abs,
@@ -915,6 +1145,7 @@ def store_dsa_sensitivity_results(
         "field_prefix": matrix_payload.get("field_prefix"),
         "solver": solver_payload.get("solver") if solver_payload else None,
         "generated_files": solver_payload.get("generated_files") if solver_payload else None,
+        "cloud_result": cloud_result,
     }
 
 

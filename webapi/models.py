@@ -235,6 +235,8 @@ class SensitivityStoreDsaRequest(BaseModel):
     batch_no: Optional[str] = "1"
     input_inp: str
     output_dir: Optional[str] = None
+    odb_id: Optional[str] = None
+    base_url: Optional[str] = None
     workspace: Optional[str] = None
     odb_path: Optional[str] = None
     step: Optional[str] = None
@@ -259,6 +261,10 @@ class SensitivityStoreDsaRequest(BaseModel):
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
+    write_cloud_result: bool = False
+    cloud_result_group: Optional[str] = None
+    cloud_step_name: str = "Sensitivity"
+    cloud_field_name: str = "SENSITIVITY_CLOUD"
 
 
 class SensitivityStoredQueryRequest(BaseModel):
