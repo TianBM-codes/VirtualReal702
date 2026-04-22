@@ -59,6 +59,15 @@ class _QueryCursor:
             ]
         return []
 
+    def fetchone(self):
+        sql = self.last_sql
+        if "FROM t_mt_py_fem_transform_operation" in sql:
+            return {
+                "transform_type": "fem",
+                "matrix4_json": "[[1,0,0,0],[0,1,0,0],[0,0,0,2],[0,0,0,1]]",
+            }
+        return None
+
     def close(self):
         return None
 
@@ -131,4 +140,56 @@ def test_get_pair_node_point_result_keeps_sensor_and_node_order(monkeypatch):
     assert result == {
         "sensor_name": ["WY1", "WY2"],
         "node_xyz": [[0.1, 0.2, 0.3], [0.5, 0.3, 0.5]],
+    }
+
+
+def test_save_transform_operation_upserts_matrix4(monkeypatch):
+    fake_conn = _WriteConnection()
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.save_transform_operation(
+        project_id=101,
+        transform_type="fem",
+        matrix4=[
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 2],
+            [0, 0, 0, 1],
+        ],
+    )
+
+    assert result == {
+        "project_id": 101,
+        "type": "fem",
+        "matrix4": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 2.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }
+    assert fake_conn.committed is True
+    assert fake_conn.cursor_obj.executed == [
+        (
+            "INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE matrix4_json = VALUES(matrix4_json), updated_at = CURRENT_TIMESTAMP",
+            (101, "fem", "[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 2.0], [0.0, 0.0, 0.0, 1.0]]"),
+        )
+    ]
+
+
+def test_get_transform_auto_info_returns_matrix4(monkeypatch):
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: _QueryConnection())
+
+    result = inp_service.get_transform_auto_info(project_id=101, transform_type="fem")
+
+    assert result == {
+        "type": "fem",
+        "matrix4": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
     }

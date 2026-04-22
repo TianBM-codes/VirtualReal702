@@ -173,6 +173,17 @@ class CorrelationEvaluateRequest(BaseModel):
     include_rotations: bool = False
 
 
+class TransformOperationRequest(BaseModel):
+    project_id: int
+    type: str
+    matrix4: List[List[float]]
+
+
+class TransformAutoInfoRequest(BaseModel):
+    project_id: int
+    type: Optional[str] = None
+
+
 class SensitivityBuildWorkspaceRequest(BaseModel):
     odb_path: str
     workspace: str

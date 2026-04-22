@@ -59,6 +59,26 @@ def _json_loads(value):
     return json.loads(value)
 
 
+def _normalize_transform_type(transform_type: str) -> str:
+    value = str(transform_type or "").strip().lower()
+    if value not in {"fem", "test"}:
+        raise ValueError("type must be 'fem' or 'test'")
+    return value
+
+
+def _normalize_matrix4(matrix4) -> List[List[float]]:
+    rows = list(matrix4 or [])
+    if len(rows) != 4:
+        raise ValueError("matrix4 must contain 4 rows")
+    normalized = []
+    for row in rows:
+        values = list(row or [])
+        if len(values) != 4:
+            raise ValueError("matrix4 must be a 4x4 matrix")
+        normalized.append([float(item) for item in values])
+    return normalized
+
+
 def _build_rotation_matrix(axis: Sequence[float], angle_deg: float) -> np.ndarray:
     axis_vec = np.asarray(axis, dtype=np.float64).reshape(3)
     axis_norm = float(np.linalg.norm(axis_vec))
@@ -868,13 +888,15 @@ _DEFAULT_PARAMETER_SCATTER = 0.25
 
 
 def import_inp_catalog(file_path, project_id, clear_before_insert=True,
-                       build_octree=True, force_rebuild_octree=False):
+                       build_octree=True, force_rebuild_octree=False,
+                       model=None):
     # Central INP import pipeline:
     # 1. parse the model and derive catalogs/parameter metadata
     # 2. optionally build the global-node octree cache
     # 3. refresh the database tables that the rest of the API queries
     ensure_tables_exist()
-    model = parse_inp(file_path, resolve_refs=True)
+    if model is None:
+        model = parse_inp(file_path, resolve_refs=True)
     legacy_materials = _extract_legacy_material_rows(model)
     legacy_properties = _extract_legacy_property_rows(model)
     legacy_boundaries = _extract_legacy_boundary_rows(model)
@@ -1648,6 +1670,78 @@ def get_pair_node_point_result(project_id):
         return {
             "sensor_name": sensor_names,
             "node_xyz": node_xyz,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def save_transform_operation(project_id: int, transform_type: str, matrix4):
+    ensure_tables_exist()
+    resolved_type = _normalize_transform_type(transform_type)
+    resolved_matrix4 = _normalize_matrix4(matrix4)
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                matrix4_json = VALUES(matrix4_json),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (int(project_id), resolved_type, _json_dumps(resolved_matrix4)),
+        )
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "type": resolved_type,
+            "matrix4": resolved_matrix4,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_transform_auto_info(project_id: int, transform_type: str = None):
+    ensure_tables_exist()
+    resolved_type = _normalize_transform_type(transform_type) if transform_type is not None else None
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if resolved_type is None:
+            cursor.execute(
+                """
+                SELECT transform_type, matrix4_json
+                FROM t_mt_py_fem_transform_operation
+                WHERE pid = %s
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (int(project_id),),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT transform_type, matrix4_json
+                FROM t_mt_py_fem_transform_operation
+                WHERE pid = %s AND transform_type = %s
+                LIMIT 1
+                """,
+                (int(project_id), resolved_type),
+            )
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError("transform operation not found")
+        return {
+            "type": str(row["transform_type"]),
+            "matrix4": _normalize_matrix4(_json_loads(row["matrix4_json"])),
         }
     finally:
         cursor.close()

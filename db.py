@@ -209,6 +209,19 @@ CREATE_TABLE_SQL_LIST = [
     ) COMMENT='有限元节点配对信息表'
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_transform_operation (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        transform_type VARCHAR(32) NOT NULL COMMENT '变换类型 fem/test',
+        matrix4_json JSON NOT NULL COMMENT '4x4矩阵JSON',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_transform_type (pid, transform_type),
+        KEY idx_pid_updated_at (pid, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='空间匹配变换记录表';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_dof_pairs (
         pid INT NOT NULL COMMENT '工程ID',
         node INT NOT NULL COMMENT '节点编号',
@@ -760,12 +773,6 @@ def ensure_tables_exist():
     try:
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
-        cursor.execute("SHOW COLUMNS FROM t_mt_py_fem_parameter_candidate LIKE 'scatter'")
-        if cursor.fetchone() is None:
-            cursor.execute(
-                "ALTER TABLE t_mt_py_fem_parameter_candidate "
-                "ADD COLUMN scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '默认离散度' AFTER scalar_value"
-            )
         cursor.execute(
             "ALTER TABLE t_mt_py_fem_optimization_parameter "
             "MODIFY COLUMN scatter FLOAT NOT NULL DEFAULT 0.25 COMMENT '离散度'"
@@ -803,6 +810,7 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_beam_property WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_boundary WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_pairs WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_transform_operation WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_static_shape_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameters WHERE pid = {pid}")
