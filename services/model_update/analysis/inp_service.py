@@ -1574,6 +1574,86 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
         conn.close()
 
 
+def _coord_key(values) -> tuple:
+    arr = np.asarray(values, dtype=np.float64).reshape(3)
+    return tuple(float(f"{item:.12g}") for item in arr.tolist())
+
+
+def get_pair_node_point_result(project_id):
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        octree_meta = _get_latest_octree_meta(cursor, project_id)
+        cache = _load_octree_cache(octree_meta["cache_file_path"])
+
+        cursor.execute("""
+            SELECT id, test_node_id, instance_name, fem_node_label
+            FROM t_mt_py_fem_node_match
+            WHERE pid = %s
+            ORDER BY id
+        """, (project_id,))
+        node_matches = cursor.fetchall()
+        if not node_matches:
+            raise ValueError("node matches not found, run /pair/node_point first")
+
+        cursor.execute("""
+            SELECT nid, x, y, z
+            FROM t_mt_py_test_node
+            WHERE pid = %s
+            ORDER BY nid
+        """, (project_id,))
+        test_nodes = cursor.fetchall()
+        test_node_lookup = {
+            str(row["nid"]): _coord_key([row["x"], row["y"], row["z"]])
+            for row in test_nodes
+        }
+
+        cursor.execute("""
+            SELECT id, measuring_point_name, x_position, y_position, z_position
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id
+        """, (project_id,))
+        measuring_rows = cursor.fetchall()
+        sensor_lookup = {
+            _coord_key([row["x_position"], row["y_position"], row["z_position"]]): str(row["measuring_point_name"])
+            for row in measuring_rows
+        }
+
+        fem_coord_lookup = {}
+        for inst_name, label, coord in zip(cache["point_instances"], cache["point_labels"], cache["point_coords"]):
+            fem_coord_lookup[(str(inst_name), int(label))] = [
+                float(coord[0]),
+                float(coord[1]),
+                float(coord[2]),
+            ]
+
+        sensor_names = []
+        node_xyz = []
+        for row in node_matches:
+            test_node_id = str(row["test_node_id"])
+            coord_key = test_node_lookup.get(test_node_id)
+            if coord_key is None:
+                continue
+            sensor_name = sensor_lookup.get(coord_key)
+            if not sensor_name:
+                continue
+            fem_coord = fem_coord_lookup.get((str(row["instance_name"] or ""), int(row["fem_node_label"])))
+            if fem_coord is None:
+                continue
+            sensor_names.append(sensor_name)
+            node_xyz.append(fem_coord)
+
+        return {
+            "sensor_name": sensor_names,
+            "node_xyz": node_xyz,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def _get_test_modal_point_ids(cursor, project_id: int) -> set:
     point_ids = set()
     cursor.execute("""
@@ -2418,6 +2498,47 @@ def compute_static_correlation(
     finally:
         cursor.close()
         conn.close()
+
+
+def evaluate_static_correlation(
+    project_id,
+    load_case_no=None,
+    result_no=None,
+    components=None,
+    include_rotations=False,
+):
+    result = compute_static_correlation(
+        project_id=project_id,
+        load_case_no=load_case_no,
+        result_no=result_no,
+        components=components,
+        include_rotations=include_rotations,
+    )
+
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO t_mt_py_fem_dac_dsf (pid, dac, dsf)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                dac = VALUES(dac),
+                dsf = VALUES(dsf)
+        """, (
+            int(project_id),
+            float(result["dac"]),
+            float(result["dsf"]),
+        ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    return result
 
 
 def _load_test_mode_vectors(cursor, project_id: int) -> Dict[int, Dict[str, np.ndarray]]:

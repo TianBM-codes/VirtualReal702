@@ -20,6 +20,18 @@ class PlotModalShapeRequest(BaseModel):
     project_id: int
 
 
+class SensorPositionRequest(BaseModel):
+    project_id: int
+
+
+class DeformSensorPositionRequest(BaseModel):
+    project_id: int
+    scale: float = 1.0
+    static_result_id: Optional[int] = None
+    load_case_no: Optional[int] = None
+    result_no: Optional[int] = None
+
+
 class DumpVtkRequest(BaseModel):
     vtk_path: str
     project_id: int
@@ -147,6 +159,18 @@ class MatchNodesRequest(BaseModel):
     auto_translate: bool = True
     translation: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
     rotation: Optional[RotationRequest] = None
+
+
+class PairNodePointResultRequest(BaseModel):
+    project_id: int
+
+
+class CorrelationEvaluateRequest(BaseModel):
+    project_id: int
+    load_case_no: Optional[int] = None
+    result_no: Optional[int] = None
+    components: Optional[List[str]] = None
+    include_rotations: bool = False
 
 
 class SensitivityBuildWorkspaceRequest(BaseModel):

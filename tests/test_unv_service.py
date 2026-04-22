@@ -23,7 +23,7 @@ class _FakeConnection:
         self.committed = False
         self.rolled_back = False
 
-    def cursor(self):
+    def cursor(self, dictionary=False):
         return self.cursor_obj
 
     def commit(self):
@@ -179,3 +179,104 @@ def test_import_unv_data_keeps_dynamic_modal_tables_for_modal_results(monkeypatc
     assert "INSERT INTO t_mt_py_test_modal_frequency" in executed_sql
     assert "INSERT INTO t_mt_py_test_modal_shape_real" in executed_sql
     assert "INSERT INTO t_mt_py_test_static_result" not in executed_sql
+
+
+class _QueryCursor:
+    def __init__(self):
+        self.last_sql = ""
+        self.last_params = None
+
+    def execute(self, sql, params=None):
+        self.last_sql = " ".join(sql.split())
+        self.last_params = params
+
+    def fetchall(self):
+        sql = self.last_sql
+        params = self.last_params
+        if "FROM t_mt_measuring_point_info" in sql and "ORDER BY id" in sql:
+            return [
+                {
+                    "id": 1,
+                    "measuring_point_name": "WY1",
+                    "sensor_type_id": 21,
+                    "x_position": 1.0,
+                    "y_position": 2.0,
+                    "z_position": 3.0,
+                },
+                {
+                    "id": 2,
+                    "measuring_point_name": "WY2",
+                    "sensor_type_id": 21,
+                    "x_position": 4.0,
+                    "y_position": 5.0,
+                    "z_position": 6.0,
+                },
+            ]
+        if "FROM t_mt_py_test_static_result" in sql and "WHERE pid = %s AND id = %s" in sql:
+            assert params == (101, 9)
+            return [
+                {
+                    "id": 9,
+                    "point": 1001,
+                    "ux": 0.5,
+                    "uy": -0.25,
+                    "uz": 1.0,
+                }
+            ]
+        return []
+
+    def fetchone(self):
+        sql = self.last_sql
+        params = self.last_params
+        if "FROM t_mt_py_test_node" in sql:
+            assert params == (101, "1001")
+            return {"nid": "1001", "x": 1.0, "y": 2.0, "z": 3.0}
+        if "FROM t_mt_measuring_point_info" in sql and "LIMIT 1" in sql:
+            return {
+                "id": 1,
+                "measuring_point_name": "WY1",
+                "sensor_type_id": 21,
+                "x_position": 1.0,
+                "y_position": 2.0,
+                "z_position": 3.0,
+            }
+        return None
+
+    def close(self):
+        return None
+
+
+class _QueryConnection:
+    def __init__(self):
+        self.cursor_obj = _QueryCursor()
+
+    def cursor(self, dictionary=False):
+        return self.cursor_obj
+
+    def close(self):
+        return None
+
+
+def test_get_sensor_positions_returns_expected_shape(monkeypatch):
+    monkeypatch.setattr(unv_service, "get_connection", lambda: _QueryConnection())
+
+    result = unv_service.get_sensor_positions(101)
+
+    assert result == [
+        {"sensor_label": "WY1", "sensor_type": "位移", "sensor_pos": [1.0, 2.0, 3.0]},
+        {"sensor_label": "WY2", "sensor_type": "位移", "sensor_pos": [4.0, 5.0, 6.0]},
+    ]
+
+
+def test_get_deform_sensor_positions_scales_static_displacement(monkeypatch):
+    monkeypatch.setattr(unv_service, "get_connection", lambda: _QueryConnection())
+
+    result = unv_service.get_deform_sensor_positions(
+        project_id=101,
+        static_result_id=9,
+        scale=2.0,
+    )
+
+    assert result == [
+        {"sensor_label": "WY1", "sensor_type": "位移", "sensor_pos": [2.0, 1.5, 5.0]},
+    ]
