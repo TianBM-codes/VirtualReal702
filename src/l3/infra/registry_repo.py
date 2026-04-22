@@ -156,22 +156,18 @@ class RegistryRepo:
         SQLite WAL guarantees this UPDATE is atomic across processes.
         """
         with self._connect() as conn:
-            cur = conn.execute(
-                """UPDATE odb_jobs
-                   SET status='l1_running', l1_started_at=?
-                   WHERE odb_id = (
-                     SELECT odb_id FROM odb_jobs
-                     WHERE status='submitted'
-                     ORDER BY created_at LIMIT 1
-                   )""",
-                (_now_iso(),),
-            )
-            if cur.rowcount == 0:
-                return None
-            row = conn.execute(
-                "SELECT odb_id FROM odb_jobs WHERE status='l1_running'"
+            candidate = conn.execute(
+                "SELECT odb_id FROM odb_jobs WHERE status='submitted' ORDER BY created_at LIMIT 1"
             ).fetchone()
-            return row["odb_id"] if row else None
+            if candidate is None:
+                return None
+            odb_id = candidate["odb_id"]
+            cur = conn.execute(
+                "UPDATE odb_jobs SET status='l1_running', l1_started_at=?"
+                " WHERE odb_id=? AND status='submitted'",
+                (_now_iso(), odb_id),
+            )
+            return odb_id if cur.rowcount > 0 else None
 
     # ── read ─────────────────────────────────────────────────────────────────
 

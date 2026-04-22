@@ -220,7 +220,8 @@ def _find_node_pos_in_elem(
     Used to index into ELEMENT_NODAL data (first extra dim = corner node order).
     Returns None if the geometry file is unavailable or the node is not found.
     """
-    geom_h5 = os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
+    geom_h5 = ManifestRepo(workspace).get_geom_path(instance) or \
+              os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
     try:
         with h5py.File(geom_h5, "r") as f:
             conn = np.asarray(f[f"elements/{etype_str}/conn"][elem_row])
@@ -601,7 +602,8 @@ def bbox(
     elem_labels_out: Optional[List[int]] = None
     if unique_elem_count > 0 and unique_elem_count <= 2000 and unique_etype_rows is not None:
         try:
-            geom_h5 = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+            geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+                      os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
             collected: List[int] = []
             with h5py.File(geom_h5, "r") as f:
                 for et_key in np.unique(unique_etype_rows):
@@ -633,7 +635,8 @@ def _batch_elem_labels(
     if unique_etype_rows is None:
         return None
     try:
-        geom_h5 = os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
+        geom_h5 = ManifestRepo(workspace).get_geom_path(instance) or \
+                  os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
         out: List[int] = []
         with h5py.File(geom_h5, "r") as f:
             for et_key in np.unique(unique_etype_rows):
@@ -1057,6 +1060,7 @@ def ray_pick(
     component_idx: Optional[int] = None,
     include_coords: bool = False,
     deform_scale: float = 1.0,
+    result_group: Optional[str] = None,
 ) -> PickResponse:
     """
     Ray-cast pick: reconstruct a world-space ray from the camera view-projection
@@ -1116,6 +1120,27 @@ def ray_pick(
 
     best_face = int(candidates[best_local])
 
+    # ── Step 3b: auto node_idx for node pick ─────────────────────────────────
+    # Project the 3 triangle vertices through the VP matrix and pick whichever
+    # lands closest to (screen_x, screen_y).  Only runs in node mode when the
+    # caller has not already specified node_idx.
+    resolved_node_idx = node_idx
+    if pick_mode == "node" and node_idx is None:
+        vp_col = np.array(vp_matrix_col_major, dtype=np.float64).reshape(4, 4)
+        VP = vp_col.T          # Three.js column-major → row-major
+        face_verts = coords[node_rows[best_face]]  # (3, 3)
+        dist_sq = []
+        for v in face_verts:
+            clip = VP @ np.array([v[0], v[1], v[2], 1.0], dtype=np.float64)
+            w = clip[3]
+            if abs(w) < 1e-30:
+                dist_sq.append(np.inf)
+                continue
+            sx = (clip[0] / w + 1.0) / 2.0 * viewport_width
+            sy = (1.0 - clip[1] / w) / 2.0 * viewport_height
+            dist_sq.append((sx - screen_x) ** 2 + (sy - screen_y) ** 2)
+        resolved_node_idx = int(np.argmin(dist_sq))
+
     # ── Step 4: delegate to existing pick() ──────────────────────────────────
     return pick(
         registry=registry,
@@ -1127,9 +1152,10 @@ def ray_pick(
         field=field,
         frame_idx=frame_idx,
         component_idx=component_idx,
-        node_idx=node_idx,
+        node_idx=resolved_node_idx,
         include_coords=include_coords,
         deform_scale=deform_scale,
+        result_group=result_group,
     )
 
 

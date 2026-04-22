@@ -91,9 +91,7 @@ CREATE TABLE IF NOT EXISTS result_group_meta (
     consistency_check  TEXT NOT NULL DEFAULT 'count-only',
     created_at         TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS user_sets (
-    set_name            TEXT PRIMARY KEY,
-    set_scope           TEXT,
-    user_set_instances  BLOB
-);
 """
+# user_sets / user_set_instances tables are NOT created here.
+# They are created on-demand by ManifestRepo._ensure_user_tables() when the
+# first bbox selection is saved, so the schema stays in one place.

@@ -34,15 +34,24 @@ FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
 
+# Keep in sync with src/inp/exporter.py _ELEM_TYPE_CODE.
 ELEM_TYPE_CODE = {
-    'S3': 0, 'S3R': 0, 'S6': 0,
-    'S4': 1, 'S4R': 1, 'S4R5': 1, 'S8R': 1, 'S8R5': 1,
-    'C3D4': 2, 'C3D4H': 2,
-    'C3D6': 3, 'C3D6H': 3,
-    'C3D8': 4, 'C3D8R': 4, 'C3D8H': 4, 'C3D8RH': 4,
-    'C3D10': 5, 'C3D10M': 5, 'C3D10H': 5,
+    # shells / membranes
+    'S3': 0,  'S3R': 0,  'S6': 0,   'STRI3': 0,
+    'S4': 1,  'S4R': 1,  'S4R5': 1, 'S8R': 1, 'S8R5': 1,
+    # solids
+    'C3D4': 2,  'C3D4H': 2,
+    'C3D6': 3,  'C3D6H': 3,
+    'C3D8': 4,  'C3D8R': 4,  'C3D8I': 4,  'C3D8H': 4,  'C3D8RH': 4,
+    'C3D10': 5, 'C3D10M': 5, 'C3D10H': 5, 'C3D10MH': 5,
     'C3D15': 6, 'C3D15H': 6,
     'C3D20': 7, 'C3D20R': 7, 'C3D20H': 7, 'C3D20RH': 7,
+    # plane / axisymmetric (treated as shell faces)
+    'CPS3': 0, 'CPS4': 1, 'CPS4R': 1,
+    'CPE3': 0, 'CPE4': 1, 'CPE4R': 1,
+    'CAX3': 0, 'CAX4': 1, 'CAX4R': 1,
+    # membrane 3D (M3D* handled separately via startswith check below)
+    'M3D3': 0, 'M3D4': 1, 'M3D4R': 1,
 }
 
 
@@ -98,6 +107,7 @@ def collect_faces(geom_h5):
             continue
         etype_code = ELEM_TYPE_CODE.get(etype_str, -1)
         if etype_code < 0:
+            logger.warning("collect_faces: unrecognized element type '%s' — skipped", etype_str)
             continue
 
         fnc = grp["face_node_conn"][:]   # [Mf, w]
@@ -816,7 +826,12 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     logger.info("Processing instance: {} ...".format(inst_name))
     t0 = time.time()
 
-    geom_path = os.path.join(workspace, "l1", "geometry", "{}.h5".format(inst_name))
+    row = db_conn.execute(
+        "SELECT geom_path FROM instances WHERE instance_name=?", (inst_name,)
+    ).fetchone()
+    # db_conn has no row_factory, fetchone() returns a plain tuple → row[0]
+    geom_path = (os.path.join(workspace, row[0]) if row and row[0]
+                 else os.path.join(workspace, "l1", "geometry", "{}.h5".format(inst_name)))
     if not os.path.exists(geom_path):
         logger.warning("  Not found: {}".format(geom_path))
         return

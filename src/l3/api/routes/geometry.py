@@ -55,7 +55,7 @@ def _compact_by_render_rows(
 async def get_render_buffers(
     odb_id: str,
     instance: str,
-    set: Optional[str] = Query(default=None, description="User set name to filter geometry"),
+    set_name: Optional[str] = Query(default=None, alias="set", description="User set name to filter geometry"),
 ):
     """
     Return indexed render buffers for one instance as L3BE binary.
@@ -85,12 +85,12 @@ async def get_render_buffers(
                     if "render/indices" in f else None
 
     # ── Set filtering ──────────────────────────────────────────────────────
-    if set is not None and indices is not None:
+    if set_name is not None and indices is not None:
         manifest = ManifestRepo(idx.workspace)
-        render_rows = manifest.get_user_set_render_rows(set, instance)
+        render_rows = manifest.get_user_set_render_rows(set_name, instance)
         if render_rows is None:
             # Fallback: try INP/ODB element_sets by name
-            elem_labels = manifest.get_element_set_labels(set, instance)
+            elem_labels = manifest.get_element_set_labels(set_name, instance)
             if elem_labels is not None and len(elem_labels) > 0:
                 face_mask = get_face_mask_for_elem_labels(
                     idx, instance, set(elem_labels.tolist())

@@ -86,6 +86,7 @@ async def ray_pick(odb_id: str, body: RayPickRequest):
         component_idx=body.component_idx,
         include_coords=body.include_coords,
         deform_scale=body.deform_scale,
+        result_group=body.result_group,
     )
     return ok(result.model_dump())
 

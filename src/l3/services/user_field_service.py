@@ -23,7 +23,19 @@ from ..infra.manifest_repo import ManifestRepo
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 def _geom_h5_path(workspace: str, instance: str) -> str:
-    return os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
+    """Resolve L1 geometry path via manifest; fall back to safe-name construction."""
+    try:
+        import sqlite3
+        with sqlite3.connect(os.path.join(workspace, "manifest.db")) as conn:
+            row = conn.execute(
+                "SELECT geom_path FROM instances WHERE instance_name=?", (instance,)
+            ).fetchone()
+            if row and row[0]:
+                return os.path.join(workspace, row[0])
+    except Exception:
+        pass
+    def _safe(s): return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
+    return os.path.join(workspace, "l1", "geometry", f"{_safe(instance)}.h5")
 
 
 def get_face_mask_for_elem_labels(

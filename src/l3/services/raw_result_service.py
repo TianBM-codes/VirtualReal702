@@ -33,7 +33,19 @@ def _result_h5_path(workspace: str, step: str, field: str,
 
 
 def _geom_h5_path(workspace: str, instance: str) -> str:
-    return os.path.join(workspace, "l1", "geometry", f"{instance}.h5")
+    """Resolve L1 geometry path via manifest; fall back to safe-name construction."""
+    try:
+        import sqlite3
+        with sqlite3.connect(os.path.join(workspace, "manifest.db")) as conn:
+            row = conn.execute(
+                "SELECT geom_path FROM instances WHERE instance_name=?", (instance,)
+            ).fetchone()
+            if row and row[0]:
+                return os.path.join(workspace, row[0])
+    except Exception:
+        pass
+    def _safe(s): return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
+    return os.path.join(workspace, "l1", "geometry", f"{_safe(instance)}.h5")
 
 
 def _safe_section_name(prefix: str, etype: str) -> str:
@@ -46,9 +58,11 @@ def _safe_section_name(prefix: str, etype: str) -> str:
     return name[:32]
 
 
-def _read_components_from_manifest(workspace: str, step: str, field: str) -> List[str]:
+def _read_components_from_manifest(workspace: str, step: str, field: str,
+                                   result_group: str = None) -> List[str]:
     """
     Try to read component names from manifest.db result_files table.
+    result_group=None matches rows where result_group IS NULL (legacy/single-group).
     Returns [] if unavailable.
     """
     try:
@@ -57,10 +71,18 @@ def _read_components_from_manifest(workspace: str, step: str, field: str) -> Lis
         if not os.path.exists(db):
             return []
         with sqlite3.connect(db) as conn:
-            row = conn.execute(
-                "SELECT components FROM result_files WHERE step_name=? AND field_name=?",
-                (step, field),
-            ).fetchone()
+            if result_group is None:
+                row = conn.execute(
+                    "SELECT components FROM result_files"
+                    " WHERE step_name=? AND field_name=? AND result_group IS NULL",
+                    (step, field),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT components FROM result_files"
+                    " WHERE step_name=? AND field_name=? AND result_group=?",
+                    (step, field, result_group),
+                ).fetchone()
         if row and row[0]:
             return json.loads(row[0])
     except Exception:
@@ -133,7 +155,7 @@ def get_raw_values(
         )
 
     # Try to get component names from manifest first (cheapest, no HDF5 open needed)
-    components = _read_components_from_manifest(idx.workspace, step, field)
+    components = _read_components_from_manifest(idx.workspace, step, field, result_group)
 
     sections: List[Tuple[str, np.ndarray]] = []
     etype_groups: List[str] = []

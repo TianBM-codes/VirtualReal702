@@ -58,7 +58,9 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     """
     schemes: List[str] = ["etype"]
 
-    geom_h5 = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
     if os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
             for etype in f.get("elements", {}):
@@ -192,7 +194,9 @@ def _labels_from_elem_attr(
     Look up per-element string attributes (material_name / section_type)
     from L1 geometry H5, grouped by etype for efficiency.
     """
-    geom_h5 = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
     if not os.path.exists(geom_h5):
         raise NotFoundError(f"Geometry H5 not found for '{instance}'", {})
 
@@ -233,8 +237,10 @@ def _labels_from_elsets(
     Return per-face label: the first matching set name if the element belongs
     to any of *set_names*, else "other".  Priority = order of set_names.
     """
+    from ..infra.manifest_repo import ManifestRepo
     sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
-    geom_h5 = os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
     if not os.path.exists(sets_h5):
         raise NotFoundError("No sets data found for this workspace", {})

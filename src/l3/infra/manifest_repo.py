@@ -8,6 +8,7 @@ class ManifestRepo:
     Repository for interacting with the SQLite manifest.db of a specific ODB.
     """
     def __init__(self, workspace: str):
+        self.workspace = workspace
         self.db_path = os.path.join(workspace, "manifest.db")
     
     def _get_conn(self):
@@ -33,6 +34,13 @@ class ManifestRepo:
                 ).fetchone()
         except Exception:
             return None
+
+    def get_geom_path(self, instance_name: str):
+        """Return absolute L1 geometry HDF5 path from manifest, or None if not found."""
+        row = self.get_instance_info(instance_name)
+        if row and row["geom_path"]:
+            return os.path.join(self.workspace, row["geom_path"])
+        return None
 
     @staticmethod
     def _rg_clause(result_group, prefix=""):

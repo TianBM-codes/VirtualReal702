@@ -158,20 +158,21 @@ class EmbeddedRunner:
         """Atomically claim one submitted job → l1_running.
         Returns (odb_id, odb_path, workspace_abs) or (None, None, None)."""
         with self._connect() as conn:
+            candidate = conn.execute(
+                "SELECT odb_id FROM odb_jobs WHERE status='submitted' ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            if candidate is None:
+                return None, None, None
+            odb_id = candidate["odb_id"]
             cur = conn.execute(
-                """UPDATE odb_jobs
-                   SET status='l1_running', l1_started_at=?
-                   WHERE odb_id = (
-                     SELECT odb_id FROM odb_jobs
-                     WHERE status='submitted'
-                     ORDER BY created_at LIMIT 1
-                   )""",
-                (_now_iso(),),
+                "UPDATE odb_jobs SET status='l1_running', l1_started_at=?"
+                " WHERE odb_id=? AND status='submitted'",
+                (_now_iso(), odb_id),
             )
             if cur.rowcount == 0:
-                return None, None, None
+                return None, None, None  # race: another process claimed it first
             row = conn.execute(
-                "SELECT odb_id, odb_path, workspace FROM odb_jobs WHERE status='l1_running'"
+                "SELECT odb_id, odb_path, workspace FROM odb_jobs WHERE odb_id=?", (odb_id,)
             ).fetchone()
         if row is None:
             return None, None, None
@@ -328,8 +329,8 @@ class EmbeddedRunner:
             creationflags=_win_flags,
         )
         if ret.returncode != 0:
-            self._update_status(odb_id, "l1_done",
-                error_msg="ingest failed: " + ret.stderr[-2000:])
+            self._update_status(odb_id, "error",
+                error_msg="[L2] ingest failed: " + ret.stderr[-2000:])
             logger.error("[%s] L2 failed (rc=%d)", odb_id, ret.returncode)
             return False
 

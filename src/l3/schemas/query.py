@@ -143,3 +143,4 @@ class RayPickRequest(BaseModel):
     component_idx: Optional[int] = Field(default=None, ge=0)
     include_coords: bool = False
     deform_scale: float = Field(default=1.0, ge=0.0)
+    result_group: Optional[str] = None

@@ -29,7 +29,8 @@ class ExternalResultWriter:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _geom_h5(self, instance: str) -> str:
-        return os.path.join(self.workspace, "l1", "geometry", f"{instance}.h5")
+        return self._manifest.get_geom_path(instance) or \
+               os.path.join(self.workspace, "l1", "geometry", f"{instance}.h5")
 
     def _out_h5(self, step: str, field: str) -> str:
         rg_dir = os.path.join(
