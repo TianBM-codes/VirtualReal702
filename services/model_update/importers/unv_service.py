@@ -202,6 +202,44 @@ def _insert_static_results(cursor, project_id, file_id, test_modes):
     return row_count
 
 
+def _clear_measuring_points(cursor, project_id):
+    cursor.execute(
+        "DELETE FROM t_mt_measuring_point_info WHERE project_id = %s",
+        (project_id,),
+    )
+
+
+def _insert_measuring_points(cursor, project_id, test_nodes):
+    insert_sql = """
+    INSERT INTO t_mt_measuring_point_info
+    (measuring_point_name, project_id, sensor_type_id, x_position, y_position, z_position, data_source)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+    update_name_sql = """
+    UPDATE t_mt_measuring_point_info
+    SET measuring_point_name = %s
+    WHERE id = %s
+    """
+
+    row_count = 0
+    for node in test_nodes:
+        cursor.execute(insert_sql, (
+            f"WY_PENDING_{_safe_int(node['nid'])}",
+            project_id,
+            21,
+            _safe_float(node["x"]),
+            _safe_float(node["y"]),
+            _safe_float(node["z"]),
+            "LOCAL",
+        ))
+        inserted_id = getattr(cursor, "lastrowid", None)
+        if inserted_id is None:
+            raise ValueError("failed to resolve inserted measuring point id")
+        cursor.execute(update_name_sql, (f"WY{int(inserted_id)}", int(inserted_id)))
+        row_count += 1
+    return row_count
+
+
 def parse_unv_file(file_path):
     """
     解析试验测试模态结果，并保存到mysql数据库中
@@ -256,6 +294,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
     try:
         if clear_before_insert:
             clear_unv_tables(cursor, project_id)
+            _clear_measuring_points(cursor, project_id)
 
         node_sql = """
         INSERT INTO t_mt_py_test_node (nid, pid, fid, ics, ocs, x, y, z)
@@ -273,6 +312,8 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
                 _safe_float(node["y"]),
                 _safe_float(node["z"])
             ))
+
+        measuring_point_count = _insert_measuring_points(cursor, project_id, test_nodes)
 
         element_sql = """
         INSERT INTO t_mt_py_test_element (
@@ -308,6 +349,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
             "result_kind": result_kind,
             "cleared_before_insert": clear_before_insert,
             "test_node_count": len(test_nodes),
+            "measuring_point_count": measuring_point_count,
             "test_element_count": len(test_elements),
             "test_mode_count": len(test_modes),
             "test_static_result_count": static_result_count,

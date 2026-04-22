@@ -725,6 +725,19 @@ CREATE_TABLE_SQL_LIST = [
         response_diff FLOAT COMMENT '响应差异(%)',
         PRIMARY KEY (pid, batch_no, response_name, iteration)
     ) COMMENT='响应差异表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_measuring_point_info(
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        measuring_point_name VARCHAR(64) NOT NULL COMMENT '测点名称',
+        project_id BIGINT NOT NULL COMMENT '项目ID',
+        sensor_type_id BIGINT NOT NULL COMMENT '传感器类型ID',
+        x_position DOUBLE NOT NULL COMMENT 'X坐标',
+        y_position DOUBLE NOT NULL COMMENT 'Y坐标',
+        z_position DOUBLE NOT NULL COMMENT 'Z坐标',
+        data_source VARCHAR(32) NOT NULL COMMENT '数据来源',
+        PRIMARY KEY (id, measuring_point_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='测点信息表'; 
     """
 ]
 

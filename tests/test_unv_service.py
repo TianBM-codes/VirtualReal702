@@ -4,9 +4,14 @@ from services.model_update.importers import unv_service
 class _FakeCursor:
     def __init__(self):
         self.executed = []
+        self.lastrowid = None
+        self._measuring_point_seq = 0
 
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
+        if "INSERT INTO t_mt_measuring_point_info" in sql:
+            self._measuring_point_seq += 1
+            self.lastrowid = self._measuring_point_seq
 
     def close(self):
         return None
@@ -102,13 +107,27 @@ def test_import_unv_data_writes_static_results_to_static_table(monkeypatch):
         for sql, params in fake_conn.cursor_obj.executed
         if "INSERT INTO t_mt_py_test_static_result" in sql
     ]
+    measuring_point_inserts = [
+        params
+        for sql, params in fake_conn.cursor_obj.executed
+        if "INSERT INTO t_mt_measuring_point_info" in sql
+    ]
+    measuring_point_updates = [
+        params
+        for sql, params in fake_conn.cursor_obj.executed
+        if "UPDATE t_mt_measuring_point_info" in sql
+    ]
 
     assert clear_calls == [101]
     assert fake_conn.committed is True
     assert result["result_kind"] == "static"
+    assert result["measuring_point_count"] == 1
     assert result["test_static_result_count"] == 1
     assert "INSERT INTO t_mt_py_test_modal_frequency" not in executed_sql
     assert len(static_inserts) == 1
+    assert len(measuring_point_inserts) == 1
+    assert measuring_point_inserts[0] == ("WY_PENDING_1001", 101, 21, 1.0, 2.0, 3.0, "LOCAL")
+    assert measuring_point_updates == [("WY1", 1)]
     assert static_inserts[0][5:11] == (0.1, 0.2, 0.3, 0.01, 0.02, 0.03)
 
 

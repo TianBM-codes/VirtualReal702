@@ -97,6 +97,11 @@ class BayesianModelUpdateRequest(BaseModel):
     run_solver: bool = False
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
+    write_cloud_result: bool = False
+    cloud_result_group: Optional[str] = None
+    cloud_step_name: str = "BayesianUpdate"
+    cloud_field_name: str = "PARAMETER_CLOUD"
+    cloud_value_mode: str = "updated_value"
 
 
 class TextRowReadRequest(BaseModel):

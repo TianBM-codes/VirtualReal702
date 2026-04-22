@@ -537,6 +537,192 @@ P1=1.0
     assert Path(result["saved_artifacts"]["files"]["response_diff_history_png"]).exists()
 
 
+def test_run_bayesian_update_workflow_writes_cloud_result_metadata(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text(
+        """*Heading
+*PARAMETER
+P1=1.0
+*Step
+*Static
+*End Step
+""",
+        encoding="utf-8",
+    )
+
+    matrix_payload = {
+        "workspace": str(tmp_path / "initial_ws"),
+        "source_mode": "workspace",
+        "workspace_built": False,
+        "odb_id": None,
+        "matrix": [[1.0]],
+        "response_values": [10.0],
+        "parameter_values": [1.0],
+        "parameter_columns": [
+            {
+                "field": "d_UR_P1",
+                "parameter_name": "P1",
+                "parameter_token": "P1",
+                "parameter_value": 1.0,
+                "element_mapping": {
+                    "field": "d_UR_P1",
+                    "parameter_name": "P1",
+                    "target_kind": "cell",
+                    "targets_by_scope": {"PART-1-1": [101]},
+                },
+            }
+        ],
+        "response_rows": [
+            {"row_key": "r1", "response_label": "INST::10"}
+        ],
+    }
+    cloud_calls = {}
+
+    monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", lambda **kwargs: matrix_payload)
+    monkeypatch.setattr(
+        bayesian_service,
+        "bayesian_update_normalized",
+        lambda **kwargs: {
+            "delta_r": np.array([[1.0]]),
+            "y": np.array([[10.0]]),
+            "x": np.array([[0.1]]),
+            "dp": np.array([[0.1]]),
+            "p_new": np.array([1.1]),
+            "G_n": np.eye(1),
+        },
+    )
+    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", lambda **kwargs: None)
+
+    def fake_write_cloud(**kwargs):
+        cloud_calls.update(kwargs)
+        return {
+            "result_group": "viz_rg",
+            "step": "Bayesian Step",
+            "field": "PARAMETER_CLOUD",
+            "value_mode": "delta_value",
+            "components": ["P1"],
+            "frame_count": 1,
+        }
+
+    monkeypatch.setattr(bayesian_service, "_write_bayesian_cloud_result", fake_write_cloud)
+
+    result = bayesian_service.run_bayesian_update_workflow(
+        project_id=3,
+        batch_no=2,
+        input_inp=str(inp_path),
+        odb_id="odb-demo",
+        workspace=str(tmp_path / "initial_ws"),
+        target_responses=[8.0],
+        output_dir=str(tmp_path / "out"),
+        iterations=1,
+        run_solver=False,
+        write_cloud_result=True,
+        cloud_result_group="viz_rg",
+        cloud_step_name="Bayesian Step",
+        cloud_field_name="PARAMETER_CLOUD",
+        cloud_value_mode="delta_value",
+    )
+
+    assert cloud_calls["odb_id"] == "odb-demo"
+    assert cloud_calls["base_url"] is None
+    assert cloud_calls["batch_no"] == 2
+    assert cloud_calls["result_group"] == "viz_rg"
+    assert cloud_calls["step_name"] == "Bayesian Step"
+    assert cloud_calls["field_name"] == "PARAMETER_CLOUD"
+    assert cloud_calls["value_mode"] == "delta_value"
+    assert result["cloud_result"]["result_group"] == "viz_rg"
+    assert result["cloud_result"]["components"] == ["P1"]
+
+
+def test_write_bayesian_cloud_result_posts_external_field_payload(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, base_url: str, timeout: int):
+            captured["base_url"] = base_url
+            captured["timeout"] = timeout
+
+        def post_external_field(self, odb_id: str, body: dict):
+            captured["odb_id"] = odb_id
+            captured["body"] = body
+            return {
+                "field_name": body["field_name"],
+                "step_name": body["step_name"],
+                "instances_written": len(body["instances"]),
+                "frames_written": len(body["instances"][0]["frames"]),
+                "source": "external",
+            }
+
+    monkeypatch.setattr(bayesian_service._sens, "ODBClient", FakeClient)
+
+    result = bayesian_service._write_bayesian_cloud_result(
+        odb_id="odb-demo",
+        base_url="http://127.0.0.1:18765",
+        batch_no=5,
+        iteration_results=[
+            {
+                "parameter_columns": [
+                    {"parameter_name": "P1", "parameter_value": 1.0},
+                    {"parameter_name": "P2", "parameter_value": 2.0},
+                ],
+                "parameter_element_mapping": [
+                    {
+                        "parameter_name": "P1",
+                        "parameter_value": 1.0,
+                        "updated_parameter_value": 1.1,
+                        "target_kind": "cell",
+                        "targets_by_scope": {"PART-1-1": [101, 102]},
+                    },
+                    {
+                        "parameter_name": "P2",
+                        "parameter_value": 2.0,
+                        "updated_parameter_value": 2.4,
+                        "target_kind": "cell",
+                        "targets_by_scope": {"PART-1-1": [102]},
+                    },
+                ],
+            }
+        ],
+        result_group="viz_rg",
+        step_name="Bayesian Step",
+        field_name="PARAMETER_CLOUD",
+        value_mode="delta_value",
+        timeout=33,
+    )
+
+    assert captured["odb_id"] == "odb-demo"
+    assert captured["base_url"] == "http://127.0.0.1:18765"
+    assert captured["timeout"] == 33
+    assert captured["body"]["type"] == "element"
+    assert captured["body"]["components"] == ["P1", "P2"]
+    assert captured["body"]["result_group"] == "viz_rg"
+    assert len(captured["body"]["instances"]) == 1
+    assert captured["body"]["instances"][0]["instance"] == "PART-1-1"
+    assert captured["body"]["instances"][0]["frames"][0]["frame_idx"] == 0
+    assert captured["body"]["instances"][0]["frames"][0]["frame_value"] == 1.0
+    first_entry, second_entry = captured["body"]["instances"][0]["frames"][0]["data"]
+    assert first_entry["label"] == 101
+    assert np.isclose(first_entry["values"][0], 0.1)
+    assert np.isnan(first_entry["values"][1])
+    assert second_entry["label"] == 102
+    assert np.isclose(second_entry["values"][0], 0.1)
+    assert np.isclose(second_entry["values"][1], 0.4)
+    assert result["odb_id"] == "odb-demo"
+    assert result["query_hint"]["odb_id"] == "odb-demo"
+    assert result["write_response"]["instances_written"] == 1
+
+
+def test_resolve_cloud_scalar_value_supports_relative_change():
+    assert np.isclose(
+        bayesian_service._resolve_cloud_scalar_value(
+            mode="relative_change",
+            updated_value=1.2,
+            baseline_value=1.0,
+        ),
+        0.2,
+    )
+
+
 def test_run_bayesian_update_workflow_stops_early_when_response_diff_within_threshold(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "model.inp"
     inp_path.write_text(
