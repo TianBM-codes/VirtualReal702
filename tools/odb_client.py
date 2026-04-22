@@ -387,6 +387,13 @@ class ODBClient:
     # 三、几何数据（返回 numpy 数组）
     # ═══════════════════════════════════════════════════════════════════════════
 
+    def post_external_field(self, odb_id: str, body: Dict[str, Any]) -> Dict:
+        """
+        Write an external nodal/element field into the selected ODB workspace.
+        """
+        resp = self._post_json(f"/api/odb/{odb_id}/results/external-field", body)
+        return resp.get("data", resp)
+
     def get_render_buffers(self, odb_id: str, instance: str) -> Dict:
         """
         获取表面三角网格（Triangle Soup），用于渲染。

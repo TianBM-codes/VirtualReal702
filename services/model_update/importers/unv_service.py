@@ -5,6 +5,7 @@ import numpy as np
 
 from db import get_connection, ensure_tables_exist, clear_unv_tables
 from FemToolsUNVParser import parse_unv
+from src.l3.core.errors import NotFoundError, ValidationError
 
 
 def _to_builtin(value):
@@ -202,6 +203,116 @@ def _insert_static_results(cursor, project_id, file_id, test_modes):
     return row_count
 
 
+def _clear_measuring_points(cursor, project_id):
+    cursor.execute(
+        "DELETE FROM t_mt_measuring_point_info WHERE project_id = %s",
+        (project_id,),
+    )
+
+
+def _insert_measuring_points(cursor, project_id, test_nodes):
+    insert_sql = """
+    INSERT INTO t_mt_measuring_point_info
+    (measuring_point_name, project_id, sensor_type_id, x_position, y_position, z_position, data_source)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+    update_name_sql = """
+    UPDATE t_mt_measuring_point_info
+    SET measuring_point_name = %s
+    WHERE id = %s
+    """
+
+    row_count = 0
+    for node in test_nodes:
+        cursor.execute(insert_sql, (
+            f"WY_PENDING_{_safe_int(node['nid'])}",
+            project_id,
+            21,
+            _safe_float(node["x"]),
+            _safe_float(node["y"]),
+            _safe_float(node["z"]),
+            "LOCAL",
+        ))
+        inserted_id = getattr(cursor, "lastrowid", None)
+        if inserted_id is None:
+            raise ValueError("failed to resolve inserted measuring point id")
+        cursor.execute(update_name_sql, (f"WY{int(inserted_id)}", int(inserted_id)))
+        row_count += 1
+    return row_count
+
+
+def _sensor_position_item(row):
+    return {
+        "sensor_label": str(row["measuring_point_name"]),
+        "sensor_type": "位移",
+        "sensor_pos": [
+            _safe_float(row["x_position"]),
+            _safe_float(row["y_position"]),
+            _safe_float(row["z_position"]),
+        ],
+    }
+
+
+def _resolve_deform_rows(cursor, project_id, static_result_id=None, load_case_no=None, result_no=None):
+    if static_result_id is not None:
+        cursor.execute(
+            """
+            SELECT id, point, ux, uy, uz
+            FROM t_mt_py_test_static_result
+            WHERE pid = %s AND id = %s
+            """,
+            (project_id, int(static_result_id)),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            raise NotFoundError(
+                "test static result row not found",
+                {"project_id": project_id, "static_result_id": int(static_result_id)},
+            )
+        return rows
+
+    if load_case_no is None or result_no is None:
+        cursor.execute(
+            """
+            SELECT load_case_no, result_no
+            FROM t_mt_py_test_static_result
+            WHERE pid = %s
+            ORDER BY load_case_no, result_no, id
+            LIMIT 1
+            """,
+            (project_id,),
+        )
+        pair = cursor.fetchone()
+        if not pair:
+            raise NotFoundError(
+                "test static result rows not found",
+                {"project_id": project_id},
+            )
+        load_case_no = int(pair["load_case_no"])
+        result_no = int(pair["result_no"])
+
+    cursor.execute(
+        """
+        SELECT id, point, ux, uy, uz
+        FROM t_mt_py_test_static_result
+        WHERE pid = %s AND load_case_no = %s AND result_no = %s
+        ORDER BY point, id
+        """,
+        (project_id, int(load_case_no), int(result_no)),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        raise NotFoundError(
+            "test static result rows not found for the selected case",
+            {
+                "project_id": project_id,
+                "load_case_no": int(load_case_no),
+                "result_no": int(result_no),
+            },
+        )
+    return rows
+
+
 def parse_unv_file(file_path):
     """
     解析试验测试模态结果，并保存到mysql数据库中
@@ -256,6 +367,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
     try:
         if clear_before_insert:
             clear_unv_tables(cursor, project_id)
+            _clear_measuring_points(cursor, project_id)
 
         node_sql = """
         INSERT INTO t_mt_py_test_node (nid, pid, fid, ics, ocs, x, y, z)
@@ -273,6 +385,8 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
                 _safe_float(node["y"]),
                 _safe_float(node["z"])
             ))
+
+        measuring_point_count = _insert_measuring_points(cursor, project_id, test_nodes)
 
         element_sql = """
         INSERT INTO t_mt_py_test_element (
@@ -308,6 +422,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
             "result_kind": result_kind,
             "cleared_before_insert": clear_before_insert,
             "test_node_count": len(test_nodes),
+            "measuring_point_count": measuring_point_count,
             "test_element_count": len(test_elements),
             "test_mode_count": len(test_modes),
             "test_static_result_count": static_result_count,
@@ -405,6 +520,105 @@ def get_modal_shape(project_id):
         conn.close()
 
     return res_json
+
+
+def get_sensor_positions(project_id):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT id, measuring_point_name, sensor_type_id, x_position, y_position, z_position
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id
+            """,
+            (project_id,),
+        )
+        rows = cursor.fetchall()
+        return [_sensor_position_item(row) for row in rows]
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_deform_sensor_positions(project_id, scale=1.0, static_result_id=None, load_case_no=None, result_no=None):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        deform_rows = _resolve_deform_rows(
+            cursor,
+            project_id,
+            static_result_id=static_result_id,
+            load_case_no=load_case_no,
+            result_no=result_no,
+        )
+        result = []
+        for deform_row in deform_rows:
+            point_id = str(deform_row["point"])
+            cursor.execute(
+                """
+                SELECT nid, x, y, z
+                FROM t_mt_py_test_node
+                WHERE pid = %s AND nid = %s
+                ORDER BY fid
+                LIMIT 1
+                """,
+                (project_id, point_id),
+            )
+            node_row = cursor.fetchone()
+            if not node_row:
+                raise NotFoundError(
+                    "test node not found for static result point",
+                    {
+                        "project_id": project_id,
+                        "point": point_id,
+                        "static_result_id": int(deform_row["id"]),
+                    },
+                )
+
+            cursor.execute(
+                """
+                SELECT id, measuring_point_name, sensor_type_id, x_position, y_position, z_position
+                FROM t_mt_measuring_point_info
+                WHERE project_id = %s
+                  AND x_position = %s
+                  AND y_position = %s
+                  AND z_position = %s
+                ORDER BY id
+                LIMIT 1
+                """,
+                (
+                    project_id,
+                    _safe_float(node_row["x"]),
+                    _safe_float(node_row["y"]),
+                    _safe_float(node_row["z"]),
+                ),
+            )
+            measuring_row = cursor.fetchone()
+            if measuring_row is None:
+                measuring_row = {
+                    "measuring_point_name": f"WY{point_id}",
+                    "x_position": node_row["x"],
+                    "y_position": node_row["y"],
+                    "z_position": node_row["z"],
+                }
+
+            result.append(
+                {
+                    "sensor_label": str(measuring_row["measuring_point_name"]),
+                    "sensor_type": "位移",
+                    "sensor_pos": [
+                        _safe_float(node_row["x"]) + _safe_float(deform_row["ux"] or 0.0) * float(scale),
+                        _safe_float(node_row["y"]) + _safe_float(deform_row["uy"] or 0.0) * float(scale),
+                        _safe_float(node_row["z"]) + _safe_float(deform_row["uz"] or 0.0) * float(scale),
+                    ],
+                }
+            )
+        return result
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def dump_unv_modal_shapes_to_vtk(project_id, output_path):

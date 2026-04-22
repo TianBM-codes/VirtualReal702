@@ -38,6 +38,8 @@ async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaReque
             batch_no=body.batch_no,
             input_inp=body.input_inp,
             output_dir=body.output_dir,
+            odb_id=body.odb_id,
+            base_url=body.base_url,
             workspace=body.workspace,
             odb_path=body.odb_path,
             step=body.step,
@@ -62,6 +64,10 @@ async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaReque
             run_solver=body.run_solver,
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
+            write_cloud_result=body.write_cloud_result,
+            cloud_result_group=body.cloud_result_group,
+            cloud_step_name=body.cloud_step_name,
+            cloud_field_name=body.cloud_field_name,
         )
         return success_response(data, "sensitivity results stored")
     except AppError as exc:

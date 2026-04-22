@@ -34,6 +34,7 @@ def _compact_bayesian_run_response(payload: dict) -> dict:
         "final_updated_inp": payload.get("final_updated_inp"),
         "history_dir": payload.get("saved_artifacts", {}).get("history_dir"),
         "history_html": payload.get("saved_artifacts", {}).get("files", {}).get("overview_html"),
+        "cloud_result": payload.get("cloud_result"),
         # Detailed matrices, mappings, and per-iteration summaries stay on disk
         # under output_dir. The API only returns the root paths needed to find them.
         "iteration_dirs": iteration_dirs,
@@ -111,6 +112,11 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
             run_solver=body.run_solver,
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
+            write_cloud_result=body.write_cloud_result,
+            cloud_result_group=body.cloud_result_group,
+            cloud_step_name=body.cloud_step_name,
+            cloud_field_name=body.cloud_field_name,
+            cloud_value_mode=body.cloud_value_mode,
         )
         return success_response(_compact_bayesian_run_response(data), "Bayesian模型修正执行成功")
     except AppError as exc:

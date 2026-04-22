@@ -17,6 +17,7 @@ from db import ensure_tables_exist, get_connection
 from src.inp import parse_inp
 from src.inp.parameter_mapping import build_parameter_target_map
 from src.l3.core.errors import NotFoundError, ValidationError
+from tools.odb_client import ODBClientError
 
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
@@ -964,6 +965,242 @@ def _parameter_element_mapping_entry(
     return result
 
 
+def _resolve_cloud_scalar_value(
+        *,
+        mode: str,
+        updated_value: float,
+        baseline_value: float,
+) -> float:
+    if mode == "updated_value":
+        return float(updated_value)
+    if mode == "delta_value":
+        return float(updated_value) - float(baseline_value)
+    if mode == "relative_change":
+        baseline = float(baseline_value)
+        if np.isclose(baseline, 0.0):
+            if np.isclose(float(updated_value), baseline):
+                return 0.0
+            raise ValidationError(
+                "relative_change cloud mode requires a non-zero baseline parameter value",
+                {"baseline_value": baseline_value, "updated_value": updated_value},
+            )
+        return (float(updated_value) - baseline) / baseline
+    raise ValidationError(
+        "unsupported cloud_value_mode",
+        {"cloud_value_mode": mode, "allowed": ["updated_value", "delta_value", "relative_change"]},
+    )
+
+
+def _resolve_loaded_odb_id_for_workspace(workspace: Optional[str]) -> Optional[str]:
+    if not workspace:
+        return None
+    try:
+        normalized_workspace = os.path.normcase(os.path.abspath(workspace))
+    except Exception:
+        return None
+
+    loaded = getattr(_sens.registry, "loaded", {})
+    for loaded_odb_id, model_index in dict(loaded).items():
+        candidate_workspace = getattr(model_index, "workspace", None)
+        if not candidate_workspace:
+            continue
+        if os.path.normcase(os.path.abspath(candidate_workspace)) == normalized_workspace:
+            return str(loaded_odb_id)
+    return None
+
+
+def _build_bayesian_cloud_request(
+        *,
+        batch_no: int,
+        iteration_results: Sequence[dict],
+        result_group: Optional[str] = None,
+        step_name: str = "BayesianUpdate",
+        field_name: str = "PARAMETER_CLOUD",
+        value_mode: str = "updated_value",
+) -> tuple[dict, dict]:
+    if not iteration_results:
+        raise ValidationError("iteration_results must not be empty for cloud export")
+
+    resolved_result_group = str(result_group or f"bayesian_batch_{int(batch_no)}")
+    resolved_step_name = str(step_name or "BayesianUpdate").strip() or "BayesianUpdate"
+    resolved_field_name = str(field_name or "PARAMETER_CLOUD").strip() or "PARAMETER_CLOUD"
+
+    first_iteration = dict(iteration_results[0])
+    parameter_columns = list(first_iteration.get("parameter_columns") or [])
+    if not parameter_columns:
+        raise ValidationError("parameter_columns are required for cloud export")
+
+    components = [
+        str(column.get("parameter_name") or column.get("field") or f"parameter_{index + 1}")
+        for index, column in enumerate(parameter_columns)
+    ]
+    baseline_values = {
+        components[index]: float(column.get("parameter_value") or 0.0)
+        for index, column in enumerate(parameter_columns)
+    }
+
+    instances_payload: List[dict] = []
+    instance_frames: Dict[str, List[dict]] = {}
+    instance_counts: Dict[str, List[int]] = {}
+
+    for iteration_index, iteration_result in enumerate(iteration_results):
+        mappings = list(iteration_result.get("parameter_element_mapping") or [])
+        if len(mappings) != len(components):
+            raise ValidationError(
+                "parameter_element_mapping length does not match parameter column count",
+                {"expected": len(components), "actual": len(mappings), "iteration": iteration_index + 1},
+            )
+
+        per_instance_labels: Dict[str, Dict[int, List[float]]] = {}
+
+        for component_index, mapping in enumerate(mappings):
+            target_kind = str(mapping.get("target_kind") or "").lower()
+            if target_kind not in {"cell", ""}:
+                raise ValidationError(
+                    "bayesian cloud export currently supports element targets only",
+                    {
+                        "target_kind": mapping.get("target_kind"),
+                        "parameter_name": mapping.get("parameter_name"),
+                    },
+                )
+
+            parameter_name = components[component_index]
+            updated_value = float(mapping.get("updated_parameter_value", mapping.get("parameter_value", 0.0)))
+            baseline_value = float(baseline_values.get(parameter_name, mapping.get("parameter_value", 0.0)))
+            scalar_value = _resolve_cloud_scalar_value(
+                mode=value_mode,
+                updated_value=updated_value,
+                baseline_value=baseline_value,
+            )
+
+            for scope_name, labels in dict(mapping.get("targets_by_scope") or {}).items():
+                instance_name = str(scope_name or "").strip()
+                if not instance_name:
+                    continue
+                label_map = per_instance_labels.setdefault(instance_name, {})
+                for label in labels or []:
+                    element_label = int(label)
+                    values = label_map.setdefault(
+                        element_label,
+                        [float("nan")] * len(components),
+                    )
+                    values[component_index] = float(scalar_value)
+
+        for instance_name, label_map in per_instance_labels.items():
+            frame_entry = {
+                "frame_idx": iteration_index,
+                "frame_value": float(iteration_index + 1),
+                "data": [
+                    {"label": int(label), "values": values}
+                    for label, values in sorted(label_map.items())
+                ],
+            }
+            instance_frames.setdefault(instance_name, []).append(frame_entry)
+            instance_counts.setdefault(instance_name, []).append(len(frame_entry["data"]))
+
+    if not instance_frames:
+        raise ValidationError("no element targets were resolved for bayesian cloud export")
+
+    for instance_name, frames in sorted(instance_frames.items()):
+        instances_payload.append({"instance": instance_name, "frames": frames})
+
+    request_body = {
+        "step_name": resolved_step_name,
+        "field_name": resolved_field_name,
+        "components": components,
+        "result_group": resolved_result_group,
+        "type": "element",
+        "instances": instances_payload,
+    }
+    metadata = {
+        "result_group": resolved_result_group,
+        "step": resolved_step_name,
+        "field": resolved_field_name,
+        "position": "ELEMENT_NODAL",
+        "value_mode": value_mode,
+        "frame_count": len(iteration_results),
+        "frames": [
+            {
+                "frame_idx": index,
+                "frame_value": float(index + 1),
+                "description": f"Iteration {index + 1}",
+            }
+            for index in range(len(iteration_results))
+        ],
+        "components": components,
+        "instances": [str(item["instance"]) for item in instances_payload],
+        "instance_element_counts": {
+            instance_name: [int(count) for count in counts]
+            for instance_name, counts in sorted(instance_counts.items())
+        },
+    }
+    return request_body, metadata
+
+
+def _write_bayesian_cloud_result(
+        *,
+        odb_id: str,
+        base_url: Optional[str],
+        batch_no: int,
+        iteration_results: Sequence[dict],
+        result_group: Optional[str] = None,
+        step_name: str = "BayesianUpdate",
+        field_name: str = "PARAMETER_CLOUD",
+        value_mode: str = "updated_value",
+        timeout: int = 60,
+) -> dict:
+    resolved_odb_id = str(odb_id or "").strip()
+    if not resolved_odb_id:
+        raise ValidationError("odb_id is required for cloud export via external-field api")
+
+    request_body, metadata = _build_bayesian_cloud_request(
+        batch_no=batch_no,
+        iteration_results=iteration_results,
+        result_group=result_group,
+        step_name=step_name,
+        field_name=field_name,
+        value_mode=value_mode,
+    )
+    resolved_base_url = base_url or "http://127.0.0.1:18765"
+    client = _sens.ODBClient(base_url=resolved_base_url, timeout=timeout)
+    try:
+        write_response = client.post_external_field(resolved_odb_id, request_body)
+    except ODBClientError as exc:
+        details = {
+            "odb_id": resolved_odb_id,
+            "base_url": resolved_base_url,
+            "status_code": exc.status_code,
+        }
+        if exc.status_code == 404:
+            raise NotFoundError(
+                "external-field api target odb was not found",
+                details,
+            ) from exc
+        raise ValidationError(
+            "external-field api request failed",
+            {**details, "detail": exc.detail},
+        ) from exc
+
+    result = dict(metadata)
+    result.update(
+        {
+            "odb_id": resolved_odb_id,
+            "base_url": resolved_base_url,
+            "write_response": write_response,
+            "query_hint": {
+                "endpoint": "/api/odb/{odb_id}/results/frame-scalars",
+                "odb_id": resolved_odb_id,
+                "result_group": metadata["result_group"],
+                "step": metadata["step"],
+                "field": metadata["field"],
+                "frame": 0,
+                "component_idx": 0,
+            },
+        }
+    )
+    return result
+
+
 def _read_text_matrix(file_path: str, row_start: int, row_count: int, col_start: int = 1) -> np.ndarray:
     if int(row_count) <= 0:
         raise ValidationError("row_count must be > 0", {"row_count": row_count})
@@ -1828,6 +2065,11 @@ def run_bayesian_update_workflow(
         run_solver: bool = False,
         timeout_sec: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
+        write_cloud_result: bool = False,
+        cloud_result_group: Optional[str] = None,
+        cloud_step_name: str = "BayesianUpdate",
+        cloud_field_name: str = "PARAMETER_CLOUD",
+        cloud_value_mode: str = "updated_value",
 ) -> dict:
     if int(iterations) <= 0:
         raise ValidationError("iterations must be > 0", {"iterations": iterations})
@@ -1861,6 +2103,9 @@ def run_bayesian_update_workflow(
 
         iteration_results = []
         stopped_early = False
+        last_resolved_workspace: Optional[str] = None
+        cloud_export_odb_id = str(odb_id or "").strip() or None
+        cloud_export_base_url = base_url
         next_source = {
             "workspace": _normalize_optional_path(workspace),
             "odb_path": _normalize_optional_path(odb_path),
@@ -1911,6 +2156,15 @@ def run_bayesian_update_workflow(
                 python3=python3,
                 keep_raw=keep_raw,
                 timeout=timeout,
+            )
+            last_resolved_workspace = str(matrix_payload.get("workspace") or "") or last_resolved_workspace
+            cloud_export_odb_id = (
+                str(matrix_payload.get("odb_id") or next_source.get("odb_id") or "").strip()
+                or cloud_export_odb_id
+            )
+            cloud_export_base_url = (
+                str(next_source.get("base_url") or "").strip()
+                or cloud_export_base_url
             )
 
             parameter_columns = list(matrix_payload["parameter_columns"])
@@ -2067,6 +2321,30 @@ def run_bayesian_update_workflow(
             batch_no=resolved_batch_no,
             iteration_results=iteration_results,
         )
+        cloud_result = None
+        if write_cloud_result:
+            resolved_cloud_odb_id = cloud_export_odb_id or _resolve_loaded_odb_id_for_workspace(last_resolved_workspace)
+            if not resolved_cloud_odb_id:
+                raise ValidationError(
+                    "cloud export via external-field api requires odb_id or a workspace already loaded in the L3 registry",
+                    {
+                        "project_id": project_id,
+                        "batch_no": resolved_batch_no,
+                        "odb_id": odb_id,
+                        "workspace": last_resolved_workspace,
+                    },
+                )
+            cloud_result = _write_bayesian_cloud_result(
+                odb_id=resolved_cloud_odb_id,
+                base_url=cloud_export_base_url,
+                batch_no=resolved_batch_no,
+                iteration_results=iteration_results,
+                result_group=cloud_result_group,
+                step_name=cloud_step_name,
+                field_name=cloud_field_name,
+                value_mode=cloud_value_mode,
+                timeout=timeout,
+            )
         saved_artifacts = (
             _save_bayesian_history_artifacts(
                 root_dir=root_dir,
@@ -2097,6 +2375,7 @@ def run_bayesian_update_workflow(
             "response_rows": final_iteration["response_rows"],
             "iteration_results": iteration_results,
             "saved_artifacts": saved_artifacts,
+            "cloud_result": cloud_result,
         }
     finally:
         if cleanup_root_dir is not None:
