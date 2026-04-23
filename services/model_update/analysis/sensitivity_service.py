@@ -21,6 +21,7 @@ from src.l3.infra.manifest_repo import ManifestRepo
 from src.l3.services.node_table_service import get_instance_fields
 from tools.odb_client import ODBClient, ODBClientError, _select_component_values
 
+from .model_update_meta_service import resolve_abaqus_command
 from .solver_service import run_abaqus_sensitivity_job
 
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
@@ -154,7 +155,7 @@ def _default_step_from_rows(step_rows: List[dict]) -> Optional[str]:
 def build_workspace_from_odb(
         odb_path: str,
         workspace: str,
-        abaqus: str = "abaqus",
+        abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
 ) -> dict:
@@ -179,7 +180,7 @@ def build_workspace_from_odb(
         "--out",
         workspace_abs,
         "--abaqus",
-        abaqus,
+        resolve_abaqus_command(abaqus),
     ]
     if keep_raw:
         cmd.append("--keep-raw")
@@ -1008,7 +1009,7 @@ def store_dsa_sensitivity_results(
         response_frequency: int = 1,
         node_vars: Optional[List[str]] = None,
         element_vars: Optional[List[str]] = None,
-        abaqus: str = "abaqus",
+        abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -2306,7 +2307,7 @@ def _export_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: str = "abaqus",
+        abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -2791,7 +2792,7 @@ def export_dsa_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: str = "abaqus",
+        abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -2833,7 +2834,7 @@ def export_adjoint_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: str = "abaqus",
+        abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -2876,7 +2877,7 @@ def export_odb_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: str = "abaqus",
+        abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,

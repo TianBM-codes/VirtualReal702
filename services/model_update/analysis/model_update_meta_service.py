@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -14,22 +13,17 @@ def _service_config_path() -> Path:
     return _repo_root() / "service_config.json"
 
 
-def get_abaqus_config() -> dict:
+def resolve_abaqus_command(abaqus: Optional[str] = None) -> str:
+    explicit = str(abaqus or "").strip()
+    if explicit:
+        return explicit
+
     config_path = _service_config_path()
     if not config_path.exists():
-        return {
-            "abaqus_cmd": "abaqus",
-            "configured": False,
-            "source_file": str(config_path),
-        }
+        return "abaqus"
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-    abaqus_cmd = str(payload.get("APP_ABAQUS_CMD") or "abaqus").strip() or "abaqus"
-    return {
-        "abaqus_cmd": abaqus_cmd,
-        "configured": bool(payload.get("APP_ABAQUS_CMD")),
-        "source_file": str(config_path),
-    }
+    return str(payload.get("APP_ABAQUS_CMD") or "abaqus").strip() or "abaqus"
 
 
 def add_manual_parameter(

@@ -33,7 +33,7 @@ class _WriteConnection:
         return None
 
 
-def test_get_abaqus_config_reads_service_config(monkeypatch, tmp_path: Path):
+def test_resolve_abaqus_command_reads_service_config(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "service_config.json"
     config_path.write_text(
         '{"APP_ABAQUS_CMD": "C:/SIMULIA/Commands/abaqus.bat"}',
@@ -41,13 +41,9 @@ def test_get_abaqus_config_reads_service_config(monkeypatch, tmp_path: Path):
     )
     monkeypatch.setattr(model_update_meta_service, "_service_config_path", lambda: config_path)
 
-    result = model_update_meta_service.get_abaqus_config()
+    result = model_update_meta_service.resolve_abaqus_command(None)
 
-    assert result == {
-        "abaqus_cmd": "C:/SIMULIA/Commands/abaqus.bat",
-        "configured": True,
-        "source_file": str(config_path),
-    }
+    assert result == "C:/SIMULIA/Commands/abaqus.bat"
 
 
 def test_add_manual_parameter_upserts_row(monkeypatch):

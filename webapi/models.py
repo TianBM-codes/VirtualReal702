@@ -118,7 +118,7 @@ class BayesianModelUpdateRequest(BaseModel):
     step_scale: float = 1.0
     lower_bound: Optional[Any] = None
     upper_bound: Optional[Any] = None
-    abaqus: str = "abaqus"
+    abaqus: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
@@ -206,7 +206,7 @@ class TransformAutoInfoRequest(BaseModel):
 class SensitivityBuildWorkspaceRequest(BaseModel):
     odb_path: str
     workspace: str
-    abaqus: str = "abaqus"
+    abaqus: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
 
@@ -242,7 +242,7 @@ class SensitivityExportVtuBaseRequest(BaseModel):
     position: Optional[str] = None
     aggregation: str = "max_abs"
     frame: int = 0
-    abaqus: str = "abaqus"
+    abaqus: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
@@ -281,7 +281,7 @@ class SensitivityStoreDsaRequest(BaseModel):
     response_frequency: int = 1
     node_vars: Optional[List[str]] = None
     element_vars: Optional[List[str]] = None
-    abaqus: str = "abaqus"
+    abaqus: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
@@ -310,7 +310,7 @@ class AbaqusSensitivityRunRequest(BaseModel):
     response_frequency: int = 1
     node_vars: Optional[List[str]] = None
     element_vars: Optional[List[str]] = None
-    abaqus: str = "abaqus"
+    abaqus: Optional[str] = None
     job_name: Optional[str] = None
     cpus: Optional[int] = None
     interactive: bool = True
@@ -323,7 +323,7 @@ class AbaqusAdjointRunRequest(BaseModel):
     input_inp: str
     output_inp: Optional[str] = None
     response_nset: Optional[str] = None
-    abaqus: str = "abaqus"
+    abaqus: Optional[str] = None
     job_name: Optional[str] = None
     cpus: Optional[int] = None
     interactive: bool = True

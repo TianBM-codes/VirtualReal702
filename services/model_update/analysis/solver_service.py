@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from src.l3.core.errors import NotFoundError, ValidationError
 
+from .model_update_meta_service import resolve_abaqus_command
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import convert_to_sol103
 from ..solver_prep.abaqus_sensitivity import generate_sensitivity_inp
@@ -130,7 +131,7 @@ def _run_local_solver(
 
 
 def _build_abaqus_command(
-    abaqus: str,
+    abaqus: Optional[str],
     inp_path: Path,
     job_name: str,
     cpus: Optional[int] = None,
@@ -139,7 +140,7 @@ def _build_abaqus_command(
 ) -> List[str]:
     # Abaqus is invoked in the directory that contains the generated input deck,
     # so the command only needs the file name, not the full absolute path.
-    command = [str(abaqus), f"job={job_name}", f"input={inp_path.name}"]
+    command = [resolve_abaqus_command(abaqus), f"job={job_name}", f"input={inp_path.name}"]
     if interactive:
         command.append("interactive")
     if cpus is not None:
@@ -168,7 +169,7 @@ def run_abaqus_sensitivity_job(
     response_frequency: int = 1,
     node_vars: Optional[List[str]] = None,
     element_vars: Optional[List[str]] = None,
-    abaqus: str = "abaqus",
+    abaqus: Optional[str] = None,
     job_name: Optional[str] = None,
     cpus: Optional[int] = None,
     interactive: bool = True,
@@ -231,7 +232,7 @@ def run_abaqus_adjoint_job(
     input_inp: str,
     output_inp: Optional[str] = None,
     response_nset: Optional[str] = None,
-    abaqus: str = "abaqus",
+    abaqus: Optional[str] = None,
     job_name: Optional[str] = None,
     cpus: Optional[int] = None,
     interactive: bool = True,

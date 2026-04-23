@@ -127,6 +127,31 @@ def test_build_abaqus_command_uses_basename_and_runtime_flags():
     ]
 
 
+def test_build_abaqus_command_uses_configured_default(monkeypatch):
+    from services.model_update.analysis import solver_service
+
+    monkeypatch.setattr(
+        solver_service,
+        "resolve_abaqus_command",
+        lambda abaqus=None: "C:/SIMULIA/Commands/abaqus.bat" if not abaqus else abaqus,
+    )
+
+    command = _build_abaqus_command(
+        abaqus=None,
+        inp_path=Path(r"D:\tmp\demo.inp"),
+        job_name="demo_job",
+        cpus=None,
+        interactive=False,
+        extra_args=None,
+    )
+
+    assert command == [
+        "C:/SIMULIA/Commands/abaqus.bat",
+        "job=demo_job",
+        "input=demo.inp",
+    ]
+
+
 def test_build_nastran_command_keeps_relative_bdf_name():
     command = _build_nastran_command(
         nastran="nastran.exe",
