@@ -10,6 +10,8 @@ DELETE /api/projects/{project_id}                 — 删除 project（文件夹
 import json
 import os
 import shutil
+import sqlite3
+from pathlib import Path
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -19,6 +21,14 @@ from ...core.config import settings
 from ...core.errors import ConflictError, NotFoundError, ValidationError
 from ...infra.registry_repo import RegistryRepo
 from ...infra.manifest_repo import ManifestRepo
+from ...infra.workspace_safety import (
+    clone_tmp_workspace,
+    project_workspace,
+    require_directory,
+    require_target_absent,
+    safe_rmtree,
+    validate_workspace_id,
+)
 from ..response import ok
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -60,6 +70,10 @@ class AddResultGroupRequest(BaseModel):
 
 class PatchResultGroupRequest(BaseModel):
     display_name: str
+
+
+class CloneProjectRequest(BaseModel):
+    new_project_id: str
 
 
 # ── Shared helper ──────────────────────────────────────────────────────────────
@@ -114,6 +128,15 @@ def _build_project_response(proj, repo) -> dict:
 
 # ── GET /api/projects ──────────────────────────────────────────────────────────
 
+def _reject_symlink_tree(root: Path) -> None:
+    for entry in root.rglob("*"):
+        if entry.is_symlink():
+            raise ValidationError(
+                "Project workspace contains symlinks and cannot be copied",
+                {"path": str(entry)},
+            )
+
+
 @router.get("")
 async def list_projects():
     """列出所有 projects，含各 result_group 状态。"""
@@ -130,28 +153,102 @@ async def create_project(body: CreateProjectRequest):
     创建新 project，触发 INP 几何解析。
     调用方（Java 后端）提供 project_id（UUID），避免 L3 自己生成。
     """
+    project_id = validate_workspace_id(body.project_id, "project_id")
     if not os.path.isfile(body.source_path):
         raise ValidationError(f"File not found on server: {body.source_path}")
 
     repo = _repo()
-    if repo.get_project(body.project_id) is not None:
-        raise ConflictError(f"Project '{body.project_id}' already exists")
+    if repo.get_project(project_id) is not None:
+        raise ConflictError(f"Project '{project_id}' already exists")
 
-    workspace = _workspace(body.project_id)
-    os.makedirs(workspace, exist_ok=True)
+    workspace = project_workspace(settings.data_root, project_id)
+    require_target_absent(workspace, "project workspace")
+    workspace.mkdir(parents=True, exist_ok=False)
 
     # Store bare project_id as workspace key (same pattern as odb_jobs).
     # resolve_workspace(project_id, data_root) → data_root/project_id at read time.
-    repo.create_project(
-        project_id=body.project_id,
-        workspace=body.project_id,
-        inp_path=body.source_path,
-    )
+    try:
+        repo.create_project(
+            project_id=project_id,
+            workspace=project_id,
+            inp_path=body.source_path,
+        )
+    except Exception:
+        safe_rmtree(workspace, settings.data_root, "project workspace")
+        raise
 
-    return ok({"project_id": body.project_id, "geom_status": "pending"})
+    return ok({"project_id": project_id, "geom_status": "pending"})
 
 
 # ── POST /api/projects/{project_id}/results ───────────────────────────────────
+
+@router.post("/{source_project_id}/clone", status_code=201)
+async def clone_project(source_project_id: str, body: CloneProjectRequest):
+    source_project_id = validate_workspace_id(source_project_id, "source_project_id")
+    new_project_id = validate_workspace_id(body.new_project_id, "new_project_id")
+    if source_project_id == new_project_id:
+        raise ConflictError("new_project_id must be different from source_project_id")
+
+    repo = _repo()
+    src = repo.get_project(source_project_id)
+    if src is None:
+        raise NotFoundError(f"Project '{source_project_id}' not found")
+    if repo.get_project(new_project_id) is not None:
+        raise ConflictError(f"Project '{new_project_id}' already exists")
+    if repo.project_has_active_tasks(source_project_id):
+        raise ConflictError(
+            "Cannot clone a project while geometry or result parsing is pending/running"
+        )
+
+    source_workspace = project_workspace(settings.data_root, source_project_id)
+    target_workspace = project_workspace(settings.data_root, new_project_id)
+    tmp_workspace = clone_tmp_workspace(settings.data_root, new_project_id)
+
+    require_directory(source_workspace, "source workspace")
+    require_target_absent(target_workspace, "target workspace")
+    require_target_absent(tmp_workspace, "temporary workspace")
+    _reject_symlink_tree(source_workspace)
+
+    target_created = False
+    try:
+        shutil.copytree(str(source_workspace), str(tmp_workspace), symlinks=False)
+
+        if repo.project_has_active_tasks(source_project_id):
+            raise ConflictError(
+                "Cannot clone a project while geometry or result parsing is pending/running"
+            )
+
+        tmp_workspace.rename(target_workspace)
+        target_created = True
+
+        try:
+            repo.clone_project_records(source_project_id, new_project_id)
+        except sqlite3.IntegrityError as exc:
+            safe_rmtree(target_workspace, settings.data_root, "target workspace")
+            target_created = False
+            raise ConflictError(f"Project '{new_project_id}' already exists") from exc
+        except ValueError as exc:
+            safe_rmtree(target_workspace, settings.data_root, "target workspace")
+            target_created = False
+            raise NotFoundError(f"Project '{source_project_id}' not found") from exc
+        except Exception:
+            safe_rmtree(target_workspace, settings.data_root, "target workspace")
+            target_created = False
+            raise
+
+    except Exception:
+        if not target_created:
+            safe_rmtree(tmp_workspace, settings.data_root, "temporary workspace")
+        raise
+
+    cloned_groups = repo.list_result_groups(new_project_id)
+    return ok({
+        "source_project_id": source_project_id,
+        "project_id": new_project_id,
+        "geom_status": src["geom_status"],
+        "result_group_count": len(cloned_groups),
+    })
+
 
 @router.post("/{project_id}/results", status_code=201)
 async def add_result_group(project_id: str, body: AddResultGroupRequest):
@@ -254,6 +351,29 @@ async def rename_result_group(project_id: str, result_group: str,
     })
 
 
+# ── GET /api/projects/{project_id}/summary ────────────────────────────────────
+
+@router.get("/{project_id}/summary")
+async def get_project_summary(project_id: str):
+    """
+    返回模型统计摘要（来自 INP 解析）。
+    geom_status=ready 后可用；尚未解析完返回 404。
+    """
+    repo = _repo()
+    proj = repo.get_project(project_id)
+    if proj is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+
+    workspace = _resolve_workspace(proj["workspace"], project_id)
+    summary_path = os.path.join(workspace, "model_summary.json")
+    if not os.path.isfile(summary_path):
+        raise NotFoundError("Summary not yet available — geometry may still be processing")
+
+    with open(summary_path, encoding="utf-8") as f:
+        data = json.load(f)
+    return ok(data)
+
+
 # ── DELETE /api/projects/{project_id} ─────────────────────────────────────────
 
 @router.delete("/{project_id}", status_code=200)
@@ -261,19 +381,19 @@ async def delete_project(project_id: str):
     """
     删除 project：移除 model/<project_id>/ 整个目录 + registry.db 中相关行。
     """
+    project_id = validate_workspace_id(project_id, "project_id")
     repo = _repo()
 
     proj = repo.get_project(project_id)
     if proj is None:
         raise NotFoundError(f"Project '{project_id}' not found")
 
-    workspace = _resolve_workspace(proj["workspace"], project_id)
+    workspace = project_workspace(settings.data_root, project_id)
 
     # Remove from registry first (so runner won't pick it up)
     repo.delete_project(project_id)
 
     # Delete the workspace directory
-    if os.path.isdir(workspace):
-        shutil.rmtree(workspace, ignore_errors=True)
+    safe_rmtree(workspace, settings.data_root, "project workspace")
 
     return ok({"project_id": project_id, "deleted": True})

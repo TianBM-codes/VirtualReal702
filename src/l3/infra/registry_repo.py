@@ -369,6 +369,80 @@ class RegistryRepo:
                 (project_id,),
             ).fetchall()
 
+    def project_has_active_tasks(self, project_id: str) -> bool:
+        """Return True if project geometry or any result group is queued/running."""
+        with self._connect() as conn:
+            proj = conn.execute(
+                "SELECT geom_status FROM projects WHERE project_id=?", (project_id,)
+            ).fetchone()
+            if proj is None:
+                return False
+            if proj["geom_status"] in ("pending", "running"):
+                return True
+            row = conn.execute(
+                "SELECT 1 FROM result_groups"
+                " WHERE project_id=? AND status IN ('pending', 'running') LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            return row is not None
+
+    def clone_project_records(self, source_project_id: str, new_project_id: str) -> None:
+        """
+        Clone registry rows for one project and all its result_groups.
+        The workspace field is set to the bare new_project_id.
+        """
+        now = _now_iso()
+        with self._connect() as conn:
+            src = conn.execute(
+                "SELECT * FROM projects WHERE project_id=?", (source_project_id,)
+            ).fetchone()
+            if src is None:
+                raise ValueError(f"Project '{source_project_id}' not found")
+            existing = conn.execute(
+                "SELECT 1 FROM projects WHERE project_id=?", (new_project_id,)
+            ).fetchone()
+            if existing is not None:
+                raise sqlite3.IntegrityError(f"Project '{new_project_id}' already exists")
+
+            conn.execute(
+                "INSERT INTO projects"
+                " (project_id, workspace, inp_path, geom_status, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?)",
+                (
+                    new_project_id,
+                    new_project_id,
+                    src["inp_path"],
+                    src["geom_status"],
+                    now,
+                    now,
+                ),
+            )
+
+            rows = conn.execute(
+                "SELECT * FROM result_groups WHERE project_id=? ORDER BY created_at",
+                (source_project_id,),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "INSERT INTO result_groups"
+                    " (project_id, result_group, display_name, source_path,"
+                    "  source_file, status, parse_options, error_message,"
+                    "  created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        new_project_id,
+                        row["result_group"],
+                        row["display_name"],
+                        row["source_path"],
+                        row["source_file"],
+                        row["status"],
+                        row["parse_options"],
+                        row["error_message"],
+                        now,
+                        now,
+                    ),
+                )
+
     def update_result_group_status(self, project_id: str, result_group: str,
                                    status: str,
                                    error_message: Optional[str] = None) -> None:

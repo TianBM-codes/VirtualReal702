@@ -390,10 +390,16 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
     # --- L1: parse INP once, export geometry HDF5 + run catalog import ---
     logger.info("[%s] Geom: parsing INP %s", project_id, inp_path)
     try:
+        import json as _json
         from src.inp import parse_inp
         from src.inp.exporter import export_l1
+        from src.inp.summary import compute_inp_summary
         model = parse_inp(inp_path)
         export_l1(model, workspace)
+        summary = compute_inp_summary(model)
+        summary_path = os.path.join(workspace, "model_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as _f:
+            _json.dump(summary, _f)
     except Exception as exc:
         msg = "INP parse/export failed: {}".format(exc)
         logger.exception("[%s] %s", project_id, msg)
