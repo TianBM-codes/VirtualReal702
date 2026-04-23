@@ -5,7 +5,6 @@ from services.model_update.analysis.bayesian_service import (
     run_bayesian_update_workflow,
 )
 from services.model_update.analysis.model_update_meta_service import (
-    add_manual_parameter,
     add_manual_response,
 )
 from services.model_update.analysis.inp_service import create_optimization_parameter
@@ -13,7 +12,6 @@ from src.l3.core.errors import AppError, ValidationError
 
 from ..common import error_response, server_error, success_response
 from ..models import (
-    AddParameterRequest,
     AddResponseRequest,
     BayesianModelUpdateRequest,
     BayesianTextCheckRequest,
@@ -22,6 +20,22 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
+
+
+def _normalize_set_names(raw_value) -> list[str]:
+    if isinstance(raw_value, str):
+        values = [raw_value]
+    else:
+        values = list(raw_value or [])
+    result = []
+    seen = set()
+    for item in values:
+        token = str(item or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+    return result
 
 
 def _compact_bayesian_run_response(payload: dict) -> dict:
@@ -52,26 +66,6 @@ def _compact_bayesian_run_response(payload: dict) -> dict:
     }
 
 
-@router.post("/add/parameters")
-async def add_parameter_api(request: Request, body: AddParameterRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        data = add_manual_parameter(
-            project_id=body.project_id,
-            parameter=body.parameter,
-            parameter_type=body.type,
-            scatter=body.scatter,
-            upper=body.upper,
-            lower=body.lower,
-        )
-        return success_response(data, "参数添加成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
 @router.post("/add/response")
 async def add_response_api(request: Request, body: AddResponseRequest):
     await log_request(request, model_to_dict(body))
@@ -97,22 +91,41 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
     # type to one resolved INP set entry in the imported catalog.
     await log_request(request, model_to_dict(body))
     try:
-        if (not body.candidate_code and not body.quantity_code) or not body.set_name:
+        set_names = _normalize_set_names(body.set_name)
+        if (not body.candidate_code and not body.quantity_code) or not set_names:
             raise ValidationError("project_id, set_name and either candidate_code or quantity_code are required")
 
-        result = create_optimization_parameter(
-            project_id=body.project_id,
-            candidate_code=body.candidate_code,
-            quantity_code=body.quantity_code,
-            selection_mode=body.selection_mode,
-            set_name=body.set_name,
-            parameter_name=body.parameter_name,
-            scatter=body.scatter,
-            description=body.description,
-            set_type=body.set_type,
-            set_scope=body.set_scope,
-            instance_name=body.instance_name,
-            part_name=body.part_name,
+        results = []
+        multi_set = len(set_names) > 1
+        for set_name in set_names:
+            resolved_parameter_name = body.parameter_name
+            if multi_set and resolved_parameter_name:
+                resolved_parameter_name = f"{resolved_parameter_name}@{set_name}"
+            results.append(
+                create_optimization_parameter(
+                    project_id=body.project_id,
+                    candidate_code=body.candidate_code,
+                    quantity_code=body.quantity_code,
+                    selection_mode=body.selection_mode,
+                    set_name=set_name,
+                    parameter_name=resolved_parameter_name,
+                    scatter=body.scatter,
+                    description=body.description,
+                    set_type=body.set_type,
+                    set_scope=body.set_scope,
+                    instance_name=body.instance_name,
+                    part_name=body.part_name,
+                )
+            )
+        result = (
+            results[0]
+            if len(results) == 1
+            else {
+                "project_id": body.project_id,
+                "set_names": set_names,
+                "created_set_count": len(results),
+                "results": results,
+            }
         )
         return success_response(result, "优化参数创建成功")
     except AppError as exc:

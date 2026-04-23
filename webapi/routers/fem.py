@@ -1,7 +1,11 @@
 from fastapi import APIRouter, Request
 
 from services.model_update.importers.bdf_service import import_bdf_data
-from services.model_update.analysis.inp_service import get_inp_catalog, import_inp_catalog
+from services.model_update.analysis.inp_service import (
+    get_inp_catalog,
+    get_inp_parameter_options,
+    import_inp_catalog,
+)
 from services.model_update.analysis.inp_tree_service import get_inp_tree
 from src.l3.core.errors import AppError
 
@@ -58,6 +62,21 @@ async def get_inp_catalog_api(request: Request, body: InpCatalogRequest):
     try:
         result = get_inp_catalog(body.project_id)
         return success_response(result, "INP 目录查询成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/catalog/inp/parameter-options")
+async def get_inp_parameter_options_api(request: Request, body: InpCatalogRequest):
+    # Query the simplified parameter/level/set mapping from the catalog tables
+    # after /import/inp/catalog has already populated the database.
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_inp_parameter_options(body.project_id)
+        return success_response(result, "INP 参数选项查询成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

@@ -216,3 +216,139 @@ def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch
 
     assert fake_conn.committed is False
     assert fake_conn.rolled_back is True
+
+
+def test_build_import_inp_catalog_summary_returns_simplified_parameter_level_sets():
+    result = inp_service._build_inp_parameter_options(
+        supported_quantities=[
+            {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
+            {"quantity_code": "H", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+        ],
+        quantity_set_capabilities=[
+            {
+                "quantity_code": "E",
+                "set_name": "SET_A",
+                "set_scope": "PART",
+                "set_type": "ELSET",
+                "instance_name": None,
+                "part_name": "P1",
+                "supports_global": 1,
+                "supports_local": 1,
+            },
+            {
+                "quantity_code": "E",
+                "set_name": "SET_A",
+                "set_scope": "ASSEMBLY",
+                "set_type": "ELSET",
+                "instance_name": "INST-1",
+                "part_name": "P1",
+                "supports_global": 1,
+                "supports_local": 0,
+            },
+            {
+                "quantity_code": "E",
+                "set_name": "SET_B",
+                "set_scope": "PART",
+                "set_type": "ELSET",
+                "instance_name": None,
+                "part_name": "P1",
+                "supports_global": 0,
+                "supports_local": 1,
+            },
+            {
+                "quantity_code": "H",
+                "set_name": "SET_SHELL",
+                "set_scope": "PART",
+                "set_type": "ELSET",
+                "instance_name": None,
+                "part_name": "P2",
+                "supports_global": 1,
+                "supports_local": 0,
+            },
+        ],
+    )
+
+    assert result == [
+        {
+            "parameter_name": "E",
+            "description": "杨氏模量",
+            "level": "GLOBAL",
+            "sets": ["SET_A"],
+        },
+        {
+            "parameter_name": "E",
+            "description": "杨氏模量",
+            "level": "LOCAL",
+            "sets": ["SET_A", "SET_B"],
+        },
+        {
+            "parameter_name": "厚度",
+            "description": "壳单元厚度",
+            "level": "GLOBAL",
+            "sets": ["SET_SHELL"],
+        },
+    ]
+
+
+class _InpOptionsCursor:
+    def __init__(self):
+        self.last_sql = ""
+        self.last_params = None
+
+    def execute(self, sql, params=None):
+        self.last_sql = " ".join(sql.split())
+        self.last_params = params
+
+    def fetchall(self):
+        if "FROM t_mt_py_fem_supported_quantity" in self.last_sql:
+            return [
+                {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
+                {"quantity_code": "H", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+            ]
+        if "FROM t_mt_py_fem_quantity_set_capability" in self.last_sql:
+            return [
+                {"quantity_code": "E", "set_name": "SET_A", "set_scope": "PART", "set_type": "ELSET", "instance_name": None, "part_name": "P1", "supports_global": 1, "supports_local": 0},
+                {"quantity_code": "H", "set_name": "SET_B", "set_scope": "PART", "set_type": "ELSET", "instance_name": None, "part_name": "P1", "supports_global": 1, "supports_local": 1},
+            ]
+        return []
+
+    def close(self):
+        return None
+
+
+class _InpOptionsConnection:
+    def __init__(self):
+        self.cursor_obj = _InpOptionsCursor()
+
+    def cursor(self, dictionary=False):
+        return self.cursor_obj
+
+    def close(self):
+        return None
+
+
+def test_get_inp_parameter_options_reads_from_database(monkeypatch):
+    monkeypatch.setattr(inp_service, "get_connection", lambda: _InpOptionsConnection())
+
+    result = inp_service.get_inp_parameter_options(101)
+
+    assert result == [
+        {
+            "parameter_name": "E",
+            "description": "杨氏模量",
+            "level": "GLOBAL",
+            "sets": ["SET_A"],
+        },
+        {
+            "parameter_name": "厚度",
+            "description": "壳单元厚度",
+            "level": "GLOBAL",
+            "sets": ["SET_B"],
+        },
+        {
+            "parameter_name": "厚度",
+            "description": "壳单元厚度",
+            "level": "LOCAL",
+            "sets": ["SET_B"],
+        },
+    ]

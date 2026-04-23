@@ -686,9 +686,77 @@ def _extract_legacy_boundary_rows(model):
 
 _DEFAULT_PARAMETER_SCATTER = 0.25
 _SUPPORTED_CORRECTION_QUANTITIES = (
-    {"quantity_code": "E", "quantity_name": "Young's Modulus", "unit": None, "enabled": 1, "sort_no": 1},
-    {"quantity_code": "H", "quantity_name": "Thickness", "unit": None, "enabled": 1, "sort_no": 2},
+    {"quantity_code": "E", "quantity_name": "E", "unit": None, "enabled": 1, "sort_no": 1},
+    {"quantity_code": "H", "quantity_name": "厚度", "unit": None, "enabled": 1, "sort_no": 2},
 )
+
+
+def _quantity_description(quantity_code: str, quantity_name: Optional[str] = None) -> str:
+    token = str(quantity_code or "").strip().upper()
+    if token == "E":
+        return "杨氏模量"
+    if token == "H":
+        return "壳单元厚度"
+    return f"{str(quantity_name or token).strip()} parameter."
+
+
+def _append_unique_name(names: List[str], seen: set, value: Optional[str]) -> None:
+    token = str(value or "").strip()
+    if not token or token in seen:
+        return
+    seen.add(token)
+    names.append(token)
+
+
+def _build_inp_parameter_options(
+        supported_quantities: Sequence[dict],
+        quantity_set_capabilities: Sequence[dict],
+) -> List[dict]:
+    quantity_rows = [
+        dict(row)
+        for row in supported_quantities
+        if int(row.get("enabled", 1) or 0) == 1
+    ]
+    quantity_rows.sort(key=lambda row: (int(row.get("sort_no", 0) or 0), str(row.get("quantity_code") or "")))
+
+    capability_rows = [dict(row) for row in (quantity_set_capabilities or [])]
+    result = []
+    for quantity in quantity_rows:
+        quantity_code = str(quantity.get("quantity_code") or "").strip().upper()
+        quantity_name = str(quantity.get("quantity_name") or quantity_code).strip()
+        description = _quantity_description(quantity_code, quantity_name)
+        matched_capabilities = [
+            row for row in capability_rows
+            if str(row.get("quantity_code") or "").strip().upper() == quantity_code
+        ]
+        for level, support_key in (("GLOBAL", "supports_global"), ("LOCAL", "supports_local")):
+            set_names = []
+            seen_names = set()
+            ordered_rows = sorted(
+                matched_capabilities,
+                key=lambda row: (
+                    str(row.get("set_scope") or ""),
+                    str(row.get("set_type") or ""),
+                    str(row.get("set_name") or ""),
+                    str(row.get("instance_name") or ""),
+                    str(row.get("part_name") or ""),
+                ),
+            )
+            for row in ordered_rows:
+                if not row.get(support_key):
+                    continue
+                _append_unique_name(set_names, seen_names, row.get("set_name"))
+            if not set_names:
+                continue
+            result.append(
+                {
+                    "parameter_name": quantity_name,
+                    "description": description,
+                    "level": level,
+                    "sets": set_names,
+                }
+            )
+    return result
 
 
 def _normalize_quantity_code(quantity_code: str) -> str:
@@ -1399,6 +1467,37 @@ def get_inp_catalog(project_id):
             "fem_mode_count": fem_mode_count,
             "modal_correlation_count": correlation_count,
         }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_inp_parameter_options(project_id):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT quantity_code, quantity_name, unit, enabled, sort_no
+            FROM t_mt_py_fem_supported_quantity
+            WHERE enabled = 1
+            ORDER BY sort_no, quantity_code
+        """)
+        supported_quantities = cursor.fetchall() or []
+
+        cursor.execute("""
+            SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
+                   set_role, element_family, section_type, material_name, member_count,
+                   supports_global, supports_local, current_value, extra_json
+            FROM t_mt_py_fem_quantity_set_capability
+            WHERE pid = %s
+            ORDER BY quantity_code, set_scope, set_type, set_name, instance_name, part_name
+        """, (project_id,))
+        quantity_set_capabilities = cursor.fetchall() or []
+
+        return _build_inp_parameter_options(
+            supported_quantities=supported_quantities,
+            quantity_set_capabilities=quantity_set_capabilities,
+        )
     finally:
         cursor.close()
         conn.close()

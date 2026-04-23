@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -65,7 +65,7 @@ class CreateOptimizationParameterRequest(BaseModel):
     candidate_code: Optional[str] = None
     quantity_code: Optional[str] = None
     selection_mode: Optional[str] = None
-    set_name: str
+    set_name: Union[str, List[str]]
     parameter_name: Optional[str] = None
     scatter: Optional[float] = None
     description: str = ""
@@ -73,15 +73,6 @@ class CreateOptimizationParameterRequest(BaseModel):
     set_scope: Optional[str] = None
     instance_name: Optional[str] = None
     part_name: Optional[str] = None
-
-
-class AddParameterRequest(BaseModel):
-    project_id: int
-    parameter: str
-    type: str
-    scatter: float
-    upper: Optional[float] = None
-    lower: Optional[float] = None
 
 
 class AddResponseRequest(BaseModel):

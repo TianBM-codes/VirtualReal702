@@ -46,37 +46,6 @@ def test_resolve_abaqus_command_reads_service_config(monkeypatch, tmp_path: Path
     assert result == "C:/SIMULIA/Commands/abaqus.bat"
 
 
-def test_add_manual_parameter_upserts_row(monkeypatch):
-    fake_conn = _WriteConnection()
-    monkeypatch.setattr(model_update_meta_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(model_update_meta_service, "get_connection", lambda: fake_conn)
-
-    result = model_update_meta_service.add_manual_parameter(
-        project_id=7,
-        parameter="E_PANEL",
-        parameter_type="E",
-        scatter=0.15,
-        upper=2.0,
-        lower=1.0,
-    )
-
-    assert result == {
-        "project_id": 7,
-        "parameter": "E_PANEL",
-        "type": "E",
-        "scatter": 0.15,
-        "upper": 2.0,
-        "lower": 1.0,
-    }
-    assert fake_conn.committed is True
-    assert fake_conn.cursor_obj.executed == [
-        (
-            "INSERT INTO t_mt_py_fem_manual_parameter (pid, parameter_name, parameter_type, scatter, upper_bound, lower_bound) VALUES (%s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE parameter_type = VALUES(parameter_type), scatter = VALUES(scatter), upper_bound = VALUES(upper_bound), lower_bound = VALUES(lower_bound), updated_at = CURRENT_TIMESTAMP",
-            (7, "E_PANEL", "E", 0.15, 2.0, 1.0),
-        )
-    ]
-
-
 def test_add_manual_response_upserts_row(monkeypatch):
     fake_conn = _WriteConnection()
     monkeypatch.setattr(model_update_meta_service, "ensure_tables_exist", lambda: None)
