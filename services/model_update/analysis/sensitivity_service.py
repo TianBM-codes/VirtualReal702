@@ -739,14 +739,14 @@ def _finalize_sensitivity_store_result(
 
     cloud_result = None
     if write_cloud_result:
-        resolved_cloud_odb_id = str(odb_id or "").strip() or _resolve_loaded_odb_id_for_workspace(matrix_payload.get("workspace"))
+        resolved_cloud_odb_id = str(project_id or "").strip() or _resolve_loaded_odb_id_for_workspace(matrix_payload.get("workspace"))
         if not resolved_cloud_odb_id:
             raise ValidationError(
                 "cloud export via external-field api requires odb_id or a workspace already loaded in the L3 registry",
                 {
                     "project_id": int(project_id),
                     "batch_no": batch_no,
-                    "odb_id": odb_id,
+                    "odb_id": project_id,
                     "workspace": matrix_payload.get("workspace"),
                 },
             )
