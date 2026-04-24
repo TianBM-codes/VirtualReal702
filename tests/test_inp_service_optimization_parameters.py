@@ -141,6 +141,9 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
     result = inp_service.create_optimization_parameter(
         project_id=101,
         quantity_code="E",
+        lower=100000.0,
+        upper=300000.0,
+        prob_id=2,
         selection_mode="LOCAL",
         set_name="SET_SHELL",
         set_type="ELSET",
@@ -157,6 +160,12 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
     assert fake_conn.rolled_back is False
     assert [params[2] for params in fake_conn.cursor_obj.inserted] == ["E_GROUP#1", "E_GROUP#2"]
     assert [params[10] for params in fake_conn.cursor_obj.inserted] == [1, 2]
+    assert [params[12] for params in fake_conn.cursor_obj.inserted] == [100000.0, 100000.0]
+    assert [params[13] for params in fake_conn.cursor_obj.inserted] == [300000.0, 300000.0]
+    assert [params[14] for params in fake_conn.cursor_obj.inserted] == [2, 2]
+    assert result["lower"] == 100000.0
+    assert result["upper"] == 300000.0
+    assert result["prob_id"] == 2
 
 
 def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch):
@@ -206,6 +215,8 @@ def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch
         inp_service.create_optimization_parameter(
             project_id=101,
             quantity_code="E",
+            lower=100000.0,
+            upper=300000.0,
             selection_mode="LOCAL",
             set_name="SET_SHELL",
             set_type="ELSET",

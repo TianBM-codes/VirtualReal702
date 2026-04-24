@@ -152,6 +152,132 @@ def _default_step_from_rows(step_rows: List[dict]) -> Optional[str]:
     return str(step_name) if step_name is not None else None
 
 
+def _infer_temp_quantity_code_from_target(target_row: dict) -> str:
+    component_name = str(target_row.get("component_name") or "").upper()
+    source_keyword = str(target_row.get("source_keyword") or "").upper()
+    if component_name == "THICKNESS" or component_name.startswith("DIM") or "SECTION" in source_keyword:
+        return "H"
+    return "DSA"
+
+
+def _rebuild_selected_parameters_from_inp(*, project_id: int, inp_path: str) -> dict:
+    # Temporary compatibility path for /sensitivity/run_and_store:
+    # rebuild the selected-parameter table directly from the current INP so
+    # DSA field discovery can proceed even when the project has no formal
+    # user-selected optimization parameters yet.
+    ensure_tables_exist()
+
+    resolved_inp_path = os.path.abspath(inp_path)
+    if not os.path.exists(resolved_inp_path):
+        raise NotFoundError("input_inp not found", {"input_inp": resolved_inp_path})
+
+    model = parse_inp(resolved_inp_path)
+    parameter_definitions = getattr(model, "parameters", {}) or {}
+    target_map = build_parameter_target_map(model)
+
+    design_parameters = sorted(
+        list(getattr(model, "design_parameters", []) or []),
+        key=lambda item: (int(getattr(item, "order", 0) or 0), str(getattr(item, "name", "") or "")),
+    )
+    ordered_parameter_names = []
+    seen_parameter_names = set()
+    for item in design_parameters:
+        name = str(getattr(item, "name", "") or "").strip()
+        if not name or name in seen_parameter_names:
+            continue
+        seen_parameter_names.add(name)
+        ordered_parameter_names.append(name)
+    for name in sorted(parameter_definitions.keys()):
+        text = str(name or "").strip()
+        if not text or text in seen_parameter_names:
+            continue
+        seen_parameter_names.add(text)
+        ordered_parameter_names.append(text)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM t_mt_py_fem_selected_parameter WHERE pid = %s", (int(project_id),))
+
+        insert_sql = """
+        INSERT INTO t_mt_py_fem_selected_parameter
+        (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
+         instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+
+        created_rows = []
+        for offset, parameter_name in enumerate(ordered_parameter_names, start=1):
+            definition = parameter_definitions.get(parameter_name)
+            scalar_value = getattr(definition, "scalar_value", None) if definition is not None else None
+            target_rows = [dict(row) for row in (target_map.get(parameter_name) or [])]
+            primary_target = dict(target_rows[0]) if target_rows else {}
+            quantity_code = _infer_temp_quantity_code_from_target(primary_target) if primary_target else "DSA"
+
+            set_name = str(primary_target.get("set_name") or f"TMP_PARAM_{offset}")
+            set_type = str(primary_target.get("set_type") or "ELSET")
+            set_scope = str(primary_target.get("set_scope") or "PART")
+            instance_name = primary_target.get("instance_name")
+            part_name = primary_target.get("part_name")
+
+            extra_json = {
+                "source": "run_and_store_temp",
+                "scalar_value": scalar_value,
+                "target_rows": target_rows,
+            }
+
+            cursor.execute(
+                insert_sql,
+                (
+                    int(project_id),
+                    str(parameter_name),
+                    str(parameter_name),
+                    quantity_code,
+                    "GLOBAL",
+                    set_name,
+                    set_type,
+                    set_scope,
+                    instance_name,
+                    part_name,
+                    None,
+                    scalar_value,
+                    float(scalar_value) if scalar_value is not None else 0.0,
+                    float(scalar_value) if scalar_value is not None else 0.0,
+                    0,
+                    float(_DEFAULT_PARAMETER_SCATTER),
+                    "temporary parameter rebuilt from inp for run_and_store",
+                    json.dumps(extra_json, ensure_ascii=False),
+                ),
+            )
+            created_rows.append(
+                {
+                    "parameter_name": str(parameter_name),
+                    "quantity_code": quantity_code,
+                    "set_name": set_name,
+                    "set_type": set_type,
+                    "set_scope": set_scope,
+                    "instance_name": instance_name,
+                    "part_name": part_name,
+                    "scalar_value": scalar_value,
+                    "target_row_count": len(target_rows),
+                }
+            )
+
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "inp_path": resolved_inp_path,
+            "selected_parameter_count": len(created_rows),
+            "selected_parameters_preview": created_rows[:20],
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def build_workspace_from_odb(
         odb_path: str,
         workspace: str,
@@ -1269,6 +1395,10 @@ def run_sensitivity_inp_and_store(
         timeout_sec: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
         cleanup_process_files: bool = True,
+        write_cloud_result: bool = False,
+        cloud_result_group: Optional[str] = None,
+        cloud_step_name: str = "Sensitivity",
+        cloud_field_name: str = "SENSITIVITY_CLOUD",
 ) -> dict:
     ensure_tables_exist()
 
@@ -1327,6 +1457,10 @@ def run_sensitivity_inp_and_store(
         if cleanup_process_files
         else []
     )
+    temp_selected_parameters = _rebuild_selected_parameters_from_inp(
+        project_id=project_id,
+        inp_path=analysis_inp_path,
+    )
 
     matrix_payload = _load_dsa_normalized_sensitivity_matrix(
         project_id=project_id,
@@ -1355,6 +1489,11 @@ def run_sensitivity_inp_and_store(
         solver_payload=solver_payload,
         generated_files=generated_files,
         deleted_process_files=deleted_process_files,
+        write_cloud_result=write_cloud_result,
+        cloud_result_group=cloud_result_group,
+        cloud_step_name=cloud_step_name,
+        cloud_field_name=cloud_field_name,
+        extra_payload={"temp_selected_parameters": temp_selected_parameters},
     )
 
 
@@ -1878,7 +2017,7 @@ def _load_project_optimization_parameters(project_id: int) -> List[dict]:
             """
             SELECT id, parameter_group_name, parameter_name, quantity_code, selection_mode,
                    set_name, set_type, set_scope, instance_name, part_name,
-                   element_label, scatter, current_value AS scalar_value, extra_json
+                   element_label, lower, upper, prob_id, scatter, current_value AS scalar_value, extra_json
             FROM t_mt_py_fem_selected_parameter
             WHERE pid = %s
             ORDER BY created_at ASC, id ASC

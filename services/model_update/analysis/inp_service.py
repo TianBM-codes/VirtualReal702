@@ -1402,7 +1402,7 @@ def get_inp_catalog(project_id):
 
         cursor.execute("""
             SELECT parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
-                   instance_name, part_name, element_label, current_value, scatter, description, extra_json, created_at
+                   instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, extra_json, created_at
             FROM t_mt_py_fem_selected_parameter
             WHERE pid = %s
             ORDER BY created_at DESC, parameter_name
@@ -1525,8 +1525,8 @@ def _resolve_selection_mode_from_capability(capability_row: dict, requested_mode
     return mode
 
 
-def create_optimization_parameter(project_id, candidate_code=None, quantity_code=None, selection_mode=None, set_name=None, parameter_name=None,
-                                  scatter=None,
+def create_optimization_parameter(project_id, candidate_code=None, quantity_code=None, lower=None, upper=None, prob_id=0,
+                                  selection_mode=None, set_name=None, parameter_name=None, scatter=None,
                                   description="", set_type=None, set_scope=None,
                                   instance_name=None, part_name=None):
     # This API turns a generic candidate type plus one cataloged set into a
@@ -1540,6 +1540,13 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         )
         if not set_name:
             raise ValueError("set_name is required")
+        if lower is None or upper is None:
+            raise ValueError("lower and upper are required")
+        resolved_lower = float(lower)
+        resolved_upper = float(upper)
+        if resolved_lower > resolved_upper:
+            raise ValueError("lower must be <= upper")
+        resolved_prob_id = int(prob_id or 0)
 
         query = """
             SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
@@ -1609,8 +1616,8 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         insert_sql = """
         INSERT INTO t_mt_py_fem_selected_parameter
         (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
-         instance_name, part_name, element_label, current_value, scatter, description, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         created_parameters = []
         if resolved_mode == "GLOBAL":
@@ -1628,6 +1635,9 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 capability_row["part_name"],
                 None,
                 capability_row.get("current_value"),
+                resolved_lower,
+                resolved_upper,
+                resolved_prob_id,
                 resolved_scatter,
                 description or "",
                 _json_dumps({
@@ -1660,6 +1670,9 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                     capability_row["part_name"],
                     int(element_label),
                     current_value,
+                    resolved_lower,
+                    resolved_upper,
+                    resolved_prob_id,
                     resolved_scatter,
                     description or "",
                     _json_dumps({
@@ -1686,6 +1699,9 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             "set_scope": capability_row["set_scope"],
             "instance_name": capability_row["instance_name"],
             "part_name": capability_row["part_name"],
+            "lower": resolved_lower,
+            "upper": resolved_upper,
+            "prob_id": resolved_prob_id,
             "scatter": resolved_scatter,
             "description": description or "",
             "created_parameter_count": len(created_parameters),

@@ -65,6 +65,9 @@ class CreateOptimizationParameterRequest(BaseModel):
     set_name: Union[str, List[str]]
     quantity_code: Optional[str] = None
     candidate_code: Optional[str] = None
+    lower: float
+    upper: float
+    prob_id: int = 0
     selection_mode: Optional[str] = None
     parameter_name: Optional[str] = None
     scatter: Optional[float] = None
@@ -310,6 +313,10 @@ class SensitivityRunAndStoreRequest(BaseModel):
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
     cleanup_process_files: bool = True
+    write_cloud_result: bool = False
+    cloud_result_group: Optional[str] = None
+    cloud_step_name: str = "Sensitivity"
+    cloud_field_name: str = "SENSITIVITY_CLOUD"
 
 
 class SensitivityGenerateRunAndStoreRequest(BaseModel):

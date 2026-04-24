@@ -224,6 +224,11 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
         "_persist_sensitivity_matrix",
         lambda **kwargs: {"analysis_run_id": 20, "project_id": 7, "batch_no": "3"},
     )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_rebuild_selected_parameters_from_inp",
+        lambda **kwargs: {"selected_parameter_count": 1},
+    )
 
     result = sensitivity_service.run_sensitivity_inp_and_store(
         project_id=7,
@@ -244,6 +249,115 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     assert result["odb_path"] == str((output_dir / "job_a.odb").resolve())
     assert result["workspace"] == str(output_dir / "job_a_workspace")
     assert result["deleted_process_files"] == [str(output_dir / "job_a.com")]
+
+
+def test_run_sensitivity_inp_and_store_writes_cloud_result_metadata(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model_sensitivity.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+
+    matrix_payload = {
+        "workspace": str(output_dir / "job_a_workspace"),
+        "step": "Step-1",
+        "instances": ["PART-1-1"],
+        "aggregation": "max_abs",
+        "frame": 0,
+        "field_prefix": "d_U_",
+        "matrix": [[0.2]],
+        "response_rows": [{"row_key": "R1", "response_label": "PART-1-1::10"}],
+        "parameter_columns": [
+            {
+                "field": "d_U_T1",
+                "parameter_name": "T1",
+                "element_mapping": {
+                    "target_kind": "cell",
+                    "targets_by_scope": {"PART-1-1": [101]},
+                },
+            }
+        ],
+    }
+    cloud_calls = {}
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "run_abaqus_job",
+        lambda **kwargs: {
+            "job_name": "job_a",
+            "generated_files": {"analysis_inp": str(output_dir / inp_path.name)},
+            "solver": {
+                "ok": True,
+                "artifacts": {"odb": str(output_dir / "job_a.odb")},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "build_workspace_from_odb",
+        lambda **kwargs: {"workspace": kwargs["workspace"]},
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "delete_abaqus_process_files",
+        lambda workdir, job_name: [str(Path(workdir) / f"{job_name}.com")],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_rebuild_selected_parameters_from_inp",
+        lambda **kwargs: {"selected_parameter_count": 1},
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_dsa_normalized_sensitivity_matrix",
+        lambda **kwargs: matrix_payload,
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_persist_sensitivity_matrix",
+        lambda **kwargs: {"analysis_run_id": 21, "project_id": 7, "batch_no": "4"},
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_resolve_loaded_odb_id_for_workspace",
+        lambda workspace: "odb-demo",
+    )
+
+    def fake_write_cloud(**kwargs):
+        cloud_calls.update(kwargs)
+        return {
+            "result_group": "viz_rg",
+            "step": "Sensitivity Step",
+            "field": "SENSITIVITY_CLOUD",
+            "components": ["T1"],
+            "frame_count": 1,
+        }
+
+    monkeypatch.setattr(sensitivity_service, "_write_sensitivity_cloud_result", fake_write_cloud)
+
+    result = sensitivity_service.run_sensitivity_inp_and_store(
+        project_id=7,
+        batch_no="4",
+        input_inp=str(inp_path),
+        output_dir=str(output_dir),
+        step="Step-1",
+        instances=["PART-1-1"],
+        field_prefix="d_U_",
+        response_component="U1",
+        position="NODAL",
+        write_cloud_result=True,
+        cloud_result_group="viz_rg",
+        cloud_step_name="Sensitivity Step",
+        cloud_field_name="SENSITIVITY_CLOUD",
+    )
+
+    assert cloud_calls["batch_no"] == "4"
+    assert cloud_calls["odb_id"] == "odb-demo"
+    assert cloud_calls["result_group"] == "viz_rg"
+    assert cloud_calls["step_name"] == "Sensitivity Step"
+    assert cloud_calls["field_name"] == "SENSITIVITY_CLOUD"
+    assert cloud_calls["matrix_payload"] is matrix_payload
+    assert result["cloud_result"]["result_group"] == "viz_rg"
+    assert result["cloud_result"]["components"] == ["T1"]
 
 
 def test_generate_sensitivity_inp_and_store_loads_project_metadata_and_reuses_run_path(monkeypatch, tmp_path: Path):

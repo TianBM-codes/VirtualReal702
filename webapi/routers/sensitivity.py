@@ -107,6 +107,10 @@ async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndSto
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
             cleanup_process_files=body.cleanup_process_files,
+            write_cloud_result=body.write_cloud_result,
+            cloud_result_group=body.cloud_result_group,
+            cloud_step_name=body.cloud_step_name,
+            cloud_field_name=body.cloud_field_name,
         )
         return success_response(data, "sensitivity inp run and store completed")
     except AppError as exc:
