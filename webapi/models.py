@@ -62,10 +62,10 @@ class InpTreeRequest(BaseModel):
 
 class CreateOptimizationParameterRequest(BaseModel):
     project_id: int
-    candidate_code: Optional[str] = None
-    quantity_code: Optional[str] = None
-    selection_mode: Optional[str] = None
     set_name: Union[str, List[str]]
+    quantity_code: Optional[str] = None
+    candidate_code: Optional[str] = None
+    selection_mode: Optional[str] = None
     parameter_name: Optional[str] = None
     scatter: Optional[float] = None
     description: str = ""
@@ -286,6 +286,54 @@ class SensitivityStoreDsaRequest(BaseModel):
     cloud_result_group: Optional[str] = None
     cloud_step_name: str = "Sensitivity"
     cloud_field_name: str = "SENSITIVITY_CLOUD"
+
+
+class SensitivityRunAndStoreRequest(BaseModel):
+    project_id: int
+    batch_no: Optional[str] = "1"
+    input_inp: str
+    output_dir: str
+    step: str
+    instances: List[str]
+    field_prefix: str
+    response_component: str
+    position: str
+    aggregation: str = "max_abs"
+    frame: int = 0
+    abaqus: Optional[str] = None
+    python3: Optional[str] = None
+    keep_raw: bool = False
+    timeout: int = 60
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    cleanup_process_files: bool = True
+
+
+class SensitivityGenerateRunAndStoreRequest(BaseModel):
+    project_id: int
+    batch_no: Optional[str] = "1"
+    input_inp: str
+    output_dir: str
+    step: str
+    instances: List[str]
+    field_prefix: str
+    response_component: str
+    position: str
+    aggregation: str = "max_abs"
+    frame: int = 0
+    abaqus: Optional[str] = None
+    python3: Optional[str] = None
+    keep_raw: bool = False
+    timeout: int = 60
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    cleanup_process_files: bool = True
 
 
 class SensitivityStoredQueryRequest(BaseModel):

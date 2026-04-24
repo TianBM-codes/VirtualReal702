@@ -687,7 +687,7 @@ def _extract_legacy_boundary_rows(model):
 _DEFAULT_PARAMETER_SCATTER = 0.25
 _SUPPORTED_CORRECTION_QUANTITIES = (
     {"quantity_code": "E", "quantity_name": "E", "unit": None, "enabled": 1, "sort_no": 1},
-    {"quantity_code": "H", "quantity_name": "厚度", "unit": None, "enabled": 1, "sort_no": 2},
+    {"quantity_code": "H", "quantity_name": "H", "unit": None, "enabled": 1, "sort_no": 2},
 )
 
 
@@ -753,7 +753,7 @@ def _build_inp_parameter_options(
                     "parameter_name": quantity_name,
                     "description": description,
                     "level": level,
-                    "sets": set_names,
+                    "sets": [{"rows": val} for val in set_names],
                 }
             )
     return result

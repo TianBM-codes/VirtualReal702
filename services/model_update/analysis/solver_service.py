@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,17 @@ _ABAQUS_ARTIFACT_SUFFIXES = (
     ".prt",
     ".sim",
     ".log",
+)
+
+_ABAQUS_PROCESS_FILE_SUFFIXES = (
+    ".com",
+    ".prt",
+    ".pmg",
+    ".pes",
+    ".par",
+    ".msg",
+    ".sta",
+    ".dat",
 )
 
 _NASTRAN_ARTIFACT_SUFFIXES = (
@@ -78,6 +90,17 @@ def _collect_artifacts(workdir: Path, stem: str, suffixes) -> Dict[str, str]:
         if path.exists():
             artifacts[suffix.lstrip(".")] = str(path.resolve())
     return artifacts
+
+
+def delete_abaqus_process_files(workdir: Path, job_name: str) -> List[str]:
+    deleted: List[str] = []
+    for suffix in _ABAQUS_PROCESS_FILE_SUFFIXES:
+        path = (workdir / f"{job_name}{suffix}").resolve()
+        if not path.exists() or not path.is_file():
+            continue
+        path.unlink()
+        deleted.append(str(path))
+    return deleted
 
 
 def _run_local_solver(
@@ -218,6 +241,59 @@ def run_abaqus_sensitivity_job(
     if run_solver:
         # Returning both the command preview and the execution result makes it
         # easier to debug solver startup issues separately from deck generation.
+        payload["solver"] = _run_local_solver(
+            command=command,
+            workdir=target_dir,
+            artifact_stem=resolved_job_name,
+            artifact_suffixes=_ABAQUS_ARTIFACT_SUFFIXES,
+            timeout_sec=timeout_sec,
+        )
+    return payload
+
+
+def run_abaqus_job(
+    input_inp: str,
+    output_dir: Optional[str] = None,
+    abaqus: Optional[str] = None,
+    job_name: Optional[str] = None,
+    cpus: Optional[int] = None,
+    interactive: bool = True,
+    run_solver: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+) -> dict:
+    input_path = _abs_file(input_inp, "input_inp")
+    target_dir = _abs_dir(output_dir, input_path.parent)
+
+    staged_inp = (target_dir / input_path.name).resolve()
+    copied_input = False
+    if input_path.resolve() != staged_inp:
+        shutil.copyfile(str(input_path), str(staged_inp))
+        copied_input = True
+
+    resolved_job_name = _sanitize_job_name(job_name or staged_inp.stem)
+    command = _build_abaqus_command(
+        abaqus=abaqus,
+        inp_path=staged_inp,
+        job_name=resolved_job_name,
+        cpus=cpus,
+        interactive=interactive,
+        extra_args=extra_args,
+    )
+
+    payload = {
+        "workflow": "abaqus_inp",
+        "input_inp": str(input_path),
+        "output_dir": str(target_dir),
+        "job_name": resolved_job_name,
+        "generated_files": {
+            "analysis_inp": str(staged_inp),
+        },
+        "copied_input_inp": copied_input,
+        "command_preview": command,
+        "solver": None,
+    }
+    if run_solver:
         payload["solver"] = _run_local_solver(
             command=command,
             workdir=target_dir,

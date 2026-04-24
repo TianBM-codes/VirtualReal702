@@ -170,3 +170,143 @@ def test_store_dsa_sensitivity_results_writes_cloud_result_metadata(monkeypatch,
     assert result["cloud_result"]["result_group"] == "viz_rg"
     assert result["cloud_result"]["components"] == ["P1"]
     assert result["analysis_run_id"] == 12
+
+
+def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_files(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model_sensitivity.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+
+    workspace_calls = {}
+    matrix_payload = {
+        "workspace": str(output_dir / "job_a_workspace"),
+        "step": "Step-1",
+        "instances": ["PART-1-1"],
+        "aggregation": "max_abs",
+        "frame": 0,
+        "field_prefix": "d_U_",
+        "matrix": [[0.2]],
+        "response_rows": [{"row_key": "R1", "response_label": "PART-1-1::10"}],
+        "parameter_columns": [{"field": "d_U_T1", "parameter_name": "T1"}],
+    }
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "run_abaqus_job",
+        lambda **kwargs: {
+            "job_name": "job_a",
+            "generated_files": {"analysis_inp": str(output_dir / inp_path.name)},
+            "solver": {
+                "ok": True,
+                "artifacts": {"odb": str(output_dir / "job_a.odb")},
+            },
+        },
+    )
+
+    def fake_build_workspace(**kwargs):
+        workspace_calls.update(kwargs)
+        return {"workspace": kwargs["workspace"]}
+
+    monkeypatch.setattr(sensitivity_service, "build_workspace_from_odb", fake_build_workspace)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "delete_abaqus_process_files",
+        lambda workdir, job_name: [str(Path(workdir) / f"{job_name}.com")],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_dsa_normalized_sensitivity_matrix",
+        lambda **kwargs: matrix_payload,
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_persist_sensitivity_matrix",
+        lambda **kwargs: {"analysis_run_id": 20, "project_id": 7, "batch_no": "3"},
+    )
+
+    result = sensitivity_service.run_sensitivity_inp_and_store(
+        project_id=7,
+        batch_no="3",
+        input_inp=str(inp_path),
+        output_dir=str(output_dir),
+        step="Step-1",
+        instances=["PART-1-1"],
+        field_prefix="d_U_",
+        response_component="U1",
+        position="NODAL",
+    )
+
+    assert workspace_calls["odb_path"] == str(output_dir / "job_a.odb")
+    assert workspace_calls["workspace"] == str(output_dir / "job_a_workspace")
+    assert result["analysis_run_id"] == 20
+    assert result["analysis_inp"] == str((output_dir / inp_path.name).resolve())
+    assert result["odb_path"] == str((output_dir / "job_a.odb").resolve())
+    assert result["workspace"] == str(output_dir / "job_a_workspace")
+    assert result["deleted_process_files"] == [str(output_dir / "job_a.com")]
+
+
+def test_generate_sensitivity_inp_and_store_loads_project_metadata_and_reuses_run_path(monkeypatch, tmp_path: Path):
+    original_inp = tmp_path / "model.inp"
+    original_inp.write_text("*Heading\n", encoding="utf-8")
+    generated_inp = tmp_path / "out" / "generated_sensitivity.inp"
+    generated_inp.parent.mkdir()
+    generated_inp.write_text("*Heading\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [{"parameter_name": "T1"}],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_design_responses",
+        lambda project_id: [{"response_no": 1, "set_name": "SET-1"}],
+    )
+
+    generation_calls = {}
+
+    def fake_generate(**kwargs):
+        generation_calls.update(kwargs)
+        return {
+            "analysis_inp": str(generated_inp),
+            "generated_files": {"design_parameter_inp": str(tmp_path / "out" / "designParameter.inp")},
+        }
+
+    monkeypatch.setattr(sensitivity_service, "_generate_sensitivity_inp_from_project_db", fake_generate)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "run_sensitivity_inp_and_store",
+        lambda **kwargs: {
+            "analysis_run_id": 31,
+            "project_id": kwargs["project_id"],
+            "batch_no": kwargs["batch_no"],
+            "input_inp": kwargs["input_inp"],
+            "analysis_inp": kwargs["input_inp"],
+            "generated_files": {"analysis_inp": kwargs["input_inp"]},
+            "deleted_process_files": [],
+        },
+    )
+
+    result = sensitivity_service.generate_sensitivity_inp_and_store(
+        project_id=9,
+        batch_no="4",
+        input_inp=str(original_inp),
+        output_dir=str(tmp_path / "out"),
+        step="Step-1",
+        instances=["PART-1-1"],
+        field_prefix="d_U_",
+        response_component="U1",
+        position="NODAL",
+    )
+
+    assert generation_calls["project_id"] == 9
+    assert generation_calls["input_inp"] == str(original_inp.resolve())
+    assert len(generation_calls["parameter_rows"]) == 1
+    assert len(generation_calls["design_response_rows"]) == 1
+    assert result["input_inp"] == str(original_inp.resolve())
+    assert result["analysis_inp"] == str(generated_inp)
+    assert result["generation_source"] == "project_db"
+    assert result["loaded_parameter_count"] == 1
+    assert result["loaded_design_response_count"] == 1
+    assert result["generated_files"]["design_parameter_inp"].endswith("designParameter.inp")

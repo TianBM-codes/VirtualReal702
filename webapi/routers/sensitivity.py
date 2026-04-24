@@ -6,9 +6,11 @@ from services.model_update.analysis.sensitivity_service import (
     export_adjoint_sensitivity_vtu,
     export_dsa_sensitivity_vtu,
     export_odb_sensitivity_vtu,
+    generate_sensitivity_inp_and_store,
     get_stored_sensitivity_matrix_payload,
     get_stored_sensitivity_table_points,
     get_sensitivity_overview,
+    run_sensitivity_inp_and_store,
     store_dsa_sensitivity_results,
 )
 from src.l3.core.errors import AppError
@@ -19,7 +21,9 @@ from ..models import (
     SensitivityExportAdjointVtuRequest,
     SensitivityExportDsaVtuRequest,
     SensitivityExportVtuRequest,
+    SensitivityGenerateRunAndStoreRequest,
     SensitivityOverviewRequest,
+    SensitivityRunAndStoreRequest,
     SensitivityStoredQueryRequest,
     SensitivityStoreDsaRequest,
     SensitivityTableRequest,
@@ -29,8 +33,7 @@ from ..utils import log_request, model_to_dict
 router = APIRouter(tags=["sensitivity"])
 
 
-@router.post("/sensitivity/store/dsa")
-@router.post("/sensitivity/calculate")
+@router.post("/sensitivity/calculate_and_store")
 async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaRequest):
     await log_request(request, model_to_dict(body))
     try:
@@ -71,6 +74,76 @@ async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaReque
             cloud_field_name=body.cloud_field_name,
         )
         return success_response(data, "sensitivity results stored")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/run_and_store")
+async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndStoreRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = run_sensitivity_inp_and_store(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+            input_inp=body.input_inp,
+            output_dir=body.output_dir,
+            step=body.step,
+            instances=body.instances,
+            field_prefix=body.field_prefix,
+            response_component=body.response_component,
+            position=body.position,
+            aggregation=body.aggregation,
+            frame=body.frame,
+            abaqus=body.abaqus,
+            python3=body.python3,
+            keep_raw=body.keep_raw,
+            timeout=body.timeout,
+            job_name=body.job_name,
+            cpus=body.cpus,
+            interactive=body.interactive,
+            timeout_sec=body.timeout_sec,
+            extra_args=body.extra_args,
+            cleanup_process_files=body.cleanup_process_files,
+        )
+        return success_response(data, "sensitivity inp run and store completed")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/generate_run_and_store")
+async def sensitivity_generate_run_and_store(request: Request, body: SensitivityGenerateRunAndStoreRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = generate_sensitivity_inp_and_store(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+            input_inp=body.input_inp,
+            output_dir=body.output_dir,
+            step=body.step,
+            instances=body.instances,
+            field_prefix=body.field_prefix,
+            response_component=body.response_component,
+            position=body.position,
+            aggregation=body.aggregation,
+            frame=body.frame,
+            abaqus=body.abaqus,
+            python3=body.python3,
+            keep_raw=body.keep_raw,
+            timeout=body.timeout,
+            job_name=body.job_name,
+            cpus=body.cpus,
+            interactive=body.interactive,
+            timeout_sec=body.timeout_sec,
+            extra_args=body.extra_args,
+            cleanup_process_files=body.cleanup_process_files,
+        )
+        return success_response(data, "sensitivity inp generated, run, and store completed")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

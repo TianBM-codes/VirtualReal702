@@ -87,13 +87,16 @@ async def add_response_api(request: Request, body: AddResponseRequest):
 
 @router.post("/optimization/parameter/create")
 async def create_optimization_parameter_api(request: Request, body: CreateOptimizationParameterRequest):
-    # Create a persistent optimization-parameter record by binding one candidate
-    # type to one resolved INP set entry in the imported catalog.
+    # Create a persistent optimization-parameter record by binding one
+    # optimization quantity type to one resolved INP set entry.
     await log_request(request, model_to_dict(body))
     try:
         set_names = _normalize_set_names(body.set_name)
         if (not body.candidate_code and not body.quantity_code) or not set_names:
-            raise ValidationError("project_id, set_name and either candidate_code or quantity_code are required")
+            raise ValidationError(
+                "project_id, set_name and optimization parameter type are required; "
+                "use quantity_code, candidate_code is only a compatible alias"
+            )
 
         results = []
         multi_set = len(set_names) > 1

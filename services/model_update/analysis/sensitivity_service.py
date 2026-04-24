@@ -22,7 +22,7 @@ from src.l3.services.node_table_service import get_instance_fields
 from tools.odb_client import ODBClient, ODBClientError, _select_component_values
 
 from .model_update_meta_service import resolve_abaqus_command
-from .solver_service import run_abaqus_sensitivity_job
+from .solver_service import delete_abaqus_process_files, run_abaqus_job, run_abaqus_sensitivity_job
 
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
 _AGGREGATIONS = {"max_abs", "mean_abs", "max", "min", "mean"}
@@ -529,6 +529,131 @@ def _load_dsa_normalized_sensitivity_matrix(**kwargs) -> dict:
     from .bayesian_service import build_dsa_normalized_sensitivity_matrix
 
     return build_dsa_normalized_sensitivity_matrix(**kwargs)
+
+
+def _load_project_design_responses(project_id: int) -> List[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json
+            FROM t_mt_py_fem_design_response_catalog
+            WHERE pid = %s
+            ORDER BY response_no ASC, request_no ASC
+            """,
+            (int(project_id),),
+        )
+        rows = []
+        for row in cursor.fetchall() or []:
+            item = dict(row)
+            variables_json = item.get("variables_json")
+            extra_json = item.get("extra_json")
+            item["variables"] = json.loads(variables_json) if variables_json else []
+            item["extra_json"] = json.loads(extra_json) if isinstance(extra_json, str) and extra_json else (
+                extra_json if isinstance(extra_json, dict) else {}
+            )
+            rows.append(item)
+        return rows
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _generate_sensitivity_inp_from_project_db(
+        *,
+        project_id: int,
+        input_inp: str,
+        output_dir: str,
+        parameter_rows: List[dict],
+        design_response_rows: List[dict],
+) -> dict:
+    raise ValidationError(
+        "project-driven sensitivity inp generator is not implemented yet",
+        {
+            "project_id": int(project_id),
+            "input_inp": os.path.abspath(input_inp),
+            "output_dir": os.path.abspath(output_dir),
+            "optimization_parameter_count": len(parameter_rows),
+            "design_response_count": len(design_response_rows),
+        },
+    )
+
+
+def _default_solver_workspace(output_dir: str, job_name: str) -> str:
+    return str((Path(output_dir).expanduser().resolve() / f"{job_name}_workspace").resolve())
+
+
+def _finalize_sensitivity_store_result(
+        *,
+        project_id: int,
+        batch_no: str,
+        source_input_inp: str,
+        analysis_inp_path: str,
+        resolved_odb_path: Optional[str],
+        matrix_payload: dict,
+        solver_payload: Optional[dict] = None,
+        generated_files: Optional[dict] = None,
+        write_cloud_result: bool = False,
+        odb_id: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout: int = 60,
+        cloud_result_group: Optional[str] = None,
+        cloud_step_name: str = "Sensitivity",
+        cloud_field_name: str = "SENSITIVITY_CLOUD",
+        deleted_process_files: Optional[List[str]] = None,
+        extra_payload: Optional[dict] = None,
+) -> dict:
+    persisted = _persist_sensitivity_matrix(
+        project_id=project_id,
+        batch_no=batch_no,
+        case_name=Path(source_input_inp).stem,
+        matrix_payload=matrix_payload,
+    )
+
+    cloud_result = None
+    if write_cloud_result:
+        resolved_cloud_odb_id = str(odb_id or "").strip() or _resolve_loaded_odb_id_for_workspace(matrix_payload.get("workspace"))
+        if not resolved_cloud_odb_id:
+            raise ValidationError(
+                "cloud export via external-field api requires odb_id or a workspace already loaded in the L3 registry",
+                {
+                    "project_id": int(project_id),
+                    "batch_no": batch_no,
+                    "odb_id": odb_id,
+                    "workspace": matrix_payload.get("workspace"),
+                },
+            )
+        cloud_result = _write_sensitivity_cloud_result(
+            odb_id=resolved_cloud_odb_id,
+            base_url=base_url or matrix_payload.get("base_url"),
+            batch_no=batch_no,
+            matrix_payload=matrix_payload,
+            result_group=cloud_result_group,
+            step_name=cloud_step_name,
+            field_name=cloud_field_name,
+            timeout=timeout,
+        )
+
+    result = {
+        **persisted,
+        "input_inp": os.path.abspath(source_input_inp),
+        "analysis_inp": os.path.abspath(analysis_inp_path),
+        "odb_path": os.path.abspath(resolved_odb_path) if resolved_odb_path else None,
+        "workspace": matrix_payload.get("workspace"),
+        "step": matrix_payload.get("step"),
+        "instances": matrix_payload.get("instances"),
+        "aggregation": matrix_payload.get("aggregation"),
+        "frame": matrix_payload.get("frame"),
+        "field_prefix": matrix_payload.get("field_prefix"),
+        "solver": solver_payload.get("solver") if solver_payload else None,
+        "generated_files": generated_files or (solver_payload.get("generated_files") if solver_payload else None),
+        "cloud_result": cloud_result,
+        "deleted_process_files": [str(path) for path in (deleted_process_files or [])],
+    }
+    if extra_payload:
+        result.update(extra_payload)
+    return result
 
 
 def _resolve_loaded_odb_id_for_workspace(workspace: Optional[str]) -> Optional[str]:
@@ -1103,51 +1228,234 @@ def store_dsa_sensitivity_results(
         keep_raw=keep_raw,
         timeout=timeout,
     )
-
-    persisted = _persist_sensitivity_matrix(
+    return _finalize_sensitivity_store_result(
         project_id=project_id,
         batch_no=normalized_batch_no,
-        case_name=Path(input_inp_abs).stem,
+        source_input_inp=input_inp_abs,
+        analysis_inp_path=analysis_inp_path,
+        resolved_odb_path=resolved_odb_path,
         matrix_payload=matrix_payload,
+        solver_payload=solver_payload,
+        write_cloud_result=write_cloud_result,
+        odb_id=odb_id,
+        base_url=base_url,
+        timeout=timeout,
+        cloud_result_group=cloud_result_group,
+        cloud_step_name=cloud_step_name,
+        cloud_field_name=cloud_field_name,
     )
-    cloud_result = None
-    if write_cloud_result:
-        resolved_cloud_odb_id = str(odb_id or "").strip() or _resolve_loaded_odb_id_for_workspace(matrix_payload.get("workspace"))
-        if not resolved_cloud_odb_id:
-            raise ValidationError(
-                "cloud export via external-field api requires odb_id or a workspace already loaded in the L3 registry",
-                {
-                    "project_id": int(project_id),
-                    "batch_no": normalized_batch_no,
-                    "odb_id": odb_id,
-                    "workspace": matrix_payload.get("workspace"),
-                },
-            )
-        cloud_result = _write_sensitivity_cloud_result(
-            odb_id=resolved_cloud_odb_id,
-            base_url=base_url or matrix_payload.get("base_url"),
-            batch_no=normalized_batch_no,
-            matrix_payload=matrix_payload,
-            result_group=cloud_result_group,
-            step_name=cloud_step_name,
-            field_name=cloud_field_name,
-            timeout=timeout,
+
+
+def run_sensitivity_inp_and_store(
+        *,
+        project_id: int,
+        batch_no: Optional[str] = None,
+        input_inp: str,
+        output_dir: str,
+        step: str,
+        instances: List[str],
+        field_prefix: str,
+        response_component: str,
+        position: str,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        abaqus: Optional[str] = None,
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
+        job_name: Optional[str] = None,
+        cpus: Optional[int] = None,
+        interactive: bool = True,
+        timeout_sec: Optional[int] = None,
+        extra_args: Optional[List[str]] = None,
+        cleanup_process_files: bool = True,
+) -> dict:
+    ensure_tables_exist()
+
+    input_inp_abs = os.path.abspath(input_inp)
+    if not os.path.exists(input_inp_abs):
+        raise NotFoundError("input_inp not found", {"input_inp": input_inp_abs})
+
+    output_dir_abs = os.path.abspath(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+    normalized_batch_no = _normalize_batch_no(batch_no)
+
+    solver_payload = run_abaqus_job(
+        input_inp=input_inp_abs,
+        output_dir=output_dir_abs,
+        abaqus=abaqus,
+        job_name=job_name,
+        cpus=cpus,
+        interactive=interactive,
+        run_solver=True,
+        timeout_sec=timeout_sec,
+        extra_args=extra_args,
+    )
+    solver_result = solver_payload.get("solver") or {}
+    if not solver_result.get("ok"):
+        raise ValidationError(
+            "abaqus sensitivity solver run failed",
+            {
+                "project_id": int(project_id),
+                "batch_no": normalized_batch_no,
+                "returncode": solver_result.get("returncode"),
+                "stdout_tail": solver_result.get("stdout_tail"),
+                "stderr_tail": solver_result.get("stderr_tail"),
+            },
         )
-    return {
-        **persisted,
-        "input_inp": input_inp_abs,
-        "analysis_inp": analysis_inp_path,
-        "odb_path": os.path.abspath(resolved_odb_path) if resolved_odb_path else None,
-        "workspace": matrix_payload.get("workspace"),
-        "step": matrix_payload.get("step"),
-        "instances": matrix_payload.get("instances"),
-        "aggregation": matrix_payload.get("aggregation"),
-        "frame": matrix_payload.get("frame"),
-        "field_prefix": matrix_payload.get("field_prefix"),
-        "solver": solver_payload.get("solver") if solver_payload else None,
-        "generated_files": solver_payload.get("generated_files") if solver_payload else None,
-        "cloud_result": cloud_result,
+
+    generated_files = solver_payload.get("generated_files") or {}
+    analysis_inp_path = os.path.abspath(str(generated_files.get("analysis_inp") or input_inp_abs))
+    resolved_job_name = str(solver_payload.get("job_name") or Path(analysis_inp_path).stem)
+    resolved_odb_path = (solver_result.get("artifacts") or {}).get("odb")
+    if not resolved_odb_path:
+        raise NotFoundError(
+            "odb artifact not found after abaqus sensitivity run",
+            {"project_id": int(project_id), "batch_no": normalized_batch_no},
+        )
+
+    resolved_workspace = _default_solver_workspace(output_dir_abs, resolved_job_name)
+    build_workspace_from_odb(
+        odb_path=str(resolved_odb_path),
+        workspace=resolved_workspace,
+        abaqus=abaqus,
+        python3=python3,
+        keep_raw=keep_raw,
+    )
+    deleted_process_files = (
+        delete_abaqus_process_files(Path(output_dir_abs), resolved_job_name)
+        if cleanup_process_files
+        else []
+    )
+
+    matrix_payload = _load_dsa_normalized_sensitivity_matrix(
+        project_id=project_id,
+        inp_path=analysis_inp_path,
+        workspace=resolved_workspace,
+        step=step,
+        instances=instances,
+        field_prefix=field_prefix,
+        response_component=response_component,
+        position=position,
+        aggregation=aggregation,
+        frame=frame,
+        abaqus=abaqus,
+        python3=python3,
+        keep_raw=keep_raw,
+        timeout=timeout,
+    )
+
+    return _finalize_sensitivity_store_result(
+        project_id=project_id,
+        batch_no=normalized_batch_no,
+        source_input_inp=input_inp_abs,
+        analysis_inp_path=analysis_inp_path,
+        resolved_odb_path=str(resolved_odb_path),
+        matrix_payload=matrix_payload,
+        solver_payload=solver_payload,
+        generated_files=generated_files,
+        deleted_process_files=deleted_process_files,
+    )
+
+
+def generate_sensitivity_inp_and_store(
+        *,
+        project_id: int,
+        batch_no: Optional[str] = None,
+        input_inp: str,
+        output_dir: str,
+        step: str,
+        instances: List[str],
+        field_prefix: str,
+        response_component: str,
+        position: str,
+        aggregation: str = "max_abs",
+        frame: int = 0,
+        abaqus: Optional[str] = None,
+        python3: Optional[str] = None,
+        keep_raw: bool = False,
+        timeout: int = 60,
+        job_name: Optional[str] = None,
+        cpus: Optional[int] = None,
+        interactive: bool = True,
+        timeout_sec: Optional[int] = None,
+        extra_args: Optional[List[str]] = None,
+        cleanup_process_files: bool = True,
+) -> dict:
+    ensure_tables_exist()
+
+    input_inp_abs = os.path.abspath(input_inp)
+    if not os.path.exists(input_inp_abs):
+        raise NotFoundError("input_inp not found", {"input_inp": input_inp_abs})
+
+    output_dir_abs = os.path.abspath(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    parameter_rows = _load_project_optimization_parameters(project_id)
+    if not parameter_rows:
+        raise ValidationError(
+            "no optimization parameters found for project-driven sensitivity generation",
+            {"project_id": int(project_id)},
+        )
+    design_response_rows = _load_project_design_responses(project_id)
+    if not design_response_rows:
+        raise ValidationError(
+            "no design responses found for project-driven sensitivity generation",
+            {"project_id": int(project_id)},
+        )
+
+    generation_payload = _generate_sensitivity_inp_from_project_db(
+        project_id=project_id,
+        input_inp=input_inp_abs,
+        output_dir=output_dir_abs,
+        parameter_rows=parameter_rows,
+        design_response_rows=design_response_rows,
+    )
+    generated_analysis_inp = generation_payload.get("analysis_inp")
+    if not generated_analysis_inp:
+        raise ValidationError(
+            "project-driven sensitivity inp generator did not return analysis_inp",
+            {"project_id": int(project_id), "generation_payload": generation_payload},
+        )
+
+    result = run_sensitivity_inp_and_store(
+        project_id=project_id,
+        batch_no=batch_no,
+        input_inp=str(generated_analysis_inp),
+        output_dir=output_dir_abs,
+        step=step,
+        instances=instances,
+        field_prefix=field_prefix,
+        response_component=response_component,
+        position=position,
+        aggregation=aggregation,
+        frame=frame,
+        abaqus=abaqus,
+        python3=python3,
+        keep_raw=keep_raw,
+        timeout=timeout,
+        job_name=job_name,
+        cpus=cpus,
+        interactive=interactive,
+        timeout_sec=timeout_sec,
+        extra_args=extra_args,
+        cleanup_process_files=cleanup_process_files,
+    )
+    result["input_inp"] = input_inp_abs
+    result["generation_source"] = "project_db"
+    result["loaded_parameter_count"] = len(parameter_rows)
+    result["loaded_design_response_count"] = len(design_response_rows)
+    result["generation_summary"] = {
+        "optimization_parameter_count": len(parameter_rows),
+        "design_response_count": len(design_response_rows),
     }
+    generated_files = dict(result.get("generated_files") or {})
+    generation_files = dict(generation_payload.get("generated_files") or {})
+    if generation_files:
+        generated_files.update(generation_files)
+    generated_files["analysis_inp"] = os.path.abspath(str(generated_analysis_inp))
+    result["generated_files"] = generated_files
+    return result
 
 
 def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[str] = None) -> dict:

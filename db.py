@@ -701,22 +701,6 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模型修正最终位移结果表';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_manual_parameter (
-        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-        pid BIGINT NOT NULL COMMENT '工程ID',
-        parameter_name VARCHAR(100) NOT NULL COMMENT '参数名称',
-        parameter_type VARCHAR(32) NOT NULL COMMENT '参数类型',
-        scatter FLOAT NOT NULL COMMENT '离散度',
-        upper_bound FLOAT NULL COMMENT '上限',
-        lower_bound FLOAT NULL COMMENT '下限',
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-        PRIMARY KEY (id),
-        UNIQUE KEY uk_pid_parameter_name (pid, parameter_name),
-        KEY idx_pid_parameter_type (pid, parameter_type)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手工录入参数表';
-    """,
-    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_manual_response (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
@@ -871,6 +855,5 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_tracking_value WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_analysis_error WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_model_update_static_result WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_manual_parameter WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_manual_response WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dac_dsf WHERE pid = {pid}")
