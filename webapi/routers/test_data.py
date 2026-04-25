@@ -7,6 +7,7 @@ from services.model_update.importers.unv_service import (
     get_modal_shape,
     get_sensor_positions,
     import_unv_data,
+    get_sensor_relative_error
 )
 from src.l3.core.errors import AppError
 
@@ -59,6 +60,17 @@ async def get_sensor_position_api(request: Request, body: SensorPositionRequest)
     await log_request(request, model_to_dict(body))
     try:
         return success_response(get_sensor_positions(body.project_id), "测点位置获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+@router.post("/get/sensor_relative_error")
+async def get_sensor_relative_error_api(request: Request, body: SensorPositionRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        return success_response(get_sensor_relative_error(body.project_id), "测点位置获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

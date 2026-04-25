@@ -475,7 +475,7 @@ def get_modal_shape(project_id):
         node2idx = {}
         for ii, nd in enumerate(node_ids):
             node2idx[nd] = ii
-        node_coords = np.array(nodes, dtype=float)[:,1:].flatten().tolist()
+        node_coords = np.array(nodes, dtype=float)[:, 1:].flatten().tolist()
 
         """
         读取单元信息
@@ -520,6 +520,32 @@ def get_modal_shape(project_id):
         conn.close()
 
     return res_json
+
+
+def get_sensor_relative_error(project_id):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT id, measuring_point_name, sensor_type_id, x_position, y_position, z_position
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id
+            """,
+            (project_id,),
+        )
+        rows = cursor.fetchall()
+        res = []
+        import random
+        for row in rows:
+            iter_dict = _sensor_position_item(row)
+            iter_dict["e_value"] = random.random()
+            res.append(iter_dict)
+        return res
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def get_sensor_positions(project_id):
