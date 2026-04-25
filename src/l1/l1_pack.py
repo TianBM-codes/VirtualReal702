@@ -168,6 +168,7 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                     for fname, dsname in [
                         ('labels.npy',        'labels'),
                         ('conn.npy',          'conn'),
+                        ('section_id.npy',    'section_id'),
                         ('face_elem_idx.npy', 'face_elem_idx'),
                         ('face_seq.npy',      'face_seq'),
                         ('face_node_conn.npy','face_node_conn'),
@@ -185,6 +186,14 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                     sg.attrs['material_name'] = sinfo.get('material_name', '')
                     sg.attrs['type']          = sinfo.get('type', '')
                     sg.attrs['thickness']     = float(sinfo.get('thickness') or float('nan'))
+
+            sec_names_path = os.path.join(d, 'section_names.json')
+            if os.path.exists(sec_names_path):
+                names = load_json(sec_names_path)
+                if names:
+                    f.create_dataset('section_names',
+                                     data=np.array(names, dtype=object),
+                                     dtype=h5py.special_dtype(vlen=str))
 
             # Materials
             mat_path = os.path.join(d, 'materials.json')

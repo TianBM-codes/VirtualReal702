@@ -63,6 +63,45 @@ def _resolve_project_workspace(stored: str, project_id: str) -> str:
     return os.path.join(settings.data_root, stored)
 
 
+def _migrate_legacy_odb_results(repo: RegistryRepo,
+                                only_project_id: str = None) -> None:
+    """
+    For ODB projects with result_group=NULL in manifest and no registry entries,
+    auto-adopt them as result_group='default'. Called at startup and from the poll loop.
+    only_project_id: if set, only process that one project.
+    """
+    from .infra.manifest_repo import ManifestRepo
+    for row in repo.list_projects():
+        if row["geom_status"] != "ready":
+            continue
+        source_type = row["source_type"] if "source_type" in row.keys() else "inp"
+        if source_type != "odb":
+            continue
+        project_id = row["project_id"]
+        if only_project_id is not None and project_id != only_project_id:
+            continue
+        if repo.list_result_groups(project_id):
+            continue  # already registered
+        workspace = _resolve_project_workspace(row["workspace"], project_id)
+        if not os.path.isdir(workspace):
+            continue
+        odb_path = row["inp_path"] or ""
+        source_file = os.path.basename(odb_path) if odb_path else None
+        display_name = os.path.splitext(source_file)[0] if source_file else "default"
+        manifest = ManifestRepo(workspace)
+        migrated = manifest.adopt_null_result_group("default", display_name, source_file)
+        if migrated:
+            repo.adopt_default_result_group(
+                project_id, "default", display_name, odb_path, source_file
+            )
+            logger.info("Migrated ODB project %s → result_group='default'", project_id)
+        else:
+            logger.debug(
+                "ODB project %s: adopt_null_result_group returned False "
+                "(no NULL steps rows or already migrated)", project_id
+            )
+
+
 def _bootstrap_registry() -> None:
     """
     Pre-fork: ensure schema exists, recover stuck jobs, then load all
@@ -100,6 +139,9 @@ def _bootstrap_registry() -> None:
             logger.info("Loaded ODB %s (status=%s)", odb_id, status)
         except Exception:
             logger.exception("Failed to load ODB %s", odb_id)
+
+    # Backfill ODB projects that were processed before result_group registration existed
+    _migrate_legacy_odb_results(repo)
 
     # Load ready projects (geometry parsed, mesh viewable even without result_groups)
     for row in repo.list_projects():
@@ -146,6 +188,10 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         elif not existing.is_render_ready:
             registry.upgrade(project_id)
             logger.info("Poll: upgraded project %s to render-ready", project_id)
+        # Backfill: if ODB project has no result_groups yet, try to adopt now
+        source_type = row["source_type"] if "source_type" in row.keys() else "inp"
+        if source_type == "odb" and not repo.list_result_groups(project_id):
+            _migrate_legacy_odb_results(repo, only_project_id=project_id)
 
 
 def _poll_loop(repo: RegistryRepo) -> None:

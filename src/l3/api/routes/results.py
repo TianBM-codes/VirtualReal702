@@ -19,7 +19,7 @@ from ...services.result_service import frame_colors, frame_scalars, frame_deform
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 
-Component = Literal["U1", "U2", "U3", "USUM"]
+Component = Literal["U1", "U2", "U3"]
 
 
 @router.get("/results/frame-colors")
@@ -29,7 +29,7 @@ async def get_frame_colors(
     step: str,
     field: str,
     frame: int = 0,
-    component: Component = "USUM",
+    component: Component = "U1",
     mode: str = Query("smooth", pattern="^(smooth|flat)$"),
     result_group: Optional[str] = Query(None, description="Result group (project mode)"),
     set: Optional[str] = Query(None, description="User set name to filter triangles"),

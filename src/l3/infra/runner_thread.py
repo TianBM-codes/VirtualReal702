@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.utils.file_fetch import download_if_url, is_http_url
+from src.l3.infra.manifest_repo import ManifestRepo as _ManifestRepo
 
 logger = logging.getLogger(__name__)
 
@@ -554,7 +555,32 @@ class EmbeddedRunner:
 
         self._update_project_geom_status(project_id, "ready")
         logger.info("[%s] Project ODB ready", project_id)
+        try:
+            self._adopt_odb_default_results(project_id, odb_path, workspace)
+        except Exception:
+            logger.exception("[%s] Failed to auto-register default result_group", project_id)
         return True
+
+    def _adopt_odb_default_results(self, project_id: str, odb_path: str, workspace: str):
+        """Tag NULL result_group in manifest + register in registry.db as 'default'."""
+        rg_name = "default"
+        source_file = os.path.basename(odb_path) if odb_path else None
+        display_name = os.path.splitext(source_file)[0] if source_file else rg_name
+        manifest = _ManifestRepo(workspace)
+        migrated = manifest.adopt_null_result_group(rg_name, display_name, source_file)
+        logger.debug("[%s] adopt_null_result_group migrated=%s", project_id, migrated)
+        if migrated:
+            now = _now_iso()
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO result_groups"
+                    " (project_id, result_group, display_name, source_path, source_file,"
+                    "  status, parse_options, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
+                    (project_id, rg_name, display_name,
+                     odb_path or '', source_file or '', now, now),
+                )
+            logger.info("[%s] Adopted ODB results as result_group='default'", project_id)
 
     def _run_project(self, project_id: str, source_path: str,
                      source_type: str, workspace: str) -> bool:

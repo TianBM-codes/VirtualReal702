@@ -204,20 +204,29 @@ class ManifestRepo:
                 " WHERE {}".format(rg_clause),
                 rg_params,
             )
+        # Deserialize JSON-string columns in instances
+        for inst in instances:
+            for key in ("bbox_min", "bbox_max"):
+                v = inst.get(key)
+                if isinstance(v, str):
+                    try:
+                        inst[key] = json.loads(v)
+                    except Exception:
+                        pass
         return {"instances": instances, "steps": steps, "fields": self._group_invariant_fields(fields)}
 
     @staticmethod
     def _group_invariant_fields(fields: list) -> list:
         """
-        Merge scalar-invariant fields (e.g. E_MAX_PRINCIPAL) into their parent's
-        components list (e.g. E), then remove them from the top-level list.
+        Separate scalar-invariant fields (e.g. S_MISES) from their parent (e.g. S).
+        Invariants go into a dedicated 'invariants' list on the parent, NOT into
+        'components'. This lets the frontend route correctly:
+          - components → field=S & component_idx=N  (column in S.h5)
+          - invariants → field=S_MISES              (separate file, no component_idx)
 
-        A field is treated as an invariant of parent P when:
-          - its components list is empty (or "[]")
-          - its name starts with P + "_"
-          - P exists as another field in the same list
+        A field is an invariant of parent P when its components list is empty,
+        its name starts with P + "_", and P exists in the same list.
         """
-        # Parse components from JSON strings stored in the DB
         parsed = []
         for f in fields:
             raw = f.get("components", "[]") or "[]"
@@ -229,7 +238,7 @@ class ManifestRepo:
 
         field_name_set = {f["field_name"] for f in parsed}
 
-        # Map invariant_name → parent_name
+        # Map invariant_field_name → parent_field_name  (e.g. "S_MISES" → "S")
         inv_parent: dict[str, str] = {}
         for f in parsed:
             if not f["_comps"]:
@@ -239,22 +248,85 @@ class ManifestRepo:
                     if candidate in field_name_set:
                         inv_parent[f["field_name"]] = candidate
 
-        # Collect extra components per parent, stripping the "PARENT_" prefix
-        extra: dict[str, list] = {}
+        # Collect invariant suffixes per parent  (e.g. "S" → ["MISES", "MAX_PRINCIPAL"])
+        inv_suffixes: dict[str, list] = {}
         for inv_name, parent_name in sorted(inv_parent.items()):
-            suffix = inv_name[len(parent_name) + 1:]  # e.g. "E_MAX_PRINCIPAL" → "MAX_PRINCIPAL"
-            extra.setdefault(parent_name, []).append(suffix)
+            suffix = inv_name[len(parent_name) + 1:]
+            inv_suffixes.setdefault(parent_name, []).append(suffix)
 
         result = []
         for f in parsed:
             if f["field_name"] in inv_parent:
-                continue  # absorbed into parent
+                continue  # absorbed into parent's invariants list
             field_copy = {k: v for k, v in f.items() if k != "_comps"}
-            merged = f["_comps"] + extra.get(f["field_name"], [])
-            field_copy["components"] = json.dumps(merged)
+            field_copy["components"] = f["_comps"]
+            field_copy["invariants"] = inv_suffixes.get(f["field_name"], [])
+            # positions is stored as a JSON string in the DB — deserialize it
+            raw_pos = f.get("positions", "[]") or "[]"
+            try:
+                field_copy["positions"] = json.loads(raw_pos) if isinstance(raw_pos, str) else raw_pos
+            except Exception:
+                field_copy["positions"] = []
             result.append(field_copy)
 
         return result
+
+    def adopt_null_result_group(self, result_group_name: str,
+                                display_name: str, source_file: str = None) -> bool:
+        """
+        Tag every NULL result_group row in this manifest as result_group_name.
+        Also creates a result_group_meta entry.
+        Returns True if any rows were migrated or if result_group_meta was
+        upserted (i.e. the group is at least partially adopted).
+
+        Each table is handled independently so a partial-migration state
+        (e.g. steps done, result_files not yet) can always be retried.
+        """
+        from datetime import datetime, timezone
+        if not os.path.exists(self.db_path):
+            return False
+        try:
+            with self._get_conn() as conn:
+                now = datetime.now(timezone.utc).isoformat()
+                any_migrated = False
+                # Per-table: only update rows that are still NULL — skip tables
+                # already fully migrated without blocking the others.
+                for tbl in ("steps", "frames", "result_files", "result_blocks"):
+                    try:
+                        has_null = conn.execute(
+                            f"SELECT 1 FROM {tbl} WHERE result_group IS NULL LIMIT 1"
+                        ).fetchone()
+                        if not has_null:
+                            continue
+                        cur = conn.execute(
+                            f"UPDATE {tbl} SET result_group=?"
+                            f" WHERE result_group IS NULL",
+                            (result_group_name,)
+                        )
+                        if cur.rowcount > 0:
+                            any_migrated = True
+                    except Exception:
+                        pass
+                try:
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS result_group_meta"
+                        " (result_group TEXT PRIMARY KEY, display_name TEXT NOT NULL,"
+                        "  source_file TEXT, consistency_check TEXT NOT NULL"
+                        "  DEFAULT 'count-only', created_at TEXT NOT NULL)"
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO result_group_meta"
+                        " (result_group, display_name, source_file,"
+                        "  consistency_check, created_at)"
+                        " VALUES (?,?,?,'count-only',?)",
+                        (result_group_name, display_name, source_file, now)
+                    )
+                    any_migrated = True
+                except Exception:
+                    pass
+            return any_migrated
+        except Exception:
+            return False
 
     def _ensure_user_tables(self, conn):
         conn.execute("""

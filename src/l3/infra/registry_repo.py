@@ -340,6 +340,22 @@ class RegistryRepo:
             ).fetchone()
             return row["project_id"] if row else None
 
+    def adopt_default_result_group(self, project_id: str, result_group: str,
+                                    display_name: str, source_path: str,
+                                    source_file: str = None) -> bool:
+        """INSERT OR IGNORE a result_group with status='ready'. Returns True if inserted."""
+        now = _now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO result_groups"
+                " (project_id, result_group, display_name, source_path, source_file,"
+                "  status, parse_options, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
+                (project_id, result_group, display_name,
+                 source_path or '', source_file, now, now),
+            )
+            return cur.rowcount > 0
+
     def delete_project(self, project_id: str) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM result_groups WHERE project_id=?", (project_id,))

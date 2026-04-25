@@ -516,6 +516,17 @@ def dump_geometry(odb, raw_dir, meta):
             elem_by_type[t]['labels'].append(elem.label)
             elem_by_type[t]['conn'].append(list(elem.connectivity))
 
+        # Pre-collect only the element-set names referenced by sectionAssignments
+        # (fast: attribute access only, no element iteration yet).
+        _sec_region_names = set()
+        try:
+            for _sa in instance.sectionAssignments:
+                _rname = getattr(getattr(_sa, 'region', None), 'name', '')
+                if _rname:
+                    _sec_region_names.add(_rname)
+        except AttributeError:
+            pass
+
         etype_meta = {}
         total_elems = 0
         has_highorder = False
@@ -578,14 +589,64 @@ def dump_geometry(odb, raw_dir, meta):
             isets_node[sname] = len(lbls)
 
         isets_elem = {}
+        # Collect labels for sets referenced by sectionAssignments (reuse this
+        # iteration instead of calling sa.region.elements separately — much faster).
+        _isets_sec_labels = {}   # set_name → sorted labels array (only the ones we need)
         for sname, es in instance.elementSets.items():
             lbls = np.array(sorted([e.label for e in es.elements]), dtype=np.int32)
             isd  = os.path.join(d, 'isets', 'elem_sets')
             mkdirs(isd)
             npsave(os.path.join(isd, safe(sname) + '.npy'), lbls)
             isets_elem[sname] = len(lbls)
+            if sname in _sec_region_names:
+                _isets_sec_labels[sname] = lbls
 
-        # Sections
+        # Build section_id per etype using vectorized numpy (no extra element iteration)
+        section_names  = []
+        sec_name_to_id = {}
+        _sec_lbl_parts = []
+        _sec_sid_parts = []
+        try:
+            for _sa in instance.sectionAssignments:
+                _sname = _sa.sectionName
+                if _sname not in sec_name_to_id:
+                    sec_name_to_id[_sname] = len(section_names)
+                    section_names.append(_sname)
+                _sid = sec_name_to_id[_sname]
+                _rname = getattr(getattr(_sa, 'region', None), 'name', '')
+                _lbls = _isets_sec_labels.get(_rname)
+                if _lbls is not None and len(_lbls) > 0:
+                    _sec_lbl_parts.append(_lbls)
+                    _sec_sid_parts.append(np.full(len(_lbls), _sid, dtype=np.int32))
+        except AttributeError:
+            pass
+
+        if _sec_lbl_parts:
+            _sc_lbls = np.concatenate(_sec_lbl_parts)
+            _sc_sids = np.concatenate(_sec_sid_parts)
+            _srt = np.argsort(_sc_lbls, kind='stable')
+            _sc_lbls = _sc_lbls[_srt]
+            _sc_sids = _sc_sids[_srt]
+        else:
+            _sc_lbls = np.array([], dtype=np.int32)
+            _sc_sids = np.array([], dtype=np.int32)
+
+        for etype, edata in elem_by_type.items():
+            if ELEM_TYPE_CODE.get(etype) is None:
+                continue
+            _elblsrt = np.array(edata['labels'], dtype=np.int32)
+            _elblsrt = _elblsrt[np.argsort(_elblsrt)]
+            td = os.path.join(d, 'elems', safe(etype))
+            if _sc_lbls.size > 0:
+                _ii = np.searchsorted(_sc_lbls, _elblsrt)
+                _ii = np.clip(_ii, 0, len(_sc_lbls) - 1)
+                _found = _sc_lbls[_ii] == _elblsrt
+                _sid_arr = np.where(_found, _sc_sids[_ii], np.int32(-1)).astype(np.int32)
+            else:
+                _sid_arr = np.full(len(_elblsrt), -1, dtype=np.int32)
+            npsave(os.path.join(td, 'section_id.npy'), _sid_arr)
+
+        # Sections metadata (no element access, just names/types/thickness)
         sections_info = {}
         try:
             for sa in instance.sectionAssignments:
@@ -608,6 +669,8 @@ def dump_geometry(odb, raw_dir, meta):
                 sections_info[sname] = entry
         except AttributeError:
             pass
+
+        jdump(os.path.join(d, 'section_names.json'), section_names)
 
         # Materials
         materials_info = {}
@@ -756,151 +819,282 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
     print("  fields_manifest.json written.")
 
 
+def _compute_invariants_numpy(comp, inv_name):
+    """
+    Compute a scalar invariant from a component array.
+
+    comp     : [..., ncomp] float32/float64
+    inv_name : e.g. 'MISES', 'MAX_PRINCIPAL', 'PRESS', ...
+    Returns  : [..., 1] float32, or None if ncomp < 4.
+
+    Supports Voigt 6-component (full 3-D tensor: 11,22,33,12,13,23) and
+    4-component (in-plane shell: 11,22,33,12, treats 13=23=0).
+    """
+    ncomp = comp.shape[-1]
+    if ncomp < 4:
+        return None
+
+    c11 = comp[..., 0].astype(np.float64)
+    c22 = comp[..., 1].astype(np.float64)
+    c33 = comp[..., 2].astype(np.float64)
+    c12 = comp[..., 3].astype(np.float64)
+    c13 = comp[..., 4].astype(np.float64) if ncomp >= 6 else np.zeros_like(c11)
+    c23 = comp[..., 5].astype(np.float64) if ncomp >= 6 else np.zeros_like(c11)
+
+    if inv_name == 'MISES':
+        result = np.sqrt(np.maximum(0.0,
+            0.5 * ((c11-c22)**2 + (c22-c33)**2 + (c33-c11)**2
+                   + 6*(c12**2 + c13**2 + c23**2))))
+
+    elif inv_name == 'PRESS':
+        result = -(c11 + c22 + c33) / 3.0
+
+    elif inv_name in ('MAX_PRINCIPAL', 'MID_PRINCIPAL', 'MIN_PRINCIPAL', 'TRESCA'):
+        shape = c11.shape
+        N = max(int(np.prod(shape)), 1)
+        T = np.empty((N, 3, 3), dtype=np.float64)
+        T[:, 0, 0] = c11.ravel(); T[:, 1, 1] = c22.ravel(); T[:, 2, 2] = c33.ravel()
+        T[:, 0, 1] = T[:, 1, 0] = c12.ravel()
+        T[:, 0, 2] = T[:, 2, 0] = c13.ravel()
+        T[:, 1, 2] = T[:, 2, 1] = c23.ravel()
+        eigs = np.linalg.eigvalsh(T).reshape(shape + (3,))  # ascending
+        if   inv_name == 'MAX_PRINCIPAL': result = eigs[..., 2]
+        elif inv_name == 'MID_PRINCIPAL': result = eigs[..., 1]
+        elif inv_name == 'MIN_PRINCIPAL': result = eigs[..., 0]
+        else:                             result = eigs[..., 2] - eigs[..., 0]  # TRESCA
+
+    elif inv_name == 'INV3':
+        p    = (c11 + c22 + c33) / 3.0
+        d11  = c11 - p;  d22 = c22 - p;  d33 = c33 - p
+        result = (d11*(d22*d33 - c23**2)
+                  - c12*(c12*d33 - c23*c13)
+                  + c13*(c12*c23 - d22*c13))
+
+    elif inv_name == 'MAX_INPLANE_PRINCIPAL':
+        avg = (c11 + c22) * 0.5
+        result = avg + np.sqrt(np.maximum(0.0, ((c11-c22)*0.5)**2 + c12**2))
+
+    elif inv_name == 'MIN_INPLANE_PRINCIPAL':
+        avg = (c11 + c22) * 0.5
+        result = avg - np.sqrt(np.maximum(0.0, ((c11-c22)*0.5)**2 + c12**2))
+
+    elif inv_name == 'OUTOFPLANE_PRINCIPAL':
+        result = c33.copy()
+
+    else:
+        return None
+
+    return result[..., np.newaxis].astype(np.float32)
+
+
 def _extract_ip_invariants(step, step_name, field_name, first_field,
                            invariants, results_dir, safe_step, safe_field,
                            block_struct, odb_instances):
-    """Extract scalar invariant fields from IP-level FieldValue iteration.
+    """Extract scalar invariant fields, preserving raw per-IP and per-local-node values.
 
-    Preserves the etype block structure of the parent field so that L3's
-    /{position}/{instance}/{etype}/data lookup and src_elem_row indexing still work.
-    Averages all IP/SP values per element; writes [N_etype_elem, 1, 1] per block.
+    ELEMENT_NODAL path (preferred): stores [N_elem, n_local_node, 1] per block.
+      L3 applies the same 75% conditional averaging as for regular components.
+    INTEGRATION_POINT path: stores [N_elem, n_ip, 1] per block.
+      L3 does NOT average; IP data is used only for point queries.
+
+    No pre-averaging is done here — that is L3's responsibility.
     """
     active_invs = [(inv, INV_ATTR_MAP[inv]) for inv in invariants if inv in INV_ATTR_MAP]
     if not active_invs:
         return
 
-    # Load canonical elem-label arrays from the parent field's IP blocks.
-    # ip_blocks: {(iname, etype): sorted int32 labels array}
-    ip_blocks = {}
-    parent_field_dir = os.path.join(results_dir,
-                                    '{}_{}'.format(safe_step, safe_field))
+    parent_field_dir = os.path.join(results_dir, '{}_{}'.format(safe_step, safe_field))
+
+    # ── Discover EN blocks from parent block_struct ───────────────────────────
+    en_blocks = {}  # {(iname, etype): {'labels': arr, 'n_enodes': int}}
+    for (iname, pos, etype, _sp) in list(block_struct.keys()):
+        if pos != 'ELEMENT_NODAL':
+            continue
+        info = block_struct[(iname, pos, etype, _sp)]
+        n_enodes = info.get('n_enodes', 0)
+        if n_enodes == 0:
+            continue
+        bd = os.path.join(parent_field_dir, safe(iname), 'ELEMENT_NODAL')
+        if etype:
+            bd = os.path.join(bd, safe(etype))
+        lbl_path = os.path.join(bd, 'labels.npy')
+        if not os.path.exists(lbl_path):
+            continue
+        en_blocks[(iname, etype)] = {'labels': np.load(lbl_path), 'n_enodes': n_enodes}
+
+    # ── Discover IP blocks from parent block_struct ───────────────────────────
+    ip_blocks = {}  # {(iname, etype, sp_num_key): {'labels': arr, 'ip_labels': arr}}
     for (iname, pos, etype, sp_num_key) in list(block_struct.keys()):
         if pos != 'INTEGRATION_POINT':
             continue
-        bd_parts = [parent_field_dir, safe(iname), pos]
+        bd_parts = [parent_field_dir, safe(iname), 'INTEGRATION_POINT']
         if etype:
             bd_parts.append(safe(etype))
         if sp_num_key is not None:
             bd_parts.append('sp{}'.format(sp_num_key))
-        lbl_path = os.path.join(os.path.join(*bd_parts), 'labels.npy')
+        bd = os.path.join(*bd_parts)
+        lbl_path = os.path.join(bd, 'labels.npy')
         if not os.path.exists(lbl_path):
             continue
-        ip_blocks[(iname, etype, sp_num_key)] = np.load(lbl_path)  # already sorted
+        ip_lbl_path = os.path.join(bd, 'ip_labels.npy')
+        ip_labels = (np.load(ip_lbl_path) if os.path.exists(ip_lbl_path)
+                     else np.array([1], dtype=np.int32))
+        ip_blocks[(iname, etype, sp_num_key)] = {
+            'labels':    np.load(lbl_path),
+            'ip_labels': ip_labels,
+        }
 
-    if not ip_blocks:
-        print("    [inv] no IP blocks found, skipping invariant extraction")
+    if not en_blocks and not ip_blocks:
+        print("    [inv] no EN or IP blocks found, skipping invariant extraction")
         return
 
-    insts = list({k[0] for k in ip_blocks})
+    insts = list({k[0] for k in list(en_blocks.keys()) + list(ip_blocks.keys())})
 
-    # Create synthetic field dirs + write static files per (inv, inst, etype, sp)
+    # ── Create synthetic field dirs and write static index files ─────────────
     inv_field_dirs = {}
     for inv_name, _ in active_invs:
         syn_field = '{}_{}'.format(field_name, inv_name)
         fdir = os.path.join(results_dir, '{}_{}'.format(safe_step, safe(syn_field)))
         mkdirs(fdir)
         inv_field_dirs[inv_name] = fdir
-        for (iname, etype, sp_num_key), canon in ip_blocks.items():
-            bd_parts = [fdir, safe(iname), 'INTEGRATION_POINT']
+
+    for (iname, etype), info in en_blocks.items():
+        for inv_name in inv_field_dirs:
+            bd = os.path.join(inv_field_dirs[inv_name], safe(iname), 'ELEMENT_NODAL')
+            if etype:
+                bd = os.path.join(bd, safe(etype))
+            mkdirs(bd)
+            npsave(os.path.join(bd, 'labels.npy'), info['labels'])
+
+    for (iname, etype, sp_num_key), info in ip_blocks.items():
+        for inv_name in inv_field_dirs:
+            bd_parts = [inv_field_dirs[inv_name], safe(iname), 'INTEGRATION_POINT']
             if etype:
                 bd_parts.append(safe(etype))
             if sp_num_key is not None:
                 bd_parts.append('sp{}'.format(sp_num_key))
             bd = os.path.join(*bd_parts)
             mkdirs(bd)
-            npsave(os.path.join(bd, 'labels.npy'),    canon)
-            npsave(os.path.join(bd, 'ip_labels.npy'), np.array([1], dtype=np.int32))
+            npsave(os.path.join(bd, 'labels.npy'),    info['labels'])
+            npsave(os.path.join(bd, 'ip_labels.npy'), info['ip_labels'])
             sp_arr = (np.array([sp_num_key], dtype=np.int32)
-                      if sp_num_key is not None
-                      else np.array([], dtype=np.int32))
+                      if sp_num_key is not None else np.array([], dtype=np.int32))
             npsave(os.path.join(bd, 'sp_labels.npy'), sp_arr)
 
-    # Per-frame: one .values pass per instance → scatter into per-etype arrays
-    for frame_idx, frame in enumerate(step.frames):
-        if field_name not in frame.fieldOutputs:
-            continue
-        fout = frame.fieldOutputs[field_name]
+    # ── Per-frame invariant computation (numpy, no .values API calls) ────────
+    # Component data was already saved by dump_results as f{frame_idx:04d}.npy.
+    # Load those files and apply numpy formulas — no Abaqus API calls needed.
+    num_frames = len(step.frames)
 
-        for iname in insts:
-            if iname not in odb_instances:
+    for frame_idx in range(num_frames):
+
+        # ELEMENT_NODAL: load component npy → compute invariants
+        for (iname, etype), info in en_blocks.items():
+            canon    = info['labels']
+            n_enodes = info['n_enodes']
+
+            bd_comp = os.path.join(parent_field_dir, safe(iname), 'ELEMENT_NODAL')
+            if etype:
+                bd_comp = os.path.join(bd_comp, safe(etype))
+            comp_path = os.path.join(bd_comp, 'f{:04d}.npy'.format(frame_idx))
+            if not os.path.exists(comp_path):
                 continue
-            try:
-                inst_fo = fout.getSubset(region=odb_instances[iname])
-            except Exception:
-                continue
+            comp = np.load(comp_path)         # [N_elem, n_enodes, ncomp]
+            if comp.ndim == 2:
+                comp = comp[:, :, np.newaxis]
 
-            # Accumulate: {elbl: {inv_name: [val, ...]}}
-            accum = {}
-            for fv in inst_fo.values:
-                elbl = fv.elementLabel
-                if elbl not in accum:
-                    accum[elbl] = {inv_name: [] for inv_name, _ in active_invs}
-                for inv_name, attr in active_invs:
-                    val = getattr(fv, attr, None)
-                    if val is not None:
-                        accum[elbl][inv_name].append(float(val))
-
-            if not accum:
-                continue
-
-            # Pre-average per element across all IPs/SPs
-            # avg: {elbl: {inv_name: float}}
-            avg = {}
-            for elbl, inv_vals in accum.items():
-                avg[elbl] = {}
-                for inv_name, _ in active_invs:
-                    vals = inv_vals[inv_name]
-                    avg[elbl][inv_name] = (float(sum(vals)) / float(len(vals))
-                                          if vals else float('nan'))
-
-            # Build numpy arrays for vectorised scatter into each etype block
-            elbl_arr = np.array(list(avg.keys()), dtype=np.int32)
-            inv_avg_arrs = {}
             for inv_name, _ in active_invs:
-                inv_avg_arrs[inv_name] = np.array(
-                    [avg[int(e)][inv_name] for e in elbl_arr], dtype=np.float32)
+                inv_data = _compute_invariants_numpy(comp, inv_name)
+                if inv_data is None:
+                    inv_data = np.full((len(canon), n_enodes, 1), np.nan, dtype=np.float32)
+                else:
+                    # Clamp to expected shape (canon × n_enodes × 1)
+                    N_comp = inv_data.shape[0]
+                    N_en   = inv_data.shape[1]
+                    if N_comp != len(canon) or N_en != n_enodes:
+                        tmp = np.full((len(canon), n_enodes, 1), np.nan, dtype=np.float32)
+                        r = min(N_comp, len(canon))
+                        c = min(N_en, n_enodes)
+                        tmp[:r, :c, :] = inv_data[:r, :c, :]
+                        inv_data = tmp
 
-            for (blk_iname, etype, sp_num_key), canon in ip_blocks.items():
-                if blk_iname != iname:
-                    continue
-                rows = np.searchsorted(canon, elbl_arr)
-                safe_rows = np.clip(rows, 0, len(canon) - 1)
-                valid = (rows < len(canon)) & (canon[safe_rows] == elbl_arr)
-                for inv_name, _ in active_invs:
-                    out = np.full(len(canon), np.nan, dtype=np.float32)
-                    out[rows[valid]] = inv_avg_arrs[inv_name][valid]
-                    bd_parts = [inv_field_dirs[inv_name], safe(iname), 'INTEGRATION_POINT']
-                    if etype:
-                        bd_parts.append(safe(etype))
-                    if sp_num_key is not None:
-                        bd_parts.append('sp{}'.format(sp_num_key))
-                    bd = os.path.join(*bd_parts)
-                    npsave(os.path.join(bd, 'f{:04d}.npy'.format(frame_idx)),
-                           out.reshape(-1, 1, 1))
+                bd_inv = os.path.join(inv_field_dirs[inv_name], safe(iname), 'ELEMENT_NODAL')
+                if etype:
+                    bd_inv = os.path.join(bd_inv, safe(etype))
+                npsave(os.path.join(bd_inv, 'f{:04d}.npy'.format(frame_idx)), inv_data)
 
-    # Write meta.json for each synthetic invariant field
+        # INTEGRATION_POINT: load component npy → compute invariants
+        for (iname, etype, sp_num_key), info in ip_blocks.items():
+            canon     = info['labels']
+            ip_labels = info['ip_labels']
+            n_ip      = len(ip_labels)
+
+            bd_comp_parts = [parent_field_dir, safe(iname), 'INTEGRATION_POINT']
+            if etype:
+                bd_comp_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_comp_parts.append('sp{}'.format(sp_num_key))
+            comp_path = os.path.join(*(bd_comp_parts + ['f{:04d}.npy'.format(frame_idx)]))
+            if not os.path.exists(comp_path):
+                continue
+            comp = np.load(comp_path)         # [N_elem, n_ip, ncomp]
+            if comp.ndim == 2:
+                comp = comp[:, :, np.newaxis]
+
+            for inv_name, _ in active_invs:
+                inv_data = _compute_invariants_numpy(comp, inv_name)
+                if inv_data is None:
+                    inv_data = np.full((len(canon), n_ip, 1), np.nan, dtype=np.float32)
+                else:
+                    N_comp = inv_data.shape[0]
+                    N_ip   = inv_data.shape[1]
+                    if N_comp != len(canon) or N_ip != n_ip:
+                        tmp = np.full((len(canon), n_ip, 1), np.nan, dtype=np.float32)
+                        r = min(N_comp, len(canon))
+                        c = min(N_ip, n_ip)
+                        tmp[:r, :c, :] = inv_data[:r, :c, :]
+                        inv_data = tmp
+
+                bd_parts = [inv_field_dirs[inv_name], safe(iname), 'INTEGRATION_POINT']
+                if etype:
+                    bd_parts.append(safe(etype))
+                if sp_num_key is not None:
+                    bd_parts.append('sp{}'.format(sp_num_key))
+                npsave(os.path.join(*(bd_parts + ['f{:04d}.npy'.format(frame_idx)])), inv_data)
+
+    # ── Write meta.json for each synthetic invariant field ────────────────────
     for inv_name, _ in active_invs:
         fdir      = inv_field_dirs[inv_name]
         syn_field = '{}_{}'.format(field_name, inv_name)
+        blocks    = []
+        for (iname, etype), info in en_blocks.items():
+            blocks.append({
+                'inst_name':  iname,
+                'position':   'ELEMENT_NODAL',
+                'elem_type':  etype,
+                'sp_num':     None,
+                'ncomp':      1,
+                'n_entities': len(info['labels']),
+                'n_enodes':   info['n_enodes'],
+            })
+        for (iname, etype, sp_num_key), info in ip_blocks.items():
+            blocks.append({
+                'inst_name':  iname,
+                'position':   'INTEGRATION_POINT',
+                'elem_type':  etype,
+                'sp_num':     sp_num_key,
+                'ncomp':      1,
+                'n_entities': len(info['labels']),
+                'n_ip':       len(info['ip_labels']),
+                'n_sp':       0,
+            })
         jdump(os.path.join(fdir, 'meta.json'), {
             'step_name':   step_name,
             'field_name':  syn_field,
             'components':  [],
             'invariants':  [],
             'has_section': 0,
-            'blocks': [
-                {
-                    'inst_name':  iname,
-                    'position':   'INTEGRATION_POINT',
-                    'elem_type':  etype,
-                    'sp_num':     sp_num_key,
-                    'ncomp':      1,
-                    'n_entities': len(canon),
-                    'n_ip':       1,
-                    'n_sp':       0,
-                }
-                for (iname, etype, sp_num_key), canon in ip_blocks.items()
-            ],
+            'blocks':      blocks,
         })
 
     print("    [inv] extracted {} invariant(s): {}".format(
@@ -1234,6 +1428,28 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             npsave(fr_path, data_nd)
                     except Exception as _e:
                         pass  # per-frame EN extrapolation failure is non-fatal
+
+            # ── Extend components if solid blocks have more than shell blocks ──
+            # first_field.componentLabels returns the INTERSECTION across all
+            # element types in the instance, so for a mixed shell+solid model
+            # it only reports the 4 shell in-plane components, dropping S13/S23.
+            # Detect this by comparing max ncomp across blocks to len(components)
+            # and extend using the standard Abaqus Voigt-notation suffix sequence.
+            _max_ncomp = max(
+                (v['ncomp'] for v in block_struct.values()
+                 if isinstance(v.get('ncomp'), int)),
+                default=len(components)
+            )
+            if _max_ncomp > len(components) and len(components) == 4 and _max_ncomp == 6:
+                _T4 = ['11', '22', '33', '12']
+                _T6 = ['11', '22', '33', '12', '13', '23']
+                _first = components[0] if components else ''
+                _prefix = _first[:-2] if len(_first) > 2 else ''
+                if _prefix and list(components) == [_prefix + s for s in _T4]:
+                    _extra = [_prefix + s for s in _T6[4:]]
+                    components = list(components) + _extra
+                    print("    [components] extended to {} (solid blocks have ncomp={})".format(
+                        components, _max_ncomp))
 
             # Write field meta.json
             jdump(os.path.join(field_dir, 'meta.json'), {

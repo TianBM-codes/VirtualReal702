@@ -20,7 +20,7 @@ from ..infra.manifest_repo import ManifestRepo
 
 logger = logging.getLogger(__name__)
 
-Component = Literal["U1", "U2", "U3", "USUM"]
+Component = Literal["U1", "U2", "U3"]
 
 
 # ─── Generic component extraction ────────────────────────────────────────────
@@ -41,8 +41,9 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.nda
     ci = int(component_idx)
     if ci < data.shape[-1]:
         return data[..., ci].astype(np.float32)
-    # component_idx out of range → fall back to magnitude
-    return np.linalg.norm(data, axis=-1).astype(np.float32)
+    # component_idx out of range (element type has fewer components) → NaN so
+    # those faces render as no-data (grey) rather than a spurious magnitude.
+    return np.full(data.shape[:-1], np.nan, dtype=np.float32)
 
 
 def _scalar_nodal_by_idx(f, instance: str, frame_idx: int,
@@ -142,6 +143,30 @@ def _result_h5_path(workspace: str, step: str, field: str,
     return os.path.join(workspace, "l1", "results", fname)
 
 
+def _manifest_result_h5_path(workspace: str, step: str, field: str,
+                              result_group: str = None) -> str:
+    """
+    Get result H5 path from manifest.db file_path column (authoritative),
+    falling back to _result_h5_path if no manifest entry exists.
+
+    Also tries result_group=NULL as a secondary fallback so that legacy
+    ODB projects whose result_files rows were only partially migrated
+    (result_group column still NULL) can still be served correctly.
+    """
+    try:
+        manifest = ManifestRepo(workspace)
+        rf = manifest.get_result_file(step, field, result_group)
+        if rf is None and result_group is not None:
+            # Partial migration: result_files row still has NULL result_group
+            rf = manifest.get_result_file(step, field, None)
+        if rf and rf["file_path"]:
+            rel = rf["file_path"].replace("\\", os.sep).replace("/", os.sep)
+            return os.path.join(workspace, rel)
+    except Exception:
+        pass
+    return _result_h5_path(workspace, step, field, result_group)
+
+
 def _scalar_from_nodal(f, instance: str, frame_idx: int, component: Component):
     """
     Read NODAL data → scalar per node [N_nodes].
@@ -159,10 +184,6 @@ def _scalar_from_nodal(f, instance: str, frame_idx: int, component: Component):
             {"frame_idx": frame_idx},
         )
     frame_data = ds[frame_idx]   # [N, ncomp]
-    if component == "USUM":
-        if frame_data.ndim == 1:
-            return frame_data.astype(np.float32), num_frames
-        return np.linalg.norm(frame_data, axis=1).astype(np.float32), num_frames
     ci = _COMP_IDX.get(component, 0)
     if frame_data.ndim == 1:
         return frame_data.astype(np.float32), num_frames
@@ -281,7 +302,7 @@ def frame_colors(
             {"instance": instance},
         )
 
-    h5_path = _result_h5_path(idx.workspace, step, field, result_group)
+    h5_path = _manifest_result_h5_path(idx.workspace, step, field, result_group)
     if not os.path.exists(h5_path):
         raise NotFoundError(
             f"Result file not found for step='{step}' field='{field}'",
@@ -450,12 +471,15 @@ def frame_scalars(
             {"instance": instance},
         )
 
-    h5_path = _result_h5_path(idx.workspace, step, field, result_group)
+    h5_path = _manifest_result_h5_path(idx.workspace, step, field, result_group)
     if not os.path.exists(h5_path):
         raise NotFoundError(
             f"Result file not found for step='{step}' field='{field}'",
             {"step": step, "field": field},
         )
+
+    _manifest = ManifestRepo(idx.workspace)
+    geom_h5_path = _manifest.get_geom_path(instance)
 
     # Indexed geometry arrays — present only when L2 produced an index buffer.
     # vtx_nr [Nv]: L1 node row for each unique vertex
@@ -551,6 +575,17 @@ def frame_scalars(
                     else:
                         scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
+        # ── All-element global range for ELEMENT_NODAL paths ────────────
+        # Override surface-only range with full-model averaged range using
+        # section_id from geometry H5 (all elements including interior).
+        if result_position.startswith("ELEMENT_NODAL") and geom_h5_path is not None:
+            all_range = _compute_en_global_range(
+                f, geom_h5_path, instance, frame_idx, component_idx,
+                average_threshold,
+            )
+            if all_range is not None:
+                global_range = all_range
+
         # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
         if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
             result = _scalar_elem_pos_by_idx(
@@ -566,6 +601,13 @@ def frame_scalars(
                     scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
     if scalar_vertex is None:
+        logger.warning(
+            "frame_scalars: no data found  field=%s instance=%s step=%s frame=%s "
+            "h5=%s src_etypes=%s",
+            field, instance, step, frame_idx, h5_path,
+            [e.decode("ascii", errors="replace").rstrip("\x00")
+             for e in (np.unique(src_etype).tolist() if src_etype is not None else [])],
+        )
         raise NotFoundError(
             f"No result data (NODAL/ELEMENT_NODAL/INTEGRATION_POINT) "
             f"for instance '{instance}' in field '{field}'",
@@ -863,6 +905,155 @@ def _en_per_vertex_averaged(
     return scalar_vertex, num_frames, global_range
 
 
+def _compute_en_global_range(
+    result_h5,
+    geom_h5_path: str,
+    instance: str,
+    frame_idx: int,
+    component_idx: Optional[int],
+    average_threshold: float = 0.75,
+) -> Optional[Tuple[float, float]]:
+    """
+    Compute global legend range from ALL elements (including interior) using
+    section-only partitioned 75% conditional averaging.
+
+    Returns (global_min, global_max), or None if section_id data is unavailable.
+    """
+    if not os.path.exists(geom_h5_path):
+        return None
+
+    all_secs  = []
+    all_nodes = []
+    all_vals  = []
+
+    try:
+        with h5py.File(geom_h5_path, 'r') as geom_f:
+            if 'elements' not in geom_f:
+                return None
+
+            for etype_key in geom_f['elements']:
+                grp_path = f'/ELEMENT_NODAL/{instance}/{etype_key}'
+                if grp_path not in result_h5:
+                    continue
+
+                geom_grp = geom_f['elements'][etype_key]
+                if 'conn' not in geom_grp or 'section_id' not in geom_grp:
+                    continue
+
+                sec_id   = geom_grp['section_id'][:]   # [N_geom] int32
+                conn     = geom_grp['conn'][:]          # [N_geom, n_corner] int32
+                N_geom   = len(sec_id)
+                n_corner = conn.shape[1]
+
+                res_grp = result_h5[grp_path]
+                if 'data' in res_grp:
+                    ds = res_grp['data']
+                else:
+                    sp_keys = sorted(k for k in res_grp.keys() if k.startswith('sp'))
+                    if not sp_keys:
+                        continue
+                    ds = res_grp[sp_keys[0]]['data']
+
+                if frame_idx >= int(ds.shape[0]):
+                    continue
+
+                fd = ds[frame_idx]
+                while fd.ndim > 3:
+                    fd = fd.mean(axis=2)
+                if fd.ndim == 3:
+                    sc = _extract_component(
+                        fd.reshape(-1, fd.shape[-1]), component_idx
+                    ).reshape(fd.shape[0], fd.shape[1])
+                elif fd.ndim == 2:
+                    sc = _extract_component(fd, component_idx)[:, np.newaxis]
+                else:
+                    sc = fd.astype(np.float32)[:, np.newaxis]
+
+                N_result = sc.shape[0]
+                n_local  = sc.shape[1]
+                N        = min(N_geom, N_result)
+                n_shared = min(n_local, n_corner)
+                if N == 0 or n_shared == 0:
+                    continue
+
+                sc_sub   = sc[:N, :n_shared].astype(np.float64)
+                conn_sub = conn[:N, :n_shared]
+                sec_rep  = np.repeat(sec_id[:N], n_shared)
+                node_rep = conn_sub.ravel()
+                val_rep  = sc_sub.ravel()
+
+                valid = np.isfinite(val_rep)
+                if valid.any():
+                    all_secs.append(sec_rep[valid].astype(np.int32))
+                    all_nodes.append(node_rep[valid].astype(np.int32))
+                    all_vals.append(val_rep[valid])
+    except Exception:
+        logger.exception("_compute_en_global_range: failed reading %s", geom_h5_path)
+        return None
+
+    if not all_vals:
+        return None
+
+    sec_ids   = np.concatenate(all_secs)
+    node_rows = np.concatenate(all_nodes)
+    values    = np.concatenate(all_vals)
+
+    # Per-domain raw range (for the 75% threshold denominator)
+    dom_sort    = np.argsort(sec_ids, kind='stable')
+    sec_dom     = sec_ids[dom_sort]
+    val_dom     = values[dom_sort]
+    dom_bounds  = np.concatenate([[0],
+                                   np.where(sec_dom[1:] != sec_dom[:-1])[0] + 1,
+                                   [len(sec_dom)]])
+    dom_min_arr   = np.minimum.reduceat(val_dom, dom_bounds[:-1])
+    dom_max_arr   = np.maximum.reduceat(val_dom, dom_bounds[:-1])
+    dom_range_arr = dom_max_arr - dom_min_arr
+    dom_sec_arr   = sec_dom[dom_bounds[:-1]]
+    dom_range_map = {int(s): float(r) for s, r in zip(dom_sec_arr, dom_range_arr)}
+
+    # Per-node stats: sort by (domain, node_row) compound key
+    max_nr      = int(node_rows.max()) + 1
+    compound    = sec_ids.astype(np.int64) * max_nr + node_rows.astype(np.int64)
+    node_sort   = np.argsort(compound, kind='stable')
+    comp_s      = compound[node_sort]
+    sec_s       = sec_ids[node_sort]
+    val_s       = values[node_sort]
+
+    node_bounds   = np.concatenate([[0],
+                                     np.where(comp_s[1:] != comp_s[:-1])[0] + 1,
+                                     [len(comp_s)]])
+    node_min_arr  = np.minimum.reduceat(val_s, node_bounds[:-1])
+    node_max_arr  = np.maximum.reduceat(val_s, node_bounds[:-1])
+    node_sum_arr  = np.add.reduceat(val_s, node_bounds[:-1])
+    node_cnt_arr  = np.diff(node_bounds).astype(np.float64)
+    node_mean_arr = node_sum_arr / node_cnt_arr
+    node_spr_arr  = node_max_arr - node_min_arr
+    node_sec_arr  = sec_s[node_bounds[:-1]]
+
+    dom_range_per_node = np.array(
+        [dom_range_map.get(int(s), 0.0) for s in node_sec_arr], dtype=np.float64
+    )
+
+    # Vectorized 75% threshold: averaged nodes use mean; unaveraged use per-elem spread
+    avg_mask = (dom_range_per_node < 1e-12) | (node_spr_arr <= average_threshold * dom_range_per_node)
+
+    g_min = np.inf
+    g_max = -np.inf
+
+    if avg_mask.any():
+        means = node_mean_arr[avg_mask]
+        g_min = min(g_min, float(means.min()))
+        g_max = max(g_max, float(means.max()))
+
+    if (~avg_mask).any():
+        g_min = min(g_min, float(node_min_arr[~avg_mask].min()))
+        g_max = max(g_max, float(node_max_arr[~avg_mask].max()))
+
+    if not (np.isfinite(g_min) and np.isfinite(g_max)):
+        return None
+    return float(g_min), float(g_max)
+
+
 # ─── frame_deformed_positions ─────────────────────────────────────────────────
 
 def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
@@ -937,7 +1128,7 @@ def frame_deformed_positions(
         indices   = np.ascontiguousarray(f["render/indices"][:],   dtype=np.int32) \
                     if "render/indices" in f else None
 
-    h5_path = _result_h5_path(idx.workspace, step, "U", result_group)
+    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
     if not os.path.exists(h5_path):
         raise NotFoundError(
             f"U field not found for step='{step}'",
