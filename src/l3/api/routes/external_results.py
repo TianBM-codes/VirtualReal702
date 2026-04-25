@@ -49,6 +49,7 @@ class FrameEntry(BaseModel):
 class FrameData(BaseModel):
     frame_idx: int
     frame_value: float = 0.0
+    description: str | None = None
     data: List[FrameEntry]
 
 
@@ -81,6 +82,7 @@ async def write_external_field(odb_id: str, body: ExternalFieldRequest):
                 {
                     "frame_idx":   f.frame_idx,
                     "frame_value": f.frame_value,
+                    "description": f.description,
                     "data":        [{"label": e.label, "values": e.values} for e in f.data],
                 }
                 for f in inst_data.frames

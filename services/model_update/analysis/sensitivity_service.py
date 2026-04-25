@@ -800,6 +800,44 @@ def _project_workspace_path(project_id: int) -> str:
     return os.path.abspath(os.path.join(settings.data_root, str(project_id)))
 
 
+def _build_project_result_parse_options(
+        *,
+        step: Optional[str],
+        frame: Optional[int],
+        field_prefix: Optional[str],
+) -> dict:
+    parse_options = {
+        "consistency_check": "count-only",
+        "steps": [str(step)] if step else None,
+        "frames": [int(frame)] if frame is not None else "all",
+        "invariants": "none",
+    }
+
+    # DSA normalization needs both the sensitivity fields (for example d_U_T1)
+    # and the base response field they are normalized against (for example U).
+    # Passing a DSA field_prefix into the project-result extraction filters that
+    # response field out of the workspace, so only preserve the prefix filter
+    # for non-DSA prefixes that do not map back to a response token.
+    if field_prefix and _field_prefix_response_token(field_prefix) is None:
+        parse_options["field_prefix"] = str(field_prefix)
+
+    return {key: value for key, value in parse_options.items() if value is not None}
+
+
+def _resolved_workspace_frame(
+        *,
+        requested_frame: int,
+        parse_via_project_results: bool,
+) -> int:
+    if not parse_via_project_results:
+        return int(requested_frame)
+
+    # Project result-group extraction is usually scoped to a single requested
+    # frame. The extracted workspace then stores that one physical frame as
+    # frame_idx=0, so later workspace lookups must use the remapped index.
+    return 0
+
+
 def _submit_project_result_group_and_wait(
         *,
         project_id: int,
@@ -828,14 +866,11 @@ def _submit_project_result_group_and_wait(
     resolved_wait_timeout_sec = max(int(wait_timeout_sec or 0), 1)
     resolved_poll_interval = max(float(poll_interval_sec or 0), 0.1)
 
-    parse_options = {
-        "consistency_check": "count-only",
-        "steps": [str(step)] if step else None,
-        "frames": [int(frame)] if frame is not None else "all",
-        "field_prefix": str(field_prefix) if field_prefix else None,
-        "invariants": "none",
-    }
-    parse_options = {key: value for key, value in parse_options.items() if value is not None}
+    parse_options = _build_project_result_parse_options(
+        step=step,
+        frame=frame,
+        field_prefix=field_prefix,
+    )
 
     client = ODBClient(base_url=resolved_base_url, timeout=resolved_timeout)
     try:
@@ -1020,6 +1055,37 @@ def _resolve_loaded_odb_id_for_workspace(workspace: Optional[str]) -> Optional[s
     return None
 
 
+def _response_frame_name(row_meta: dict) -> str:
+    response_label = str(row_meta.get("response_label") or "").strip() or "response"
+    response_field = str(row_meta.get("response_field") or "").strip() or "field"
+    return f"sensitivity_{response_label}_{response_field}"
+
+
+def _workspace_instance_element_labels(workspace: str, instance: str) -> List[int]:
+    geom_path = ManifestRepo(workspace).get_geom_path(instance) or os.path.join(
+        workspace,
+        "l1",
+        "geometry",
+        f"{instance}.h5",
+    )
+    if not os.path.exists(geom_path):
+        raise NotFoundError(
+            "geometry HDF5 not found while assembling sensitivity cloud result",
+            {"workspace": workspace, "instance": instance, "geom_path": geom_path},
+        )
+
+    labels: List[int] = []
+    with h5py.File(geom_path, "r") as geom_h5:
+        if "elements" not in geom_h5:
+            raise ValidationError(
+                "geometry HDF5 has no /elements group",
+                {"workspace": workspace, "instance": instance, "geom_path": geom_path},
+            )
+        for etype in geom_h5["elements"]:
+            labels.extend(int(item) for item in np.asarray(geom_h5[f"elements/{etype}/labels"][:], dtype=np.int64).tolist())
+    return sorted(set(labels))
+
+
 def _build_sensitivity_cloud_request(
         *,
         batch_no: str,
@@ -1051,17 +1117,19 @@ def _build_sensitivity_cloud_request(
             },
         )
 
-    components = _parameter_display_names(parameter_columns)
     resolved_result_group = str(result_group or f"sensitivity_batch_{batch_no}")
     resolved_step_name = str(step_name or "Sensitivity").strip() or "Sensitivity"
     resolved_field_name = str(field_name or "SENSITIVITY_CLOUD").strip() or "SENSITIVITY_CLOUD"
+    resolved_workspace = os.path.abspath(str(matrix_payload.get("workspace"))) if matrix_payload.get("workspace") else None
+    components = ["SENSITIVITY"]
 
     instance_frames: Dict[str, List[dict]] = {}
     instance_counts: Dict[str, List[int]] = {}
+    instance_label_cache: Dict[str, List[int]] = {}
 
     for frame_index, row_meta in enumerate(response_rows):
-        per_instance_labels: Dict[str, Dict[int, List[float]]] = {}
-        for component_index, column_meta in enumerate(parameter_columns):
+        per_instance_labels: Dict[str, Dict[int, float]] = {}
+        for column_index, column_meta in enumerate(parameter_columns):
             mapping = dict(column_meta.get("element_mapping") or {})
             target_kind = str(mapping.get("target_kind") or "").lower()
             if target_kind not in {"cell", ""}:
@@ -1075,11 +1143,11 @@ def _build_sensitivity_cloud_request(
                 )
 
             scalar_value = _ensure_finite_float(
-                matrix[frame_index, component_index],
+                matrix[frame_index, column_index],
                 context="sensitivity cloud matrix value",
                 details={
                     "frame_index": int(frame_index),
-                    "component_index": int(component_index),
+                    "component_index": int(column_index),
                     "parameter_name": column_meta.get("parameter_name"),
                     "field": column_meta.get("field"),
                 },
@@ -1088,22 +1156,45 @@ def _build_sensitivity_cloud_request(
                 instance_name = str(scope_name or "").strip()
                 if not instance_name:
                     continue
-                label_map = per_instance_labels.setdefault(instance_name, {})
+                if instance_name not in per_instance_labels:
+                    if resolved_workspace:
+                        instance_label_cache.setdefault(
+                            instance_name,
+                            _workspace_instance_element_labels(resolved_workspace, instance_name),
+                        )
+                        per_instance_labels[instance_name] = {
+                            int(label): 0.0 for label in instance_label_cache[instance_name]
+                        }
+                    else:
+                        per_instance_labels[instance_name] = {}
+                label_map = per_instance_labels[instance_name]
                 for label in labels or []:
                     element_label = int(label)
-                    values = label_map.setdefault(
-                        element_label,
-                        [0.0] * len(components),
-                    )
-                    values[component_index] = scalar_value
+                    current_value = label_map.get(element_label)
+                    if current_value is not None and not np.isclose(current_value, 0.0) and not np.isclose(current_value, scalar_value):
+                        raise ValidationError(
+                            "multiple sensitivity parameters map to the same element in assembled cloud export",
+                            {
+                                "frame_index": int(frame_index),
+                                "response": dict(row_meta),
+                                "instance": instance_name,
+                                "element_label": element_label,
+                                "existing_value": float(current_value),
+                                "incoming_value": float(scalar_value),
+                                "parameter_name": column_meta.get("parameter_name"),
+                                "field": column_meta.get("field"),
+                            },
+                        )
+                    label_map[element_label] = float(scalar_value)
 
         for instance_name, label_map in sorted(per_instance_labels.items()):
             instance_frame_entry = {
                 "frame_idx": frame_index,
                 "frame_value": float(frame_index + 1),
+                "description": _response_frame_name(dict(row_meta)),
                 "data": [
-                    {"label": int(label), "values": values}
-                    for label, values in sorted(label_map.items())
+                    {"label": int(label), "values": [float(value)]}
+                    for label, value in sorted(label_map.items())
                 ],
             }
             instance_frames.setdefault(instance_name, []).append(instance_frame_entry)
@@ -1120,7 +1211,7 @@ def _build_sensitivity_cloud_request(
         {
             "frame_idx": index,
             "frame_value": float(index + 1),
-            "description": _response_display_name(dict(row_meta)),
+            "description": _response_frame_name(dict(row_meta)),
             "response": dict(row_meta),
         }
         for index, row_meta in enumerate(response_rows)
@@ -1648,6 +1739,10 @@ def run_sensitivity_inp_and_store(
     output_dir_abs = os.path.abspath(output_dir)
     os.makedirs(output_dir_abs, exist_ok=True)
     normalized_batch_no = _normalize_batch_no(batch_no)
+    workspace_frame = _resolved_workspace_frame(
+        requested_frame=frame,
+        parse_via_project_results=parse_via_project_results,
+    )
 
     def _run():
         solver_payload = run_abaqus_job(
@@ -1731,7 +1826,7 @@ def run_sensitivity_inp_and_store(
             response_component=response_component,
             position=position,
             aggregation=aggregation,
-            frame=frame,
+            frame=workspace_frame,
             abaqus=abaqus,
             python3=python3,
             keep_raw=keep_raw,
@@ -1757,6 +1852,7 @@ def run_sensitivity_inp_and_store(
             extra_payload={
                 "temp_selected_parameters": temp_selected_parameters,
                 "project_result_parse": project_result_parse,
+                "workspace_frame": int(workspace_frame),
             },
         )
 
