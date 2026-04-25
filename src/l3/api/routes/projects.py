@@ -207,6 +207,11 @@ async def create_project(body: CreateProjectRequest):
         raise ConflictError(f"Project '{project_id}' already exists")
 
     workspace = project_workspace(settings.data_root, project_id)
+    if workspace.exists() or workspace.is_symlink():
+        raise ConflictError(
+            f"Project '{project_id}' cannot be created because workspace "
+            f"'{workspace}' already exists without a registry entry"
+        )
     require_target_absent(workspace, "project workspace")
     workspace.mkdir(parents=True, exist_ok=False)
 
@@ -433,12 +438,18 @@ async def delete_project(project_id: str):
     """
     project_id = validate_workspace_id(project_id, "project_id")
     repo = _repo()
+    workspace = project_workspace(settings.data_root, project_id)
 
     proj = repo.get_project(project_id)
     if proj is None:
+        if workspace.exists() or workspace.is_symlink():
+            safe_rmtree(workspace, settings.data_root, "project workspace")
+            return ok({
+                "project_id": project_id,
+                "deleted": True,
+                "orphan_workspace_deleted": True,
+            })
         raise NotFoundError(f"Project '{project_id}' not found")
-
-    workspace = project_workspace(settings.data_root, project_id)
 
     # Remove from registry first (so runner won't pick it up)
     repo.delete_project(project_id)
@@ -446,4 +457,8 @@ async def delete_project(project_id: str):
     # Delete the workspace directory
     safe_rmtree(workspace, settings.data_root, "project workspace")
 
-    return ok({"project_id": project_id, "deleted": True})
+    return ok({
+        "project_id": project_id,
+        "deleted": True,
+        "orphan_workspace_deleted": False,
+    })
