@@ -21,6 +21,10 @@ from ...core.state import registry
 from ...infra.registry_repo import RegistryRepo
 from ..response import ok
 
+
+def _is_http_url(s: str) -> bool:
+    return s.startswith("http://") or s.startswith("https://")
+
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
@@ -55,16 +59,18 @@ class SubmitJobRequest(BaseModel):
 @router.post("", status_code=201)
 async def submit_job(body: SubmitJobRequest):
     """Submit a new ODB file for L1+L2 processing."""
-    # Validate path exists on the server
-    if not os.path.isfile(body.odb_path):
-        raise ValidationError(f"File not found on server: {body.odb_path}")
-
-    # Optional path-traversal guard
-    if settings.raw_odb_root:
-        raw_root = os.path.realpath(settings.raw_odb_root)
-        req_path = os.path.realpath(body.odb_path)
-        if not req_path.startswith(raw_root + os.sep):
-            raise ValidationError("odb_path is outside the allowed root directory")
+    if _is_http_url(body.odb_path):
+        # URL will be downloaded by the job runner before L1 starts.
+        # No filesystem check needed here.
+        pass
+    else:
+        if not os.path.isfile(body.odb_path):
+            raise ValidationError(f"File not found on server: {body.odb_path}")
+        if settings.raw_odb_root:
+            raw_root = os.path.realpath(settings.raw_odb_root)
+            req_path = os.path.realpath(body.odb_path)
+            if not req_path.startswith(raw_root + os.sep):
+                raise ValidationError("odb_path is outside the allowed root directory")
 
     odb_id    = str(uuid.uuid4())
     workspace = os.path.join(settings.data_root, odb_id)

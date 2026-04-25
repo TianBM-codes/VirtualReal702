@@ -35,6 +35,8 @@ REPO_ROOT     = Path(__file__).resolve().parent.parent
 # python -m src.job_runner).
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from src.utils.file_fetch import download_if_url, is_http_url
 DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
 PACK_SCRIPT     = REPO_ROOT / "src" / "l1" / "l1_pack.py"
 INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
@@ -65,6 +67,37 @@ def _cfg(cfg: dict, key: str, default: str) -> str:
     if key in os.environ:
         return os.environ[key]
     return str(cfg.get(key, default))
+
+
+def _append_extract_filters(cmd: list, parse_opts: dict) -> list:
+    steps = parse_opts.get("steps")
+    if isinstance(steps, str):
+        steps_arg = steps.strip()
+    elif isinstance(steps, (list, tuple)):
+        steps_arg = ",".join(str(s).strip() for s in steps if str(s).strip())
+    else:
+        steps_arg = None
+    if steps_arg:
+        cmd.extend(["--steps", steps_arg])
+
+    frames = parse_opts.get("frames")
+    frames_arg = None
+    if isinstance(frames, str):
+        frames_arg = frames.strip()
+    elif isinstance(frames, int):
+        frames_arg = str(frames)
+    elif isinstance(frames, (list, tuple)):
+        vals = [str(int(v)) for v in frames]
+        if vals:
+            frames_arg = ",".join(vals)
+    if frames_arg:
+        cmd.extend(["--frames", frames_arg])
+
+    field_prefix = parse_opts.get("field_prefix")
+    if field_prefix:
+        cmd.extend(["--field-prefix", str(field_prefix)])
+
+    return cmd
 
 
 _svc_cfg = _load_service_config()
@@ -352,17 +385,18 @@ def _claim_pending_project() -> tuple:
             (_now_iso(),),
         )
         if cur.rowcount == 0:
-            return None, None, None
+            return None, None, None, None
         row = conn.execute(
-            "SELECT project_id, workspace, inp_path FROM projects"
+            "SELECT project_id, workspace, inp_path, source_type FROM projects"
             " WHERE geom_status='running' ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
         if row is None:
-            return None, None, None
+            return None, None, None, None
         ws = row["workspace"]
         if not (os.path.isabs(ws) or re.match(r'^[A-Za-z]:[/\\]', ws)):
             ws = os.path.join(DATA_ROOT, row["project_id"])
-        return row["project_id"], row["inp_path"], ws
+        source_type = row["source_type"] if "source_type" in row.keys() else "inp"
+        return row["project_id"], row["inp_path"], source_type, ws
 
 
 def _update_project_geom_status(project_id: str, status: str,
@@ -432,6 +466,57 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
     _update_project_geom_status(project_id, "ready")
     logger.info("[%s] Geom ready", project_id)
     return True
+
+
+def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
+    if not odb_path:
+        msg = "No ODB path stored for project {}".format(project_id)
+        logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    logger.info("[%s] Project ODB: abaqus_dump.py", project_id)
+    dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
+    if INVARIANTS_MODE == "full":
+        dump_cmd += ["--invariants", "full"]
+    rc1, tail1 = _run_streaming(dump_cmd, project_id, "project_abaqus_dump")
+    if rc1 != 0:
+        msg = "abaqus_dump failed: " + tail1
+        _update_project_geom_status(project_id, "error", msg)
+        logger.error("[%s] Project ODB phase 1 failed (rc=%d)", project_id, rc1)
+        return False
+
+    logger.info("[%s] Project ODB: l1_pack.py", project_id)
+    rc2, tail2 = _run_streaming(
+        [sys.executable, str(PACK_SCRIPT), "--workspace", workspace],
+        project_id, "project_l1_pack",
+    )
+    if rc2 != 0:
+        msg = "l1_pack failed: " + tail2
+        _update_project_geom_status(project_id, "error", msg)
+        logger.error("[%s] Project ODB phase 2 failed (rc=%d)", project_id, rc2)
+        return False
+
+    logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
+    ret = subprocess.run(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    if ret.returncode != 0:
+        msg = "ingest failed: " + ret.stderr[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, ret.returncode)
+        return False
+
+    _update_project_geom_status(project_id, "ready")
+    logger.info("[%s] Project ODB ready", project_id)
+    return True
+
+
+def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
+    if source_type == "odb":
+        return _run_odb_project(project_id, source_path, workspace)
+    return _run_geom_project(project_id, source_path, workspace)
 
 
 def _claim_pending_result_group() -> tuple:
@@ -537,6 +622,7 @@ def _run_result_group(project_id: str, result_group: str,
                    "--mode", "extract"]
     if inv_mode == "full":
         extract_cmd += ["--invariants", "full"]
+    _append_extract_filters(extract_cmd, parse_opts)
     rc, tail = _run_streaming(extract_cmd, label, "extract")
     if rc != 0:
         msg = "extract failed: " + tail
@@ -587,12 +673,13 @@ def main() -> None:
         did_work = False
 
         # 1. Project geometry (INP)
-        project_id, inp_path, ws = _claim_pending_project()
+        project_id, source_path, source_type, ws = _claim_pending_project()
         if project_id is not None:
             did_work = True
             logger.info("Claimed project geom %s", project_id)
             try:
-                _run_geom_project(project_id, inp_path, ws)
+                source_path = download_if_url(source_path, ws)
+                _run_project(project_id, source_path, source_type, ws)
             except Exception:
                 logger.exception("Error in project geom %s", project_id)
                 try:
@@ -610,6 +697,11 @@ def main() -> None:
             logger.info("Claimed result_group %s", label)
             try:
                 _cleanup_result_group(ws, rg)
+                if is_http_url(src):
+                    rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
+                    ext = os.path.splitext(src.split("?")[0])[1] or ".odb"
+                    src = download_if_url(src, ws,
+                                           dest_name="{}_source{}".format(rg_safe, ext))
                 _run_result_group(project_id, rg, src, parse_opts, ws)
             except Exception:
                 logger.exception("Error in result_group %s", label)
@@ -625,6 +717,7 @@ def main() -> None:
         if odb_id is not None:
             did_work = True
             logger.info("Claimed job %s", odb_id)
+            odb_path = download_if_url(odb_path, workspace)
             _run_job(odb_id, odb_path, workspace)
 
         if not did_work:

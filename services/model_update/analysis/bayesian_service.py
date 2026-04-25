@@ -85,7 +85,13 @@ def _scalarize(value: Any, *, field: str, row_key: str) -> float:
             "bayesian update requires scalar normalized sensitivities and scalar response values",
             {"field": field, "row_key": row_key, "value": _clone_jsonable(value)},
         )
-    return float(arr.reshape(-1)[0])
+    scalar = float(arr.reshape(-1)[0])
+    if not np.isfinite(scalar):
+        raise ValidationError(
+            "bayesian update does not accept non-finite scalar values",
+            {"field": field, "row_key": row_key, "value": _clone_jsonable(value)},
+        )
+    return scalar
 
 
 def _response_row_key(

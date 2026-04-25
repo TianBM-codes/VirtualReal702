@@ -837,6 +837,8 @@ def _en_per_vertex_averaged(
             if avg is not None:
                 scalar_vertex[vtx] = avg
 
+    return scalar_vertex, num_frames
+
 
 # ─── frame_deformed_positions ─────────────────────────────────────────────────
 

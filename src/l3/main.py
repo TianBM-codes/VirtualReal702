@@ -219,8 +219,13 @@ app.add_middleware(
         "X-Val-Min", "X-Val-Max", "X-Component", "X-Frame",
         "X-Face-Count", "X-Payload-Type", "X-Layout-Version",
         "X-Tri-Count", "X-Edge-Count", "X-Axis", "X-Position",
+        "X-Color-Legend",
         # raw-values endpoint
         "X-Components", "X-Etype-Groups",
+        # frame-scalars / deformation endpoints
+        "X-Result-Position", "X-Normalization-Scope", "X-Component-Idx",
+        "X-Feature-Angle", "X-Average-Threshold",
+        "X-Use-Geometry-Split", "X-Vertex-Count", "X-Scale",
         # node-table endpoints
         "X-Node-Count", "X-Col-Count", "X-Columns", "X-Field-Coverage",
         # user-field endpoints

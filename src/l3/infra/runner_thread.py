@@ -24,6 +24,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.utils.file_fetch import download_if_url, is_http_url
+
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT    = Path(__file__).resolve().parent.parent.parent.parent
@@ -38,6 +40,37 @@ _HB_INTERVAL = 15   # seconds between heartbeat refreshes
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _append_extract_filters(cmd: list, parse_opts: dict) -> list:
+    steps = parse_opts.get("steps")
+    if isinstance(steps, str):
+        steps_arg = steps.strip()
+    elif isinstance(steps, (list, tuple)):
+        steps_arg = ",".join(str(s).strip() for s in steps if str(s).strip())
+    else:
+        steps_arg = None
+    if steps_arg:
+        cmd.extend(["--steps", steps_arg])
+
+    frames = parse_opts.get("frames")
+    frames_arg = None
+    if isinstance(frames, str):
+        frames_arg = frames.strip()
+    elif isinstance(frames, int):
+        frames_arg = str(frames)
+    elif isinstance(frames, (list, tuple)):
+        vals = [str(int(v)) for v in frames]
+        if vals:
+            frames_arg = ",".join(vals)
+    if frames_arg:
+        cmd.extend(["--frames", frames_arg])
+
+    field_prefix = parse_opts.get("field_prefix")
+    if field_prefix:
+        cmd.extend(["--field-prefix", str(field_prefix)])
+
+    return cmd
 
 
 class EmbeddedRunner:
@@ -353,18 +386,19 @@ class EmbeddedRunner:
                 (_now_iso(),),
             )
             if cur.rowcount == 0:
-                return None, None, None
+                return None, None, None, None
             row = conn.execute(
-                "SELECT project_id, workspace, inp_path FROM projects"
+                "SELECT project_id, workspace, inp_path, source_type FROM projects"
                 " WHERE geom_status='running'"
                 " ORDER BY updated_at DESC LIMIT 1",
             ).fetchone()
             if row is None:
-                return None, None, None
+                return None, None, None, None
             ws = row["workspace"]
             if not os.path.isabs(ws):
                 ws = os.path.join(self.data_root, row["project_id"])
-            return row["project_id"], row["inp_path"], ws
+            source_type = row["source_type"] if "source_type" in row.keys() else "inp"
+            return row["project_id"], row["inp_path"], source_type, ws
 
     def _update_project_geom_status(self, project_id: str, status: str,
                                     error_message: str = None):
@@ -480,6 +514,53 @@ class EmbeddedRunner:
         self._update_project_geom_status(project_id, "ready")
         logger.info("[%s] Geom ready", project_id)
         return True
+
+    def _run_odb_project(self, project_id: str, odb_path: str,
+                         workspace: str) -> bool:
+        if not odb_path:
+            msg = "No ODB path stored for project {}".format(project_id)
+            logger.error("Runner: %s", msg)
+            self._update_project_geom_status(project_id, "error", msg)
+            return False
+
+        logger.info("[%s] Project ODB: abaqus_dump.py", project_id)
+        dump_cmd = [self.abaqus_cmd, "python", str(_DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
+        rc, tail = self._run_streaming(dump_cmd, project_id, "project_abaqus_dump")
+        if rc != 0:
+            msg = "abaqus_dump failed: " + tail
+            self._update_project_geom_status(project_id, "error", msg)
+            return False
+
+        logger.info("[%s] Project ODB: l1_pack.py", project_id)
+        rc, tail = self._run_streaming(
+            [sys.executable, str(_PACK_SCRIPT), "--workspace", workspace],
+            project_id, "project_l1_pack",
+        )
+        if rc != 0:
+            msg = "l1_pack failed: " + tail
+            self._update_project_geom_status(project_id, "error", msg)
+            return False
+
+        logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
+        ret = subprocess.run(
+            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
+            capture_output=True, encoding="utf-8", errors="replace",
+        )
+        if ret.returncode != 0:
+            msg = "ingest failed: " + ret.stderr[-2000:]
+            self._update_project_geom_status(project_id, "error", msg)
+            logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, ret.returncode)
+            return False
+
+        self._update_project_geom_status(project_id, "ready")
+        logger.info("[%s] Project ODB ready", project_id)
+        return True
+
+    def _run_project(self, project_id: str, source_path: str,
+                     source_type: str, workspace: str) -> bool:
+        if source_type == "odb":
+            return self._run_odb_project(project_id, source_path, workspace)
+        return self._run_geom_project(project_id, source_path, workspace)
 
     # ── Result group pipeline ─────────────────────────────────────────────────
 
@@ -609,14 +690,15 @@ class EmbeddedRunner:
 
         # ── Step 2: extract results ───────────────────────────────────────────
         logger.info("[%s] extract", label)
-        rc, tail = self._run_streaming(
-            [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
-             "--odb", source_path,
-             "--out", workspace,
-             "--result-group", result_group,
-             "--mode", "extract"],
-            label, "extract",
-        )
+        extract_cmd = [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
+                       "--odb", source_path,
+                       "--out", workspace,
+                       "--result-group", result_group,
+                       "--mode", "extract"]
+        if parse_opts.get("invariants") == "full":
+            extract_cmd.extend(["--invariants", "full"])
+        _append_extract_filters(extract_cmd, parse_opts)
+        rc, tail = self._run_streaming(extract_cmd, label, "extract")
         if rc != 0:
             msg = "extract failed: " + tail
             self._update_result_group_status(project_id, result_group, "error", msg)
@@ -662,12 +744,13 @@ class EmbeddedRunner:
             did_work = False
 
             # ── 1. Project geometry tasks (INP) ──────────────────────────────
-            project_id, inp_path, ws = self._claim_pending_project()
+            project_id, source_path, source_type, ws = self._claim_pending_project()
             if project_id is not None:
                 did_work = True
                 logger.info("Runner claimed project geom %s", project_id)
                 try:
-                    self._run_geom_project(project_id, inp_path, ws)
+                    source_path = download_if_url(source_path, ws)
+                    self._run_project(project_id, source_path, source_type, ws)
                 except Exception:
                     logger.exception("Runner: error in project geom %s", project_id)
                     try:
@@ -686,6 +769,13 @@ class EmbeddedRunner:
                 try:
                     # error 重试：先清理旧产物
                     self._cleanup_result_group(ws, rg)
+                    if is_http_url(src):
+                        rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
+                        ext = os.path.splitext(src.split("?")[0])[1] or ".odb"
+                        src = download_if_url(
+                            src, ws,
+                            dest_name="{}_source{}".format(rg_safe, ext),
+                        )
                     self._run_result_group(project_id, rg, src, parse_opts, ws)
                 except Exception:
                     logger.exception("Runner: error in result_group %s", label)
@@ -702,6 +792,7 @@ class EmbeddedRunner:
                 did_work = True
                 logger.info("Runner claimed job %s", odb_id)
                 try:
+                    odb_path = download_if_url(odb_path, workspace)
                     ok = self._run_l1(odb_id, odb_path, workspace)
                     if ok:
                         self._run_l2(odb_id, workspace)

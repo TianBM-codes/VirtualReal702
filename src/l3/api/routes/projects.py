@@ -1,7 +1,7 @@
 """
 Project-grouping API endpoints.
 
-POST   /api/projects                              — 创建 project（提交 INP）
+POST   /api/projects                              — 创建 project（提交 INP 或 ODB）
 POST   /api/projects/{project_id}/results         — 提交 ODB（追加结果组）
 GET    /api/projects/{project_id}                 — 查询 project + result_groups 状态
 PATCH  /api/projects/{project_id}/results/{rg}    — 修改 result_group 显示名
@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -30,6 +31,10 @@ from ...infra.workspace_safety import (
     validate_workspace_id,
 )
 from ..response import ok
+
+
+def _is_http_url(s: str) -> bool:
+    return s.startswith("http://") or s.startswith("https://")
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -59,6 +64,7 @@ def _resolve_workspace(stored: str, project_id: str) -> str:
 class CreateProjectRequest(BaseModel):
     project_id: str
     source_path: str
+    source_type: Optional[str] = None
 
 
 class AddResultGroupRequest(BaseModel):
@@ -83,6 +89,7 @@ def _build_project_response(proj, repo) -> dict:
     project_id = proj["project_id"]
     workspace  = _resolve_workspace(proj["workspace"], project_id)
     rg_rows    = repo.list_result_groups(project_id)
+    source_type = proj["source_type"] if "source_type" in proj.keys() else "inp"
 
     result_groups = []
     for rg in rg_rows:
@@ -121,9 +128,46 @@ def _build_project_response(proj, repo) -> dict:
 
     return {
         "project_id": project_id,
+        "source_type": source_type,
         "geom_status": proj["geom_status"],
         "result_groups": result_groups,
     }
+
+
+def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str:
+    allowed = {"inp", "odb"}
+    if explicit is not None:
+        source_type = explicit.strip().lower()
+        if source_type not in allowed:
+            raise ValidationError(
+                "source_type must be one of: inp, odb",
+                {"source_type": explicit},
+            )
+    else:
+        source_type = None
+
+    parsed_path = urlparse(source_path).path if _is_http_url(source_path) else source_path
+    suffix = Path(parsed_path).suffix.lower()
+    inferred = None
+    if suffix == ".inp":
+        inferred = "inp"
+    elif suffix == ".odb":
+        inferred = "odb"
+
+    if source_type is None:
+        if inferred is None:
+            raise ValidationError(
+                "Cannot infer source_type from source_path; please pass source_type explicitly",
+                {"source_path": source_path},
+            )
+        return inferred
+
+    if inferred is not None and inferred != source_type:
+        raise ValidationError(
+            "source_type does not match source_path extension",
+            {"source_type": source_type, "source_path": source_path},
+        )
+    return source_type
 
 
 # ── GET /api/projects ──────────────────────────────────────────────────────────
@@ -150,12 +194,13 @@ async def list_projects():
 @router.post("", status_code=201)
 async def create_project(body: CreateProjectRequest):
     """
-    创建新 project，触发 INP 几何解析。
+    创建新 project，触发 source_path 对应的解析流程。
     调用方（Java 后端）提供 project_id（UUID），避免 L3 自己生成。
     """
     project_id = validate_workspace_id(body.project_id, "project_id")
-    if not os.path.isfile(body.source_path):
+    if not _is_http_url(body.source_path) and not os.path.isfile(body.source_path):
         raise ValidationError(f"File not found on server: {body.source_path}")
+    source_type = _detect_source_type(body.source_path, body.source_type)
 
     repo = _repo()
     if repo.get_project(project_id) is not None:
@@ -172,12 +217,17 @@ async def create_project(body: CreateProjectRequest):
             project_id=project_id,
             workspace=project_id,
             inp_path=body.source_path,
+            source_type=source_type,
         )
     except Exception:
         safe_rmtree(workspace, settings.data_root, "project workspace")
         raise
 
-    return ok({"project_id": project_id, "geom_status": "pending"})
+    return ok({
+        "project_id": project_id,
+        "source_type": source_type,
+        "geom_status": "pending",
+    })
 
 
 # ── POST /api/projects/{project_id}/results ───────────────────────────────────
@@ -264,7 +314,7 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
     if proj is None:
         raise NotFoundError(f"Project '{project_id}' not found")
 
-    if not os.path.isfile(body.source_path):
+    if not _is_http_url(body.source_path) and not os.path.isfile(body.source_path):
         raise ValidationError(f"File not found on server: {body.source_path}")
 
     display_name = body.display_name or body.result_group

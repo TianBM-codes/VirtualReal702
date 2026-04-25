@@ -272,9 +272,15 @@ class ODBClient:
         return resp.json()
 
     def _post_json(self, path: str, body: dict) -> Any:
-        resp = self._check(self._session.post(
-            self._url(path), json=body, timeout=self.timeout
-        ))
+        try:
+            resp = self._check(self._session.post(
+                self._url(path), json=body, timeout=self.timeout
+            ))
+        except ValueError as exc:
+            raise ODBClientError(
+                400,
+                f"request body is not JSON compliant: {exc}",
+            ) from exc
         return resp.json()
 
     def _delete_json(self, path: str, **params) -> Any:
@@ -335,6 +341,30 @@ class ODBClient:
         """
         return self._get_json(f"/api/jobs/{odb_id}")
 
+    def add_project_result_group(
+        self,
+        project_id: str,
+        *,
+        source_path: str,
+        result_group: str,
+        display_name: str = "",
+        parse_options: Optional[dict] = None,
+    ) -> Dict:
+        body: Dict[str, Any] = {
+            "source_path": source_path,
+            "result_group": result_group,
+        }
+        if display_name:
+            body["display_name"] = display_name
+        if parse_options:
+            body["parse_options"] = parse_options
+        resp = self._post_json(f"/api/projects/{project_id}/results", body)
+        return resp.get("data", resp)
+
+    def get_project(self, project_id: str) -> Dict:
+        resp = self._get_json(f"/api/projects/{project_id}")
+        return resp.get("data", resp)
+
     def list_jobs(self) -> List[Dict]:
         """返回所有作业列表，每项结构同 get_job()。"""
         return self._get_json("/api/jobs")
@@ -391,6 +421,7 @@ class ODBClient:
         """
         Write an external nodal/element field into the selected ODB workspace.
         """
+        print(1)
         resp = self._post_json(f"/api/odb/{odb_id}/results/external-field", body)
         return resp.get("data", resp)
 

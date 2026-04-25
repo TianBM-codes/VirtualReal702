@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS projects (
     project_id   TEXT PRIMARY KEY,
     workspace    TEXT NOT NULL,
     inp_path     TEXT,
+    source_type  TEXT NOT NULL DEFAULT 'inp',
     geom_status  TEXT NOT NULL DEFAULT 'pending',
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
@@ -84,6 +85,12 @@ class RegistryRepo:
         """Create odb_jobs table if it does not exist."""
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            try:
+                conn.execute(
+                    "ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'inp'"
+                )
+            except Exception:
+                pass
 
     # ── write ────────────────────────────────────────────────────────────────
 
@@ -276,14 +283,15 @@ class RegistryRepo:
     # ── projects ─────────────────────────────────────────────────────────────
 
     def create_project(self, project_id: str, workspace: str,
-                       inp_path: str = None) -> None:
+                       inp_path: str = None,
+                       source_type: str = "inp") -> None:
         now = _now_iso()
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO projects"
-                " (project_id, workspace, inp_path, geom_status, created_at, updated_at)"
-                " VALUES (?,?,?,'pending',?,?)",
-                (project_id, workspace, inp_path, now, now),
+                " (project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)"
+                " VALUES (?,?,?,?,'pending',?,?)",
+                (project_id, workspace, inp_path, source_type, now, now),
             )
 
     def list_projects(self) -> list:
@@ -406,12 +414,13 @@ class RegistryRepo:
 
             conn.execute(
                 "INSERT INTO projects"
-                " (project_id, workspace, inp_path, geom_status, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?)",
+                " (project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?)",
                 (
                     new_project_id,
                     new_project_id,
                     src["inp_path"],
+                    src["source_type"],
                     src["geom_status"],
                     now,
                     now,

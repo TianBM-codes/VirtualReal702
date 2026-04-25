@@ -163,6 +163,13 @@ def parse_args():
                    help='Step name (results-worker mode only)')
     p.add_argument('--fields', default=None,
                    help='Comma-separated field names (results-worker mode only)')
+    p.add_argument('--steps', default=None,
+                   help='Comma-separated step names to extract (extract mode only)')
+    p.add_argument('--frames', default=None,
+                   help=('Frame filter for extract mode: "all" (default), '
+                         '"first_last", or comma-separated 0-based indices'))
+    p.add_argument('--field-prefix', default=None,
+                   help='Only extract fields whose names start with this prefix (extract mode only)')
     p.add_argument('--worker-id', default='0',
                    help='Worker ID shown in log prefix (results-worker mode only)')
     return p.parse_args()
@@ -197,6 +204,40 @@ def _fmt_t(secs):
     if secs >= 60:
         return "{:d}m {:.1f}s".format(int(secs) // 60, secs % 60)
     return "{:.1f}s".format(secs)
+
+
+def _parse_csv_names(text):
+    if not text:
+        return None
+    names = [item.strip() for item in text.split(',') if item.strip()]
+    return names or None
+
+
+def _parse_frame_spec(text):
+    if not text:
+        return None
+    spec = text.strip()
+    if not spec or spec == 'all':
+        return None
+    if spec == 'first_last':
+        return spec
+
+    frames = []
+    for part in spec.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            idx = int(part)
+        except ValueError:
+            raise ValueError("Invalid frame index '{}'".format(part))
+        if idx < 0:
+            raise ValueError("Frame index must be >= 0, got {}".format(idx))
+        frames.append(idx)
+
+    if not frames:
+        return None
+    return sorted(set(frames))
 
 
 # ─── Transform ────────────────────────────────────────────────────────────────
@@ -866,13 +907,20 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
         len(active_invs), ', '.join(inv for inv, _ in active_invs)))
 
 
-def dump_results(odb, raw_dir, meta, field_filter=None, extract_invariants=False):
+def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
+                 field_prefix=None, extract_invariants=False):
     """Write per-frame result arrays to l1_raw/results/<step>__<field>/<inst>/<pos>/[<etype>/]
 
     field_filter: optional dict {step_name: set_of_field_names}.
       If provided, only those (step, field) combinations are dumped.
       Steps/fields absent from field_filter are silently skipped.
       If None, all fields in all steps are dumped (original behaviour).
+
+    frame_filter: optional dict {step_name: None | 'first_last' | [orig_frame_idx, ...]}.
+      Selected frames are re-indexed densely from 0 within the extracted output.
+
+    field_prefix: optional string. If provided, only fields starting with this prefix
+      are dumped.
 
     extract_invariants: if True, also extract validInvariants as synthetic NODAL scalar
       fields named {field}_{INV_NAME} (e.g. S_MISES, S_MAX_PRINCIPAL).
@@ -889,6 +937,28 @@ def dump_results(odb, raw_dir, meta, field_filter=None, extract_invariants=False
         if field_filter is not None and step_name not in field_filter:
             continue
 
+        selected_frames = list(enumerate(step.frames))
+        if frame_filter is not None and step_name in frame_filter:
+            spec = frame_filter[step_name]
+            if spec == 'first_last':
+                if len(step.frames) == 0:
+                    selected_frames = []
+                elif len(step.frames) == 1:
+                    selected_frames = [(0, step.frames[0])]
+                else:
+                    last_idx = len(step.frames) - 1
+                    selected_frames = [(0, step.frames[0]), (last_idx, step.frames[last_idx])]
+            elif spec is not None:
+                selected_frames = []
+                for orig_idx in spec:
+                    if orig_idx >= len(step.frames):
+                        raise ValueError(
+                            "Requested frame {} out of range for step '{}' (num_frames={})".format(
+                                orig_idx, step_name, len(step.frames)
+                            )
+                        )
+                    selected_frames.append((orig_idx, step.frames[orig_idx]))
+
         # Abaqus 2024+: step.procedure 返回原始关键字字符串如 '*STATIC'
         # 旧版: step.procedureType 返回符号常量如 'STATIC_GENERAL'
         raw_proc = getattr(step, 'procedureType', None) or getattr(step, 'procedure', '') or ''
@@ -902,12 +972,12 @@ def dump_results(odb, raw_dir, meta, field_filter=None, extract_invariants=False
                     break
         if procedure is None:
             procedure = raw_proc_upper or 'STATIC'
-        num_frames = len(step.frames)
+        num_frames = len(selected_frames)
         t_step = time.time()
         print("  Step '{}' ({} frames) ...".format(step_name, num_frames))
 
         frames_meta = []
-        for fi, frame in enumerate(step.frames):
+        for fi, (_, frame) in enumerate(selected_frames):
             frames_meta.append({
                 'frame_idx':   fi,
                 'frame_value': float(frame.frameValue),
@@ -923,7 +993,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, extract_invariants=False
 
         # Collect field names across all frames
         all_field_names = set()
-        for frame in step.frames:
+        for _, frame in selected_frames:
             all_field_names.update(frame.fieldOutputs.keys())
 
         # Apply field_filter within this step
@@ -932,12 +1002,14 @@ def dump_results(odb, raw_dir, meta, field_filter=None, extract_invariants=False
         for field_name in sorted(all_field_names):
             if allowed_fields is not None and field_name not in allowed_fields:
                 continue
+            if field_prefix is not None and not field_name.startswith(field_prefix):
+                continue
             t_field = time.time()
             print("    Field '{}' ...".format(field_name))
 
             # First frame with this field → discover structure
             first_frame = next(
-                (fr for fr in step.frames if field_name in fr.fieldOutputs), None)
+                (fr for _, fr in selected_frames if field_name in fr.fieldOutputs), None)
             if first_frame is None:
                 continue
 
@@ -1079,7 +1151,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, extract_invariants=False
 
             # Write per-frame data
             has_section = 0
-            for frame_idx, frame in enumerate(step.frames):
+            for frame_idx, (_, frame) in enumerate(selected_frames):
                 if field_name not in frame.fieldOutputs:
                     continue
                 field_out = frame.fieldOutputs[field_name]
@@ -1399,10 +1471,40 @@ def _run_extract(args, odb_path, workspace):
     odb = odbAccess.openOdb(path=odb_path, readOnly=True)
     print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
 
+    try:
+        step_names = _parse_csv_names(args.steps)
+        frame_spec = _parse_frame_spec(args.frames)
+    except ValueError as exc:
+        print("ERROR: {}".format(exc))
+        odb.close()
+        sys.exit(1)
+
+    field_filter = None
+    frame_filter = None
+
+    if step_names is not None:
+        missing = [name for name in step_names if name not in odb.steps]
+        if missing:
+            print("ERROR: step(s) not found: {}".format(', '.join(missing)))
+            odb.close()
+            sys.exit(1)
+        field_filter = dict((name, None) for name in step_names)
+        frame_filter = dict((name, frame_spec) for name in step_names)
+    elif frame_spec is not None:
+        field_filter = dict((name, None) for name in odb.steps.keys())
+        frame_filter = dict((name, frame_spec) for name in odb.steps.keys())
+
     meta = {}
     try:
         dump_results(odb, raw_dir, meta,
+                     field_filter=field_filter,
+                     frame_filter=frame_filter,
+                     field_prefix=args.field_prefix,
                      extract_invariants=(args.invariants == 'full'))
+    except ValueError as exc:
+        print("ERROR: {}".format(exc))
+        odb.close()
+        sys.exit(1)
     except Exception:
         traceback.print_exc()
         odb.close()

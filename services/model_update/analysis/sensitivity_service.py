@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import shutil
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -15,6 +16,7 @@ import numpy as np
 from db import ensure_tables_exist, get_connection
 from src.inp import parse_inp
 from src.inp.parameter_mapping import build_parameter_target_map
+from src.l3.core.config import settings
 from src.l3.core.state import registry
 from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.manifest_repo import ManifestRepo
@@ -631,6 +633,22 @@ def _response_display_name(row_meta: dict) -> str:
     return "|".join(parts)
 
 
+def _ensure_finite_float(value, *, context: str, details: Optional[dict] = None) -> float:
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.size != 1:
+        raise ValidationError(
+            f"{context} must resolve to a scalar float",
+            {**(details or {}), "value": arr.tolist()},
+        )
+    scalar = float(arr.reshape(-1)[0])
+    if not np.isfinite(scalar):
+        raise ValidationError(
+            f"{context} contains a non-finite float",
+            {**(details or {}), "value": scalar},
+        )
+    return scalar
+
+
 def _parameter_display_names(parameter_columns: List[dict]) -> List[str]:
     base_names = [
         str(item.get("parameter_name") or item.get("field") or f"parameter_{index + 1}")
@@ -708,6 +726,154 @@ def _generate_sensitivity_inp_from_project_db(
 
 def _default_solver_workspace(output_dir: str, job_name: str) -> str:
     return str((Path(output_dir).expanduser().resolve() / f"{job_name}_workspace").resolve())
+
+
+def _normalize_result_group_name(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    text = text.strip("._-")
+    if not text:
+        raise ValidationError("result_group name cannot be empty", {"value": value})
+    return text[:96]
+
+
+def _default_project_result_group(batch_no: str, job_name: str) -> str:
+    return _normalize_result_group_name(
+        f"sensitivity_batch_{batch_no}_{job_name}_{int(time.time())}"
+    )
+
+
+def _project_workspace_path(project_id: int) -> str:
+    return os.path.abspath(os.path.join(settings.data_root, str(project_id)))
+
+
+def _submit_project_result_group_and_wait(
+        *,
+        project_id: int,
+        odb_path: str,
+        batch_no: str,
+        job_name: str,
+        step: Optional[str],
+        frame: Optional[int],
+        field_prefix: Optional[str],
+        base_url: Optional[str],
+        timeout: int,
+        result_group: Optional[str] = None,
+        display_name: Optional[str] = None,
+        wait_timeout_sec: int = 3600,
+        poll_interval_sec: float = 2.0,
+) -> dict:
+    resolved_odb_path = os.path.abspath(str(odb_path))
+    if not os.path.exists(resolved_odb_path):
+        raise NotFoundError("odb file not found", {"odb_path": resolved_odb_path})
+
+    resolved_result_group = _normalize_result_group_name(
+        result_group or _default_project_result_group(batch_no, job_name)
+    )
+    resolved_base_url = str(base_url or "http://127.0.0.1:18765").strip().rstrip("/")
+    resolved_timeout = max(int(timeout or 0), 60)
+    resolved_wait_timeout_sec = max(int(wait_timeout_sec or 0), 1)
+    resolved_poll_interval = max(float(poll_interval_sec or 0), 0.1)
+
+    parse_options = {
+        "consistency_check": "count-only",
+        "steps": [str(step)] if step else None,
+        "frames": [int(frame)] if frame is not None else "all",
+        "field_prefix": str(field_prefix) if field_prefix else None,
+        "invariants": "none",
+    }
+    parse_options = {key: value for key, value in parse_options.items() if value is not None}
+
+    client = ODBClient(base_url=resolved_base_url, timeout=resolved_timeout)
+    try:
+        submit_response = client.add_project_result_group(
+            str(project_id),
+            source_path=resolved_odb_path,
+            result_group=resolved_result_group,
+            display_name=display_name or resolved_result_group,
+            parse_options=parse_options,
+        )
+    except ODBClientError as exc:
+        details = {
+            "project_id": int(project_id),
+            "result_group": resolved_result_group,
+            "base_url": resolved_base_url,
+            "status_code": exc.status_code,
+            "detail": exc.detail,
+            "odb_path": resolved_odb_path,
+        }
+        if exc.status_code == 404:
+            raise NotFoundError("project result-group api target project was not found", details) from exc
+        raise ValidationError("project result-group api request failed", details) from exc
+
+    started_at = time.monotonic()
+    last_status = str(submit_response.get("status") or "pending")
+    last_error_message = None
+    while True:
+        try:
+            project_payload = client.get_project(str(project_id))
+        except ODBClientError as exc:
+            details = {
+                "project_id": int(project_id),
+                "result_group": resolved_result_group,
+                "base_url": resolved_base_url,
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            }
+            if exc.status_code == 404:
+                raise NotFoundError("project was not found while polling result-group status", details) from exc
+            raise ValidationError("failed to poll project result-group status", details) from exc
+
+        matched_group = None
+        for row in list(project_payload.get("result_groups") or []):
+            if str(row.get("result_group") or "") == resolved_result_group:
+                matched_group = dict(row)
+                break
+
+        if matched_group is not None:
+            last_status = str(matched_group.get("status") or last_status or "pending")
+            last_error_message = matched_group.get("error_message")
+            if last_status == "ready":
+                workspace = _workspace_path(_project_workspace_path(project_id))
+                return {
+                    "project_id": int(project_id),
+                    "result_group": resolved_result_group,
+                    "display_name": display_name or resolved_result_group,
+                    "status": last_status,
+                    "workspace": workspace,
+                    "base_url": resolved_base_url,
+                    "parse_options": parse_options,
+                    "submit_response": submit_response,
+                    "waited_seconds": round(time.monotonic() - started_at, 3),
+                }
+            if last_status == "error":
+                raise ValidationError(
+                    "project result-group extraction failed",
+                    {
+                        "project_id": int(project_id),
+                        "result_group": resolved_result_group,
+                        "status": last_status,
+                        "error_message": last_error_message,
+                        "base_url": resolved_base_url,
+                        "parse_options": parse_options,
+                    },
+                )
+
+        if (time.monotonic() - started_at) >= resolved_wait_timeout_sec:
+            raise ValidationError(
+                "timed out waiting for project result-group to become ready",
+                {
+                    "project_id": int(project_id),
+                    "result_group": resolved_result_group,
+                    "status": last_status,
+                    "error_message": last_error_message,
+                    "base_url": resolved_base_url,
+                    "wait_timeout_sec": resolved_wait_timeout_sec,
+                    "poll_interval_sec": resolved_poll_interval,
+                    "parse_options": parse_options,
+                },
+            )
+
+        time.sleep(resolved_poll_interval)
 
 
 def _finalize_sensitivity_store_result(
@@ -854,7 +1020,16 @@ def _build_sensitivity_cloud_request(
                     },
                 )
 
-            scalar_value = float(matrix[frame_index, component_index])
+            scalar_value = _ensure_finite_float(
+                matrix[frame_index, component_index],
+                context="sensitivity cloud matrix value",
+                details={
+                    "frame_index": int(frame_index),
+                    "component_index": int(component_index),
+                    "parameter_name": column_meta.get("parameter_name"),
+                    "field": column_meta.get("field"),
+                },
+            )
             for scope_name, labels in dict(mapping.get("targets_by_scope") or {}).items():
                 instance_name = str(scope_name or "").strip()
                 if not instance_name:
@@ -864,7 +1039,7 @@ def _build_sensitivity_cloud_request(
                     element_label = int(label)
                     values = label_map.setdefault(
                         element_label,
-                        [float("nan")] * len(components),
+                        [0.0] * len(components),
                     )
                     values[component_index] = scalar_value
 
@@ -1387,6 +1562,7 @@ def run_sensitivity_inp_and_store(
         frame: int = 0,
         abaqus: Optional[str] = None,
         python3: Optional[str] = None,
+        base_url: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
         job_name: Optional[str] = None,
@@ -1395,6 +1571,11 @@ def run_sensitivity_inp_and_store(
         timeout_sec: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
         cleanup_process_files: bool = True,
+        parse_via_project_results: bool = True,
+        project_result_group: Optional[str] = None,
+        project_result_display_name: Optional[str] = None,
+        project_result_wait_timeout_sec: int = 3600,
+        project_result_poll_interval_sec: float = 2.0,
         write_cloud_result: bool = False,
         cloud_result_group: Optional[str] = None,
         cloud_step_name: str = "Sensitivity",
@@ -1444,14 +1625,33 @@ def run_sensitivity_inp_and_store(
             {"project_id": int(project_id), "batch_no": normalized_batch_no},
         )
 
-    resolved_workspace = _default_solver_workspace(output_dir_abs, resolved_job_name)
-    build_workspace_from_odb(
-        odb_path=str(resolved_odb_path),
-        workspace=resolved_workspace,
-        abaqus=abaqus,
-        python3=python3,
-        keep_raw=keep_raw,
-    )
+    project_result_parse = None
+    if parse_via_project_results:
+        project_result_parse = _submit_project_result_group_and_wait(
+            project_id=project_id,
+            odb_path=str(resolved_odb_path),
+            batch_no=normalized_batch_no,
+            job_name=resolved_job_name,
+            step=step,
+            frame=frame,
+            field_prefix=field_prefix,
+            base_url=base_url,
+            timeout=timeout,
+            result_group=project_result_group,
+            display_name=project_result_display_name,
+            wait_timeout_sec=project_result_wait_timeout_sec,
+            poll_interval_sec=project_result_poll_interval_sec,
+        )
+        resolved_workspace = str(project_result_parse["workspace"])
+    else:
+        resolved_workspace = _default_solver_workspace(output_dir_abs, resolved_job_name)
+        build_workspace_from_odb(
+            odb_path=str(resolved_odb_path),
+            workspace=resolved_workspace,
+            abaqus=abaqus,
+            python3=python3,
+            keep_raw=keep_raw,
+        )
     deleted_process_files = (
         delete_abaqus_process_files(Path(output_dir_abs), resolved_job_name)
         if cleanup_process_files
@@ -1488,12 +1688,17 @@ def run_sensitivity_inp_and_store(
         matrix_payload=matrix_payload,
         solver_payload=solver_payload,
         generated_files=generated_files,
+        base_url=base_url,
+        timeout=timeout,
         deleted_process_files=deleted_process_files,
         write_cloud_result=write_cloud_result,
         cloud_result_group=cloud_result_group,
         cloud_step_name=cloud_step_name,
         cloud_field_name=cloud_field_name,
-        extra_payload={"temp_selected_parameters": temp_selected_parameters},
+        extra_payload={
+            "temp_selected_parameters": temp_selected_parameters,
+            "project_result_parse": project_result_parse,
+        },
     )
 
 
@@ -1512,6 +1717,7 @@ def generate_sensitivity_inp_and_store(
         frame: int = 0,
         abaqus: Optional[str] = None,
         python3: Optional[str] = None,
+        base_url: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
         job_name: Optional[str] = None,
@@ -1520,6 +1726,11 @@ def generate_sensitivity_inp_and_store(
         timeout_sec: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
         cleanup_process_files: bool = True,
+        parse_via_project_results: bool = True,
+        project_result_group: Optional[str] = None,
+        project_result_display_name: Optional[str] = None,
+        project_result_wait_timeout_sec: int = 3600,
+        project_result_poll_interval_sec: float = 2.0,
 ) -> dict:
     ensure_tables_exist()
 
@@ -1571,6 +1782,7 @@ def generate_sensitivity_inp_and_store(
         frame=frame,
         abaqus=abaqus,
         python3=python3,
+        base_url=base_url,
         keep_raw=keep_raw,
         timeout=timeout,
         job_name=job_name,
@@ -1579,6 +1791,11 @@ def generate_sensitivity_inp_and_store(
         timeout_sec=timeout_sec,
         extra_args=extra_args,
         cleanup_process_files=cleanup_process_files,
+        parse_via_project_results=parse_via_project_results,
+        project_result_group=project_result_group,
+        project_result_display_name=project_result_display_name,
+        project_result_wait_timeout_sec=project_result_wait_timeout_sec,
+        project_result_poll_interval_sec=project_result_poll_interval_sec,
     )
     result["input_inp"] = input_inp_abs
     result["generation_source"] = "project_db"
@@ -2413,6 +2630,12 @@ def _normalize_dsa_sensitivity_value(
     sens_arr = np.asarray(sensitivity_value, dtype=np.float64)
     resp_arr = np.asarray(response_value, dtype=np.float64)
 
+    if np.any(~np.isfinite(sens_arr)):
+        raise ValidationError(
+            "sensitivity value contains non-finite entries for DSA normalization",
+            {"field": source_field, "response_field": response_field, "sensitivity_value": sensitivity_value},
+        )
+
     if resp_arr.size == 0:
         raise ValidationError(
             "response value is empty for DSA normalization",
@@ -2432,6 +2655,15 @@ def _normalize_dsa_sensitivity_value(
         )
 
     normalized = (sens_arr * float(parameter_value)) / resp_arr
+    if np.any(~np.isfinite(normalized)):
+        raise ValidationError(
+            "normalized sensitivity contains non-finite entries",
+            {
+                "field": source_field,
+                "response_field": response_field,
+                "parameter_value": float(parameter_value),
+            },
+        )
     if normalized.ndim == 0:
         return float(normalized.item())
     values = normalized.tolist()

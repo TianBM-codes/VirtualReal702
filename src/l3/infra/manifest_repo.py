@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import os
 import zlib
@@ -203,7 +204,57 @@ class ManifestRepo:
                 " WHERE {}".format(rg_clause),
                 rg_params,
             )
-        return {"instances": instances, "steps": steps, "fields": fields}
+        return {"instances": instances, "steps": steps, "fields": self._group_invariant_fields(fields)}
+
+    @staticmethod
+    def _group_invariant_fields(fields: list) -> list:
+        """
+        Merge scalar-invariant fields (e.g. E_MAX_PRINCIPAL) into their parent's
+        components list (e.g. E), then remove them from the top-level list.
+
+        A field is treated as an invariant of parent P when:
+          - its components list is empty (or "[]")
+          - its name starts with P + "_"
+          - P exists as another field in the same list
+        """
+        # Parse components from JSON strings stored in the DB
+        parsed = []
+        for f in fields:
+            raw = f.get("components", "[]") or "[]"
+            try:
+                comps = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except Exception:
+                comps = []
+            parsed.append({**f, "_comps": comps})
+
+        field_name_set = {f["field_name"] for f in parsed}
+
+        # Map invariant_name → parent_name
+        inv_parent: dict[str, str] = {}
+        for f in parsed:
+            if not f["_comps"]:
+                idx = f["field_name"].find("_")
+                if idx > 0:
+                    candidate = f["field_name"][:idx]
+                    if candidate in field_name_set:
+                        inv_parent[f["field_name"]] = candidate
+
+        # Collect extra components per parent, stripping the "PARENT_" prefix
+        extra: dict[str, list] = {}
+        for inv_name, parent_name in sorted(inv_parent.items()):
+            suffix = inv_name[len(parent_name) + 1:]  # e.g. "E_MAX_PRINCIPAL" → "MAX_PRINCIPAL"
+            extra.setdefault(parent_name, []).append(suffix)
+
+        result = []
+        for f in parsed:
+            if f["field_name"] in inv_parent:
+                continue  # absorbed into parent
+            field_copy = {k: v for k, v in f.items() if k != "_comps"}
+            merged = f["_comps"] + extra.get(f["field_name"], [])
+            field_copy["components"] = json.dumps(merged)
+            result.append(field_copy)
+
+        return result
 
     def _ensure_user_tables(self, conn):
         conn.execute("""

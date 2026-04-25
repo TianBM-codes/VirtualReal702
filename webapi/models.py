@@ -289,6 +289,7 @@ class SensitivityStoreDsaRequest(BaseModel):
     cloud_result_group: Optional[str] = None
     cloud_step_name: str = "Sensitivity"
     cloud_field_name: str = "SENSITIVITY_CLOUD"
+    async_submit: bool = False
 
 
 class SensitivityRunAndStoreRequest(BaseModel):
@@ -305,6 +306,7 @@ class SensitivityRunAndStoreRequest(BaseModel):
     frame: int = 0
     abaqus: Optional[str] = None
     python3: Optional[str] = None
+    base_url: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
     job_name: Optional[str] = None
@@ -313,10 +315,16 @@ class SensitivityRunAndStoreRequest(BaseModel):
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
     cleanup_process_files: bool = True
+    parse_via_project_results: bool = True
+    project_result_group: Optional[str] = None
+    project_result_display_name: Optional[str] = None
+    project_result_wait_timeout_sec: int = 3600
+    project_result_poll_interval_sec: float = 2.0
     write_cloud_result: bool = False
     cloud_result_group: Optional[str] = None
     cloud_step_name: str = "Sensitivity"
     cloud_field_name: str = "SENSITIVITY_CLOUD"
+    async_submit: bool = False
 
 
 class SensitivityGenerateRunAndStoreRequest(BaseModel):
@@ -333,6 +341,7 @@ class SensitivityGenerateRunAndStoreRequest(BaseModel):
     frame: int = 0
     abaqus: Optional[str] = None
     python3: Optional[str] = None
+    base_url: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
     job_name: Optional[str] = None
@@ -341,6 +350,12 @@ class SensitivityGenerateRunAndStoreRequest(BaseModel):
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
     cleanup_process_files: bool = True
+    parse_via_project_results: bool = True
+    project_result_group: Optional[str] = None
+    project_result_display_name: Optional[str] = None
+    project_result_wait_timeout_sec: int = 3600
+    project_result_poll_interval_sec: float = 2.0
+    async_submit: bool = False
 
 
 class SensitivityStoredQueryRequest(BaseModel):
