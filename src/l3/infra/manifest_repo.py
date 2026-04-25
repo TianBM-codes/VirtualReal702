@@ -483,6 +483,7 @@ class ManifestRepo:
         positions: list,
         instance_name: str,
         position: str,
+        frames: list = None,
     ) -> None:
         """
         Insert/replace a result_files row and matching result_blocks row for an
@@ -490,6 +491,56 @@ class ManifestRepo:
         """
         import json as _json
         with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO result_group_meta
+                    (result_group, display_name, source_file, consistency_check, created_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                """,
+                (result_group, result_group, None, "count-only"),
+            )
+            if frames is not None:
+                existing_step = conn.execute(
+                    "SELECT step_number, procedure FROM steps WHERE result_group=? AND step_name=?",
+                    (result_group, step_name),
+                ).fetchone()
+                if existing_step is not None:
+                    step_number = int(existing_step["step_number"] or 0)
+                    procedure = existing_step["procedure"] or "EXTERNAL"
+                else:
+                    next_step = conn.execute(
+                        "SELECT COALESCE(MAX(step_number), -1) + 1 AS next_step FROM steps WHERE result_group=?",
+                        (result_group,),
+                    ).fetchone()
+                    step_number = int(next_step["next_step"] or 0)
+                    procedure = "EXTERNAL"
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO steps
+                        (result_group, step_name, step_number, procedure, num_frames)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (result_group, step_name, step_number, procedure, len(frames)),
+                )
+                conn.execute(
+                    "DELETE FROM frames WHERE result_group=? AND step_name=?",
+                    (result_group, step_name),
+                )
+                for frame in frames:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO frames
+                            (result_group, step_name, frame_idx, frame_value, description)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            result_group,
+                            step_name,
+                            int(frame.get("frame_idx", 0)),
+                            float(frame.get("frame_value", 0.0)),
+                            str(frame.get("description") or f"Frame {int(frame.get('frame_idx', 0))}"),
+                        ),
+                    )
             conn.execute(
                 """
                 INSERT OR REPLACE INTO result_files

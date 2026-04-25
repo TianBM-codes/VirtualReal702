@@ -1055,6 +1055,37 @@ def _resolve_loaded_odb_id_for_workspace(workspace: Optional[str]) -> Optional[s
     return None
 
 
+def _response_frame_name(row_meta: dict) -> str:
+    response_label = str(row_meta.get("response_label") or "").strip() or "response"
+    response_field = str(row_meta.get("response_field") or "").strip() or "field"
+    return f"sensitivity_{response_label}_{response_field}"
+
+
+def _workspace_instance_element_labels(workspace: str, instance: str) -> List[int]:
+    geom_path = ManifestRepo(workspace).get_geom_path(instance) or os.path.join(
+        workspace,
+        "l1",
+        "geometry",
+        f"{instance}.h5",
+    )
+    if not os.path.exists(geom_path):
+        raise NotFoundError(
+            "geometry HDF5 not found while assembling sensitivity cloud result",
+            {"workspace": workspace, "instance": instance, "geom_path": geom_path},
+        )
+
+    labels: List[int] = []
+    with h5py.File(geom_path, "r") as geom_h5:
+        if "elements" not in geom_h5:
+            raise ValidationError(
+                "geometry HDF5 has no /elements group",
+                {"workspace": workspace, "instance": instance, "geom_path": geom_path},
+            )
+        for etype in geom_h5["elements"]:
+            labels.extend(int(item) for item in np.asarray(geom_h5[f"elements/{etype}/labels"][:], dtype=np.int64).tolist())
+    return sorted(set(labels))
+
+
 def _build_sensitivity_cloud_request(
         *,
         batch_no: str,
@@ -1086,17 +1117,19 @@ def _build_sensitivity_cloud_request(
             },
         )
 
-    components = _parameter_display_names(parameter_columns)
     resolved_result_group = str(result_group or f"sensitivity_batch_{batch_no}")
     resolved_step_name = str(step_name or "Sensitivity").strip() or "Sensitivity"
     resolved_field_name = str(field_name or "SENSITIVITY_CLOUD").strip() or "SENSITIVITY_CLOUD"
+    resolved_workspace = os.path.abspath(str(matrix_payload.get("workspace"))) if matrix_payload.get("workspace") else None
+    components = ["SENSITIVITY"]
 
     instance_frames: Dict[str, List[dict]] = {}
     instance_counts: Dict[str, List[int]] = {}
+    instance_label_cache: Dict[str, List[int]] = {}
 
     for frame_index, row_meta in enumerate(response_rows):
-        per_instance_labels: Dict[str, Dict[int, List[float]]] = {}
-        for component_index, column_meta in enumerate(parameter_columns):
+        per_instance_labels: Dict[str, Dict[int, float]] = {}
+        for column_index, column_meta in enumerate(parameter_columns):
             mapping = dict(column_meta.get("element_mapping") or {})
             target_kind = str(mapping.get("target_kind") or "").lower()
             if target_kind not in {"cell", ""}:
@@ -1110,11 +1143,11 @@ def _build_sensitivity_cloud_request(
                 )
 
             scalar_value = _ensure_finite_float(
-                matrix[frame_index, component_index],
+                matrix[frame_index, column_index],
                 context="sensitivity cloud matrix value",
                 details={
                     "frame_index": int(frame_index),
-                    "component_index": int(component_index),
+                    "component_index": int(column_index),
                     "parameter_name": column_meta.get("parameter_name"),
                     "field": column_meta.get("field"),
                 },
@@ -1123,22 +1156,45 @@ def _build_sensitivity_cloud_request(
                 instance_name = str(scope_name or "").strip()
                 if not instance_name:
                     continue
-                label_map = per_instance_labels.setdefault(instance_name, {})
+                if instance_name not in per_instance_labels:
+                    if resolved_workspace:
+                        instance_label_cache.setdefault(
+                            instance_name,
+                            _workspace_instance_element_labels(resolved_workspace, instance_name),
+                        )
+                        per_instance_labels[instance_name] = {
+                            int(label): 0.0 for label in instance_label_cache[instance_name]
+                        }
+                    else:
+                        per_instance_labels[instance_name] = {}
+                label_map = per_instance_labels[instance_name]
                 for label in labels or []:
                     element_label = int(label)
-                    values = label_map.setdefault(
-                        element_label,
-                        [0.0] * len(components),
-                    )
-                    values[component_index] = scalar_value
+                    current_value = label_map.get(element_label)
+                    if current_value is not None and not np.isclose(current_value, 0.0) and not np.isclose(current_value, scalar_value):
+                        raise ValidationError(
+                            "multiple sensitivity parameters map to the same element in assembled cloud export",
+                            {
+                                "frame_index": int(frame_index),
+                                "response": dict(row_meta),
+                                "instance": instance_name,
+                                "element_label": element_label,
+                                "existing_value": float(current_value),
+                                "incoming_value": float(scalar_value),
+                                "parameter_name": column_meta.get("parameter_name"),
+                                "field": column_meta.get("field"),
+                            },
+                        )
+                    label_map[element_label] = float(scalar_value)
 
         for instance_name, label_map in sorted(per_instance_labels.items()):
             instance_frame_entry = {
                 "frame_idx": frame_index,
                 "frame_value": float(frame_index + 1),
+                "description": _response_frame_name(dict(row_meta)),
                 "data": [
-                    {"label": int(label), "values": values}
-                    for label, values in sorted(label_map.items())
+                    {"label": int(label), "values": [float(value)]}
+                    for label, value in sorted(label_map.items())
                 ],
             }
             instance_frames.setdefault(instance_name, []).append(instance_frame_entry)
@@ -1155,7 +1211,7 @@ def _build_sensitivity_cloud_request(
         {
             "frame_idx": index,
             "frame_value": float(index + 1),
-            "description": _response_display_name(dict(row_meta)),
+            "description": _response_frame_name(dict(row_meta)),
             "response": dict(row_meta),
         }
         for index, row_meta in enumerate(response_rows)

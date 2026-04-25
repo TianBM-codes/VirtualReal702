@@ -106,6 +106,7 @@ class ExternalResultWriter:
             positions=["NODAL"],
             instance_name=instance,
             position="NODAL",
+            frames=frames,
         )
         return num_frames
 
@@ -175,5 +176,6 @@ class ExternalResultWriter:
             positions=["ELEMENT_NODAL"],
             instance_name=instance,
             position="ELEMENT_NODAL",
+            frames=frames,
         )
         return num_frames

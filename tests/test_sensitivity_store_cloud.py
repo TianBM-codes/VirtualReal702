@@ -32,16 +32,22 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
             }
 
     monkeypatch.setattr(sensitivity_service, "ODBClient", FakeClient)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_workspace_instance_element_labels",
+        lambda workspace, instance: [101, 102, 103],
+    )
 
     result = sensitivity_service._write_sensitivity_cloud_result(
         odb_id="odb-demo",
         base_url="http://127.0.0.1:18765",
         batch_no="5",
         matrix_payload={
+            "workspace": "E:/fake/workspace",
             "matrix": [[0.1, 0.2], [0.3, 0.4]],
             "response_rows": [
-                {"row_key": "R1", "response_label": "PART-1-1::10"},
-                {"row_key": "R2", "response_label": "PART-1-1::20"},
+                {"row_key": "R1", "response_label": "PART-1-1::10", "response_field": "U"},
+                {"row_key": "R2", "response_label": "PART-1-1::20", "response_field": "U"},
             ],
             "parameter_columns": [
                 {
@@ -57,7 +63,7 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
                     "field": "d_U_P2",
                     "element_mapping": {
                         "target_kind": "cell",
-                        "targets_by_scope": {"PART-1-1": [102]},
+                        "targets_by_scope": {"PART-1-1": [103]},
                     },
                 },
             ],
@@ -72,7 +78,7 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
     assert captured["base_url"] == "http://127.0.0.1:18765"
     assert captured["timeout"] == 33
     assert captured["body"]["type"] == "element"
-    assert captured["body"]["components"] == ["P1", "P2"]
+    assert captured["body"]["components"] == ["SENSITIVITY"]
     assert captured["body"]["result_group"] == "viz_rg"
     assert len(captured["body"]["instances"]) == 1
     assert captured["body"]["instances"][0]["instance"] == "PART-1-1"
@@ -83,20 +89,22 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
     assert frame0["frame_value"] == 1.0
     assert frame1["frame_idx"] == 1
     assert frame1["frame_value"] == 2.0
-    first_entry, second_entry = frame0["data"]
+    assert frame0["description"] == "sensitivity_PART-1-1::10_U"
+    first_entry, second_entry, third_entry = frame0["data"]
     assert first_entry["label"] == 101
     assert np.isclose(first_entry["values"][0], 0.1)
-    assert np.isclose(first_entry["values"][1], 0.0)
     assert second_entry["label"] == 102
     assert np.isclose(second_entry["values"][0], 0.1)
-    assert np.isclose(second_entry["values"][1], 0.2)
+    assert third_entry["label"] == 103
+    assert np.isclose(third_entry["values"][0], 0.2)
     assert frame1["data"][1]["label"] == 102
     assert np.isclose(frame1["data"][1]["values"][0], 0.3)
-    assert np.isclose(frame1["data"][1]["values"][1], 0.4)
+    assert frame1["data"][2]["label"] == 103
+    assert np.isclose(frame1["data"][2]["values"][0], 0.4)
     assert result["odb_id"] == "odb-demo"
     assert result["frame_count"] == 2
-    assert result["components"] == ["P1", "P2"]
-    assert result["frames"][0]["description"] == "R1"
+    assert result["components"] == ["SENSITIVITY"]
+    assert result["frames"][0]["description"] == "sensitivity_PART-1-1::10_U"
     assert result["query_hint"]["endpoint"] == "/api/odb/{odb_id}/results/frame-scalars"
     assert result["write_response"]["instances_written"] == 1
 
