@@ -63,6 +63,7 @@ except ImportError:
     print("Error: meshio not installed.  Run: pip install meshio")
     sys.exit(1)
 
+from config import get_local_service_base_url
 from src.inp import parse_inp, InpModel
 from tools.odb_client import ODBClient
 
@@ -455,7 +456,7 @@ def _build_odb_results(
         spec = json.load(f)
 
     client = ODBClient(
-        base_url=spec.get("base_url", "http://localhost:18765"),
+        base_url=spec.get("base_url", get_local_service_base_url()),
         timeout=int(spec.get("timeout", 60)),
     )
 

@@ -11,7 +11,7 @@ ODB L3 Service — Python 调用封装
 用法：
     from tools.odb_client import ODBClient
 
-    c = ODBClient("http://localhost:18765")
+    c = ODBClient()
 
     # 提交 ODB 文件
     job = c.submit_job("/data/raw/car.odb", display_name="车身")
@@ -32,6 +32,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import requests
+
+try:
+    from VirtualReal702.config import get_local_service_base_url
+except ImportError:  # pragma: no cover - local direct run fallback
+    from config import get_local_service_base_url
 
 # ── L3BE 解码器 ────────────────────────────────────────────────────────────────
 
@@ -242,12 +247,12 @@ class ODBClient:
         健康检查        health_live / health_ready
     """
 
-    def __init__(self, base_url: str = "http://localhost:18765", timeout: int = 60):
+    def __init__(self, base_url: Optional[str] = None, timeout: int = 60):
         """
         base_url : 服务地址，末尾不要带斜杠
         timeout  : HTTP 请求超时秒数（对大文件可适当调大）
         """
-        self.base_url = base_url.rstrip("/")
+        self.base_url = str(base_url or get_local_service_base_url()).rstrip("/")
         self.timeout = timeout
         self._session = requests.Session()
 

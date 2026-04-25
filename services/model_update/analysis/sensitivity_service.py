@@ -14,6 +14,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import h5py
 import numpy as np
 
+from config import get_local_service_base_url
 from db import ensure_tables_exist, get_connection
 from src.inp import parse_inp
 from src.inp.parameter_mapping import build_parameter_target_map
@@ -822,7 +823,7 @@ def _submit_project_result_group_and_wait(
     resolved_result_group = _normalize_result_group_name(
         result_group or _default_project_result_group(batch_no, job_name)
     )
-    resolved_base_url = str(base_url or "http://127.0.0.1:18765").strip().rstrip("/")
+    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
     resolved_timeout = max(int(timeout or 0), 60)
     resolved_wait_timeout_sec = max(int(wait_timeout_sec or 0), 1)
     resolved_poll_interval = max(float(poll_interval_sec or 0), 0.1)
@@ -1172,7 +1173,7 @@ def _write_sensitivity_cloud_result(
         step_name=step_name,
         field_name=field_name,
     )
-    resolved_base_url = base_url or "http://127.0.0.1:18765"
+    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
     client = ODBClient(base_url=resolved_base_url, timeout=timeout)
     try:
         write_response = client.post_external_field(resolved_odb_id, request_body)
@@ -3068,7 +3069,7 @@ def _export_sensitivity_vtu(
     node_results: Dict[str, Dict] = {}
     cell_results: Dict[str, Dict] = {}
     export_items = []
-    resolved_base_url = base_url or "http://127.0.0.1:18765"
+    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
     workspace_built = False
     client: Optional[ODBClient] = None
 

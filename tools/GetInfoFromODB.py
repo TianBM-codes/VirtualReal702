@@ -1,6 +1,6 @@
 from tools.odb_client import ODBClient
 
-c = ODBClient("http://localhost:18765")
+c = ODBClient()
 
 # 读几何
 geo = c.get_render_buffers(odb_id, "PART-1-1")
