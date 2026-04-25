@@ -800,6 +800,44 @@ def _project_workspace_path(project_id: int) -> str:
     return os.path.abspath(os.path.join(settings.data_root, str(project_id)))
 
 
+def _build_project_result_parse_options(
+        *,
+        step: Optional[str],
+        frame: Optional[int],
+        field_prefix: Optional[str],
+) -> dict:
+    parse_options = {
+        "consistency_check": "count-only",
+        "steps": [str(step)] if step else None,
+        "frames": [int(frame)] if frame is not None else "all",
+        "invariants": "none",
+    }
+
+    # DSA normalization needs both the sensitivity fields (for example d_U_T1)
+    # and the base response field they are normalized against (for example U).
+    # Passing a DSA field_prefix into the project-result extraction filters that
+    # response field out of the workspace, so only preserve the prefix filter
+    # for non-DSA prefixes that do not map back to a response token.
+    if field_prefix and _field_prefix_response_token(field_prefix) is None:
+        parse_options["field_prefix"] = str(field_prefix)
+
+    return {key: value for key, value in parse_options.items() if value is not None}
+
+
+def _resolved_workspace_frame(
+        *,
+        requested_frame: int,
+        parse_via_project_results: bool,
+) -> int:
+    if not parse_via_project_results:
+        return int(requested_frame)
+
+    # Project result-group extraction is usually scoped to a single requested
+    # frame. The extracted workspace then stores that one physical frame as
+    # frame_idx=0, so later workspace lookups must use the remapped index.
+    return 0
+
+
 def _submit_project_result_group_and_wait(
         *,
         project_id: int,
@@ -828,14 +866,11 @@ def _submit_project_result_group_and_wait(
     resolved_wait_timeout_sec = max(int(wait_timeout_sec or 0), 1)
     resolved_poll_interval = max(float(poll_interval_sec or 0), 0.1)
 
-    parse_options = {
-        "consistency_check": "count-only",
-        "steps": [str(step)] if step else None,
-        "frames": [int(frame)] if frame is not None else "all",
-        "field_prefix": str(field_prefix) if field_prefix else None,
-        "invariants": "none",
-    }
-    parse_options = {key: value for key, value in parse_options.items() if value is not None}
+    parse_options = _build_project_result_parse_options(
+        step=step,
+        frame=frame,
+        field_prefix=field_prefix,
+    )
 
     client = ODBClient(base_url=resolved_base_url, timeout=resolved_timeout)
     try:
@@ -1648,6 +1683,10 @@ def run_sensitivity_inp_and_store(
     output_dir_abs = os.path.abspath(output_dir)
     os.makedirs(output_dir_abs, exist_ok=True)
     normalized_batch_no = _normalize_batch_no(batch_no)
+    workspace_frame = _resolved_workspace_frame(
+        requested_frame=frame,
+        parse_via_project_results=parse_via_project_results,
+    )
 
     def _run():
         solver_payload = run_abaqus_job(
@@ -1731,7 +1770,7 @@ def run_sensitivity_inp_and_store(
             response_component=response_component,
             position=position,
             aggregation=aggregation,
-            frame=frame,
+            frame=workspace_frame,
             abaqus=abaqus,
             python3=python3,
             keep_raw=keep_raw,
@@ -1757,6 +1796,7 @@ def run_sensitivity_inp_and_store(
             extra_payload={
                 "temp_selected_parameters": temp_selected_parameters,
                 "project_result_parse": project_result_parse,
+                "workspace_frame": int(workspace_frame),
             },
         )
 
