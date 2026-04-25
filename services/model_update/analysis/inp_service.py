@@ -1743,10 +1743,10 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             raise ValueError(f"octree cache file not found: {cache_path}")
 
         cursor.execute("""
-            SELECT nid, x, y, z
-            FROM t_mt_py_test_node
-            WHERE pid = %s
-            ORDER BY nid
+            SELECT measuring_point_name, x_position, y_position, z_position
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY measuring_point_name
         """, (project_id,))
         test_nodes = cursor.fetchall()
         if not test_nodes:
@@ -1755,7 +1755,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
         cache = _load_octree_cache(cache_path)
         part_lookup = _cache_part_lookup(cache)
         raw_test_coords = np.array(
-            [[float(row["x"]), float(row["y"]), float(row["z"])] for row in test_nodes],
+            [[float(row["x_position"]), float(row["y_position"]), float(row["z_position"])] for row in test_nodes],
             dtype=np.float64,
         )
 
@@ -1811,7 +1811,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             inst_name = str(cache["point_instances"][point_idx])
             delta = fem_coord - coord_after
             match = {
-                "test_node_id": str(row["nid"]),
+                "test_node_id": str(row["measuring_point_name"]),
                 "instance_name": inst_name,
                 "part_name": part_lookup.get((inst_name, fem_label)),
                 "fem_node_label": fem_label,
@@ -1858,6 +1858,27 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
                 item["y_offset"],
                 item["z_offset"],
                 transform_json,
+            ))
+
+        insert_sql = """
+        INSERT INTO t_mt_py_fem_node_pairs
+        (pid, node, point, distance, x_offset, y_offset, z_offset)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            distance = VALUES(distance),
+            x_offset = VALUES(x_offset),
+            y_offset = VALUES(y_offset),
+            z_offset = VALUES(z_offset),
+        """
+        for item in matches:
+            cursor.execute(insert_sql, (
+                project_id,
+                item["fem_node_label"],
+                item["test_node_id"],
+                item["distance"],
+                item["x_offset"],
+                item["y_offset"],
+                item["z_offset"],
             ))
         conn.commit()
 

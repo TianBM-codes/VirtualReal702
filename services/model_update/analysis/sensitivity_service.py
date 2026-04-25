@@ -1887,17 +1887,12 @@ def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[s
     points = []
     for row_index, row_name in enumerate(row_names):
         current_row = matrix[row_index] if row_index < len(matrix) else []
+        columns_value = {}
         for col_index, col_name in enumerate(col_names):
             value = current_row[col_index] if col_index < len(current_row) else None
-            points.append(
-                {
-                    "row_index": row_index,
-                    "col_index": col_index,
-                    "row_name": row_name,
-                    "col_name": col_name,
-                    "value": value,
-                }
-            )
+            columns_value[col_name] = value
+
+        points.append(columns_value)
 
     return {
         "analysis_run_id": payload.get("analysis_run_id"),
@@ -1905,9 +1900,9 @@ def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[s
         "batch_no": payload.get("batch_no"),
         "case_name": payload.get("case_name"),
         "created_at": payload.get("created_at"),
-        "row_names": row_names,
-        "col_names": col_names,
-        "points": points,
+        "rows": row_names,
+        "column": col_names,
+        "data": points,
         "summary": {
             "response_count": len(row_names),
             "parameter_count": len(col_names),
@@ -1922,19 +1917,25 @@ def get_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional
     col_names = list(payload.get("col_names") or [])
     matrix = list(payload.get("matrix") or [])
 
-    rows = {
-        row_name: list(matrix[row_index] if row_index < len(matrix) else [])
-        for row_index, row_name in enumerate(row_names)
-    }
+    column_count = len(col_names)
+    row_count = len(row_names)
+    data = []
+
+    for ii in range(row_count):
+        for jj in range(column_count):
+            data.append([ii, jj, matrix[ii][jj]])
+
+    sensitivity = {"column": col_names,
+                   "rows": row_names,
+                   "data": data}
+
     return {
         "analysis_run_id": payload.get("analysis_run_id"),
         "project_id": payload.get("project_id"),
         "batch_no": payload.get("batch_no"),
         "case_name": payload.get("case_name"),
         "created_at": payload.get("created_at"),
-        "row_names": row_names,
-        "col_names": col_names,
-        "rows": rows,
+        "data": sensitivity,
         "summary": {
             "response_count": len(row_names),
             "parameter_count": len(col_names),
