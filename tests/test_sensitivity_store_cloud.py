@@ -178,6 +178,53 @@ def test_store_dsa_sensitivity_results_writes_cloud_result_metadata(monkeypatch,
     assert result["analysis_run_id"] == 12
 
 
+def test_store_dsa_sensitivity_results_updates_project_status(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    statuses = []
+    matrix_payload = {
+        "workspace": str(workspace),
+        "step": "Step-1",
+        "instances": ["PART-1-1"],
+        "aggregation": "max_abs",
+        "frame": 0,
+        "field_prefix": "d_U_",
+        "matrix": [[0.1]],
+        "response_rows": [{"row_key": "R1", "response_label": "PART-1-1::10"}],
+        "parameter_columns": [{"field": "d_U_P1", "parameter_name": "P1"}],
+    }
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_update_project_sensitivity_status",
+        lambda project_id, status: statuses.append((project_id, status)),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_dsa_normalized_sensitivity_matrix",
+        lambda **kwargs: matrix_payload,
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_persist_sensitivity_matrix",
+        lambda **kwargs: {"analysis_run_id": 15, "project_id": 3, "batch_no": "2"},
+    )
+
+    result = sensitivity_service.store_dsa_sensitivity_results(
+        project_id=3,
+        batch_no="2",
+        input_inp=str(inp_path),
+        workspace=str(workspace),
+        run_solver=False,
+    )
+
+    assert result["analysis_run_id"] == 15
+    assert statuses == [(3, 0), (3, 1)]
+
+
 def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_files(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "model_sensitivity.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
@@ -256,6 +303,73 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     assert result["odb_path"] == str((output_dir / "job_a.odb").resolve())
     assert result["workspace"] == str(output_dir / "job_a_workspace")
     assert result["deleted_process_files"] == [str(output_dir / "job_a.com")]
+
+
+def test_run_sensitivity_inp_and_store_resets_project_status_on_failure(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model_sensitivity.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+
+    statuses = []
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_update_project_sensitivity_status",
+        lambda project_id, status: statuses.append((project_id, status)),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "run_abaqus_job",
+        lambda **kwargs: {
+            "job_name": "job_a",
+            "generated_files": {"analysis_inp": str(output_dir / inp_path.name)},
+            "solver": {
+                "ok": False,
+                "returncode": 99,
+                "stdout_tail": "solver stdout",
+                "stderr_tail": "solver stderr",
+            },
+        },
+    )
+
+    try:
+        sensitivity_service.run_sensitivity_inp_and_store(
+            project_id=7,
+            batch_no="3",
+            input_inp=str(inp_path),
+            output_dir=str(output_dir),
+            step="Step-1",
+            instances=["PART-1-1"],
+            field_prefix="d_U_",
+            response_component="U1",
+            position="NODAL",
+            parse_via_project_results=False,
+        )
+    except sensitivity_service.ValidationError:
+        pass
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected run_sensitivity_inp_and_store to fail")
+
+    assert statuses == [(7, 0), (7, -1)]
+
+
+def test_nested_sensitivity_status_wrapper_updates_only_once(monkeypatch):
+    statuses = []
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_update_project_sensitivity_status",
+        lambda project_id, status: statuses.append((project_id, status)),
+    )
+
+    result = sensitivity_service._run_with_project_sensitivity_status(
+        11,
+        lambda: sensitivity_service._run_with_project_sensitivity_status(11, lambda: "ok"),
+    )
+
+    assert result == "ok"
+    assert statuses == [(11, 0), (11, 1)]
 
 
 def test_run_sensitivity_inp_and_store_writes_cloud_result_metadata(monkeypatch, tmp_path: Path):
