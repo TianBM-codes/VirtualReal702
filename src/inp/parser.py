@@ -294,9 +294,9 @@ class InpParser:
         target_part = self._current_part
         if target_part is None and self._ctx not in (CTX_INSTANCE,):
             # nodes defined outside part/instance — create an implicit root part
-            if "__root__" not in self._model.parts:
-                self._model.parts["__root__"] = Part(name="__root__")
-            target_part = self._model.parts["__root__"]
+            if "PART-1-1" not in self._model.parts:
+                self._model.parts["PART-1-1"] = Part(name="PART-1-1")
+            target_part = self._model.parts["PART-1-1"]
 
         labels_for_nset: List[int] = []
 
@@ -345,9 +345,9 @@ class InpParser:
         target_part = self._current_part
 
         if target_part is None:
-            if "__root__" not in self._model.parts:
-                self._model.parts["__root__"] = Part(name="__root__")
-            target_part = self._model.parts["__root__"]
+            if "PART-1-1" not in self._model.parts:
+                self._model.parts["PART-1-1"] = Part(name="PART-1-1")
+            target_part = self._model.parts["PART-1-1"]
 
         labels_for_elset: List[int] = []
         # High-order elements span multiple physical lines but the Lexer has
@@ -428,9 +428,9 @@ class InpParser:
         else:
             part = self._current_part
             if part is None:
-                if "__root__" not in self._model.parts:
-                    self._model.parts["__root__"] = Part(name="__root__")
-                part = self._model.parts["__root__"]
+                if "PART-1-1" not in self._model.parts:
+                    self._model.parts["PART-1-1"] = Part(name="PART-1-1")
+                part = self._model.parts["PART-1-1"]
             if name not in part.nsets:
                 part.nsets[name] = Nset(name=name)
             target = part.nsets[name]
@@ -460,9 +460,9 @@ class InpParser:
         else:
             part = self._current_part
             if part is None:
-                if "__root__" not in self._model.parts:
-                    self._model.parts["__root__"] = Part(name="__root__")
-                part = self._model.parts["__root__"]
+                if "PART-1-1" not in self._model.parts:
+                    self._model.parts["PART-1-1"] = Part(name="PART-1-1")
+                part = self._model.parts["PART-1-1"]
             if name not in part.elsets:
                 part.elsets[name] = Elset(name=name)
             target = part.elsets[name]
@@ -579,9 +579,9 @@ class InpParser:
             self._current_part.sections.append(sec)
             return
 
-        if "__root__" not in self._model.parts:
-            self._model.parts["__root__"] = Part(name="__root__")
-        self._model.parts["__root__"].sections.append(sec)
+        if "PART-1-1" not in self._model.parts:
+            self._model.parts["PART-1-1"] = Part(name="PART-1-1")
+        self._model.parts["PART-1-1"].sections.append(sec)
 
     # ------------------------------------------------------------------
     # Material

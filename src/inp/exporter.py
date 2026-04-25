@@ -121,10 +121,10 @@ def export_l1(model: InpModel, workspace: str) -> None:
     try:
         if model.assembly is not None:
             inst_iter = model.assembly.instances.items()
-        elif "__root__" in model.parts:
+        elif "PART-1-1" in model.parts:
             # Flat-format INP: synthesize a single instance with identity transform
-            _synthetic = Instance(name="__root__", part_name="__root__")
-            inst_iter = [("__root__", _synthetic)]
+            _synthetic = Instance(name="PART-1-1", part_name="PART-1-1")
+            inst_iter = [("PART-1-1", _synthetic)]
         else:
             inst_iter = []
 
@@ -157,9 +157,9 @@ def _write_assembly_h5(model: InpModel, workspace: str) -> None:
                 grp = f.require_group("instances/{}".format(inst_name))
                 mat = _build_transform_matrix(inst)
                 grp.create_dataset("transform", data=mat)
-        elif "__root__" in model.parts:
+        elif "PART-1-1" in model.parts:
             # Flat-format INP: no Assembly — write identity transform for the synthetic instance
-            grp = f.require_group("instances/__root__")
+            grp = f.require_group("instances/PART-1-1")
             grp.create_dataset("transform", data=np.eye(4, dtype=np.float64))
 
 

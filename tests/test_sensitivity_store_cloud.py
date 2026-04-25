@@ -575,9 +575,81 @@ def test_run_sensitivity_inp_and_store_uses_project_result_group_when_enabled(mo
     assert project_parse_calls["field_prefix"] == "d_U_"
     assert project_parse_calls["base_url"] == "http://127.0.0.1:5000"
     assert matrix_calls["workspace"] == str(project_workspace)
+    assert matrix_calls["frame"] == 0
     assert result["workspace"] == str(project_workspace)
+    assert result["workspace_frame"] == 0
     assert result["project_result_parse"]["result_group"] == "sens_rg"
     assert result["deleted_process_files"] == [str(output_dir / "job_a.com")]
+
+
+def test_submit_project_result_group_and_wait_omits_dsa_field_prefix_filter(monkeypatch, tmp_path: Path):
+    project_workspace = tmp_path / "1001"
+    project_workspace.mkdir()
+    (project_workspace / "manifest.db").write_text("", encoding="utf-8")
+
+    odb_path = tmp_path / "job_a.odb"
+    odb_path.write_text("odb", encoding="utf-8")
+
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, base_url: str, timeout: int):
+            captured["base_url"] = base_url
+            captured["timeout"] = timeout
+
+        def add_project_result_group(
+            self,
+            project_id: str,
+            *,
+            source_path: str,
+            result_group: str,
+            display_name: str = "",
+            parse_options: dict | None = None,
+        ):
+            captured["project_id"] = project_id
+            captured["source_path"] = source_path
+            captured["result_group"] = result_group
+            captured["display_name"] = display_name
+            captured["parse_options"] = dict(parse_options or {})
+            return {"status": "pending"}
+
+        def get_project(self, project_id: str):
+            return {
+                "result_groups": [
+                    {
+                        "result_group": captured["result_group"],
+                        "status": "ready",
+                        "error_message": None,
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(sensitivity_service, "ODBClient", FakeClient)
+    monkeypatch.setattr(sensitivity_service.settings, "data_root", str(tmp_path))
+
+    result = sensitivity_service._submit_project_result_group_and_wait(
+        project_id=1001,
+        odb_path=str(odb_path),
+        batch_no="1",
+        job_name="job_a",
+        step="Step-1",
+        frame=0,
+        field_prefix="d_U_",
+        base_url="http://127.0.0.1:5000",
+        timeout=60,
+        result_group="sens_rg",
+        display_name="Sensitivity",
+        wait_timeout_sec=1,
+        poll_interval_sec=0.01,
+    )
+
+    assert captured["project_id"] == "1001"
+    assert captured["source_path"] == str(odb_path)
+    assert captured["parse_options"]["steps"] == ["Step-1"]
+    assert captured["parse_options"]["frames"] == [0]
+    assert captured["parse_options"]["invariants"] == "none"
+    assert "field_prefix" not in captured["parse_options"]
+    assert result["workspace"] == str(project_workspace)
 
 
 def test_generate_sensitivity_inp_and_store_loads_project_metadata_and_reuses_run_path(monkeypatch, tmp_path: Path):
