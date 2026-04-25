@@ -77,15 +77,13 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         (scalar_per_face [Rf] float32, num_frames, global_range or None).
     Returns None if no etype group was found.
 
-    global_range = (val_min, val_max) computed from ALL elements (not just surface faces),
-    so the legend covers the full model range including interior elements.
+    global_range = (val_min, val_max) from surface faces only (NaN excluded),
+    matching Abaqus which bases its legend on the visible surface.
     """
     Rf = len(src_etype)
     scalar_face = np.full(Rf, np.nan, dtype=np.float32)
     num_frames = None
     found_any = False
-    global_min = np.inf
-    global_max = -np.inf
 
     for etype_bytes in np.unique(src_etype):
         etype_str = etype_bytes.decode("ascii").rstrip("\x00")
@@ -117,13 +115,7 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         while frame_data.ndim > 2:
             frame_data = frame_data.mean(axis=1)
 
-        scalar_elem = _extract_component(frame_data, component_idx)   # [N_elem] — ALL elements
-
-        # Track global range from ALL elements (not just the surface subset)
-        finite_vals = scalar_elem[np.isfinite(scalar_elem)]
-        if finite_vals.size > 0:
-            global_min = min(global_min, float(finite_vals.min()))
-            global_max = max(global_max, float(finite_vals.max()))
+        scalar_elem = _extract_component(frame_data, component_idx)   # [N_elem]
 
         mask = src_etype == etype_bytes
         elem_rows = src_elem_row[mask]
@@ -133,7 +125,9 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
 
     if not found_any:
         return None
-    global_range = (global_min, global_max) if np.isfinite(global_min) else None
+    # global_range from surface faces only (matches Abaqus: legend uses visible surface values)
+    valid_face = scalar_face[np.isfinite(scalar_face)]
+    global_range = (float(valid_face.min()), float(valid_face.max())) if valid_face.size > 0 else None
     return scalar_face, num_frames, global_range
 _COMP_IDX = {"U1": 0, "U2": 1, "U3": 2}
 
@@ -748,9 +742,9 @@ def _en_per_vertex_averaged(
     Read ELEMENT_NODAL data and apply per-domain 75% conditional averaging.
 
     Returns (scalar_vertex [Nv] float32, num_frames, global_range) or None.
-    global_range = (val_min, val_max) over the FULL model:
-      - surface nodes: post-averaging values (respects 75% threshold)
-      - interior elements (not on surface): raw per-element-local values
+    global_range = (val_min, val_max) from surface post-averaged values only,
+    matching Abaqus which bases its legend on the averaged values of the
+    visible exterior surface nodes.
 
     Per domain:
       1. Collect node_row → [values from all elements sharing that node]
@@ -860,44 +854,12 @@ def _en_per_vertex_averaged(
             if avg is not None:
                 scalar_vertex[vtx] = avg
 
-    # Step 5: compute global range = surface post-averaged + interior element raw values
-    # Surface range comes from scalar_vertex (post-domain-averaged, correct per Abaqus).
-    # Interior elements (not in avd surface set) contribute raw per-local-node values.
+    # Step 5: global range from surface post-averaged values only.
+    # Abaqus legend = min/max of averaged nodal values on the visible surface.
+    # np.isfinite excludes vertices with no matching element data (NaN) so they
+    # don't corrupt the range via nan_to_num(nan=0.0) later.
     surf_valid = scalar_vertex[np.isfinite(scalar_vertex)]
-    if surf_valid.size > 0:
-        g_min = float(surf_valid.min())
-        g_max = float(surf_valid.max())
-    else:
-        g_min, g_max = np.inf, -np.inf
-
-    # Build set of surface element rows per etype for fast interior exclusion
-    surf_row_by_etype: Dict[bytes, set] = defaultdict(set)
-    for i in range(len(avg_elem_row)):
-        surf_row_by_etype[avg_elem_etype[i].tobytes()].add(int(avg_elem_row[i]))
-
-    for etype_bytes, sc in scalar_en_by_etype.items():
-        eb_bytes = etype_bytes.tobytes()
-        surf_rows = surf_row_by_etype.get(eb_bytes)
-        n_elem = len(sc)
-        if surf_rows:
-            is_surf = np.zeros(n_elem, dtype=bool)
-            valid_surf = np.array([r for r in surf_rows if r < n_elem], dtype=np.int64)
-            if valid_surf.size > 0:
-                is_surf[valid_surf] = True
-            if not is_surf.all():
-                int_sc = sc[~is_surf]
-                finite_int = int_sc[np.isfinite(int_sc)]
-                if finite_int.size > 0:
-                    g_min = min(g_min, float(finite_int.min()))
-                    g_max = max(g_max, float(finite_int.max()))
-        else:
-            # All elements of this etype are interior
-            finite_all = sc[np.isfinite(sc)]
-            if finite_all.size > 0:
-                g_min = min(g_min, float(finite_all.min()))
-                g_max = max(g_max, float(finite_all.max()))
-
-    global_range = (g_min, g_max) if np.isfinite(g_min) else None
+    global_range = (float(surf_valid.min()), float(surf_valid.max())) if surf_valid.size > 0 else None
     return scalar_vertex, num_frames, global_range
 
 
