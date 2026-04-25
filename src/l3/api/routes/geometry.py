@@ -51,6 +51,45 @@ def _compact_by_render_rows(
     return pos_out, idx_out
 
 
+# ── Chunked render-buffers ────────────────────────────────────────────────
+# Chunk size targets WebGL1 uint16 index limit (65535 verts/chunk).
+# Each face adds at most 3 new vertices, so FACES_PER_CHUNK * 3 must be ≤ 65535
+# in the worst case. 20000 faces → ≤ 60000 verts safely; in practice (faces
+# share vertices) actual unique-vertex count per chunk is much smaller.
+CHUNK_VERTEX_LIMIT = 60000
+FACES_PER_CHUNK    = CHUNK_VERTEX_LIMIT // 3   # = 20000
+
+
+def _build_render_chunks(positions: np.ndarray, indices: np.ndarray):
+    """
+    Split (positions, indices) into face_idx-contiguous chunks satisfying
+    the WebGL1 uint16 limit. Returns list of dicts:
+        { 'positions':       float32 [Nv_k, 3]   chunk-local vertex coords
+          'indices':         int32   [Nt_k, 3]   chunk-local triangle indices
+          'vertex_global_id': int32  [Nv_k]      chunk-local → global vertex
+          'face_idx_base':    int                global face_idx of local face 0 }
+
+    Per-chunk vertex count is upper-bounded by FACES_PER_CHUNK * 3 (≤ 60000).
+    Faces stay in their original render order, so global_face_idx =
+    face_idx_base + local_face_idx is exact.
+    """
+    Nt = len(indices)
+    chunks = []
+    for start in range(0, Nt, FACES_PER_CHUNK):
+        end = min(start + FACES_PER_CHUNK, Nt)
+        sub_indices = indices[start:end]                                # [Nt_k, 3]
+        unique_verts, remapped = np.unique(
+            sub_indices.ravel(), return_inverse=True
+        )
+        chunks.append({
+            "positions":        np.ascontiguousarray(positions[unique_verts]),
+            "indices":          remapped.reshape(-1, 3).astype(np.int32),
+            "vertex_global_id": unique_verts.astype(np.int32),
+            "face_idx_base":    start,
+        })
+    return chunks
+
+
 @router.get("/geometry/{instance}/render-buffers")
 async def get_render_buffers(
     odb_id: str,
@@ -112,6 +151,85 @@ async def get_render_buffers(
         content=payload,
         media_type="application/octet-stream",
         headers={"X-Face-Count": str(Nt)},
+    )
+
+
+@router.get("/geometry/{instance}/render-buffers-chunked")
+async def get_render_buffers_chunked(
+    odb_id: str,
+    instance: str,
+    set_name: Optional[str] = Query(default=None, alias="set", description="User set name to filter geometry"),
+):
+    """
+    Return chunked render buffers for one instance as L3BE binary.
+
+    Each chunk contains ≤ CHUNK_VERTEX_LIMIT (60000) unique vertices so that
+    indices fit in uint16 (WebGL1 fallback for GPUs lacking
+    OES_element_index_uint).
+
+    Section layout (see docs/l3/Binary-Payload-Spec.md §18):
+      - "chunk_count":       int32   [1]
+      - "positions_concat":  float32 [ΣNv_k, 3]
+      - "positions_offsets": int32   [K+1]   row-offsets into positions_concat
+      - "indices_concat":    int32   [ΣNt_k, 3]
+      - "indices_offsets":   int32   [K+1]   row-offsets into indices_concat
+      - "face_idx_base":     int32   [K]     global face_idx of each chunk's first face
+      - "vertex_global_id":  int32   [ΣNv_k] chunk-local → global vertex map
+
+    Optional ?set=<name>: filter to triangles in the named user set before chunking.
+
+    Headers:
+      X-Chunk-Count: K
+      X-Face-Count : total triangle count
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        raise NotFoundError(
+            f"Render data not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:])
+        indices   = np.ascontiguousarray(f["render/indices"][:]) \
+                    if "render/indices" in f else None
+
+    if indices is None:
+        sections, K, Nt = _build_chunked_payload(
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.int32),
+        )
+        return Response(
+            content=l3be_build(sections),
+            media_type="application/octet-stream",
+            headers={"X-Chunk-Count": str(K), "X-Face-Count": str(Nt)},
+        )
+
+    # Optional set filter — same logic as render-buffers
+    if set_name is not None:
+        manifest = ManifestRepo(idx.workspace)
+        render_rows = manifest.get_user_set_render_rows(set_name, instance)
+        if render_rows is None:
+            elem_labels = manifest.get_element_set_labels(set_name, instance)
+            if elem_labels is not None and len(elem_labels) > 0:
+                face_mask = get_face_mask_for_elem_labels(
+                    idx, instance, set(elem_labels.tolist())
+                )
+                render_rows = np.where(face_mask)[0].astype(np.int32)
+        if render_rows is not None and len(render_rows) > 0:
+            positions, indices = _compact_by_render_rows(
+                positions, indices, render_rows
+            )
+
+    sections, K, Nt = _build_chunked_payload(positions, indices)
+    return Response(
+        content=l3be_build(sections),
+        media_type="application/octet-stream",
+        headers={"X-Chunk-Count": str(K), "X-Face-Count": str(Nt)},
     )
 
 
@@ -299,4 +417,89 @@ async def get_render_buffers_subset(
         content=payload,
         media_type="application/octet-stream",
         headers={"X-Face-Count": str(Nt)},
+    )
+
+
+def _build_chunked_payload(positions: np.ndarray, indices: np.ndarray):
+    """
+    Helper shared by the GET and POST chunked endpoints. Returns
+    (sections list, chunk_count, total_face_count) ready for l3be_build.
+    """
+    chunks = _build_render_chunks(positions, indices)
+    K = len(chunks)
+    if K == 0:
+        positions_concat  = np.zeros((0, 3), dtype=np.float32)
+        positions_offsets = np.zeros(1, dtype=np.int32)
+        indices_concat    = np.zeros((0, 3), dtype=np.int32)
+        indices_offsets   = np.zeros(1, dtype=np.int32)
+        face_idx_base     = np.zeros(0, dtype=np.int32)
+        vertex_global_id  = np.zeros(0, dtype=np.int32)
+    else:
+        positions_concat = np.concatenate([c["positions"] for c in chunks], axis=0).astype(np.float32, copy=False)
+        indices_concat   = np.concatenate([c["indices"]   for c in chunks], axis=0).astype(np.int32,   copy=False)
+        vertex_global_id = np.concatenate([c["vertex_global_id"] for c in chunks]).astype(np.int32, copy=False)
+        pos_lens = np.array([len(c["positions"]) for c in chunks], dtype=np.int32)
+        idx_lens = np.array([len(c["indices"])   for c in chunks], dtype=np.int32)
+        positions_offsets = np.concatenate(([0], np.cumsum(pos_lens))).astype(np.int32)
+        indices_offsets   = np.concatenate(([0], np.cumsum(idx_lens))).astype(np.int32)
+        face_idx_base     = np.array([c["face_idx_base"] for c in chunks], dtype=np.int32)
+
+    sections = [
+        ("chunk_count",       np.array([K], dtype=np.int32)),
+        ("positions_concat",  positions_concat),
+        ("positions_offsets", positions_offsets),
+        ("indices_concat",    indices_concat),
+        ("indices_offsets",   indices_offsets),
+        ("face_idx_base",     face_idx_base),
+        ("vertex_global_id",  vertex_global_id),
+    ]
+    Nt = int(indices_offsets[-1]) if K > 0 else 0
+    return sections, K, Nt
+
+
+@router.post("/geometry/{instance}/render-buffers-subset-chunked")
+async def get_render_buffers_subset_chunked(
+    odb_id: str,
+    instance: str,
+    body: ElemSubsetRequest,
+):
+    """
+    Chunked variant of POST /render-buffers-subset.
+
+    Same body/semantics; output format mirrors GET /render-buffers-chunked
+    (see docs/l3/Binary-Payload-Spec.md §18).
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        raise NotFoundError(
+            f"Render data not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    labels_set = set(body.elem_labels)
+    face_mask = get_face_mask_for_elem_labels(idx, instance, labels_set)
+    render_rows = np.where(face_mask)[0].astype(np.int32)
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:])
+        indices   = np.ascontiguousarray(f["render/indices"][:]) \
+                    if "render/indices" in f else None
+
+    if len(render_rows) == 0 or indices is None:
+        sections, K, Nt = _build_chunked_payload(
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.int32),
+        )
+    else:
+        positions, indices = _compact_by_render_rows(positions, indices, render_rows)
+        sections, K, Nt = _build_chunked_payload(positions, indices)
+
+    return Response(
+        content=l3be_build(sections),
+        media_type="application/octet-stream",
+        headers={"X-Chunk-Count": str(K), "X-Face-Count": str(Nt)},
     )

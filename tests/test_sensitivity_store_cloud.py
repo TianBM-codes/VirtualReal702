@@ -6,6 +6,7 @@ import numpy as np
 from fastapi import Request
 
 from services.model_update.analysis import sensitivity_service
+from webapi import background_jobs
 from webapi.background_jobs import get_background_task
 from webapi.models import SensitivityRunAndStoreRequest
 from webapi.routers import sensitivity as sensitivity_router
@@ -732,3 +733,37 @@ def test_sensitivity_run_and_store_async_submit_returns_task(monkeypatch, tmp_pa
         raise AssertionError("background task did not finish in time")
 
     assert task["result"]["analysis_run_id"] == 88
+
+
+def test_background_task_persists_to_sqlite_and_can_be_reloaded(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "background_tasks.db"
+    monkeypatch.setattr(background_jobs, "_task_db_path", lambda: str(db_path))
+    background_jobs._ensure_task_store_ready()
+
+    def fake_run(**kwargs):
+        return {"analysis_run_id": 99, "project_id": kwargs["project_id"]}
+
+    snapshot = background_jobs.submit_background_task(
+        task_type="sensitivity.run_and_store",
+        fn=fake_run,
+        kwargs={"project_id": 7},
+        request_payload={"project_id": 7},
+    )
+    task_id = snapshot["task_id"]
+
+    for _ in range(50):
+        task = background_jobs.get_background_task(task_id)
+        if task and task["status"] == "succeeded":
+            break
+        time.sleep(0.01)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("background task did not finish in time")
+
+    background_jobs._TASKS.pop(task_id, None)
+    reloaded = background_jobs.get_background_task(task_id)
+
+    assert reloaded is not None
+    assert reloaded["task_id"] == task_id
+    assert reloaded["status"] == "succeeded"
+    assert reloaded["request"]["project_id"] == 7
+    assert reloaded["result"]["analysis_run_id"] == 99
