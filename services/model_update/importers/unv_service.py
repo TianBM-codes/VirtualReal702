@@ -253,6 +253,65 @@ def _sensor_position_item(row):
     }
 
 
+_ERROR_COMPONENT_PRIORITY = {
+    "UY": 0,
+    "UX": 1,
+    "UZ": 2,
+    "RY": 3,
+    "RX": 4,
+    "RZ": 5,
+}
+
+
+def _analysis_error_value(row):
+    updated = row.get("updated_relative_error")
+    if updated is not None:
+        return _safe_float(updated), "updated"
+    initial = row.get("initial_relative_error")
+    if initial is not None:
+        return _safe_float(initial), "initial"
+    return None, None
+
+
+def _analysis_error_sort_key(row):
+    component_name = str(row.get("component_name") or "").strip().upper()
+    component_priority = _ERROR_COMPONENT_PRIORITY.get(component_name, 999)
+    value, value_source = _analysis_error_value(row)
+    return (
+        _safe_int(row.get("load_case_no")) or -1,
+        _safe_int(row.get("result_no")) or -1,
+        1 if value_source == "updated" else 0,
+        -component_priority,
+        1 if value is not None else 0,
+    )
+
+
+def _build_analysis_error_lookup(rows):
+    grouped = {}
+    for row in rows:
+        point_no = str(row.get("point_no") or "").strip()
+        if not point_no:
+            continue
+        value, _ = _analysis_error_value(row)
+        if value is None:
+            continue
+        existing = grouped.get(point_no)
+        if existing is None or _analysis_error_sort_key(row) > _analysis_error_sort_key(existing):
+            grouped[point_no] = row
+    return grouped
+
+
+def _sensor_error_keys(row):
+    keys = []
+    measuring_point_name = str(row.get("measuring_point_name") or "").strip()
+    if measuring_point_name:
+        keys.append(measuring_point_name)
+    point_id = _safe_int(row.get("id"))
+    if point_id is not None:
+        keys.append(str(point_id))
+    return keys
+
+
 def _resolve_deform_rows(cursor, project_id, static_result_id=None, load_case_no=None, result_no=None):
     if static_result_id is not None:
         cursor.execute(
@@ -535,12 +594,31 @@ def get_sensor_relative_error(project_id):
             """,
             (project_id,),
         )
-        rows = cursor.fetchall()
+        sensor_rows = cursor.fetchall()
+        cursor.execute(
+            """
+            SELECT load_case_no, result_no, point_no, component_name,
+                   initial_relative_error, updated_relative_error
+            FROM t_mt_py_fem_analysis_error
+            WHERE pid = %s
+            ORDER BY load_case_no DESC, result_no DESC, point_no, component_name
+            """,
+            (project_id,),
+        )
+        error_lookup = _build_analysis_error_lookup(cursor.fetchall())
         res = []
-        import random
-        for row in rows:
+        for row in sensor_rows:
             iter_dict = _sensor_position_item(row)
-            iter_dict["e_value"] = random.random()
+            matched_rows = [
+                error_lookup[key]
+                for key in _sensor_error_keys(row)
+                if key in error_lookup
+            ]
+            if matched_rows:
+                chosen_row = max(matched_rows, key=_analysis_error_sort_key)
+                iter_dict["e_value"] = _analysis_error_value(chosen_row)[0]
+            else:
+                iter_dict["e_value"] = None
             res.append(iter_dict)
         return res
     finally:

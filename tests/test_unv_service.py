@@ -182,9 +182,37 @@ def test_import_unv_data_keeps_dynamic_modal_tables_for_modal_results(monkeypatc
 
 
 class _QueryCursor:
-    def __init__(self):
+    def __init__(self, measuring_rows=None, static_rows=None, error_rows=None):
         self.last_sql = ""
         self.last_params = None
+        self.measuring_rows = measuring_rows or [
+            {
+                "id": 1,
+                "measuring_point_name": "WY1",
+                "sensor_type_id": 21,
+                "x_position": 1.0,
+                "y_position": 2.0,
+                "z_position": 3.0,
+            },
+            {
+                "id": 2,
+                "measuring_point_name": "WY2",
+                "sensor_type_id": 21,
+                "x_position": 4.0,
+                "y_position": 5.0,
+                "z_position": 6.0,
+            },
+        ]
+        self.static_rows = static_rows or [
+            {
+                "id": 9,
+                "point": 1001,
+                "ux": 0.5,
+                "uy": -0.25,
+                "uz": 1.0,
+            }
+        ]
+        self.error_rows = error_rows or []
 
     def execute(self, sql, params=None):
         self.last_sql = " ".join(sql.split())
@@ -194,35 +222,12 @@ class _QueryCursor:
         sql = self.last_sql
         params = self.last_params
         if "FROM t_mt_measuring_point_info" in sql and "ORDER BY id" in sql:
-            return [
-                {
-                    "id": 1,
-                    "measuring_point_name": "WY1",
-                    "sensor_type_id": 21,
-                    "x_position": 1.0,
-                    "y_position": 2.0,
-                    "z_position": 3.0,
-                },
-                {
-                    "id": 2,
-                    "measuring_point_name": "WY2",
-                    "sensor_type_id": 21,
-                    "x_position": 4.0,
-                    "y_position": 5.0,
-                    "z_position": 6.0,
-                },
-            ]
+            return list(self.measuring_rows)
         if "FROM t_mt_py_test_static_result" in sql and "WHERE pid = %s AND id = %s" in sql:
             assert params == (101, 9)
-            return [
-                {
-                    "id": 9,
-                    "point": 1001,
-                    "ux": 0.5,
-                    "uy": -0.25,
-                    "uz": 1.0,
-                }
-            ]
+            return list(self.static_rows)
+        if "FROM t_mt_py_fem_analysis_error" in sql:
+            return list(self.error_rows)
         return []
 
     def fetchone(self):
@@ -232,14 +237,7 @@ class _QueryCursor:
             assert params == (101, "1001")
             return {"nid": "1001", "x": 1.0, "y": 2.0, "z": 3.0}
         if "FROM t_mt_measuring_point_info" in sql and "LIMIT 1" in sql:
-            return {
-                "id": 1,
-                "measuring_point_name": "WY1",
-                "sensor_type_id": 21,
-                "x_position": 1.0,
-                "y_position": 2.0,
-                "z_position": 3.0,
-            }
+            return dict(self.measuring_rows[0])
         return None
 
     def close(self):
@@ -247,8 +245,12 @@ class _QueryCursor:
 
 
 class _QueryConnection:
-    def __init__(self):
-        self.cursor_obj = _QueryCursor()
+    def __init__(self, measuring_rows=None, static_rows=None, error_rows=None):
+        self.cursor_obj = _QueryCursor(
+            measuring_rows=measuring_rows,
+            static_rows=static_rows,
+            error_rows=error_rows,
+        )
 
     def cursor(self, dictionary=False):
         return self.cursor_obj
@@ -266,6 +268,106 @@ def test_get_sensor_positions_returns_expected_shape(monkeypatch):
         {"sensor_label": "WY1", "sensor_type": "位移", "sensor_pos": [1.0, 2.0, 3.0]},
         {"sensor_label": "WY2", "sensor_type": "位移", "sensor_pos": [4.0, 5.0, 6.0]},
     ]
+
+
+def test_get_sensor_relative_error_uses_updated_then_initial(monkeypatch):
+    monkeypatch.setattr(
+        unv_service,
+        "get_connection",
+        lambda: _QueryConnection(
+            error_rows=[
+                {
+                    "load_case_no": 1,
+                    "result_no": 1,
+                    "point_no": "WY1",
+                    "component_name": "UX",
+                    "initial_relative_error": 12.0,
+                    "updated_relative_error": 8.0,
+                },
+                {
+                    "load_case_no": 1,
+                    "result_no": 1,
+                    "point_no": "WY2",
+                    "component_name": "UY",
+                    "initial_relative_error": 5.0,
+                    "updated_relative_error": None,
+                },
+            ],
+        ),
+    )
+
+    result = unv_service.get_sensor_relative_error(101)
+
+    assert result[0]["sensor_label"] == "WY1"
+    assert result[0]["sensor_pos"] == [1.0, 2.0, 3.0]
+    assert result[0]["e_value"] == 8.0
+    assert result[1]["sensor_label"] == "WY2"
+    assert result[1]["sensor_pos"] == [4.0, 5.0, 6.0]
+    assert result[1]["e_value"] == 5.0
+
+
+def test_get_sensor_relative_error_prefers_latest_case_and_uy_component(monkeypatch):
+    monkeypatch.setattr(
+        unv_service,
+        "get_connection",
+        lambda: _QueryConnection(
+            error_rows=[
+                {
+                    "load_case_no": 1,
+                    "result_no": 1,
+                    "point_no": "WY1",
+                    "component_name": "UY",
+                    "initial_relative_error": 9.0,
+                    "updated_relative_error": 7.0,
+                },
+                {
+                    "load_case_no": 2,
+                    "result_no": 1,
+                    "point_no": "WY1",
+                    "component_name": "UX",
+                    "initial_relative_error": 6.0,
+                    "updated_relative_error": 4.0,
+                },
+                {
+                    "load_case_no": 2,
+                    "result_no": 1,
+                    "point_no": "WY1",
+                    "component_name": "UY",
+                    "initial_relative_error": 3.0,
+                    "updated_relative_error": 2.0,
+                },
+            ],
+        ),
+    )
+
+    result = unv_service.get_sensor_relative_error(101)
+
+    assert result[0]["e_value"] == 2.0
+    assert result[1]["e_value"] is None
+
+
+def test_get_sensor_relative_error_matches_point_no_by_sensor_id(monkeypatch):
+    monkeypatch.setattr(
+        unv_service,
+        "get_connection",
+        lambda: _QueryConnection(
+            error_rows=[
+                {
+                    "load_case_no": 1,
+                    "result_no": 1,
+                    "point_no": "1",
+                    "component_name": "UY",
+                    "initial_relative_error": 11.0,
+                    "updated_relative_error": None,
+                }
+            ],
+        ),
+    )
+
+    result = unv_service.get_sensor_relative_error(101)
+
+    assert result[0]["e_value"] == 11.0
+    assert result[1]["e_value"] is None
 
 
 def test_get_deform_sensor_positions_scales_static_displacement(monkeypatch):

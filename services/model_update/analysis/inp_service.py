@@ -9,7 +9,7 @@ from src.inp.parameter_mapping import (
     extract_parameter_target_rows,
 )
 from db import get_connection, ensure_tables_exist, clear_fem_tables
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -2667,6 +2667,244 @@ STATIC_COMPONENT_MAP = {
     "RY": ("ry", "ur2"),
     "RZ": ("rz", "ur3"),
 }
+_STATIC_TEST_DATA_DISPLACEMENT_TYPES = {"21", "位移", "位移传感器", "displacement", "displacement_sensor"}
+
+
+def _normalize_static_test_sensor_type(value) -> str:
+    text = str(value or "").strip().lower()
+    if text.isdigit():
+        return text
+    return text.replace(" ", "_")
+
+
+def _is_displacement_static_test_sensor_type(value) -> bool:
+    return _normalize_static_test_sensor_type(value) in _STATIC_TEST_DATA_DISPLACEMENT_TYPES
+
+
+def _coerce_static_test_float(value):
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def _is_static_test_sensor_entry(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return any(
+        key in payload
+        for key in (
+            "sensor_label",
+            "measuring_point_name",
+            "point_no",
+            "point",
+            "label",
+            "name",
+            "sensorName",
+        )
+    )
+
+
+def _extract_static_test_entry_scalar(value) -> Optional[float]:
+    if isinstance(value, dict):
+        for key in ("value", "uy", "y", "displacement", "reading", "measurement"):
+            if key in value and value.get(key) not in (None, ""):
+                return _coerce_static_test_float(value.get(key))
+        return None
+    return _coerce_static_test_float(value)
+
+
+def _extract_static_test_entry_components(value) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+    if isinstance(value, dict):
+        ux = _coerce_static_test_float(value.get("ux", value.get("x")))
+        uy = _coerce_static_test_float(value.get("uy", value.get("y")))
+        uz = _coerce_static_test_float(value.get("uz", value.get("z")))
+        rx = _coerce_static_test_float(value.get("rx", value.get("ur1")))
+        ry = _coerce_static_test_float(value.get("ry", value.get("ur2")))
+        rz = _coerce_static_test_float(value.get("rz", value.get("ur3")))
+        if ux is None and uy is None and uz is None:
+            scalar = _extract_static_test_entry_scalar(value)
+            if scalar is not None:
+                return 0.0, float(scalar), 0.0, rx, ry, rz
+        return (
+            0.0 if ux is None else float(ux),
+            0.0 if uy is None else float(uy),
+            0.0 if uz is None else float(uz),
+            rx,
+            ry,
+            rz,
+        )
+
+    scalar = _extract_static_test_entry_scalar(value)
+    if scalar is None:
+        return None, None, None, None, None, None
+    return 0.0, float(scalar), 0.0, None, None, None
+
+
+def _iter_static_test_payload_entries(payload) -> List[dict]:
+    if payload is None:
+        return []
+    if isinstance(payload, str):
+        payload = _json_loads(payload)
+    if payload is None:
+        return []
+
+    if _is_static_test_sensor_entry(payload):
+        return [dict(payload)]
+
+    if isinstance(payload, dict):
+        for key in ("data", "rows", "items", "results", "sensors", "values", "records"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return [dict(item) if isinstance(item, dict) else {"value": item} for item in nested]
+            if isinstance(nested, dict):
+                payload = nested
+                break
+
+    if isinstance(payload, list):
+        entries = []
+        for item in payload:
+            if isinstance(item, dict):
+                entries.append(dict(item))
+        return entries
+
+    if isinstance(payload, dict):
+        entries = []
+        for sensor_label, reading in payload.items():
+            if str(sensor_label or "").strip() in {"project_id", "sensor_type", "timestamp", "time", "created_at", "updated_at"}:
+                continue
+            entries.append({"sensor_label": str(sensor_label), "value": reading})
+        return entries
+
+    return []
+
+
+def _load_latest_static_test_data_row(cursor, project_id: int):
+    statements = [
+        """
+        SELECT sensor_type, data
+        FROM t_mt_static_test_data
+        WHERE project_id = %s
+        ORDER BY id DESC
+        """,
+        """
+        SELECT sensor_type, data
+        FROM t_mt_static_test_data
+        WHERE project_id = %s
+        ORDER BY created_at DESC
+        """,
+        """
+        SELECT sensor_type, data
+        FROM t_mt_static_test_data
+        WHERE project_id = %s
+        ORDER BY create_time DESC
+        """,
+        """
+        SELECT sensor_type, data
+        FROM t_mt_static_test_data
+        WHERE project_id = %s
+        """,
+    ]
+    rows = None
+    for sql in statements:
+        try:
+            cursor.execute(sql, (int(project_id),))
+            rows = cursor.fetchall()
+        except Exception:
+            rows = None
+        if rows is not None:
+            break
+    if not rows:
+        return None
+    for row in rows:
+        if _is_displacement_static_test_sensor_type(row.get("sensor_type")):
+            return row
+    return dict(rows[0])
+
+
+def _load_static_test_rows_from_data_table(cursor, project_id: int) -> List[dict]:
+    row = _load_latest_static_test_data_row(cursor, project_id)
+    if not row:
+        return []
+
+    try:
+        payload = _json_loads(row.get("data"))
+    except Exception as exc:
+        raise ValueError(f"failed to parse t_mt_static_test_data.data JSON: {exc}") from exc
+
+    entries = _iter_static_test_payload_entries(payload)
+    if not entries:
+        raise ValueError("t_mt_static_test_data.data does not contain any readable sensor entries")
+
+    measuring_rows = []
+    try:
+        cursor.execute(
+            """
+            SELECT measuring_point_name, sensor_type_id
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id, measuring_point_name
+            """,
+            (int(project_id),),
+        )
+        measuring_rows = cursor.fetchall() or []
+    except Exception:
+        measuring_rows = []
+    known_labels = {
+        str(item.get("measuring_point_name")): item
+        for item in measuring_rows
+        if item.get("measuring_point_name") is not None
+    }
+
+    rows = []
+    for entry in entries:
+        sensor_label = None
+        for key in ("sensor_label", "measuring_point_name", "point_no", "point", "label", "name", "sensorName"):
+            value = entry.get(key)
+            if value not in (None, ""):
+                sensor_label = str(value)
+                break
+        if not sensor_label:
+            continue
+        if known_labels and sensor_label not in known_labels:
+            continue
+
+        raw_value = entry.get("data", entry.get("value", entry))
+        ux, uy, uz, rx, ry, rz = _extract_static_test_entry_components(raw_value)
+        if ux is None and uy is None and uz is None:
+            continue
+        rows.append(
+            {
+                "point": str(sensor_label),
+                "ux": ux,
+                "uy": uy,
+                "uz": uz,
+                "rx": rx,
+                "ry": ry,
+                "rz": rz,
+                "load_factor": None,
+                "extra_json": {
+                    "source": "t_mt_static_test_data",
+                    "sensor_type": row.get("sensor_type"),
+                },
+            }
+        )
+
+    if not rows:
+        raise ValueError("no displacement sensor rows from t_mt_static_test_data matched the measuring points")
+    return rows
+
+
+def _load_test_static_rows(cursor, project_id: int, load_case_no: int, result_no: int) -> List[dict]:
+    cursor.execute("""
+        SELECT point, ux, uy, uz, rx, ry, rz, load_factor, extra_json
+        FROM t_mt_py_test_static_result
+        WHERE pid = %s AND load_case_no = %s AND result_no = %s
+        ORDER BY point
+    """, (int(project_id), int(load_case_no), int(result_no)))
+    rows = cursor.fetchall() or []
+    if rows:
+        return rows
+    return _load_static_test_rows_from_data_table(cursor, int(project_id))
 
 
 def _resolve_static_components(components=None, include_rotations=False):
@@ -2691,8 +2929,6 @@ def _resolve_static_case_selection(cursor, project_id: int, load_case_no=None, r
         ORDER BY load_case_no, result_no
     """, (project_id,))
     test_pairs = cursor.fetchall()
-    if not test_pairs:
-        raise ValueError("test static results not found")
 
     cursor.execute("""
         SELECT DISTINCT load_case_no
@@ -2703,6 +2939,24 @@ def _resolve_static_case_selection(cursor, project_id: int, load_case_no=None, r
     fem_cases = [int(row["load_case_no"]) for row in cursor.fetchall()]
     if not fem_cases:
         raise ValueError("fem static results not found")
+
+    if not test_pairs:
+        if not _load_latest_static_test_data_row(cursor, project_id):
+            raise ValueError("test static results not found")
+        if load_case_no is None:
+            chosen_load_case_no = int(fem_cases[0])
+        else:
+            chosen_load_case_no = int(load_case_no)
+            if chosen_load_case_no not in fem_cases:
+                raise ValueError(f"fem static load_case_no not found: {chosen_load_case_no}")
+
+        if result_no is None:
+            chosen_result_no = 1
+        else:
+            chosen_result_no = int(result_no)
+            if chosen_result_no != 1:
+                raise ValueError("t_mt_static_test_data only supports result_no=1")
+        return chosen_load_case_no, chosen_result_no
 
     test_case_to_results = {}
     for row in test_pairs:
@@ -2916,13 +3170,12 @@ def store_updated_static_analysis_error(
             components=components,
             include_rotations=include_rotations,
         )
-        cursor.execute("""
-            SELECT point, ux, uy, uz, rx, ry, rz, load_factor, extra_json
-            FROM t_mt_py_test_static_result
-            WHERE pid = %s AND load_case_no = %s AND result_no = %s
-            ORDER BY point
-        """, (project_id, chosen_load_case_no, chosen_result_no))
-        test_rows_raw = cursor.fetchall()
+        test_rows_raw = _load_test_static_rows(
+            cursor,
+            project_id=int(project_id),
+            load_case_no=int(chosen_load_case_no),
+            result_no=int(chosen_result_no),
+        )
         if not test_rows_raw:
             raise ValueError("selected test static result rows not found")
         test_rows = {str(row["point"]): row for row in test_rows_raw}
@@ -2987,13 +3240,12 @@ def compute_static_correlation(
             include_rotations=include_rotations,
         )
 
-        cursor.execute("""
-            SELECT point, ux, uy, uz, rx, ry, rz, load_factor, extra_json
-            FROM t_mt_py_test_static_result
-            WHERE pid = %s AND load_case_no = %s AND result_no = %s
-            ORDER BY point
-        """, (project_id, chosen_load_case_no, chosen_result_no))
-        test_rows_raw = cursor.fetchall()
+        test_rows_raw = _load_test_static_rows(
+            cursor,
+            project_id=int(project_id),
+            load_case_no=int(chosen_load_case_no),
+            result_no=int(chosen_result_no),
+        )
         if not test_rows_raw:
             raise ValueError("selected test static result rows not found")
         test_rows = {str(row["point"]): row for row in test_rows_raw}
