@@ -983,13 +983,20 @@ async function applyColors({ field, componentVal, componentIdx, renderMode, step
       const tValues = new Float32Array(sections.u_per_vertex.data)   // [Nv_global]
       const im = store.instanceMeshes[instName]; if (!im) return
       setColorMode(im, 'uv')
-      // Scatter global tValues into each chunk's uv via vertexGlobalId map
+      // Scatter global tValues into each chunk's uv via vertexGlobalId map.
+      // NaN = element type has no data for this component → grey (UV_CLEAR_V).
       for (const c of im.chunks) {
         const uv = c.uvAttr.array
         const vgid = c.vertexGlobalId
         for (let i = 0; i < vgid.length; i++) {
-          uv[i*2]     = tValues[vgid[i]]
-          uv[i*2 + 1] = UV_DATA_V
+          const t = tValues[vgid[i]]
+          if (isNaN(t)) {
+            uv[i*2]     = UV_DEFAULT_U
+            uv[i*2 + 1] = UV_CLEAR_V
+          } else {
+            uv[i*2]     = t
+            uv[i*2 + 1] = UV_DATA_V
+          }
         }
         c.uvAttr.needsUpdate = true
       }

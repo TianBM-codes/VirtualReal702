@@ -640,23 +640,29 @@ def frame_scalars(
                 vtx_idx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
                 scalar_vertex = scalar_vertex[vtx_idx]
 
-    scalar_vertex = np.nan_to_num(scalar_vertex, nan=0.0)
-
+    # NaN = element type has no data for this component (e.g. shell missing S33).
+    # Preserve NaN through normalization so the frontend can render those faces grey.
     # Use full-model range (computed above per code-path) so the legend matches Abaqus.
     # Fall back to surface-only range only if no global range was captured.
     if global_range is not None and np.isfinite(global_range[0]):
         val_min, val_max = float(global_range[0]), float(global_range[1])
     else:
-        val_min = float(scalar_vertex.min())
-        val_max = float(scalar_vertex.max())
+        finite = scalar_vertex[np.isfinite(scalar_vertex)]
+        if finite.size > 0:
+            val_min, val_max = float(finite.min()), float(finite.max())
+        else:
+            val_min, val_max = 0.0, 0.0
     legend_range = np.array([val_min, val_max], dtype=np.float32)
 
     span = val_max - val_min
+    has_data = np.isfinite(scalar_vertex)
     if span < 1e-12:
-        u_per_vertex = np.zeros(len(scalar_vertex), dtype=np.float32)
+        u_per_vertex = np.where(has_data, 0.0, np.nan).astype(np.float32)
     else:
-        u_per_vertex = np.clip(
-            (scalar_vertex - val_min) / span, 0.0, 1.0
+        u_per_vertex = np.where(
+            has_data,
+            np.clip((scalar_vertex - val_min) / span, 0.0, 1.0),
+            np.nan,
         ).astype(np.float32)
 
     return u_per_vertex, legend_range, result_position
