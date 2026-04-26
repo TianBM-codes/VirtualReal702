@@ -52,17 +52,27 @@ async def list_sensitivity_fields(
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     manifest = ManifestRepo(idx.workspace)
 
-    result_files = manifest.list_result_files(step_name=step)
-
     fields = []
-    for rf in result_files:
-        if rf.get("result_group") != result_group:
-            continue
-        field_name = str(rf.get("field_name") or "")
+    with manifest._get_conn() as conn:
+        if step:
+            rows = conn.execute(
+                "SELECT step_name, field_name FROM result_files"
+                " WHERE result_group=? AND step_name=? ORDER BY field_name",
+                (result_group, step),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT step_name, field_name FROM result_files"
+                " WHERE result_group=? ORDER BY field_name",
+                (result_group,),
+            ).fetchall()
+
+    for row in rows:
+        field_name = str(row["field_name"] or "")
         parsed = _parse_merged_field_name(field_name)
         fields.append({
             "field_name": field_name,
-            "step": rf.get("step_name"),
+            "step": row["step_name"],
             **parsed,
         })
 
