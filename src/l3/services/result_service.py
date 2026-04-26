@@ -95,22 +95,20 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         etype_grp = f[etype_grp_path]
 
         # Solid elements: data is directly at etype_grp/data
-        # Shell elements: data is in sp{n} subgroups; average across section points
+        # Shell elements: data is in sp{n} subgroups; use sp1 (section point 1) only
         if "data" in etype_grp:
-            sp_datasets = [etype_grp["data"]]
+            ds = etype_grp["data"]
         else:
             sp_keys = sorted(k for k in etype_grp.keys() if k.startswith("sp"))
-            sp_datasets = [etype_grp[k]["data"] for k in sp_keys
-                           if "data" in etype_grp[k]]
-        if not sp_datasets:
-            continue
+            sp_key = "sp1" if "sp1" in etype_grp else (sp_keys[0] if sp_keys else None)
+            if sp_key is None or "data" not in etype_grp[sp_key]:
+                continue
+            ds = etype_grp[sp_key]["data"]
 
         if num_frames is None:
-            num_frames = sp_datasets[0].shape[0]
+            num_frames = ds.shape[0]
 
-        # Read and average across section points
-        sp_frames = [ds[frame_idx] for ds in sp_datasets]
-        frame_data = np.mean(np.stack(sp_frames, axis=0), axis=0) if len(sp_frames) > 1 else sp_frames[0]
+        frame_data = ds[frame_idx]
 
         # Average over middle dimensions (local_nodes or ips) until [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:
@@ -217,22 +215,20 @@ def _scalar_from_element_position(f, position: str, instance: str,
 
         etype_grp = f[etype_grp_path]
 
-        # Solid elements: data directly; shell elements: sp{n} subgroups → average
+        # Solid elements: data directly; shell elements: sp{n} subgroups → use sp1 only
         if "data" in etype_grp:
-            sp_datasets = [etype_grp["data"]]
+            ds = etype_grp["data"]
         else:
             sp_keys = sorted(k for k in etype_grp.keys() if k.startswith("sp"))
-            sp_datasets = [etype_grp[k]["data"] for k in sp_keys
-                           if "data" in etype_grp[k]]
-        if not sp_datasets:
-            continue
+            sp_key = "sp1" if "sp1" in etype_grp else (sp_keys[0] if sp_keys else None)
+            if sp_key is None or "data" not in etype_grp[sp_key]:
+                continue
+            ds = etype_grp[sp_key]["data"]
 
         if num_frames is None:
-            num_frames = sp_datasets[0].shape[0]
+            num_frames = ds.shape[0]
 
-        sp_frames = [ds[frame_idx] for ds in sp_datasets]
-        frame_data = (np.mean(np.stack(sp_frames, axis=0), axis=0)
-                      if len(sp_frames) > 1 else sp_frames[0])
+        frame_data = ds[frame_idx]
 
         # Average over all middle dimensions until shape is [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:

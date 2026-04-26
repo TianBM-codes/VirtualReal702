@@ -1208,7 +1208,17 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 continue
 
             first_field = first_frame.fieldOutputs[field_name]
-            components  = list(first_field.componentLabels)
+            # Build component list as union across all block componentLabels.
+            # first_field.componentLabels returns the intersection across element
+            # types, which drops S13/S23 for mixed shell+solid models.
+            _comp_union = []
+            _comp_set   = set()
+            for _blk in first_field.bulkDataBlocks:
+                for _c in list(getattr(_blk, 'componentLabels', None) or []):
+                    if _c not in _comp_set:
+                        _comp_union.append(_c)
+                        _comp_set.add(_c)
+            components  = _comp_union if _comp_union else list(first_field.componentLabels)
             invariants  = [str(i) for i in first_field.validInvariants]
 
             safe_step  = safe(step_name)
@@ -1428,28 +1438,6 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             npsave(fr_path, data_nd)
                     except Exception as _e:
                         pass  # per-frame EN extrapolation failure is non-fatal
-
-            # ── Extend components if solid blocks have more than shell blocks ──
-            # first_field.componentLabels returns the INTERSECTION across all
-            # element types in the instance, so for a mixed shell+solid model
-            # it only reports the 4 shell in-plane components, dropping S13/S23.
-            # Detect this by comparing max ncomp across blocks to len(components)
-            # and extend using the standard Abaqus Voigt-notation suffix sequence.
-            _max_ncomp = max(
-                (v['ncomp'] for v in block_struct.values()
-                 if isinstance(v.get('ncomp'), int)),
-                default=len(components)
-            )
-            if _max_ncomp > len(components) and len(components) == 4 and _max_ncomp == 6:
-                _T4 = ['11', '22', '33', '12']
-                _T6 = ['11', '22', '33', '12', '13', '23']
-                _first = components[0] if components else ''
-                _prefix = _first[:-2] if len(_first) > 2 else ''
-                if _prefix and list(components) == [_prefix + s for s in _T4]:
-                    _extra = [_prefix + s for s in _T6[4:]]
-                    components = list(components) + _extra
-                    print("    [components] extended to {} (solid blocks have ncomp={})".format(
-                        components, _max_ncomp))
 
             # Write field meta.json
             jdump(os.path.join(field_dir, 'meta.json'), {
