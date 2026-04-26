@@ -95,22 +95,20 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         etype_grp = f[etype_grp_path]
 
         # Solid elements: data is directly at etype_grp/data
-        # Shell elements: data is in sp{n} subgroups; average across section points
+        # Shell elements: data is in sp{n} subgroups; use sp1 (section point 1) only
         if "data" in etype_grp:
-            sp_datasets = [etype_grp["data"]]
+            ds = etype_grp["data"]
         else:
             sp_keys = sorted(k for k in etype_grp.keys() if k.startswith("sp"))
-            sp_datasets = [etype_grp[k]["data"] for k in sp_keys
-                           if "data" in etype_grp[k]]
-        if not sp_datasets:
-            continue
+            sp_key = "sp1" if "sp1" in etype_grp else (sp_keys[0] if sp_keys else None)
+            if sp_key is None or "data" not in etype_grp[sp_key]:
+                continue
+            ds = etype_grp[sp_key]["data"]
 
         if num_frames is None:
-            num_frames = sp_datasets[0].shape[0]
+            num_frames = ds.shape[0]
 
-        # Read and average across section points
-        sp_frames = [ds[frame_idx] for ds in sp_datasets]
-        frame_data = np.mean(np.stack(sp_frames, axis=0), axis=0) if len(sp_frames) > 1 else sp_frames[0]
+        frame_data = ds[frame_idx]
 
         # Average over middle dimensions (local_nodes or ips) until [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:
@@ -217,22 +215,20 @@ def _scalar_from_element_position(f, position: str, instance: str,
 
         etype_grp = f[etype_grp_path]
 
-        # Solid elements: data directly; shell elements: sp{n} subgroups → average
+        # Solid elements: data directly; shell elements: sp{n} subgroups → use sp1 only
         if "data" in etype_grp:
-            sp_datasets = [etype_grp["data"]]
+            ds = etype_grp["data"]
         else:
             sp_keys = sorted(k for k in etype_grp.keys() if k.startswith("sp"))
-            sp_datasets = [etype_grp[k]["data"] for k in sp_keys
-                           if "data" in etype_grp[k]]
-        if not sp_datasets:
-            continue
+            sp_key = "sp1" if "sp1" in etype_grp else (sp_keys[0] if sp_keys else None)
+            if sp_key is None or "data" not in etype_grp[sp_key]:
+                continue
+            ds = etype_grp[sp_key]["data"]
 
         if num_frames is None:
-            num_frames = sp_datasets[0].shape[0]
+            num_frames = ds.shape[0]
 
-        sp_frames = [ds[frame_idx] for ds in sp_datasets]
-        frame_data = (np.mean(np.stack(sp_frames, axis=0), axis=0)
-                      if len(sp_frames) > 1 else sp_frames[0])
+        frame_data = ds[frame_idx]
 
         # Average over all middle dimensions until shape is [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:
@@ -998,20 +994,20 @@ def _compute_en_global_range(
     node_rows = np.concatenate(all_nodes)
     values    = np.concatenate(all_vals)
 
-    # Per-domain raw range (for the 75% threshold denominator)
-    dom_sort    = np.argsort(sec_ids, kind='stable')
-    sec_dom     = sec_ids[dom_sort]
-    val_dom     = values[dom_sort]
-    dom_bounds  = np.concatenate([[0],
-                                   np.where(sec_dom[1:] != sec_dom[:-1])[0] + 1,
-                                   [len(sec_dom)]])
+    # Per-domain raw range (denominator for the 75% threshold)
+    dom_sort      = np.argsort(sec_ids, kind='stable')
+    sec_dom       = sec_ids[dom_sort]
+    val_dom       = values[dom_sort]
+    dom_bounds    = np.concatenate([[0],
+                                     np.where(sec_dom[1:] != sec_dom[:-1])[0] + 1,
+                                     [len(sec_dom)]])
     dom_min_arr   = np.minimum.reduceat(val_dom, dom_bounds[:-1])
     dom_max_arr   = np.maximum.reduceat(val_dom, dom_bounds[:-1])
     dom_range_arr = dom_max_arr - dom_min_arr
     dom_sec_arr   = sec_dom[dom_bounds[:-1]]
     dom_range_map = {int(s): float(r) for s, r in zip(dom_sec_arr, dom_range_arr)}
 
-    # Per-node stats: sort by (domain, node_row) compound key
+    # Per-(section, node) stats via compound key
     max_nr      = int(node_rows.max()) + 1
     compound    = sec_ids.astype(np.int64) * max_nr + node_rows.astype(np.int64)
     node_sort   = np.argsort(compound, kind='stable')
@@ -1034,17 +1030,19 @@ def _compute_en_global_range(
         [dom_range_map.get(int(s), 0.0) for s in node_sec_arr], dtype=np.float64
     )
 
-    # Vectorized 75% threshold: averaged nodes use mean; unaveraged use per-elem spread
-    avg_mask = (dom_range_per_node < 1e-12) | (node_spr_arr <= average_threshold * dom_range_per_node)
+    # 75% threshold: nodes whose spread ≤ 75% of their section domain range are
+    # averaged (use mean); the rest keep per-element values.
+    # Legend range = min/max of post-averaging values across all sections.
+    avg_mask = (
+        (dom_range_per_node < 1e-12) |
+        (node_spr_arr <= average_threshold * dom_range_per_node)
+    )
 
-    g_min = np.inf
-    g_max = -np.inf
-
+    g_min, g_max = np.inf, -np.inf
     if avg_mask.any():
-        means = node_mean_arr[avg_mask]
-        g_min = min(g_min, float(means.min()))
-        g_max = max(g_max, float(means.max()))
-
+        m = node_mean_arr[avg_mask]
+        g_min = min(g_min, float(m.min()))
+        g_max = max(g_max, float(m.max()))
     if (~avg_mask).any():
         g_min = min(g_min, float(node_min_arr[~avg_mask].min()))
         g_max = max(g_max, float(node_max_arr[~avg_mask].max()))

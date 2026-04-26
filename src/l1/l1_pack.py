@@ -137,6 +137,151 @@ def pack_assembly(raw_dir, workspace, meta):
     print(f"    done. ({_fmt_t(time.time() - t0)})")
 
 
+# ─── Shell section refinement ─────────────────────────────────────────────────
+
+# Element type names whose surface normal defines an averaging domain.
+# Solid elements (C3D*) are intentionally excluded.
+_SHELL_PREFIXES = ('S3', 'S4', 'S6', 'S8', 'SC', 'STRI', 'M3D')
+
+
+def _is_shell_etype(name):
+    up = name.upper()
+    return any(up.startswith(p) for p in _SHELL_PREFIXES)
+
+
+def _refine_shell_sections(h5_path, angle_thresh_deg=20.0):
+    """
+    Post-pass on a geometry H5 file: across ALL shell element types combined,
+    subdivide section_ids into connected components where adjacent elements
+    (sharing an edge) have surface-normal angle ≤ angle_thresh_deg.
+
+    Shell etypes are processed together so that S3R/S4R elements sharing an
+    edge are considered neighbours.  Solid elements are left unchanged.
+    """
+    cos_thresh = np.cos(np.radians(angle_thresh_deg))
+
+    with h5py.File(h5_path, 'a') as f:
+        if 'elements' not in f or 'nodes/coords' not in f:
+            return
+
+        coords = f['nodes/coords'][:]   # [N_nodes, 3]
+
+        # Collect all shell etypes that have both conn and section_id.
+        shell_etypes = [
+            e for e in sorted(f['elements'].keys())
+            if _is_shell_etype(e)
+            and 'conn' in f['elements/{}'.format(e)]
+            and 'section_id' in f['elements/{}'.format(e)]
+        ]
+        if not shell_etypes:
+            return
+
+        # Starting ID for new sub-domain IDs — must not collide with any existing ID.
+        max_sid = -1
+        for etype_safe in f['elements']:
+            grp = f['elements/{}'.format(etype_safe)]
+            if 'section_id' in grp:
+                arr = grp['section_id'][:]
+                valid = arr[arr >= 0]
+                if len(valid):
+                    max_sid = max(max_sid, int(valid.max()))
+        next_id = max_sid + 1
+
+        # Build combined per-etype metadata (global element indices).
+        etype_meta = []
+        offset = 0
+        for etype_safe in shell_etypes:
+            grp   = f['elements/{}'.format(etype_safe)]
+            conn  = grp['conn'][:]
+            sid   = grp['section_id'][:]
+            N, nc = conn.shape
+            etype_meta.append({
+                'name':       etype_safe,
+                'conn':       conn,
+                'section_id': sid,
+                'n_corner':   nc,
+                'offset':     offset,
+                'N':          N,
+            })
+            offset += N
+        total = offset
+
+        # Combined section_id and normals arrays.
+        all_sid = np.concatenate([d['section_id'] for d in etype_meta])
+
+        normals_parts = []
+        for d in etype_meta:
+            conn = d['conn']
+            e0 = coords[conn[:, 0]]
+            e1 = coords[conn[:, 1]]
+            e2 = coords[conn[:, 2]]
+            raw_n = np.cross(e1 - e0, e2 - e0).astype(np.float64)
+            nrm   = np.linalg.norm(raw_n, axis=1, keepdims=True)
+            nrm   = np.where(nrm < 1e-12, 1.0, nrm)
+            normals_parts.append(raw_n / nrm)
+        normals = np.concatenate(normals_parts, axis=0)   # [total, 3]
+
+        # Build unified edge → [global_elem_idx, ...] adjacency across all etypes.
+        # Also pre-build per-element edge list for fast BFS access.
+        edge_to_elems = {}
+        elem_edges    = [None] * total   # elem_edges[gi] = list of (min,max) edge tuples
+
+        for d in etype_meta:
+            conn     = d['conn']
+            nc       = d['n_corner']
+            off      = d['offset']
+            N        = d['N']
+            rolled   = np.roll(conn, -1, axis=1)
+            e_min    = np.minimum(conn, rolled).tolist()
+            e_max    = np.maximum(conn, rolled).tolist()
+            for ei in range(N):
+                gi    = ei + off
+                edges = [(e_min[ei][j], e_max[ei][j]) for j in range(nc)]
+                elem_edges[gi] = edges
+                for edge in edges:
+                    if edge not in edge_to_elems:
+                        edge_to_elems[edge] = []
+                    edge_to_elems[edge].append(gi)
+
+        # BFS across all shell elements combined.
+        new_sid = np.full(total, -1, dtype=np.int32)
+        visited = np.zeros(total, dtype=bool)
+
+        for start in range(total):
+            if visited[start]:
+                continue
+            base_sid = int(all_sid[start])
+            comp_id  = next_id
+            next_id += 1
+            stack = [start]
+            visited[start] = True
+            new_sid[start] = comp_id
+            while stack:
+                cur = stack.pop()
+                for edge in elem_edges[cur]:
+                    for nb in edge_to_elems.get(edge, []):
+                        if visited[nb]:
+                            continue
+                        if int(all_sid[nb]) != base_sid:
+                            continue
+                        if float(np.dot(normals[cur], normals[nb])) >= cos_thresh:
+                            visited[nb] = True
+                            new_sid[nb] = comp_id
+                            stack.append(nb)
+
+        # Write refined section_ids back to each etype.
+        for d in etype_meta:
+            grp = f['elements/{}'.format(d['name'])]
+            del grp['section_id']
+            grp.create_dataset('section_id',
+                               data=new_sid[d['offset']:d['offset'] + d['N']])
+
+        n_before = int(np.unique(all_sid[all_sid >= 0]).size)
+        n_after  = int(np.unique(new_sid[new_sid >= 0]).size)
+        print("      [shells combined {}] section refine: {} assignment(s) → {} domain(s)".format(
+            '+'.join(shell_etypes), n_before, n_after))
+
+
 # ─── Pack geometry ────────────────────────────────────────────────────────────
 
 def pack_geometry(raw_dir, workspace, meta, db_conn):
@@ -261,6 +406,9 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                     g = f.require_group('node_to_elements')
                     g.create_dataset('offsets',         data=np.zeros(n_nodes + 1, dtype=np.int32))
                     g.create_dataset('elem_label_data', data=np.array([], dtype=np.int32))
+
+        # Post-pass: subdivide shell section_ids by 20° normal connectivity
+        _refine_shell_sections(h5_abs)
 
         # High-order file
         ho_rel = None
