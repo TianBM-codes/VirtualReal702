@@ -1,3 +1,5 @@
+import sqlite3
+
 from services.model_update.analysis import inp_service
 
 
@@ -29,6 +31,65 @@ class _FakeConnection:
 
     def close(self):
         return None
+
+
+class _FakeRegistryRepo:
+    def __init__(self, workspace, *, project_exists=True, result_group_status="ready"):
+        self.workspace = workspace
+        self.project_exists = project_exists
+        self.result_group_status = result_group_status
+
+    def get_project(self, project_id):
+        if not self.project_exists:
+            return None
+        return {"project_id": str(project_id), "workspace": self.workspace}
+
+    def get_result_group(self, project_id, result_group):
+        return {
+            "project_id": str(project_id),
+            "result_group": str(result_group),
+            "status": self.result_group_status,
+        }
+
+    def resolve_workspace(self, stored, data_root):
+        return self.workspace
+
+
+def _write_project_result_manifest(workspace, *, result_group="rg_static"):
+    conn = sqlite3.connect(workspace / "manifest.db")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("CREATE TABLE steps (result_group TEXT, step_name TEXT, step_number INTEGER)")
+    conn.execute(
+        "CREATE TABLE frames (result_group TEXT, step_name TEXT, frame_idx INTEGER, frame_value REAL, description TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE result_blocks (result_group TEXT, step_name TEXT, field_name TEXT, instance_name TEXT, position TEXT, elem_type TEXT, h5_path TEXT)"
+    )
+    conn.execute("CREATE TABLE instances (instance_name TEXT, part_name TEXT)")
+    conn.execute(
+        "INSERT INTO steps (result_group, step_name, step_number) VALUES (?, ?, ?)",
+        (result_group, "Step-1", 1),
+    )
+    conn.executemany(
+        "INSERT INTO frames (result_group, step_name, frame_idx, frame_value, description) VALUES (?, ?, ?, ?, ?)",
+        [
+            (result_group, "Step-1", 0, 0.0, "initial"),
+            (result_group, "Step-1", 1, 1.0, "final"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO result_blocks (result_group, step_name, field_name, instance_name, position, elem_type, h5_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (result_group, "Step-1", "U", "PART-1-1", "NODAL", None, "/fake/u"),
+            ("other_group", "Step-1", "U", "PART-9-9", "NODAL", None, "/fake/other"),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO instances (instance_name, part_name) VALUES (?, ?)",
+        ("PART-1-1", "PART-1"),
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_load_static_result_rows_from_txt_skips_first_three_lines(tmp_path):
@@ -109,3 +170,72 @@ def test_import_fe_static_results_writes_new_static_table(monkeypatch, tmp_path)
     assert result["project_id"] == 101
     assert result["load_case_nos"] == [3]
     assert result["row_count"] == 2
+
+
+def test_import_fe_static_results_from_project_result_uses_latest_frame_and_case_delete(monkeypatch, tmp_path):
+    _write_project_result_manifest(tmp_path, result_group="rg_static")
+
+    fake_conn = _FakeConnection()
+    captured_calls = []
+
+    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None,
+                       component_index=None, result_group=None):
+        captured_calls.append(
+            {
+                "workspace": workspace,
+                "step": step,
+                "field": field,
+                "instance": instance,
+                "position": position,
+                "frame": frame,
+                "aggregation": aggregation,
+                "component": component,
+                "result_group": result_group,
+            }
+        )
+        base = {
+            "PART-1-1::1001": {
+                "U1": 0.1,
+                "U2": 0.2,
+                "U3": 0.3,
+            }
+        }
+        return {label: values[component] for label, values in base.items()}
+
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(inp_service, "_registry_repo", lambda: _FakeRegistryRepo(str(tmp_path)))
+    monkeypatch.setattr(inp_service._sens, "_workspace_result_label_map", fake_label_map)
+
+    result = inp_service.import_fe_static_results_from_project_result(
+        project_id=101,
+        result_group="rg_static",
+        load_case_no=7,
+    )
+
+    delete_calls = [
+        params
+        for sql, params in fake_conn.cursor_obj.executed
+        if "DELETE FROM t_mt_py_fem_static_result WHERE pid = %s AND load_case_no = %s" in sql
+    ]
+    insert_params = [
+        params
+        for sql, params in fake_conn.cursor_obj.executed
+        if "INSERT INTO t_mt_py_fem_static_result" in sql
+    ]
+
+    assert fake_conn.committed is True
+    assert delete_calls == [(101, 7)]
+    assert len(insert_params) == 1
+    assert insert_params[0][0:5] == (101, 7, "PART-1-1", "PART-1", 1001)
+    assert insert_params[0][5:8] == (0.1, 0.2, 0.3)
+    assert result["project_id"] == 101
+    assert result["result_group"] == "rg_static"
+    assert result["step_name"] == "Step-1"
+    assert result["frame_idx"] == 1
+    assert result["instances"] == ["PART-1-1"]
+    assert result["load_case_nos"] == [7]
+    assert len(captured_calls) == 3
+    assert {item["component"] for item in captured_calls} == {"U1", "U2", "U3"}
+    assert {item["result_group"] for item in captured_calls} == {"rg_static"}
+    assert {item["frame"] for item in captured_calls} == {1}

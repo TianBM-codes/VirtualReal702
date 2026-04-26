@@ -60,6 +60,16 @@ class InpTreeRequest(BaseModel):
     max_labels: int = 8
 
 
+class ImportProjectStaticResultRequest(BaseModel):
+    project_id: int
+    result_group: str
+    load_case_no: int = Field(default=1, ge=1)
+    step: Optional[str] = None
+    frame: Optional[int] = None
+    instances: Optional[List[str]] = None
+    overwrite: bool = True
+
+
 class CreateOptimizationParameterRequest(BaseModel):
     project_id: int
     set_name: Union[str, List[str]]

@@ -12,6 +12,11 @@ from db import get_connection, ensure_tables_exist, clear_fem_tables
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from src.l3.core.config import settings
+from src.l3.core.errors import NotFoundError, ValidationError
+from src.l3.infra.registry_repo import RegistryRepo
+
+from . import sensitivity_service as _sens
 
 # This module is the "model-update integration" layer around parsed INP data.
 # It converts the parsed model into database catalogs, builds the spatial cache
@@ -1868,7 +1873,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             distance = VALUES(distance),
             x_offset = VALUES(x_offset),
             y_offset = VALUES(y_offset),
-            z_offset = VALUES(z_offset),
+            z_offset = VALUES(z_offset)
         """
         for item in matches:
             cursor.execute(insert_sql, (
@@ -2476,6 +2481,245 @@ def get_fe_modal_results(project_id):
         conn.close()
 
 
+def _manifest_result_group_clause(result_group: Optional[str], prefix: str = "") -> Tuple[str, List[str]]:
+    column = f"{prefix}result_group"
+    if result_group is None:
+        return f"{column} IS NULL", []
+    return f"{column} = ?", [str(result_group)]
+
+
+def _registry_repo() -> RegistryRepo:
+    return RegistryRepo(settings.registry_db_path)
+
+
+def _resolve_project_result_workspace(project_id: int, result_group: str) -> Tuple[str, dict]:
+    repo = _registry_repo()
+    project_row = repo.get_project(str(project_id))
+    if project_row is None:
+        raise NotFoundError(f"project '{project_id}' not found", {"project_id": int(project_id)})
+
+    result_group_row = repo.get_result_group(str(project_id), str(result_group))
+    if result_group_row is None:
+        raise NotFoundError(
+            f"result_group '{result_group}' not found for project '{project_id}'",
+            {"project_id": int(project_id), "result_group": str(result_group)},
+        )
+    if str(result_group_row["status"] or "") != "ready":
+        raise ValidationError(
+            f"result_group '{result_group}' is not ready",
+            {
+                "project_id": int(project_id),
+                "result_group": str(result_group),
+                "status": result_group_row["status"],
+            },
+        )
+
+    workspace = repo.resolve_workspace(str(project_row["workspace"]), settings.data_root)
+    workspace_abs = _sens._workspace_path(workspace)
+    return workspace_abs, dict(result_group_row)
+
+
+def _collect_project_result_static_rows(
+        *,
+        project_id: int,
+        result_group: str,
+        step: Optional[str],
+        frame: Optional[int],
+        instances: Optional[List[str]],
+) -> dict:
+    workspace_abs, _ = _resolve_project_result_workspace(project_id, result_group)
+    conn = _sens._manifest_conn(workspace_abs)
+    try:
+        rg_clause, rg_params = _manifest_result_group_clause(result_group)
+        step_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT step_name, step_number FROM steps WHERE {rg_clause} ORDER BY step_number, step_name",
+                rg_params,
+            ).fetchall()
+        ]
+        chosen_step = str(step) if step is not None else _sens._default_step_from_rows(step_rows)
+        if not chosen_step:
+            raise NotFoundError(
+                "no steps found for project result group",
+                {
+                    "project_id": int(project_id),
+                    "result_group": str(result_group),
+                    "workspace": workspace_abs,
+                },
+            )
+        if chosen_step not in {str(row.get("step_name")) for row in step_rows}:
+            available = [str(row.get("step_name")) for row in step_rows if row.get("step_name") is not None]
+            raise NotFoundError(
+                f"step '{chosen_step}' not found under result_group '{result_group}'",
+                {
+                    "project_id": int(project_id),
+                    "result_group": str(result_group),
+                    "step": chosen_step,
+                    "available_steps": available,
+                },
+            )
+
+        frame_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT frame_idx, frame_value, description FROM frames WHERE step_name = ? AND {rg_clause} ORDER BY frame_idx",
+                [chosen_step] + rg_params,
+            ).fetchall()
+        ]
+        if not frame_rows:
+            raise NotFoundError(
+                "no frames found for project result step",
+                {
+                    "project_id": int(project_id),
+                    "result_group": str(result_group),
+                    "step": chosen_step,
+                },
+            )
+        available_frames = [int(row["frame_idx"]) for row in frame_rows]
+        chosen_frame = int(frame) if frame is not None else int(available_frames[-1])
+        if chosen_frame not in set(available_frames):
+            raise ValidationError(
+                f"frame {chosen_frame} not found under step '{chosen_step}'",
+                {
+                    "project_id": int(project_id),
+                    "result_group": str(result_group),
+                    "step": chosen_step,
+                    "frame": chosen_frame,
+                    "available_frames": available_frames,
+                },
+            )
+
+        available_instances = [
+            str(row["instance_name"])
+            for row in conn.execute(
+                f"""
+                SELECT DISTINCT instance_name
+                FROM result_blocks
+                WHERE step_name = ? AND field_name = 'U' AND position = 'NODAL' AND {rg_clause}
+                ORDER BY instance_name
+                """,
+                [chosen_step] + rg_params,
+            ).fetchall()
+        ]
+        if not available_instances:
+            raise NotFoundError(
+                "nodal displacement field 'U' not found in project result group",
+                {
+                    "project_id": int(project_id),
+                    "result_group": str(result_group),
+                    "step": chosen_step,
+                },
+            )
+        if instances:
+            chosen_instances = [str(item) for item in instances]
+            missing = [item for item in chosen_instances if item not in available_instances]
+            if missing:
+                raise NotFoundError(
+                    "some instances are not available in the selected project result group",
+                    {
+                        "project_id": int(project_id),
+                        "result_group": str(result_group),
+                        "missing_instances": missing,
+                        "available_instances": available_instances,
+                    },
+                )
+        else:
+            chosen_instances = available_instances
+
+        part_name_map = {}
+        try:
+            for row in conn.execute("SELECT instance_name, part_name FROM instances ORDER BY instance_name").fetchall():
+                part_name_map[str(row["instance_name"])] = row["part_name"]
+        except Exception:
+            part_name_map = {}
+    finally:
+        conn.close()
+
+    rows = []
+    for instance_name in chosen_instances:
+        comp_maps = {
+            "U1": _sens._workspace_result_label_map(
+                workspace_abs,
+                step=chosen_step,
+                field="U",
+                instance=instance_name,
+                position="NODAL",
+                frame=chosen_frame,
+                aggregation="max_abs",
+                component="U1",
+                result_group=str(result_group),
+            ),
+            "U2": _sens._workspace_result_label_map(
+                workspace_abs,
+                step=chosen_step,
+                field="U",
+                instance=instance_name,
+                position="NODAL",
+                frame=chosen_frame,
+                aggregation="max_abs",
+                component="U2",
+                result_group=str(result_group),
+            ),
+            "U3": _sens._workspace_result_label_map(
+                workspace_abs,
+                step=chosen_step,
+                field="U",
+                instance=instance_name,
+                position="NODAL",
+                frame=chosen_frame,
+                aggregation="max_abs",
+                component="U3",
+                result_group=str(result_group),
+            ),
+        }
+        scoped_labels = sorted(
+            set(comp_maps["U1"].keys()) | set(comp_maps["U2"].keys()) | set(comp_maps["U3"].keys()),
+            key=lambda item: int(str(item).split("::", 1)[-1]),
+        )
+        for scoped_label in scoped_labels:
+            label_text = str(scoped_label).split("::", 1)[-1]
+            rows.append(
+                {
+                    "instance_name": instance_name,
+                    "part_name": part_name_map.get(instance_name),
+                    "fem_node_label": int(label_text),
+                    "u1": _safe_float(comp_maps["U1"].get(scoped_label)),
+                    "u2": _safe_float(comp_maps["U2"].get(scoped_label)),
+                    "u3": _safe_float(comp_maps["U3"].get(scoped_label)),
+                    "extra_json": {
+                        "source": "project_result_group",
+                        "project_id": int(project_id),
+                        "result_group": str(result_group),
+                        "step_name": chosen_step,
+                        "frame_idx": int(chosen_frame),
+                    },
+                }
+            )
+
+    if not rows:
+        raise NotFoundError(
+            "no nodal displacement rows resolved from project result group",
+            {
+                "project_id": int(project_id),
+                "result_group": str(result_group),
+                "step": chosen_step,
+                "frame": int(chosen_frame),
+                "instances": chosen_instances,
+            },
+        )
+
+    return {
+        "project_id": int(project_id),
+        "workspace": workspace_abs,
+        "result_group": str(result_group),
+        "step_name": chosen_step,
+        "frame_idx": int(chosen_frame),
+        "instances": chosen_instances,
+        "rows": rows,
+    }
+
+
 def _load_static_result_rows_from_txt(file_path: str) -> List[dict]:
     # Text imports follow the legacy fixed-column export layout used by current
     # FEMTools comparison files: node label plus 6 displacement/rotation values.
@@ -2540,6 +2784,84 @@ def _load_static_result_payload(file_path=None, rows=None) -> List[dict]:
     return normalized
 
 
+def _persist_fe_static_results(
+        cursor,
+        *,
+        project_id: int,
+        static_rows: Sequence[dict],
+        load_case_no=1,
+        instance_name=None,
+        part_name=None,
+        source_file_path: Optional[str] = None,
+) -> dict:
+    insert_sql = """
+    INSERT INTO t_mt_py_fem_static_result
+    (pid, load_case_no, instance_name, part_name, fem_node_label, u1, u2, u3, ur1, ur2, ur3, extra_json)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON DUPLICATE KEY UPDATE
+        part_name = VALUES(part_name),
+        u1 = VALUES(u1),
+        u2 = VALUES(u2),
+        u3 = VALUES(u3),
+        ur1 = VALUES(ur1),
+        ur2 = VALUES(ur2),
+        ur3 = VALUES(ur3),
+        extra_json = VALUES(extra_json),
+        created_at = CURRENT_TIMESTAMP
+    """
+
+    row_count = 0
+    preview = []
+    case_nos = set()
+    for item in static_rows:
+        item_load_case_no = int(item.get("load_case_no") or load_case_no or 1)
+        item_instance_name = item.get("instance_name") if item.get("instance_name") is not None else instance_name
+        item_part_name = item.get("part_name") if item.get("part_name") is not None else part_name
+        extra_json = dict(item.get("extra_json") or {})
+        if source_file_path:
+            extra_json["source_file_path"] = source_file_path
+
+        payload = {
+            "load_case_no": item_load_case_no,
+            "instance_name": item_instance_name,
+            "part_name": item_part_name,
+            "fem_node_label": int(item["fem_node_label"]),
+            "u1": _safe_float(item.get("u1")),
+            "u2": _safe_float(item.get("u2")),
+            "u3": _safe_float(item.get("u3")),
+            "ur1": _safe_float(item.get("ur1")),
+            "ur2": _safe_float(item.get("ur2")),
+            "ur3": _safe_float(item.get("ur3")),
+            "extra_json": extra_json,
+        }
+        cursor.execute(insert_sql, (
+            int(project_id),
+            payload["load_case_no"],
+            payload["instance_name"],
+            payload["part_name"],
+            payload["fem_node_label"],
+            payload["u1"],
+            payload["u2"],
+            payload["u3"],
+            payload["ur1"],
+            payload["ur2"],
+            payload["ur3"],
+            _json_dumps(payload["extra_json"]),
+        ))
+        row_count += 1
+        case_nos.add(payload["load_case_no"])
+        if len(preview) < 20:
+            preview.append(payload)
+
+    return {
+        "project_id": int(project_id),
+        "load_case_nos": sorted(case_nos),
+        "row_count": row_count,
+        "source_file_path": source_file_path,
+        "rows_preview": preview,
+    }
+
+
 def import_fe_static_results(project_id, overwrite=True, file_path=None, rows=None,
                              load_case_no=1, instance_name=None, part_name=None):
     # Static results are stored with both translational and rotational
@@ -2552,75 +2874,80 @@ def import_fe_static_results(project_id, overwrite=True, file_path=None, rows=No
     try:
         if overwrite:
             cursor.execute("DELETE FROM t_mt_py_fem_static_result WHERE pid = %s", (project_id,))
-
-        insert_sql = """
-        INSERT INTO t_mt_py_fem_static_result
-        (pid, load_case_no, instance_name, part_name, fem_node_label, u1, u2, u3, ur1, ur2, ur3, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            part_name = VALUES(part_name),
-            u1 = VALUES(u1),
-            u2 = VALUES(u2),
-            u3 = VALUES(u3),
-            ur1 = VALUES(ur1),
-            ur2 = VALUES(ur2),
-            ur3 = VALUES(ur3),
-            extra_json = VALUES(extra_json),
-            created_at = CURRENT_TIMESTAMP
-        """
-
-        row_count = 0
-        preview = []
-        case_nos = set()
         source_file_path = os.path.abspath(file_path) if file_path else None
-        for item in static_rows:
-            item_load_case_no = int(item.get("load_case_no") or load_case_no or 1)
-            item_instance_name = item.get("instance_name") if item.get("instance_name") is not None else instance_name
-            item_part_name = item.get("part_name") if item.get("part_name") is not None else part_name
-            extra_json = dict(item.get("extra_json") or {})
-            if source_file_path:
-                extra_json["source_file_path"] = source_file_path
-
-            payload = {
-                "load_case_no": item_load_case_no,
-                "instance_name": item_instance_name,
-                "part_name": item_part_name,
-                "fem_node_label": int(item["fem_node_label"]),
-                "u1": _safe_float(item.get("u1")),
-                "u2": _safe_float(item.get("u2")),
-                "u3": _safe_float(item.get("u3")),
-                "ur1": _safe_float(item.get("ur1")),
-                "ur2": _safe_float(item.get("ur2")),
-                "ur3": _safe_float(item.get("ur3")),
-                "extra_json": extra_json,
-            }
-            cursor.execute(insert_sql, (
-                project_id,
-                payload["load_case_no"],
-                payload["instance_name"],
-                payload["part_name"],
-                payload["fem_node_label"],
-                payload["u1"],
-                payload["u2"],
-                payload["u3"],
-                payload["ur1"],
-                payload["ur2"],
-                payload["ur3"],
-                _json_dumps(payload["extra_json"]),
-            ))
-            row_count += 1
-            case_nos.add(payload["load_case_no"])
-            if len(preview) < 20:
-                preview.append(payload)
-
+        result = _persist_fe_static_results(
+            cursor,
+            project_id=int(project_id),
+            static_rows=static_rows,
+            load_case_no=load_case_no,
+            instance_name=instance_name,
+            part_name=part_name,
+            source_file_path=source_file_path,
+        )
         conn.commit()
-        return {
-            "project_id": project_id,
-            "load_case_nos": sorted(case_nos),
-            "row_count": row_count,
-            "source_file_path": source_file_path,
-            "rows_preview": preview,
-        }
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def import_fe_static_results_from_project_result(
+        *,
+        project_id: int,
+        result_group: str,
+        load_case_no: int,
+        step: Optional[str] = None,
+        frame: Optional[int] = None,
+        instances: Optional[List[str]] = None,
+        overwrite: bool = True,
+):
+    ensure_tables_exist()
+    static_payload = _collect_project_result_static_rows(
+        project_id=int(project_id),
+        result_group=str(result_group),
+        step=step,
+        frame=frame,
+        instances=instances,
+    )
+    static_rows = _load_static_result_payload(
+        rows=[
+            {
+                **row,
+                "load_case_no": int(load_case_no),
+            }
+            for row in static_payload["rows"]
+        ]
+    )
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        if overwrite:
+            cursor.execute(
+                "DELETE FROM t_mt_py_fem_static_result WHERE pid = %s AND load_case_no = %s",
+                (int(project_id), int(load_case_no)),
+            )
+        result = _persist_fe_static_results(
+            cursor,
+            project_id=int(project_id),
+            static_rows=static_rows,
+            load_case_no=int(load_case_no),
+        )
+        conn.commit()
+        result.update(
+            {
+                "result_group": str(result_group),
+                "workspace": static_payload["workspace"],
+                "step_name": static_payload["step_name"],
+                "frame_idx": int(static_payload["frame_idx"]),
+                "instances": list(static_payload["instances"]),
+                "overwrite": bool(overwrite),
+            }
+        )
+        return result
     except Exception:
         conn.rollback()
         raise

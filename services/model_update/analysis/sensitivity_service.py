@@ -3065,43 +3065,65 @@ def _workspace_result_label_map(
         aggregation: str,
         component: Optional[str] = None,
         component_index: Optional[int] = None,
+        result_group: Optional[str] = None,
 ) -> Dict[str, object]:
     workspace_abs = _workspace_path(workspace)
     conn = _manifest_conn(workspace_abs)
     try:
+        if result_group is None:
+            rg_result_file_clause = "result_group IS NULL"
+            rg_result_file_params = []
+            rg_result_block_clause = "result_group IS NULL"
+            rg_result_block_params = []
+            rg_frame_clause = "result_group IS NULL"
+            rg_frame_params = []
+        else:
+            rg_result_file_clause = "result_group = ?"
+            rg_result_file_params = [str(result_group)]
+            rg_result_block_clause = "result_group = ?"
+            rg_result_block_params = [str(result_group)]
+            rg_frame_clause = "result_group = ?"
+            rg_frame_params = [str(result_group)]
+
         result_file = conn.execute(
-            "SELECT file_path, components FROM result_files WHERE step_name = ? AND field_name = ?",
-            (step, field),
+            f"SELECT file_path, components FROM result_files WHERE step_name = ? AND field_name = ? AND {rg_result_file_clause}",
+            [step, field] + rg_result_file_params,
         ).fetchone()
         if not result_file:
             raise NotFoundError(
                 f"result file not found for step='{step}' field='{field}'",
-                {"step": step, "field": field},
+                {"step": step, "field": field, "result_group": result_group},
             )
 
         block_rows = conn.execute(
-            """
+            f"""
             SELECT elem_type, h5_path
             FROM result_blocks
-            WHERE step_name = ? AND field_name = ? AND instance_name = ? AND position = ?
+            WHERE step_name = ? AND field_name = ? AND instance_name = ? AND position = ? AND {rg_result_block_clause}
             ORDER BY elem_type
             """,
-            (step, field, instance, position),
+            [step, field, instance, position] + rg_result_block_params,
         ).fetchall()
         if not block_rows:
             raise NotFoundError(
                 f"result block not found for field '{field}'",
-                {"step": step, "field": field, "instance": instance, "position": position},
+                {
+                    "step": step,
+                    "field": field,
+                    "instance": instance,
+                    "position": position,
+                    "result_group": result_group,
+                },
             )
 
         frame_exists = conn.execute(
-            "SELECT 1 FROM frames WHERE step_name = ? AND frame_idx = ?",
-            (step, int(frame)),
+            f"SELECT 1 FROM frames WHERE step_name = ? AND frame_idx = ? AND {rg_frame_clause}",
+            [step, int(frame)] + rg_frame_params,
         ).fetchone()
         if not frame_exists:
             raise ValidationError(
                 f"frame {frame} not found under step '{step}'",
-                {"step": step, "frame": frame},
+                {"step": step, "frame": frame, "result_group": result_group},
             )
 
         h5_path = os.path.join(workspace_abs, str(result_file["file_path"]))

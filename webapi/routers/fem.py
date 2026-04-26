@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 
 from services.model_update.importers.bdf_service import import_bdf_data
 from services.model_update.analysis.inp_service import (
+    import_fe_static_results_from_project_result,
     get_inp_catalog,
     get_inp_parameter_options,
     import_inp_catalog,
@@ -10,7 +11,13 @@ from services.model_update.analysis.inp_tree_service import get_inp_tree
 from src.l3.core.errors import AppError
 
 from ..common import error_response, server_error, success_response
-from ..models import ImportBdfRequest, ImportInpCatalogRequest, InpCatalogRequest, InpTreeRequest
+from ..models import (
+    ImportBdfRequest,
+    ImportInpCatalogRequest,
+    ImportProjectStaticResultRequest,
+    InpCatalogRequest,
+    InpTreeRequest,
+)
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
@@ -95,6 +102,27 @@ async def get_inp_tree_api(request: Request, body: InpTreeRequest):
             max_labels=body.max_labels,
         )
         return success_response(result, "INP 树解析成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/import/fem/static/from_project_result")
+async def import_fem_static_from_project_result_api(request: Request, body: ImportProjectStaticResultRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = import_fe_static_results_from_project_result(
+            project_id=body.project_id,
+            result_group=body.result_group,
+            load_case_no=body.load_case_no,
+            step=body.step,
+            frame=body.frame,
+            instances=body.instances,
+            overwrite=body.overwrite,
+        )
+        return success_response(result, "project result静力位移导入成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

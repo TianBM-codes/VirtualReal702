@@ -31,7 +31,7 @@ Missing node/element labels receive NaN → rendered as 0 by nan_to_num.
 """
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from ...core.errors import NotFoundError, ValidationError
 from ...core.state import registry
@@ -49,7 +49,7 @@ class FrameEntry(BaseModel):
 class FrameData(BaseModel):
     frame_idx: int
     frame_value: float = 0.0
-    description: str | None = None
+    description: Optional[str] = None
     data: List[FrameEntry]
 
 
