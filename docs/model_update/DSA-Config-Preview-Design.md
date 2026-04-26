@@ -88,3 +88,36 @@ POST /sensitivity/dsa/config/preview
 ## 边界
 
 这个接口只是把数据库记录翻译成壳厚 DSA 生成器能理解的 JSON 草稿。它不负责验证原始 inp 中 set 是否真实存在，也不处理 instance/part 歧义；这些留到下一阶段生成 inp 或人工检查时处理。
+
+## 生成 INP
+
+确认预览合理后，可以调用：
+
+```http
+POST /sensitivity/dsa/inp/generate
+```
+
+请求：
+
+```json
+{
+  "project_id": 1001,
+  "input_inp": "C:/demo/model.inp",
+  "output_dir": "C:/demo/sensitivity",
+  "value_mode": "explicit"
+}
+```
+
+可选字段：
+
+- `output_inp`：生成后的主 inp 路径；默认是 `<原文件名>_dsa.inp`。
+- `include_file`：生成的 include 文件名；默认是 `include.inp`，主 inp 里也会写 `*Include, input=include.inp`。
+- `config_file`：落盘保存的 JSON 配置路径；默认是 `dsa_config.json`。
+
+生成接口会复用预览接口的配置构造逻辑，并调用现有壳厚 DSA 生成器写出：
+
+- 新主 inp：补 `*Include`，把最后一个分析步改为 DSA，并把响应写入最后一个分析步。
+- `include.inp`：写入 `*PARAMETER`、`*DESIGN PARAMETER`、新 `*ELSET` 和新 `*SHELL SECTION`。
+- `dsa_config.json`：保存本次生成使用的 JSON 配置，便于人工复查。
+
+和预览不同，生成接口会拦截关键缺失数据。如果参数没有可用单元号、响应没有 set、响应变量为空，或者 explicit 模式下参数值为空，接口会返回校验错误，不会写 inp。

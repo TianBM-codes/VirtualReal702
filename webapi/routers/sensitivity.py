@@ -7,6 +7,7 @@ from services.model_update.analysis.sensitivity_service import (
     export_adjoint_sensitivity_vtu,
     export_dsa_sensitivity_vtu,
     export_odb_sensitivity_vtu,
+    generate_project_dsa_inp_from_db,
     generate_sensitivity_inp_and_store,
     get_stored_sensitivity_matrix_payload,
     get_stored_sensitivity_table_points,
@@ -22,6 +23,7 @@ from ..common import error_response, server_error, success_response
 from ..models import (
     SensitivityBuildWorkspaceRequest,
     SensitivityDsaConfigPreviewRequest,
+    SensitivityDsaInpGenerateRequest,
     SensitivityExportAdjointVtuRequest,
     SensitivityExportDsaVtuRequest,
     SensitivityExportVtuRequest,
@@ -241,6 +243,27 @@ async def sensitivity_dsa_config_preview(request: Request, body: SensitivityDsaC
             value_mode=body.value_mode,
         )
         return success_response(data, "sensitivity DSA config preview loaded")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/dsa/inp/generate")
+async def sensitivity_dsa_inp_generate(request: Request, body: SensitivityDsaInpGenerateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = generate_project_dsa_inp_from_db(
+            project_id=body.project_id,
+            input_inp=body.input_inp,
+            output_dir=body.output_dir,
+            value_mode=body.value_mode,
+            output_inp=body.output_inp,
+            include_file=body.include_file,
+            config_file=body.config_file,
+        )
+        return success_response(data, "sensitivity DSA inp generated")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

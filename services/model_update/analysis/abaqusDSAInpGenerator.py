@@ -1111,6 +1111,25 @@ def remove_design_response_blocks_in_step(out: List[str], step_start: int, step_
     return result
 
 
+def normalize_step_line_to_dsa(step_line: str) -> str:
+    parts = [part.strip() for part in str(step_line or "").strip().split(",")]
+    if not parts or parts[0].upper() != "*STEP":
+        return "*STEP,DSA"
+
+    kept_params = []
+    for param in parts[1:]:
+        if not param:
+            continue
+        upper = param.upper()
+        if upper == "DSA":
+            continue
+        if upper.startswith("SENSITIVITY"):
+            continue
+        kept_params.append(param)
+
+    return ",".join(["*STEP"] + kept_params + ["DSA"])
+
+
 # =========================================================
 # Patch step to DSA:
 # 1) FORMULATION 固定 TOTAL
@@ -1150,10 +1169,8 @@ def patch_static_step_to_dsa(lines: List[str], config: Dict[str, Any]) -> List[s
 
     # 5) 将最后一个分析步改成 *STEP,DSA
     step_line = out[last_step_idx].strip()
-    if step_line.upper() == "*STEP":
-        out[last_step_idx] = "*STEP,DSA"
-    elif step_line.upper().startswith("*STEP") and "DSA" not in step_line.upper():
-        out[last_step_idx] = remove_trailing_comma(step_line) + ",DSA"
+    if step_line.upper().startswith("*STEP"):
+        out[last_step_idx] = normalize_step_line_to_dsa(step_line)
 
     # 6) 删除最后一个分析步里已有的 *DESIGN RESPONSE 块
     out = remove_design_response_blocks_in_step(out, last_step_idx, last_end_step_idx)

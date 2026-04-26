@@ -1,4 +1,12 @@
+from pathlib import Path
+
 from services.model_update.analysis import sensitivity_service
+from services.model_update.analysis.abaqusDSAInpGenerator import normalize_step_line_to_dsa
+
+
+def test_normalize_step_line_to_dsa_removes_adjoint_sensitivity():
+    assert normalize_step_line_to_dsa("*STEP,SENSITIVITY=ADJOINT") == "*STEP,DSA"
+    assert normalize_step_line_to_dsa("*STEP, name=Step-1, SENSITIVITY=ADJOINT") == "*STEP,name=Step-1,DSA"
 
 
 def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(monkeypatch):
@@ -139,3 +147,98 @@ def test_build_project_dsa_config_preview_falls_back_to_capability_element_label
     ]
     assert "PARAMETER_ELEMENTS_EMPTY" not in {item["code"] for item in result["warnings"]}
     assert "PARAMETER_ELEMENTS_FROM_CAPABILITY" in {item["code"] for item in result["warnings"]}
+
+
+def test_generate_project_dsa_inp_from_db_writes_include_and_main(monkeypatch, tmp_path: Path):
+    source_inp = tmp_path / "model.inp"
+    source_inp.write_text(
+        "\n".join(
+            [
+                "*Heading",
+                "*Part, name=P1",
+                "*Node",
+                "1, 0, 0, 0",
+                "2, 1, 0, 0",
+                "3, 1, 1, 0",
+                "4, 0, 1, 0",
+                "*Element, type=S4, elset=SHELL1",
+                "1, 1, 2, 3, 4",
+                "*Elset, elset=SHELL1",
+                "1",
+                "*Shell Section, elset=SHELL1, material=MAT1",
+                "1.0",
+                "*End Part",
+                "*Assembly, name=Assembly",
+                "*Instance, name=P1-1, part=P1",
+                "*End Instance",
+                "*Nset, nset=RESP_NODES, instance=P1-1",
+                "1",
+                "*End Assembly",
+                "*Step, name=Step-1, SENSITIVITY=ADJOINT",
+                "*Static",
+                "1., 1.",
+                "*End Step",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setattr(sensitivity_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [
+            {
+                "id": 1,
+                "parameter_name": "T1",
+                "quantity_code": "H",
+                "set_name": "SHELL1",
+                "set_type": "ELSET",
+                "set_scope": "PART",
+                "instance_name": None,
+                "part_name": "P1",
+                "element_label": None,
+                "scalar_value": 1.5,
+                "extra_json": '{"element_labels": [1]}',
+            }
+        ],
+    )
+    monkeypatch.setattr(sensitivity_service, "_load_project_thickness_capabilities", lambda project_id: {})
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_design_responses",
+        lambda project_id: [
+            {
+                "response_no": 1,
+                "request_no": 1,
+                "region_type": "NODE",
+                "set_name": "RESP_NODES",
+                "variables": ["U2"],
+            }
+        ],
+    )
+
+    result = sensitivity_service.generate_project_dsa_inp_from_db(
+        project_id=1001,
+        input_inp=str(source_inp),
+        output_dir=str(out_dir),
+        value_mode="explicit",
+    )
+
+    analysis_inp = Path(result["analysis_inp"])
+    include_file = Path(result["include_file"])
+    config_file = Path(result["config_file"])
+
+    assert analysis_inp.exists()
+    assert include_file.exists()
+    assert config_file.exists()
+    assert analysis_inp.name == "model_dsa.inp"
+    assert "*Include, input=include.inp" in analysis_inp.read_text(encoding="utf-8")
+    analysis_text = analysis_inp.read_text(encoding="utf-8")
+    assert "*STEP,name=Step-1,DSA" in analysis_text
+    assert "SENSITIVITY=ADJOINT,DSA" not in analysis_text
+    include_text = include_file.read_text(encoding="utf-8")
+    assert "T1=1.5" in include_text
+    assert "*DESIGN PARAMETER" in include_text

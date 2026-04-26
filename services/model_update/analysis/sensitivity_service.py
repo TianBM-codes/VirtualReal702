@@ -25,6 +25,18 @@ from src.l3.infra.manifest_repo import ManifestRepo
 from src.l3.services.node_table_service import get_instance_fields
 from tools.odb_client import ODBClient, ODBClientError, _select_component_values
 
+from .abaqusDSAInpGenerator import (
+    COMMENT_EMPTY_SECTION,
+    DEFAULT_INCLUDE_FILE,
+    UPDATED_MAIN_INP,
+    analyze_element_set_tasks,
+    build_include_text,
+    parse_main_inp,
+    patch_include_line,
+    patch_main_sections,
+    patch_static_step_to_dsa,
+    remove_blank_lines,
+)
 from .model_update_meta_service import resolve_abaqus_command
 from .solver_service import delete_abaqus_process_files, run_abaqus_job, run_abaqus_sensitivity_job
 
@@ -1049,6 +1061,144 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
         "parameter_count": len(element_sets),
         "response_count": len(responses),
         "warnings": warnings,
+    }
+
+
+_DSA_CONFIG_BLOCKING_WARNING_CODES = {
+    "PARAMETER_ELEMENTS_EMPTY",
+    "PARAMETER_VALUE_EMPTY",
+    "RESPONSE_REGION_TYPE_UNSUPPORTED",
+    "RESPONSE_SET_NAME_EMPTY",
+    "RESPONSE_VARIABLES_EMPTY",
+}
+
+
+def _default_dsa_output_name(input_inp: str) -> str:
+    stem = Path(input_inp).stem
+    return f"{stem}_dsa.inp" if stem else UPDATED_MAIN_INP
+
+
+def _resolve_output_file(path_value: Optional[str], *, output_dir: str, default_name: str) -> str:
+    if path_value:
+        candidate = Path(path_value).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(output_dir) / candidate
+    else:
+        candidate = Path(output_dir) / default_name
+    return str(candidate.resolve())
+
+
+def generate_project_dsa_inp_from_db(
+        *,
+        project_id: int,
+        input_inp: str,
+        output_dir: Optional[str] = None,
+        value_mode: str = "inherit",
+        output_inp: Optional[str] = None,
+        include_file: Optional[str] = None,
+        config_file: Optional[str] = None,
+) -> dict:
+    ensure_tables_exist()
+
+    input_inp_abs = os.path.abspath(input_inp)
+    if not os.path.exists(input_inp_abs):
+        raise NotFoundError("input_inp not found", {"input_inp": input_inp_abs})
+
+    output_dir_abs = os.path.abspath(output_dir or os.path.dirname(input_inp_abs))
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    include_name = str(include_file or DEFAULT_INCLUDE_FILE).strip() or DEFAULT_INCLUDE_FILE
+    include_ref = os.path.basename(include_name)
+    include_path = _resolve_output_file(include_ref, output_dir=output_dir_abs, default_name=DEFAULT_INCLUDE_FILE)
+    output_inp_path = _resolve_output_file(
+        output_inp,
+        output_dir=output_dir_abs,
+        default_name=_default_dsa_output_name(input_inp_abs),
+    )
+    config_path = _resolve_output_file(
+        config_file,
+        output_dir=output_dir_abs,
+        default_name="dsa_config.json",
+    )
+
+    if os.path.abspath(output_inp_path) == input_inp_abs:
+        raise ValidationError(
+            "output_inp must not overwrite input_inp",
+            {"input_inp": input_inp_abs, "output_inp": output_inp_path},
+        )
+
+    preview = build_project_dsa_config_preview(project_id=project_id, value_mode=value_mode)
+    blocking_warnings = [
+        warning for warning in preview["warnings"]
+        if warning.get("code") in _DSA_CONFIG_BLOCKING_WARNING_CODES
+    ]
+    if blocking_warnings:
+        raise ValidationError(
+            "DSA config is not complete enough to generate inp",
+            {"project_id": int(project_id), "warnings": blocking_warnings},
+        )
+
+    config = json.loads(json.dumps(preview["config_json"], ensure_ascii=False))
+    config["include_file"] = include_ref
+    config["main_output"] = output_inp_path
+
+    main_lines = Path(input_inp_abs).read_text(encoding="utf-8", errors="ignore").splitlines()
+    parsed = parse_main_inp(main_lines)
+
+    try:
+        enriched_tasks, mother_set_to_remainder_name, generator_warnings = analyze_element_set_tasks(
+            config["element_sets"],
+            parsed,
+        )
+        include_text = build_include_text(
+            config,
+            enriched_tasks,
+            parsed,
+            mother_set_to_remainder_name,
+        )
+        patched_main_lines = patch_main_sections(
+            main_lines,
+            parsed,
+            mother_set_to_remainder_name,
+            comment_empty_section=COMMENT_EMPTY_SECTION,
+        )
+        patched_main_lines = patch_include_line(patched_main_lines, include_ref)
+        patched_main_lines = patch_static_step_to_dsa(patched_main_lines, config)
+        patched_main_lines = remove_blank_lines(patched_main_lines)
+    except ValueError as exc:
+        raise ValidationError(
+            "failed to generate DSA inp from database config",
+            {"project_id": int(project_id), "message": str(exc)},
+        )
+
+    Path(include_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_inp_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(config_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(include_path).write_text(include_text, encoding="utf-8")
+    Path(output_inp_path).write_text("\n".join(patched_main_lines) + "\n", encoding="utf-8")
+    Path(config_path).write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    warnings = list(preview["warnings"])
+    warnings.extend(
+        {
+            "code": "DSA_GENERATOR_WARNING",
+            "message": str(message),
+        }
+        for message in generator_warnings
+    )
+
+    return {
+        "project_id": int(project_id),
+        "value_mode": preview["value_mode"],
+        "input_inp": input_inp_abs,
+        "analysis_inp": output_inp_path,
+        "include_file": include_path,
+        "config_file": config_path,
+        "config_json": config,
+        "parameter_count": preview["parameter_count"],
+        "response_count": preview["response_count"],
+        "warnings": warnings,
+        "mother_set_remainders": mother_set_to_remainder_name,
     }
 
 

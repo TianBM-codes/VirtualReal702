@@ -137,6 +137,7 @@ class BayesianModelUpdateRequest(BaseModel):
     cloud_step_name: str = "BayesianUpdate"
     cloud_field_name: str = "PARAMETER_CLOUD"
     cloud_value_mode: str = "updated_value"
+    async_submit: bool = False
 
 
 class TextRowReadRequest(BaseModel):
@@ -222,6 +223,16 @@ class SensitivityOverviewRequest(BaseModel):
 class SensitivityDsaConfigPreviewRequest(BaseModel):
     project_id: int
     value_mode: str = "inherit"
+
+
+class SensitivityDsaInpGenerateRequest(BaseModel):
+    project_id: int
+    input_inp: str
+    output_dir: Optional[str] = None
+    value_mode: str = "inherit"
+    output_inp: Optional[str] = None
+    include_file: Optional[str] = None
+    config_file: Optional[str] = None
 
 
 class SensitivityTableRequest(BaseModel):
