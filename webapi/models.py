@@ -103,7 +103,6 @@ class BayesianModelUpdateRequest(BaseModel):
     target_responses: Any
     parameter_scatter: Any = None
     response_scatter: Any = None
-    output_dir: Optional[str] = None
     save_results: bool = True
     odb_id: Optional[str] = None
     base_url: Optional[str] = None
@@ -122,8 +121,6 @@ class BayesianModelUpdateRequest(BaseModel):
     step_scale: float = 1.0
     lower_bound: Optional[Any] = None
     upper_bound: Optional[Any] = None
-    abaqus: Optional[str] = None
-    python3: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
     job_name: Optional[str] = None

@@ -46,6 +46,18 @@ def test_resolve_abaqus_command_reads_service_config(monkeypatch, tmp_path: Path
     assert result == "C:/SIMULIA/Commands/abaqus.bat"
 
 
+def test_resolve_python3_and_bayesian_output_dir_read_service_config(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "service_config.json"
+    config_path.write_text(
+        '{"APP_PYTHON3_CMD": "C:/Python/python.exe", "APP_BAYESIAN_OUTPUT_DIR": "D:/temp/bayesian"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_update_meta_service, "_service_config_path", lambda: config_path)
+
+    assert model_update_meta_service.resolve_python3_command(None) == "C:/Python/python.exe"
+    assert model_update_meta_service.resolve_bayesian_output_dir(None) == "D:/temp/bayesian"
+
+
 def test_add_manual_response_upserts_row(monkeypatch):
     fake_conn = _WriteConnection()
     monkeypatch.setattr(model_update_meta_service, "ensure_tables_exist", lambda: None)

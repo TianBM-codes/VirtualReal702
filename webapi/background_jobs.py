@@ -63,6 +63,7 @@ def _ensure_task_store_ready() -> None:
                 started_at TEXT,
                 finished_at TEXT,
                 request_json TEXT,
+                progress_json TEXT,
                 result_json TEXT,
                 error_json TEXT
             )
@@ -74,6 +75,12 @@ def _ensure_task_store_ready() -> None:
             ON background_tasks(status)
             """
         )
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(background_tasks)").fetchall()
+        }
+        if "progress_json" not in columns:
+            conn.execute("ALTER TABLE background_tasks ADD COLUMN progress_json TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -106,6 +113,7 @@ def _snapshot(task: dict) -> dict:
         "started_at": task.get("started_at"),
         "finished_at": task.get("finished_at"),
         "request": _jsonable(task.get("request")),
+        "progress": _jsonable(task.get("progress")),
         "result": _jsonable(task.get("result")),
         "error": _jsonable(task.get("error")),
     }
@@ -120,9 +128,9 @@ def _persist_task(task: dict) -> None:
                 """
                 INSERT INTO background_tasks (
                     task_id, task_type, status, submitted_at, started_at, finished_at,
-                    request_json, result_json, error_json
+                    request_json, progress_json, result_json, error_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     task_type = excluded.task_type,
                     status = excluded.status,
@@ -130,6 +138,7 @@ def _persist_task(task: dict) -> None:
                     started_at = excluded.started_at,
                     finished_at = excluded.finished_at,
                     request_json = excluded.request_json,
+                    progress_json = excluded.progress_json,
                     result_json = excluded.result_json,
                     error_json = excluded.error_json
                 """,
@@ -141,6 +150,7 @@ def _persist_task(task: dict) -> None:
                     payload.get("started_at"),
                     payload.get("finished_at"),
                     json.dumps(payload.get("request"), ensure_ascii=False),
+                    json.dumps(payload.get("progress"), ensure_ascii=False),
                     json.dumps(payload.get("result"), ensure_ascii=False),
                     json.dumps(payload.get("error"), ensure_ascii=False),
                 ),
@@ -159,7 +169,7 @@ def _load_task(task_id: str) -> Optional[dict]:
             row = conn.execute(
                 """
                 SELECT task_id, task_type, status, submitted_at, started_at, finished_at,
-                       request_json, result_json, error_json
+                       request_json, progress_json, result_json, error_json
                 FROM background_tasks
                 WHERE task_id = ?
                 """,
@@ -181,6 +191,7 @@ def _load_task(task_id: str) -> Optional[dict]:
         "started_at": row["started_at"],
         "finished_at": row["finished_at"],
         "request": json.loads(row["request_json"]) if row["request_json"] else {},
+        "progress": json.loads(row["progress_json"]) if row["progress_json"] else None,
         "result": json.loads(row["result_json"]) if row["result_json"] else None,
         "error": json.loads(row["error_json"]) if row["error_json"] else None,
     }
@@ -230,17 +241,21 @@ def _cache_and_snapshot(task: dict) -> dict:
     return _snapshot(task)
 
 
-def _run_task(task_id: str, fn: Callable[..., Any], kwargs: dict) -> None:
+def _run_task(task_id: str, fn: Callable[..., Any], kwargs: dict, *, pass_task_id: bool = False) -> None:
     with _LOCK:
         task = _TASKS.get(task_id)
         if task is None:
             return
         task["status"] = "running"
         task["started_at"] = _utc_now_iso()
+        task["progress"] = {"phase": "running"}
         _persist_task(task)
 
     try:
-        result = fn(**kwargs)
+        if pass_task_id:
+            result = fn(task_id=task_id, **kwargs)
+        else:
+            result = fn(**kwargs)
     except AppError as exc:
         error = {
             "code": str(exc.code),
@@ -254,6 +269,7 @@ def _run_task(task_id: str, fn: Callable[..., Any], kwargs: dict) -> None:
                 task["status"] = "failed"
                 task["finished_at"] = _utc_now_iso()
                 task["error"] = error
+                task["progress"] = None
                 _persist_task(task)
         return
     except Exception as exc:  # pragma: no cover - defensive fallback
@@ -269,6 +285,7 @@ def _run_task(task_id: str, fn: Callable[..., Any], kwargs: dict) -> None:
                 task["status"] = "failed"
                 task["finished_at"] = _utc_now_iso()
                 task["error"] = error
+                task["progress"] = None
                 _persist_task(task)
         return
 
@@ -277,6 +294,7 @@ def _run_task(task_id: str, fn: Callable[..., Any], kwargs: dict) -> None:
         if task is not None:
             task["status"] = "succeeded"
             task["finished_at"] = _utc_now_iso()
+            task["progress"] = None
             task["result"] = _jsonable(result)
             _persist_task(task)
 
@@ -287,6 +305,7 @@ def submit_background_task(
     fn: Callable[..., Any],
     kwargs: dict,
     request_payload: Optional[dict] = None,
+    pass_task_id: bool = False,
 ) -> dict:
     task_id = str(uuid.uuid4())
     task = {
@@ -297,12 +316,13 @@ def submit_background_task(
         "started_at": None,
         "finished_at": None,
         "request": _jsonable(request_payload or {}),
+        "progress": None,
         "result": None,
         "error": None,
     }
     with _LOCK:
         snapshot = _cache_and_snapshot(task)
-    _EXECUTOR.submit(_run_task, task_id, fn, dict(kwargs))
+    _EXECUTOR.submit(_run_task, task_id, fn, dict(kwargs), pass_task_id=bool(pass_task_id))
     return snapshot
 
 
@@ -321,6 +341,21 @@ def get_background_task(task_id: str) -> Optional[dict]:
         if task is None:
             _TASKS[str(task_id)] = dict(loaded)
             task = loaded
+        return _snapshot(task)
+
+
+def update_background_task(task_id: str, *, progress: Optional[dict] = None) -> Optional[dict]:
+    with _LOCK:
+        task = _TASKS.get(str(task_id))
+        if task is None:
+            loaded = _load_task(str(task_id))
+            if loaded is None:
+                return None
+            _TASKS[str(task_id)] = dict(loaded)
+            task = _TASKS[str(task_id)]
+        if progress is not None:
+            task["progress"] = _jsonable(progress)
+        _persist_task(task)
         return _snapshot(task)
 
 

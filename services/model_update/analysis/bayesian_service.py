@@ -5,7 +5,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
 import numpy as np
@@ -2334,6 +2334,7 @@ def run_bayesian_update_workflow(
         cloud_step_name: str = "BayesianUpdate",
         cloud_field_name: str = "PARAMETER_CLOUD",
         cloud_value_mode: str = "updated_value",
+        progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     if int(iterations) <= 0:
         raise ValidationError("iterations must be > 0", {"iterations": iterations})
@@ -2378,6 +2379,14 @@ def run_bayesian_update_workflow(
         }
 
         for iteration_index in range(int(iterations)):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "phase": "iteration",
+                        "current_iteration": int(iteration_index) + 1,
+                        "total_iterations": int(iterations),
+                    }
+                )
             if iteration_index == 0 and not has_initial_source:
                 solver_payload = _run_iteration_solver(
                     inp_path=current_inp,

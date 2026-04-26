@@ -6,10 +6,14 @@ from services.model_update.analysis.bayesian_service import (
 )
 from services.model_update.analysis.model_update_meta_service import (
     add_manual_response,
+    resolve_abaqus_command,
+    resolve_bayesian_output_dir,
+    resolve_python3_command,
 )
 from services.model_update.analysis.inp_service import create_optimization_parameter
 from src.l3.core.errors import AppError, ValidationError
 
+from ..background_jobs import get_background_task, submit_background_task, update_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
     AddResponseRequest,
@@ -64,6 +68,64 @@ def _compact_bayesian_run_response(payload: dict) -> dict:
         # under output_dir. The API only returns the root paths needed to find them.
         "iteration_dirs": iteration_dirs,
     }
+
+
+def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
+    return {
+        "project_id": body.project_id,
+        "batch_no": body.batch_no,
+        "input_inp": body.input_inp,
+        "target_responses": body.target_responses,
+        "parameter_scatter": body.parameter_scatter,
+        "response_scatter": body.response_scatter,
+        "output_dir": resolve_bayesian_output_dir(None),
+        "save_results": body.save_results,
+        "odb_id": body.odb_id,
+        "base_url": body.base_url,
+        "workspace": body.workspace,
+        "odb_path": body.odb_path,
+        "step": body.step,
+        "instances": body.instances,
+        "field_prefix": body.field_prefix,
+        "response_component": body.response_component,
+        "position": body.position,
+        "aggregation": body.aggregation,
+        "frame": body.frame,
+        "iterations": body.iterations,
+        "exit_diff_percent": body.exit_diff_percent,
+        "damping": body.damping,
+        "step_scale": body.step_scale,
+        "lower_bound": body.lower_bound,
+        "upper_bound": body.upper_bound,
+        "abaqus": resolve_abaqus_command(None),
+        "python3": resolve_python3_command(None),
+        "keep_raw": body.keep_raw,
+        "timeout": body.timeout,
+        "job_name": body.job_name,
+        "cpus": body.cpus,
+        "interactive": body.interactive,
+        "run_solver": body.run_solver,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
+        "write_cloud_result": body.write_cloud_result,
+        "cloud_result_group": body.cloud_result_group,
+        "cloud_step_name": body.cloud_step_name,
+        "cloud_field_name": body.cloud_field_name,
+        "cloud_value_mode": body.cloud_value_mode,
+    }
+
+
+def _run_bayesian_update_workflow_compact(**kwargs) -> dict:
+    return _compact_bayesian_run_response(run_bayesian_update_workflow(**kwargs))
+
+
+def _run_bayesian_update_task(task_id: str, **kwargs) -> dict:
+    def _progress_callback(progress: dict) -> None:
+        update_background_task(task_id, progress=progress)
+
+    return _compact_bayesian_run_response(
+        run_bayesian_update_workflow(progress_callback=_progress_callback, **kwargs)
+    )
 
 
 @router.post("/add/response")
@@ -147,49 +209,37 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
     # runs the parameter update loop, and optionally re-solves each iteration.
     await log_request(request, model_to_dict(body))
     try:
-        data = run_bayesian_update_workflow(
-            project_id=body.project_id,
-            batch_no=body.batch_no,
-            input_inp=body.input_inp,
-            target_responses=body.target_responses,
-            parameter_scatter=body.parameter_scatter,
-            response_scatter=body.response_scatter,
-            output_dir=body.output_dir,
-            save_results=body.save_results,
-            odb_id=body.odb_id,
-            base_url=body.base_url,
-            workspace=body.workspace,
-            odb_path=body.odb_path,
-            step=body.step,
-            instances=body.instances,
-            field_prefix=body.field_prefix,
-            response_component=body.response_component,
-            position=body.position,
-            aggregation=body.aggregation,
-            frame=body.frame,
-            iterations=body.iterations,
-            exit_diff_percent=body.exit_diff_percent,
-            damping=body.damping,
-            step_scale=body.step_scale,
-            lower_bound=body.lower_bound,
-            upper_bound=body.upper_bound,
-            abaqus=body.abaqus,
-            python3=body.python3,
-            keep_raw=body.keep_raw,
-            timeout=body.timeout,
-            job_name=body.job_name,
-            cpus=body.cpus,
-            interactive=body.interactive,
-            run_solver=body.run_solver,
-            timeout_sec=body.timeout_sec,
-            extra_args=body.extra_args,
-            write_cloud_result=body.write_cloud_result,
-            cloud_result_group=body.cloud_result_group,
-            cloud_step_name=body.cloud_step_name,
-            cloud_field_name=body.cloud_field_name,
-            cloud_value_mode=body.cloud_value_mode,
-        )
-        return success_response(_compact_bayesian_run_response(data), "Bayesian模型修正执行成功")
+        kwargs = _bayesian_run_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="optimization.bayesian.run",
+                fn=_run_bayesian_update_task,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                pass_task_id=True,
+            )
+            return success_response(data, "Bayesian model update task submitted")
+        data = _run_bayesian_update_workflow_compact(**kwargs)
+        return success_response(data, "Bayesian模型修正执行成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.get("/optimization/bayesian/tasks")
+async def bayesian_task_status(task_id: str):
+    try:
+        data = get_background_task(task_id)
+        if data is None:
+            return error_response(
+                404,
+                f"Bayesian task '{task_id}' not found",
+                error_code="NOT_FOUND",
+                details={"task_id": str(task_id)},
+            )
+        return success_response(data, "Bayesian task status loaded")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

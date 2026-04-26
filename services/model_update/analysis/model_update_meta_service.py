@@ -13,17 +13,41 @@ def _service_config_path() -> Path:
     return _repo_root() / "service_config.json"
 
 
+def _load_service_config() -> dict:
+    config_path = _service_config_path()
+    if not config_path.exists():
+        return {}
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
 def resolve_abaqus_command(abaqus: Optional[str] = None) -> str:
     explicit = str(abaqus or "").strip()
     if explicit:
         return explicit
 
-    config_path = _service_config_path()
-    if not config_path.exists():
-        return "abaqus"
-
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload = _load_service_config()
     return str(payload.get("APP_ABAQUS_CMD") or "abaqus").strip() or "abaqus"
+
+
+def resolve_python3_command(python3: Optional[str] = None) -> Optional[str]:
+    explicit = str(python3 or "").strip()
+    if explicit:
+        return explicit
+
+    payload = _load_service_config()
+    resolved = str(payload.get("APP_PYTHON3_CMD") or "").strip()
+    return resolved or None
+
+
+def resolve_bayesian_output_dir(output_dir: Optional[str] = None) -> Optional[str]:
+    explicit = str(output_dir or "").strip()
+    if explicit:
+        return explicit
+
+    payload = _load_service_config()
+    resolved = str(payload.get("APP_BAYESIAN_OUTPUT_DIR") or "").strip()
+    return resolved or None
 
 
 def add_manual_parameter(
