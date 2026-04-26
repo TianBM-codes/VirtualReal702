@@ -333,6 +333,64 @@ def _response_difference_percent_for_exit(calculated: float, target: float, *, e
     return float(abs((cal_value - target_value) / target_value * 100.0))
 
 
+def build_ccabs(
+        r_target: Sequence[float],
+        r_model: Sequence[float],
+        r_scatter: Any,
+        *,
+        eps: float = 1e-12,
+) -> float:
+    r_target_arr = np.asarray(r_target, dtype=np.float64).reshape(-1)
+    r_model_arr = np.asarray(r_model, dtype=np.float64).reshape(-1)
+    if r_target_arr.shape != r_model_arr.shape:
+        raise ValidationError(
+            "r_target and r_model size mismatch",
+            {"r_target_size": int(r_target_arr.size), "r_model_size": int(r_model_arr.size)},
+        )
+
+    r_scatter_arr = _expand_scatter_vector(r_scatter, int(r_target_arr.size), label="response scatter")
+    rel_diff = (r_model_arr - r_target_arr) / np.maximum(np.abs(r_target_arr), float(eps))
+    return float(np.sum(np.abs(rel_diff) / np.maximum(r_scatter_arr, float(eps))))
+
+
+def _build_iteration_metrics(
+        *,
+        response_values: Sequence[float],
+        target_values: Sequence[float],
+        response_scatter: Any,
+        parameter_step: Sequence[float],
+        eps: float = 1e-12,
+) -> dict:
+    r_model = np.asarray(response_values, dtype=np.float64).reshape(-1)
+    r_target = np.asarray(target_values, dtype=np.float64).reshape(-1)
+    if r_model.shape != r_target.shape:
+        raise ValidationError(
+            "response_values and target_values size mismatch",
+            {"response_size": int(r_model.size), "target_size": int(r_target.size)},
+        )
+
+    residual = r_target - r_model
+    target_norm = float(np.linalg.norm(r_target))
+    residual_norm = float(np.linalg.norm(residual))
+    parameter_step_arr = np.asarray(parameter_step, dtype=np.float64).reshape(-1)
+    diffs = [
+        abs(_response_difference_percent(calculated, target))
+        for calculated, target in zip(r_model.tolist(), r_target.tolist())
+    ]
+
+    return {
+        "ra_norm": float(np.linalg.norm(r_model)),
+        "re_norm": target_norm,
+        "dr_norm": residual_norm,
+        "ccabs": build_ccabs(r_target, r_model, response_scatter, eps=eps),
+        "rel_res": float(residual_norm / (target_norm + float(eps))),
+        "dx_norm": float(np.linalg.norm(parameter_step_arr)),
+        "max_abs_dparam": float(np.max(np.abs(parameter_step_arr))) if parameter_step_arr.size else 0.0,
+        "mean_abs_response_diff": float(np.mean(diffs)) if diffs else 0.0,
+        "max_abs_response_diff": float(max(diffs)) if diffs else 0.0,
+    }
+
+
 def _evaluate_exit_condition(
     response_values: Sequence[float],
     target_values: Sequence[float],
@@ -479,6 +537,8 @@ def _history_html_content(
             f"<td>{float(row['mean_abs_response_diff']):.6g}</td>"
             f"<td>{float(row['max_abs_response_diff']):.6g}</td>"
             f"<td>{float(row['parameter_step_norm']):.6g}</td>"
+            f"<td>{float(row.get('ccabs', 0.0)):.6g}</td>"
+            f"<td>{float(row.get('rel_res', 0.0)):.6g}</td>"
             "</tr>"
         )
         for row in iteration_rows
@@ -591,6 +651,8 @@ def _history_html_content(
               <th>Mean Abs Diff (%)</th>
               <th>Max Abs Diff (%)</th>
               <th>Parameter Step Norm</th>
+              <th>CCABS</th>
+              <th>Relative Residual</th>
             </tr>
           </thead>
           <tbody>
@@ -655,6 +717,12 @@ def _save_bayesian_history_artifacts(
     iteration_summary_rows: List[dict] = []
     for iteration_result in rows:
         iteration_no = int(iteration_result["iteration"])
+        metrics = dict(iteration_result.get("metrics") or _build_iteration_metrics(
+            response_values=iteration_result.get("response_values") or [],
+            target_values=iteration_result.get("target_responses") or [],
+            response_scatter=iteration_result.get("response_scatter") or 0.01,
+            parameter_step=iteration_result.get("bayesian", {}).get("dp") or [],
+        ))
         diffs: List[float] = []
         for index, row_meta in enumerate(iteration_result.get("response_rows") or response_rows_meta):
             response_name = _response_tracking_name(dict(row_meta), index + 1)
@@ -676,9 +744,16 @@ def _save_bayesian_history_artifacts(
         iteration_summary_rows.append(
             {
                 "iteration": iteration_no,
-                "mean_abs_response_diff": float(np.mean(diffs)) if diffs else 0.0,
-                "max_abs_response_diff": float(np.max(diffs)) if diffs else 0.0,
+                "mean_abs_response_diff": float(metrics["mean_abs_response_diff"]),
+                "max_abs_response_diff": float(metrics["max_abs_response_diff"]),
                 "parameter_step_norm": float(np.linalg.norm(parameter_step)) if parameter_step.size else 0.0,
+                "ccabs": float(metrics["ccabs"]),
+                "rel_res": float(metrics["rel_res"]),
+                "ra_norm": float(metrics["ra_norm"]),
+                "re_norm": float(metrics["re_norm"]),
+                "dr_norm": float(metrics["dr_norm"]),
+                "dx_norm": float(metrics["dx_norm"]),
+                "max_abs_dparam": float(metrics["max_abs_dparam"]),
             }
         )
 
@@ -705,7 +780,19 @@ def _save_bayesian_history_artifacts(
         ),
         "iteration_summary_csv": _save_csv_rows(
             history_dir / "iteration_summary.csv",
-            ("iteration", "mean_abs_response_diff", "max_abs_response_diff", "parameter_step_norm"),
+            (
+                "iteration",
+                "mean_abs_response_diff",
+                "max_abs_response_diff",
+                "parameter_step_norm",
+                "ccabs",
+                "rel_res",
+                "ra_norm",
+                "re_norm",
+                "dr_norm",
+                "dx_norm",
+                "max_abs_dparam",
+            ),
             iteration_summary_rows,
         ),
     }
@@ -769,11 +856,18 @@ def _persist_bayesian_tracking_results(*, project_id: int, batch_no: int, iterat
     try:
         for table_name in (
                 "t_mt_py_fem_tracking_iteration",
+                "t_mt_py_fem_bayesian_iteration_metric",
                 "t_mt_py_fem_response_difference",
                 "t_mt_py_fem_parameter_variation",
                 "t_mt_py_fem_tracking_value",
         ):
-            cursor.execute(f"DELETE FROM {table_name} WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no))
+            if table_name == "t_mt_py_fem_bayesian_iteration_metric":
+                cursor.execute(
+                    f"DELETE FROM {table_name} WHERE project_id = %s AND batch_no = %s",
+                    (int(project_id), resolved_batch_no),
+                )
+            else:
+                cursor.execute(f"DELETE FROM {table_name} WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no))
 
         cursor.execute(
             """
@@ -799,6 +893,34 @@ def _persist_bayesian_tracking_results(*, project_id: int, batch_no: int, iterat
             response_values = list(iteration_result.get("response_values") or [])
             target_values = list(iteration_result.get("target_responses") or [])
             response_rows = list(iteration_result.get("response_rows") or [])
+            metrics = dict(iteration_result.get("metrics") or _build_iteration_metrics(
+                response_values=response_values,
+                target_values=target_values,
+                response_scatter=iteration_result.get("response_scatter") or 0.01,
+                parameter_step=iteration_result.get("bayesian", {}).get("dp") or [],
+            ))
+            cursor.execute(
+                """
+                INSERT INTO t_mt_py_fem_bayesian_iteration_metric
+                (project_id, batch_no, iteration, ccabs, rel_res, ra_norm, re_norm, dr_norm,
+                 dx_norm, max_abs_dparam, mean_abs_response_diff, max_abs_response_diff)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(project_id),
+                    resolved_batch_no,
+                    iteration_no,
+                    float(metrics["ccabs"]),
+                    float(metrics["rel_res"]),
+                    float(metrics["ra_norm"]),
+                    float(metrics["re_norm"]),
+                    float(metrics["dr_norm"]),
+                    float(metrics["dx_norm"]),
+                    float(metrics["max_abs_dparam"]),
+                    float(metrics["mean_abs_response_diff"]),
+                    float(metrics["max_abs_response_diff"]),
+                ),
+            )
             for row_index, row_meta in enumerate(response_rows):
                 response_name = _response_tracking_name(dict(row_meta), row_index + 1)
                 calculated = float(response_values[row_index])
@@ -2535,6 +2657,12 @@ def run_bayesian_update_workflow(
                 parameter_updates,
                 output_inp=str(next_inp),
             )
+            iteration_metrics = _build_iteration_metrics(
+                response_values=matrix_payload["response_values"],
+                target_values=r_target.tolist(),
+                response_scatter=r_scatter.tolist(),
+                parameter_step=update_payload["dp"],
+            )
 
             iteration_result = {
                 "iteration": iteration_index + 1,
@@ -2555,6 +2683,7 @@ def run_bayesian_update_workflow(
                 "parameter_element_mapping": parameter_element_mapping,
                 "response_rows": response_rows,
                 "bayesian": _clone_jsonable(update_payload),
+                "metrics": _clone_jsonable(iteration_metrics),
                 "exit_check": _clone_jsonable(exit_check),
                 "updated_inp": str(next_inp) if save_results else None,
                 "solver": solver_payload if save_results else None,
@@ -2794,6 +2923,12 @@ def run_bayesian_update_from_text(
         upper_bound=upper_bound_values,
         p_ref=p_current,
     )
+    iteration_metrics = _build_iteration_metrics(
+        response_values=r_model.tolist(),
+        target_values=r_target.tolist(),
+        response_scatter=r_scatter.tolist(),
+        parameter_step=update_payload["dp"],
+    )
 
     result = {
         "case_name": str(case_name),
@@ -2809,6 +2944,7 @@ def run_bayesian_update_from_text(
         "model_response": r_model.tolist(),
         "target_response": r_target.tolist(),
         "bayesian": _clone_jsonable(update_payload),
+        "metrics": _clone_jsonable(iteration_metrics),
     }
 
     if output_dir:

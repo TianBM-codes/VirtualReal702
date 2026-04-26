@@ -64,6 +64,25 @@ def test_bayesian_update_normalized_uses_normalized_residual_and_gain_matrix():
     assert np.allclose(result["G_n"], expected_g_n)
 
 
+def test_build_iteration_metrics_uses_ccabs_style_summary():
+    result = bayesian_service._build_iteration_metrics(
+        response_values=[10.0, 20.0],
+        target_values=[8.0, 16.0],
+        response_scatter=[0.01, 0.02],
+        parameter_step=[0.1, -0.2],
+    )
+
+    assert np.isclose(result["ccabs"], 37.5)
+    assert np.isclose(result["rel_res"], 0.25)
+    assert np.isclose(result["ra_norm"], np.linalg.norm([10.0, 20.0]))
+    assert np.isclose(result["re_norm"], np.linalg.norm([8.0, 16.0]))
+    assert np.isclose(result["dr_norm"], np.linalg.norm([-2.0, -4.0]))
+    assert np.isclose(result["dx_norm"], np.linalg.norm([0.1, -0.2]))
+    assert np.isclose(result["max_abs_dparam"], 0.2)
+    assert np.isclose(result["mean_abs_response_diff"], 25.0)
+    assert np.isclose(result["max_abs_response_diff"], 25.0)
+
+
 def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_values(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "fake.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
@@ -458,6 +477,9 @@ P2=2.0
     assert Path(result["iteration_results"][0]["updated_inp"]).name == "model_iter1.inp"
     assert Path(result["iteration_results"][1]["updated_inp"]).name == "model_iter2.inp"
     assert "next_iteration_solver" in result["iteration_results"][0]
+    assert np.isclose(result["iteration_results"][0]["metrics"]["ccabs"], 37.5)
+    assert np.isclose(result["iteration_results"][0]["metrics"]["rel_res"], 0.25)
+    assert np.isclose(result["iteration_results"][1]["metrics"]["dx_norm"], np.linalg.norm([0.2, 0.4]))
     assert Path(result["iteration_results"][0]["saved_artifacts"]["files"]["summary_json"]).exists()
     assert Path(result["iteration_results"][1]["saved_artifacts"]["files"]["sensitivity_matrix_txt"]).exists()
     mapping_json = Path(result["iteration_results"][0]["saved_artifacts"]["files"]["parameter_element_mapping_json"])
@@ -1011,28 +1033,33 @@ def test_persist_bayesian_tracking_results_overwrites_same_batch_and_writes_expe
             {
                 "iteration": 1,
                 "response_values": [5.0],
-                "target_responses": [0.0],
+                "target_responses": [4.0],
                 "response_rows": [{"row_key": "row-1", "response_label": "R1"}],
                 "parameter_values": [1.0],
+                "response_scatter": [0.01],
                 "parameter_columns": [
                     {
                         "parameter_name": "P1",
                         "element_mapping": {"target_rows": [{"set_name": "SET1"}]},
                     }
                 ],
-                "bayesian": {"p_new": [1.5]},
+                "bayesian": {"p_new": [1.5], "dp": [0.5]},
             }
         ],
     )
 
     delete_params = [params for sql, params in executed if sql.startswith("DELETE FROM")]
-    assert delete_params == [(12, 1), (12, 1), (12, 1), (12, 1)]
+    assert delete_params == [(12, 1), (12, 1), (12, 1), (12, 1), (12, 1)]
 
     inserts = [(sql, params) for sql, params in executed if sql.startswith("INSERT INTO")]
     assert inserts[0][1] == (12, 1, 1)
-    assert inserts[1][1] == (12, 1, "response_1", 1, 5.0, 0.0, 0.0)
-    assert inserts[2][1] == (12, 1, "Response", "response_1", 1, 5.0)
-    assert inserts[3][1] == (12, 1, "Parameter", "P1", 1, 1.5)
-    assert inserts[4][1] == (12, 1, "P1", "default", "default", "SET1", 1.0, 1.5, 0.5)
+    metric_insert = inserts[1][1]
+    assert metric_insert[:4] == (12, 1, 1, 25.0)
+    assert np.isclose(metric_insert[4], 0.25)
+    assert metric_insert[5:] == (5.0, 4.0, 1.0, 0.5, 0.5, 25.0, 25.0)
+    assert inserts[2][1] == (12, 1, "response_1", 1, 5.0, 4.0, 25.0)
+    assert inserts[3][1] == (12, 1, "Response", "response_1", 1, 5.0)
+    assert inserts[4][1] == (12, 1, "Parameter", "P1", 1, 1.5)
+    assert inserts[5][1] == (12, 1, "P1", "default", "default", "SET1", 1.0, 1.5, 0.5)
     assert fake_conn.committed is True
     assert fake_conn.rolled_back is False

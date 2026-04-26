@@ -746,6 +746,23 @@ CREATE_TABLE_SQL_LIST = [
     ) COMMENT='跟踪迭代表';
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_bayesian_iteration_metric (
+        project_id BIGINT NOT NULL COMMENT 'project id',
+        batch_no INT NOT NULL DEFAULT 1 COMMENT 'batch number',
+        iteration INT NOT NULL COMMENT 'iteration number',
+        ccabs DOUBLE COMMENT 'CCABS convergence metric',
+        rel_res DOUBLE COMMENT 'relative residual norm',
+        ra_norm DOUBLE COMMENT 'model response norm',
+        re_norm DOUBLE COMMENT 'target response norm',
+        dr_norm DOUBLE COMMENT 'response residual norm',
+        dx_norm DOUBLE COMMENT 'parameter update norm',
+        max_abs_dparam DOUBLE COMMENT 'maximum absolute parameter update',
+        mean_abs_response_diff DOUBLE COMMENT 'mean absolute response difference percent',
+        max_abs_response_diff DOUBLE COMMENT 'maximum absolute response difference percent',
+        PRIMARY KEY (project_id, batch_no, iteration)
+    ) COMMENT='bayesian iteration metrics';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_variation (
         pid BIGINT NOT NULL COMMENT '工程ID',
         batch_no INT NOT NULL DEFAULT 1 COMMENT '批次号',
@@ -856,6 +873,7 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_variation WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_tracking_iteration WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_tracking_value WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_bayesian_iteration_metric WHERE project_id = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_analysis_error WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_model_update_static_result WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_manual_response WHERE pid = {pid}")
