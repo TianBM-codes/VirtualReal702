@@ -20,10 +20,11 @@
     <span v-if="isMergedField" style="font-size:10px;color:#8b949e">合并场固定 component_idx=0</span>
 
     <label>Render Mode</label>
-    <select v-model="renderMode">
+    <select v-model="renderMode" :disabled="isMergedField">
       <option value="smooth">Smooth（节点插值）</option>
       <option value="flat">Flat（单元均色）</option>
     </select>
+    <span v-if="isMergedField" style="font-size:10px;color:#8b949e">合并场固定 Flat（ELEMENT_NODAL）</span>
 
     <label>Step</label>
     <select v-model="step" @change="onStepChange">
@@ -70,12 +71,13 @@ watch(() => store.meta, meta => {
   if (meta.steps?.length) { step.value = meta.steps[0].step_name; onStepChange() }
 }, { immediate: true })
 
-// 当切换到合并场时，自动设置 result_group 和 component
+// 当切换到合并场时，自动设置 result_group、component、renderMode
 watch(isMergedField, val => {
   if (val) {
     if (!resultGroupOverride.value) resultGroupOverride.value = 'merged_dsa'
     compOptions.value = [{ value: 'value', label: 'value', idx: 0, isInvariant: false }]
     selectedComp.value = 'value'
+    renderMode.value = 'flat'   // 合并场是 ELEMENT_NODAL，强制单元均色
   }
 })
 
