@@ -782,6 +782,12 @@ def _default_solver_workspace(output_dir: str, job_name: str) -> str:
     return str((Path(output_dir).expanduser().resolve() / f"{job_name}_workspace").resolve())
 
 
+def _auto_merge_result_group(batch_no: str, field_prefix: str) -> str:
+    response_field = _field_prefix_response_token(field_prefix) or "sensitivity"
+    raw = f"sensitivity_{batch_no}_{response_field}"
+    return _normalize_result_group_name(raw)
+
+
 def _normalize_result_group_name(value: str) -> str:
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
     text = text.strip("._-")
@@ -1729,8 +1735,8 @@ def run_sensitivity_inp_and_store(
         cloud_result_group: Optional[str] = None,
         cloud_step_name: str = "Sensitivity",
         cloud_field_name: str = "SENSITIVITY_CLOUD",
-        merge_fields: bool = False,
-        merge_result_group: str = "merged_dsa",
+        merge_fields: bool = True,
+        merge_result_group: Optional[str] = None,
 ) -> dict:
     ensure_tables_exist()
 
@@ -1741,6 +1747,9 @@ def run_sensitivity_inp_and_store(
     output_dir_abs = os.path.abspath(output_dir)
     os.makedirs(output_dir_abs, exist_ok=True)
     normalized_batch_no = _normalize_batch_no(batch_no)
+    resolved_merge_result_group = merge_result_group or _auto_merge_result_group(
+        batch_no=normalized_batch_no, field_prefix=field_prefix
+    )
     workspace_frame = _resolved_workspace_frame(
         requested_frame=frame,
         parse_via_project_results=parse_via_project_results,
@@ -1868,7 +1877,7 @@ def run_sensitivity_inp_and_store(
                     frame=int(workspace_frame),
                     field_prefix=field_prefix,
                     instances=list(instances) if instances else [],
-                    result_group=merge_result_group,
+                    result_group=resolved_merge_result_group,
                     source_result_group=source_rg,
                 )
                 result["merge_result"] = merge_result

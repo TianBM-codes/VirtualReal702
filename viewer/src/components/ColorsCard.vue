@@ -2,87 +2,109 @@
   <div class="card" v-if="store.meta">
     <h2>Frame Colors</h2>
 
-    <!-- Result Group 覆盖（留空 = 用当前激活的 result_group） -->
-    <label>Result Group <span style="font-size:10px;color:#8b949e">（留空用默认）</span></label>
-    <input v-model="resultGroupOverride" placeholder="e.g. merged_dsa" style="font-size:12px" />
+    <!-- ── 普通字段模式 ── -->
+    <template v-if="!sensitivityMode">
+      <label>Field</label>
+      <select v-model="field" @change="onFieldChange">
+        <option v-for="f in store.meta.fields" :key="f.field_name" :value="f.field_name">{{ f.field_name }}</option>
+      </select>
 
-    <label>Field</label>
-    <select v-model="field" @change="onFieldChange">
-      <option v-for="f in store.meta.fields" :key="f.field_name" :value="f.field_name">{{ f.field_name }}</option>
-    </select>
-    <!-- 合并场支持：手动输入字段名（如 d_999_U1_T） -->
-    <input v-model="fieldOverride" placeholder="或手动输入字段名 d_999_U1_T" style="font-size:12px;margin-top:2px" />
+      <label>Component</label>
+      <select v-model="selectedComp">
+        <option v-for="c in compOptions" :key="c.value" :value="c.value">{{ c.label }}</option>
+      </select>
 
-    <label>Component</label>
-    <select v-model="selectedComp" :disabled="isMergedField">
-      <option v-for="c in compOptions" :key="c.value" :value="c.value">{{ c.label }}</option>
-    </select>
-    <span v-if="isMergedField" style="font-size:10px;color:#8b949e">合并场固定 component_idx=0</span>
+      <label>Render Mode</label>
+      <select v-model="renderMode">
+        <option value="smooth">Smooth（节点插值）</option>
+        <option value="flat">Flat（单元均色）</option>
+      </select>
 
-    <label>Render Mode</label>
-    <select v-model="renderMode" :disabled="isMergedField">
-      <option value="smooth">Smooth（节点插值）</option>
-      <option value="flat">Flat（单元均色）</option>
-    </select>
-    <span v-if="isMergedField" style="font-size:10px;color:#8b949e">合并场固定 Flat（ELEMENT_NODAL）</span>
+      <label>Step</label>
+      <select v-model="step" @change="onStepChange">
+        <option v-for="s in store.meta.steps" :key="s.step_name" :value="s.step_name">{{ s.step_name }}</option>
+      </select>
 
-    <label>Step</label>
-    <select v-model="step" @change="onStepChange">
-      <option v-for="s in store.meta.steps" :key="s.step_name" :value="s.step_name">{{ s.step_name }}</option>
-    </select>
+      <label>Frame: <span>{{ frameIdx }}</span></label>
+      <input type="range" v-model.number="frameIdx" :min="0" :max="maxFrame" />
 
-    <label>Frame: <span>{{ frameIdx }}</span></label>
-    <input type="range" v-model.number="frameIdx" :min="0" :max="maxFrame" />
+      <button class="secondary" style="margin-top:6px" @click="sensitivityMode = true">
+        切换到灵敏度云图 →
+      </button>
+      <button class="primary" @click="applyNormal">Apply Colors</button>
+    </template>
 
-    <button class="primary" @click="apply">Apply Colors</button>
+    <!-- ── 灵敏度合并场模式 ── -->
+    <template v-else>
+      <label>灵敏度结果组</label>
+      <select v-model="sensResultGroup" @change="onSensGroupChange">
+        <option value="">-- 请选择 --</option>
+        <option v-for="rg in sensResultGroups" :key="rg" :value="rg">{{ rg }}</option>
+      </select>
+      <button style="font-size:11px;margin-top:2px" @click="loadSensGroups">刷新列表</button>
+
+      <template v-if="sensResultGroup">
+        <label>字段（响应节点_分量）</label>
+        <select v-model="sensField">
+          <option value="">-- 请选择 --</option>
+          <option v-for="f in sensFields" :key="f.field_name" :value="f.field_name">
+            {{ f.field_name }}（节点 {{ f.response_node_label }} · {{ f.component }}）
+          </option>
+        </select>
+      </template>
+
+      <label>Step</label>
+      <select v-model="step" @change="onStepChange">
+        <option v-for="s in store.meta.steps" :key="s.step_name" :value="s.step_name">{{ s.step_name }}</option>
+      </select>
+
+      <label>Frame: <span>{{ frameIdx }}</span></label>
+      <input type="range" v-model.number="frameIdx" :min="0" :max="maxFrame" />
+
+      <span style="font-size:10px;color:#8b949e">固定 Flat（ELEMENT_NODAL，单元均色）</span>
+
+      <button class="secondary" style="margin-top:6px" @click="sensitivityMode = false">
+        ← 切换到普通字段
+      </button>
+      <button class="primary" :disabled="!sensField" @click="applySensitivity">Apply Colors</button>
+    </template>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useViewerStore } from '../store/viewer'
+import http from '../utils/request'
 
 const store = useViewerStore()
 const emit  = defineEmits(['applyColors'])
 
-const field               = ref('')
-const fieldOverride       = ref('')   // 手动输入，优先级高于下拉
-const resultGroupOverride = ref('')   // 留空 = 用 store.activeResultGroup
-const renderMode          = ref('smooth')
-const step                = ref('')
-const frameIdx            = ref(0)
-const maxFrame            = ref(0)
-const selectedComp        = ref('')
-
-// 判断是否是合并场（d_{label}_U1_T 格式）
-const MERGED_FIELD_RE = /^d_\d+_U[123]_T$/i
-const isMergedField = computed(() => {
-  const fn = fieldOverride.value.trim() || field.value
-  return MERGED_FIELD_RE.test(fn)
-})
-
-// Each option carries: { value, label, idx, isInvariant, invariantField }
-const compOptions = ref([])
+// ── 通用 ──────────────────────────────────────────────────────────────────
+const step     = ref('')
+const frameIdx = ref(0)
+const maxFrame = ref(0)
 
 watch(() => store.meta, meta => {
-  if (!meta?.fields?.length) return
-  field.value = meta.fields[0].field_name
-  onFieldChange()
+  if (!meta) return
   if (meta.steps?.length) { step.value = meta.steps[0].step_name; onStepChange() }
+  if (meta.fields?.length) { field.value = meta.fields[0].field_name; onFieldChange() }
 }, { immediate: true })
 
-// 当切换到合并场时，自动设置 result_group、component、renderMode
-watch(isMergedField, val => {
-  if (val) {
-    if (!resultGroupOverride.value) resultGroupOverride.value = 'merged_dsa'
-    compOptions.value = [{ value: 'value', label: 'value', idx: 0, isInvariant: false }]
-    selectedComp.value = 'value'
-    renderMode.value = 'flat'   // 合并场是 ELEMENT_NODAL，强制单元均色
-  }
-})
+function onStepChange() {
+  const stepInfo = store.meta?.steps?.find(s => s.step_name === step.value)
+  if (!stepInfo) return
+  maxFrame.value = (stepInfo.num_frames || 1) - 1
+  if (frameIdx.value > maxFrame.value) frameIdx.value = maxFrame.value
+}
+
+// ── 普通字段模式 ─────────────────────────────────────────────────────────
+const sensitivityMode = ref(false)
+const field       = ref('')
+const renderMode  = ref('smooth')
+const selectedComp = ref('')
+const compOptions  = ref([])
 
 function onFieldChange() {
-  fieldOverride.value = ''  // 切换下拉时清除手动输入
   const fieldInfo = store.meta?.fields?.find(f => f.field_name === field.value)
   if (!fieldInfo) { compOptions.value = []; return }
   const opts = []
@@ -92,52 +114,71 @@ function onFieldChange() {
     opts.push({ value: '__scalar__', label: '— scalar —', idx: null, isInvariant: false })
   } else {
     comps.forEach((c, idx) => opts.push({ value: c, label: c, idx, isInvariant: false }))
-    invs.forEach(inv => opts.push({
-      value: inv,
-      label: inv,
-      idx: null,
-      isInvariant: true,
-      invariantField: `${field.value}_${inv}`,
-    }))
+    invs.forEach(inv => opts.push({ value: inv, label: inv, idx: null, isInvariant: true, invariantField: `${field.value}_${inv}` }))
   }
   compOptions.value = opts
   selectedComp.value = opts[0]?.value ?? ''
 }
 
-function onStepChange() {
-  const stepInfo = store.meta?.steps?.find(s => s.step_name === step.value)
-  if (!stepInfo) return
-  maxFrame.value = (stepInfo.num_frames || 1) - 1
-  if (frameIdx.value > maxFrame.value) frameIdx.value = maxFrame.value
-}
-
-function apply() {
-  const activeField = fieldOverride.value.trim() || field.value
-  const rg = resultGroupOverride.value.trim() || undefined  // undefined = 用 store 默认
-
-  if (isMergedField.value) {
-    // 合并场：固定 component_idx=0，单分量
-    emit('applyColors', {
-      field: activeField,
-      componentVal: 'value',
-      componentIdx: 0,
-      renderMode: renderMode.value,
-      step: step.value,
-      frameIdx: frameIdx.value,
-      resultGroup: rg,
-    })
-    return
-  }
-
+function applyNormal() {
   const opt = compOptions.value.find(o => o.value === selectedComp.value)
   emit('applyColors', {
-    field: opt?.isInvariant ? opt.invariantField : activeField,
+    field: opt?.isInvariant ? opt.invariantField : field.value,
     componentVal: selectedComp.value,
     componentIdx: opt?.isInvariant ? null : (opt?.idx ?? null),
     renderMode: renderMode.value,
     step: step.value,
     frameIdx: frameIdx.value,
-    resultGroup: rg,
+  })
+}
+
+// ── 灵敏度合并场模式 ──────────────────────────────────────────────────────
+const sensResultGroups = ref([])
+const sensResultGroup  = ref('')
+const sensFields       = ref([])
+const sensField        = ref('')
+
+async function loadSensGroups() {
+  if (!store.activeOdbId) return
+  try {
+    const res = await http.get(`${store.baseUrl}/api/odb/${store.activeOdbId}/sensitivity/result_groups`)
+    sensResultGroups.value = res.data?.data?.result_groups ?? []
+  } catch (e) {
+    console.warn('loadSensGroups failed', e)
+  }
+}
+
+async function onSensGroupChange() {
+  sensField.value = ''
+  sensFields.value = []
+  if (!sensResultGroup.value) return
+  try {
+    const params = new URLSearchParams({ result_group: sensResultGroup.value })
+    if (step.value) params.set('step', step.value)
+    const res = await http.get(
+      `${store.baseUrl}/api/odb/${store.activeOdbId}/sensitivity/fields?${params}`
+    )
+    sensFields.value = res.data?.data?.fields ?? []
+  } catch (e) {
+    console.warn('onSensGroupChange failed', e)
+  }
+}
+
+// 切换到灵敏度模式时自动加载 result_groups
+watch(sensitivityMode, val => {
+  if (val) loadSensGroups()
+})
+
+function applySensitivity() {
+  if (!sensField.value) return
+  emit('applyColors', {
+    field: sensField.value,
+    componentVal: 'value',
+    componentIdx: 0,
+    renderMode: 'flat',
+    step: step.value,
+    frameIdx: frameIdx.value,
+    resultGroup: sensResultGroup.value,
   })
 }
 </script>
