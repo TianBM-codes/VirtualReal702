@@ -196,6 +196,9 @@ async def create_project(body: CreateProjectRequest):
     """
     创建新 project，触发 source_path 对应的解析流程。
     调用方（Java 后端）提供 project_id（UUID），避免 L3 自己生成。
+
+    若同 project_id 已存在且 geom_status='error'，视为重试：
+    清空 workspace、更新 source_path、重置为 pending。
     """
     project_id = validate_workspace_id(body.project_id, "project_id")
     if not _is_http_url(body.source_path) and not os.path.isfile(body.source_path):
@@ -203,10 +206,26 @@ async def create_project(body: CreateProjectRequest):
     source_type = _detect_source_type(body.source_path, body.source_type)
 
     repo = _repo()
-    if repo.get_project(project_id) is not None:
-        raise ConflictError(f"Project '{project_id}' already exists")
-
+    existing = repo.get_project(project_id)
     workspace = project_workspace(settings.data_root, project_id)
+
+    if existing is not None:
+        if existing["geom_status"] != "error":
+            raise ConflictError(
+                f"Project '{project_id}' already exists "
+                f"(geom_status='{existing['geom_status']}')"
+            )
+        # Retry path: project previously failed — clean workspace and resubmit.
+        if workspace.exists() or workspace.is_symlink():
+            safe_rmtree(workspace, settings.data_root, "project workspace")
+        workspace.mkdir(parents=True, exist_ok=True)
+        repo.reset_project_for_retry(project_id, body.source_path, source_type)
+        return ok({
+            "project_id": project_id,
+            "source_type": source_type,
+            "geom_status": "pending",
+        })
+
     if workspace.exists() or workspace.is_symlink():
         raise ConflictError(
             f"Project '{project_id}' cannot be created because workspace "

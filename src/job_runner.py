@@ -662,8 +662,35 @@ def _run_job(odb_id: str, odb_path: str, workspace: str) -> None:
         _current_odb_id[0] = None
 
 
+def _recover_stuck_running_states() -> None:
+    """
+    启动时检查是否有因 runner 崩溃而卡在 'running' 状态的 project 或 result_group。
+    将它们重置为 'pending'，以便本次启动重新认领处理。
+    """
+    try:
+        with _connect() as conn:
+            n1 = conn.execute(
+                "UPDATE projects SET geom_status='pending', updated_at=?"
+                " WHERE geom_status='running'",
+                (_now_iso(),),
+            ).rowcount
+            n2 = conn.execute(
+                "UPDATE result_groups SET status='pending', error_message=NULL, updated_at=?"
+                " WHERE status='running'",
+                (_now_iso(),),
+            ).rowcount
+        if n1 > 0:
+            logger.warning("Recovered %d stuck project(s) (running → pending)", n1)
+        if n2 > 0:
+            logger.warning("Recovered %d stuck result_group(s) (running → pending)", n2)
+    except Exception:
+        logger.exception("Failed to recover stuck running states on startup")
+
+
 def main() -> None:
     logger.info("job_runner starting (registry=%s)", REGISTRY_DB)
+
+    _recover_stuck_running_states()
 
     # Start heartbeat daemon
     t = threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat")
@@ -672,53 +699,66 @@ def main() -> None:
     while True:
         did_work = False
 
-        # 1. Project geometry (INP)
-        project_id, source_path, source_type, ws = _claim_pending_project()
-        if project_id is not None:
-            did_work = True
-            logger.info("Claimed project geom %s", project_id)
-            try:
-                source_path = download_if_url(source_path, ws)
-                _run_project(project_id, source_path, source_type, ws)
-            except Exception:
-                logger.exception("Error in project geom %s", project_id)
+        try:
+            # 1. Project geometry (INP or ODB via POST /api/projects)
+            project_id, source_path, source_type, ws = _claim_pending_project()
+            if project_id is not None:
+                did_work = True
+                logger.info("Claimed project geom %s", project_id)
                 try:
-                    _update_project_geom_status(
-                        project_id, "error",
-                        "Unhandled runner exception — check server logs")
+                    source_path = download_if_url(source_path, ws)
+                    _run_project(project_id, source_path, source_type, ws)
                 except Exception:
-                    pass
+                    logger.exception("Error in project geom %s", project_id)
+                    try:
+                        _update_project_geom_status(
+                            project_id, "error",
+                            "Unhandled runner exception — check server logs")
+                    except Exception:
+                        pass
 
-        # 2. Result groups (ODB, requires project geom_status='ready')
-        project_id, rg, src, parse_opts, ws = _claim_pending_result_group()
-        if project_id is not None:
-            did_work = True
-            label = "{}/{}".format(project_id, rg)
-            logger.info("Claimed result_group %s", label)
-            try:
-                _cleanup_result_group(ws, rg)
-                if is_http_url(src):
-                    rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
-                    ext = os.path.splitext(src.split("?")[0])[1] or ".odb"
-                    src = download_if_url(src, ws,
-                                           dest_name="{}_source{}".format(rg_safe, ext))
-                _run_result_group(project_id, rg, src, parse_opts, ws)
-            except Exception:
-                logger.exception("Error in result_group %s", label)
+            # 2. Result groups (ODB, requires project geom_status='ready')
+            project_id, rg, src, parse_opts, ws = _claim_pending_result_group()
+            if project_id is not None:
+                did_work = True
+                label = "{}/{}".format(project_id, rg)
+                logger.info("Claimed result_group %s", label)
                 try:
-                    _update_result_group_status(
-                        project_id, rg, "error",
-                        "Unhandled runner exception — check server logs")
+                    _cleanup_result_group(ws, rg)
+                    if is_http_url(src):
+                        rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
+                        ext = os.path.splitext(src.split("?")[0])[1] or ".odb"
+                        src = download_if_url(src, ws,
+                                               dest_name="{}_source{}".format(rg_safe, ext))
+                    _run_result_group(project_id, rg, src, parse_opts, ws)
                 except Exception:
-                    pass
+                    logger.exception("Error in result_group %s", label)
+                    try:
+                        _update_result_group_status(
+                            project_id, rg, "error",
+                            "Unhandled runner exception — check server logs")
+                    except Exception:
+                        pass
 
-        # 3. Legacy ODB jobs
-        odb_id, odb_path, workspace = _claim_submitted()
-        if odb_id is not None:
-            did_work = True
-            logger.info("Claimed job %s", odb_id)
-            odb_path = download_if_url(odb_path, workspace)
-            _run_job(odb_id, odb_path, workspace)
+            # 3. Legacy ODB jobs
+            odb_id, odb_path, workspace = _claim_submitted()
+            if odb_id is not None:
+                did_work = True
+                logger.info("Claimed job %s", odb_id)
+                try:
+                    odb_path = download_if_url(odb_path, workspace)
+                    _run_job(odb_id, odb_path, workspace)
+                except Exception:
+                    logger.exception("Error in job %s", odb_id)
+                    try:
+                        _update_status(odb_id, "error",
+                                       error_msg="Unhandled runner exception — check server logs")
+                    except Exception:
+                        pass
+
+        except Exception:
+            logger.exception("Unexpected error in runner main loop — continuing")
+            did_work = False
 
         if not did_work:
             time.sleep(POLL_INTERVAL)

@@ -356,6 +356,16 @@ class RegistryRepo:
             )
             return cur.rowcount > 0
 
+    def reset_project_for_retry(self, project_id: str,
+                                source_path: str, source_type: str) -> None:
+        """将 error 状态的 project 重置为 pending（重新提交时调用），同时更新 source_path。"""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET geom_status='pending', inp_path=?, source_type=?,"
+                " updated_at=? WHERE project_id=? AND geom_status='error'",
+                (source_path, source_type, _now_iso(), project_id),
+            )
+
     def delete_project(self, project_id: str) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM result_groups WHERE project_id=?", (project_id,))
