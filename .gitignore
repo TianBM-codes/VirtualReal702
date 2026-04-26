@@ -57,3 +57,6 @@ runtime_bundle/
 AGENTS.md
 
 service_config.json
+# Frontend
+viewer/node_modules/
+viewer/dist/
