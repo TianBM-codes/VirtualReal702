@@ -601,20 +601,19 @@ def dump_geometry(odb, raw_dir, meta):
             if sname in _sec_region_names:
                 _isets_sec_labels[sname] = lbls
 
-        # Build section_id per etype using vectorized numpy (no extra element iteration)
-        section_names  = []
-        sec_name_to_id = {}
+        # Build section_id per etype: each sectionAssignment is its own domain.
+        # Two assignments with the same sectionName are still separate domains.
+        # section_id = index of the assignment in sectionAssignments order.
+        section_names  = []   # one entry per assignment (index == section_id)
         _sec_lbl_parts = []
         _sec_sid_parts = []
         try:
-            for _sa in instance.sectionAssignments:
+            for _i, _sa in enumerate(instance.sectionAssignments):
                 _sname = _sa.sectionName
-                if _sname not in sec_name_to_id:
-                    sec_name_to_id[_sname] = len(section_names)
-                    section_names.append(_sname)
-                _sid = sec_name_to_id[_sname]
+                section_names.append(_sname)
+                _sid   = _i
                 _rname = getattr(getattr(_sa, 'region', None), 'name', '')
-                _lbls = _isets_sec_labels.get(_rname)
+                _lbls  = _isets_sec_labels.get(_rname)
                 if _lbls is not None and len(_lbls) > 0:
                     _sec_lbl_parts.append(_lbls)
                     _sec_sid_parts.append(np.full(len(_lbls), _sid, dtype=np.int32))
@@ -906,21 +905,24 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
     parent_field_dir = os.path.join(results_dir, '{}_{}'.format(safe_step, safe_field))
 
     # ── Discover EN blocks from parent block_struct ───────────────────────────
-    en_blocks = {}  # {(iname, etype): {'labels': arr, 'n_enodes': int}}
-    for (iname, pos, etype, _sp) in list(block_struct.keys()):
+    en_blocks = {}  # {(iname, etype, sp_num_key): {'labels': arr, 'n_enodes': int}}
+    for (iname, pos, etype, sp_num_key) in list(block_struct.keys()):
         if pos != 'ELEMENT_NODAL':
             continue
-        info = block_struct[(iname, pos, etype, _sp)]
+        info = block_struct[(iname, pos, etype, sp_num_key)]
         n_enodes = info.get('n_enodes', 0)
         if n_enodes == 0:
             continue
-        bd = os.path.join(parent_field_dir, safe(iname), 'ELEMENT_NODAL')
+        bd_parts = [parent_field_dir, safe(iname), 'ELEMENT_NODAL']
         if etype:
-            bd = os.path.join(bd, safe(etype))
+            bd_parts.append(safe(etype))
+        if sp_num_key is not None:
+            bd_parts.append('sp{}'.format(sp_num_key))
+        bd = os.path.join(*bd_parts)
         lbl_path = os.path.join(bd, 'labels.npy')
         if not os.path.exists(lbl_path):
             continue
-        en_blocks[(iname, etype)] = {'labels': np.load(lbl_path), 'n_enodes': n_enodes}
+        en_blocks[(iname, etype, sp_num_key)] = {'labels': np.load(lbl_path), 'n_enodes': n_enodes}
 
     # ── Discover IP blocks from parent block_struct ───────────────────────────
     ip_blocks = {}  # {(iname, etype, sp_num_key): {'labels': arr, 'ip_labels': arr}}
@@ -958,13 +960,19 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
         mkdirs(fdir)
         inv_field_dirs[inv_name] = fdir
 
-    for (iname, etype), info in en_blocks.items():
+    for (iname, etype, sp_num_key), info in en_blocks.items():
         for inv_name in inv_field_dirs:
-            bd = os.path.join(inv_field_dirs[inv_name], safe(iname), 'ELEMENT_NODAL')
+            bd_parts = [inv_field_dirs[inv_name], safe(iname), 'ELEMENT_NODAL']
             if etype:
-                bd = os.path.join(bd, safe(etype))
+                bd_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_parts.append('sp{}'.format(sp_num_key))
+            bd = os.path.join(*bd_parts)
             mkdirs(bd)
             npsave(os.path.join(bd, 'labels.npy'), info['labels'])
+            sp_arr = (np.array([sp_num_key], dtype=np.int32)
+                      if sp_num_key is not None else np.array([], dtype=np.int32))
+            npsave(os.path.join(bd, 'sp_labels.npy'), sp_arr)
 
     for (iname, etype, sp_num_key), info in ip_blocks.items():
         for inv_name in inv_field_dirs:
@@ -989,14 +997,16 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
     for frame_idx in range(num_frames):
 
         # ELEMENT_NODAL: load component npy → compute invariants
-        for (iname, etype), info in en_blocks.items():
+        for (iname, etype, sp_num_key), info in en_blocks.items():
             canon    = info['labels']
             n_enodes = info['n_enodes']
 
-            bd_comp = os.path.join(parent_field_dir, safe(iname), 'ELEMENT_NODAL')
+            bd_comp_parts = [parent_field_dir, safe(iname), 'ELEMENT_NODAL']
             if etype:
-                bd_comp = os.path.join(bd_comp, safe(etype))
-            comp_path = os.path.join(bd_comp, 'f{:04d}.npy'.format(frame_idx))
+                bd_comp_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_comp_parts.append('sp{}'.format(sp_num_key))
+            comp_path = os.path.join(*(bd_comp_parts + ['f{:04d}.npy'.format(frame_idx)]))
             if not os.path.exists(comp_path):
                 continue
             comp = np.load(comp_path)         # [N_elem, n_enodes, ncomp]
@@ -1018,10 +1028,12 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                         tmp[:r, :c, :] = inv_data[:r, :c, :]
                         inv_data = tmp
 
-                bd_inv = os.path.join(inv_field_dirs[inv_name], safe(iname), 'ELEMENT_NODAL')
+                bd_inv_parts = [inv_field_dirs[inv_name], safe(iname), 'ELEMENT_NODAL']
                 if etype:
-                    bd_inv = os.path.join(bd_inv, safe(etype))
-                npsave(os.path.join(bd_inv, 'f{:04d}.npy'.format(frame_idx)), inv_data)
+                    bd_inv_parts.append(safe(etype))
+                if sp_num_key is not None:
+                    bd_inv_parts.append('sp{}'.format(sp_num_key))
+                npsave(os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)])), inv_data)
 
         # INTEGRATION_POINT: load component npy → compute invariants
         for (iname, etype, sp_num_key), info in ip_blocks.items():
@@ -1067,12 +1079,12 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
         fdir      = inv_field_dirs[inv_name]
         syn_field = '{}_{}'.format(field_name, inv_name)
         blocks    = []
-        for (iname, etype), info in en_blocks.items():
+        for (iname, etype, sp_num_key), info in en_blocks.items():
             blocks.append({
                 'inst_name':  iname,
                 'position':   'ELEMENT_NODAL',
                 'elem_type':  etype,
-                'sp_num':     None,
+                'sp_num':     sp_num_key,
                 'ncomp':      1,
                 'n_entities': len(info['labels']),
                 'n_enodes':   info['n_enodes'],
@@ -1261,7 +1273,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     _n = len(getattr(block, 'elementLabels',
                              getattr(block, 'nodeLabels', [])))
                     elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                sp_num    = _block_sp_num(block) if position == 'INTEGRATION_POINT' else None
+                sp_num    = _block_sp_num(block)   # None for solids, int for shell SPs
                 key       = (inst_name, position, elem_type, sp_num)
                 if key in block_struct:
                     continue  # already discovered
@@ -1332,10 +1344,11 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             _n = len(getattr(block, 'elementLabels', []))
                             elem_type = '_auto_{}x{}'.format(
                                 _n, _d.shape[1] if _d.ndim > 1 else 1)
-                        key = (inst_name, position, elem_type, None)
+                        sp_num = _block_sp_num(block)
+                        key = (inst_name, position, elem_type, sp_num)
                         if key in block_struct:
                             continue
-                        bd = get_block_dir(inst_name, position, elem_type)
+                        bd = get_block_dir(inst_name, position, elem_type, sp_num)
                         ncomp = np.array(block.data).shape[1]
                         u_elems, data_nd = reshape_element_nodal_block(block)
                         npsave(os.path.join(bd, 'labels.npy'), u_elems)
@@ -1372,8 +1385,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         _n = len(getattr(block, 'elementLabels',
                                  getattr(block, 'nodeLabels', [])))
                         elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                    fr_sp_num = (_block_sp_num(block)
-                                 if position == 'INTEGRATION_POINT' else None)
+                    fr_sp_num = _block_sp_num(block)   # None for solids, int for shell SPs
                     key       = (inst_name, position, elem_type, fr_sp_num)
                     if key not in block_struct:
                         continue
@@ -1429,10 +1441,11 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                                 _n = len(getattr(block, 'elementLabels', []))
                                 elem_type = '_auto_{}x{}'.format(
                                     _n, _d.shape[1] if _d.ndim > 1 else 1)
-                            key = (inst_name, position, elem_type, None)
+                            sp_num = _block_sp_num(block)
+                            key = (inst_name, position, elem_type, sp_num)
                             if key not in block_struct:
                                 continue
-                            bd      = get_block_dir(inst_name, position, elem_type)
+                            bd      = get_block_dir(inst_name, position, elem_type, sp_num)
                             fr_path = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
                             _, data_nd = reshape_element_nodal_block(block)
                             npsave(fr_path, data_nd)

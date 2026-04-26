@@ -35,6 +35,11 @@ def _result_h5_path(workspace: str, step: str, field: str,
     return os.path.join(workspace, "l1", "results", fname)
 
 
+# Synthetic invariant suffixes computed from stress components via numpy formulas.
+# MISES is kept (Abaqus-consistent); the rest are hidden until verified.
+_HIDDEN_INV_SUFFIXES = ("_PRESS", "_INV3", "_MAX_PRINCIPAL", "_MID_PRINCIPAL", "_MIN_PRINCIPAL")
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
 def get_instance_fields(
@@ -76,6 +81,9 @@ def get_instance_fields(
 
     result = []
     for row in rows:
+        fname = row["field_name"]
+        if any(fname.endswith(suf) for suf in _HIDDEN_INV_SUFFIXES):
+            continue
         positions_raw = row["positions"] or ""
         positions = [p.strip() for p in positions_raw.split(",") if p.strip()]
         try:
@@ -83,7 +91,7 @@ def get_instance_fields(
         except Exception:
             components = []
         result.append({
-            "name":       row["field_name"],
+            "name":       fname,
             "positions":  positions,
             "components": components,
         })
