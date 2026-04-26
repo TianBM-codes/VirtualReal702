@@ -717,6 +717,20 @@ class ManifestRepo:
         except Exception:
             return []
 
+    def get_instances_by_part_name(self, part_name: str) -> list:
+        """Return instance_name list for all instances of the given part."""
+        try:
+            with self._get_conn() as conn:
+                return [
+                    r["instance_name"]
+                    for r in conn.execute(
+                        "SELECT instance_name FROM instances WHERE part_name=? ORDER BY rowid",
+                        (part_name,),
+                    ).fetchall()
+                ]
+        except Exception:
+            return []
+
     def list_node_sets(self):
         """Return all node sets."""
         try:

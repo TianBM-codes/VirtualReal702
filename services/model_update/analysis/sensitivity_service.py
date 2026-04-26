@@ -1729,6 +1729,8 @@ def run_sensitivity_inp_and_store(
         cloud_result_group: Optional[str] = None,
         cloud_step_name: str = "Sensitivity",
         cloud_field_name: str = "SENSITIVITY_CLOUD",
+        merge_fields: bool = False,
+        merge_result_group: str = "merged_dsa",
 ) -> dict:
     ensure_tables_exist()
 
@@ -1833,7 +1835,7 @@ def run_sensitivity_inp_and_store(
             timeout=timeout,
         )
 
-        return _finalize_sensitivity_store_result(
+        result = _finalize_sensitivity_store_result(
             project_id=project_id,
             batch_no=normalized_batch_no,
             source_input_inp=input_inp_abs,
@@ -1855,6 +1857,25 @@ def run_sensitivity_inp_and_store(
                 "workspace_frame": int(workspace_frame),
             },
         )
+
+        if merge_fields:
+            source_rg = (project_result_parse or {}).get("result_group") if parse_via_project_results else None
+            try:
+                merge_result = merge_dsa_sensitivity_fields(
+                    project_id=project_id,
+                    workspace=str(result["workspace"]),
+                    step=step,
+                    frame=int(workspace_frame),
+                    field_prefix=field_prefix,
+                    instances=list(instances) if instances else [],
+                    result_group=merge_result_group,
+                    source_result_group=source_rg,
+                )
+                result["merge_result"] = merge_result
+            except Exception as exc:
+                result["merge_result"] = {"error": str(exc)}
+
+        return result
 
     return _run_with_project_sensitivity_status(project_id, _run)
 
@@ -3741,4 +3762,42 @@ def export_odb_sensitivity_vtu(
         python3=python3,
         keep_raw=keep_raw,
         timeout=timeout,
+    )
+
+
+def merge_dsa_sensitivity_fields(
+        *,
+        project_id: int,
+        workspace: str,
+        step: str,
+        frame: int = 0,
+        field_prefix: str,
+        instances: Optional[List[str]] = None,
+        result_group: str = "merged_dsa",
+        source_result_group: Optional[str] = None,
+) -> List[dict]:
+    """
+    查询 project 的优化参数，合并 DSA 灵敏度场写入 workspace。
+
+    返回写入的字段列表，每条含 field_name / response_node_label /
+    component / instance_count / element_count。
+    """
+    from src.l3.services.dsa_merge_service import merge_dsa_fields
+
+    parameter_rows = _load_project_optimization_parameters(project_id)
+    if not parameter_rows:
+        raise ValidationError(
+            "no optimization parameters found for project",
+            {"project_id": int(project_id)},
+        )
+
+    return merge_dsa_fields(
+        workspace=workspace,
+        step=step,
+        frame=frame,
+        field_prefix=field_prefix,
+        instances=list(instances) if instances else [],
+        parameter_rows=parameter_rows,
+        result_group=result_group,
+        source_result_group=source_result_group,
     )

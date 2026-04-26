@@ -324,6 +324,8 @@ class SensitivityRunAndStoreRequest(BaseModel):
     cloud_result_group: Optional[str] = None
     cloud_step_name: str = "Sensitivity"
     cloud_field_name: str = "SENSITIVITY_CLOUD"
+    merge_fields: bool = False
+    merge_result_group: str = "merged_dsa"
     async_submit: bool = False
 
 
@@ -361,6 +363,18 @@ class SensitivityGenerateRunAndStoreRequest(BaseModel):
 class SensitivityStoredQueryRequest(BaseModel):
     project_id: int
     batch_no: Optional[str] = "1"
+
+
+class SensitivityMergeFieldsRequest(BaseModel):
+    project_id: int
+    workspace: str
+    step: str
+    frame: int = 0
+    field_prefix: str
+    instances: List[str] = Field(default_factory=list)
+    result_group: str = "merged_dsa"
+    source_result_group: Optional[str] = None
+    async_submit: bool = False
 
 
 class AbaqusSensitivityRunRequest(BaseModel):
