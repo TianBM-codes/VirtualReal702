@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
 
 from services.model_update.analysis.sensitivity_service import (
+    build_project_dsa_config_preview,
     build_sensitivity_table,
     build_workspace_from_odb,
     export_adjoint_sensitivity_vtu,
@@ -20,6 +21,7 @@ from ..background_jobs import get_background_task, submit_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
     SensitivityBuildWorkspaceRequest,
+    SensitivityDsaConfigPreviewRequest,
     SensitivityExportAdjointVtuRequest,
     SensitivityExportDsaVtuRequest,
     SensitivityExportVtuRequest,
@@ -223,6 +225,22 @@ async def sensitivity_task_status(task_id: str):
                 details={"task_id": str(task_id)},
             )
         return success_response(data, "sensitivity task status loaded")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/dsa/config/preview")
+async def sensitivity_dsa_config_preview(request: Request, body: SensitivityDsaConfigPreviewRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = build_project_dsa_config_preview(
+            project_id=body.project_id,
+            value_mode=body.value_mode,
+        )
+        return success_response(data, "sensitivity DSA config preview loaded")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

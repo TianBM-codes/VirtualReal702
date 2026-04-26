@@ -758,6 +758,300 @@ def _load_project_design_responses(project_id: int) -> List[dict]:
         conn.close()
 
 
+def _load_project_thickness_parameters(project_id: int) -> List[dict]:
+    return [
+        row
+        for row in _load_project_optimization_parameters(project_id)
+        if str(row.get("quantity_code") or "").upper() == "H"
+    ]
+
+
+def _capability_key(row: dict) -> tuple:
+    return (
+        str(row.get("set_name") or "").strip(),
+        str(row.get("set_type") or "").strip(),
+        str(row.get("set_scope") or "").strip(),
+        str(row.get("instance_name") or "").strip(),
+        str(row.get("part_name") or "").strip(),
+    )
+
+
+def _load_project_thickness_capabilities(project_id: int) -> Dict[tuple, dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name, extra_json
+            FROM t_mt_py_fem_quantity_set_capability
+            WHERE pid = %s AND quantity_code = 'H'
+            """,
+            (int(project_id),),
+        )
+        rows = [dict(row) for row in (cursor.fetchall() or [])]
+        return {_capability_key(row): row for row in rows}
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _parse_optional_json_object(raw_value) -> dict:
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    if not raw_value:
+        return {}
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _parse_id_list(raw_value) -> List[int]:
+    if raw_value is None or raw_value == "":
+        return []
+    if isinstance(raw_value, (list, tuple, set)):
+        values = raw_value
+    else:
+        values = [raw_value]
+
+    labels = []
+    for item in values:
+        if item is None or item == "":
+            continue
+        if isinstance(item, str) and "," in item:
+            labels.extend(_parse_id_list([part.strip() for part in item.split(",")]))
+            continue
+        labels.append(int(item))
+    return labels
+
+
+def _safe_dsa_set_name(parameter_name: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", str(parameter_name or "").strip())
+    base = base.strip("_") or "PARAM"
+    raw_name = f"DSA_{base}"
+    if raw_name[0].isdigit():
+        raw_name = f"DSA_{raw_name}"
+    return raw_name
+
+
+def _unique_name(preferred: str, used_names: set) -> str:
+    name = preferred
+    suffix = 2
+    while name in used_names:
+        name = f"{preferred}_{suffix}"
+        suffix += 1
+    used_names.add(name)
+    return name
+
+
+def _jsonable_scalar(value):
+    if value is None:
+        return None
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    try:
+        import decimal
+
+        if isinstance(value, decimal.Decimal):
+            return float(value)
+    except Exception:
+        pass
+    return value
+
+
+def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inherit") -> dict:
+    resolved_value_mode = str(value_mode or "").strip().lower()
+    if resolved_value_mode not in {"inherit", "explicit"}:
+        raise ValidationError(
+            "value_mode must be either 'inherit' or 'explicit'",
+            {"value_mode": value_mode, "allowed": ["inherit", "explicit"]},
+        )
+
+    parameter_rows = _load_project_thickness_parameters(project_id)
+    capability_rows = _load_project_thickness_capabilities(project_id)
+    response_rows = _load_project_design_responses(project_id)
+    warnings: List[dict] = []
+
+    used_set_names = set()
+    source_set_names = {
+        str(row.get("set_name") or "").strip()
+        for row in list(parameter_rows) + list(response_rows)
+        if str(row.get("set_name") or "").strip()
+    }
+    element_sets = []
+
+    for idx, row in enumerate(parameter_rows, start=1):
+        parameter_name = str(row.get("parameter_name") or "").strip()
+        if not parameter_name:
+            parameter_name = f"T{idx}"
+            warnings.append(
+                {
+                    "code": "PARAMETER_NAME_EMPTY",
+                    "message": "参数名为空，预览中使用临时参数名",
+                    "parameter_index": idx,
+                    "fallback_parameter": parameter_name,
+                }
+            )
+
+        preferred_set_name = _safe_dsa_set_name(parameter_name)
+        set_name = _unique_name(preferred_set_name, used_set_names)
+        if set_name != preferred_set_name:
+            warnings.append(
+                {
+                    "code": "PARAMETER_SET_NAME_RENAMED",
+                    "message": "自动生成的 DSA 集合名重复，已追加后缀避免冲突",
+                    "parameter": parameter_name,
+                    "preferred_set_name": preferred_set_name,
+                    "set_name": set_name,
+                }
+            )
+        if set_name in source_set_names:
+            warnings.append(
+                {
+                    "code": "PARAMETER_SET_NAME_MAY_COLLIDE",
+                    "message": "自动生成的 DSA 集合名与数据库中的已有集合名相同，请人工确认原始 inp 中没有同名集合",
+                    "parameter": parameter_name,
+                    "set_name": set_name,
+                }
+            )
+
+        extra_json = _parse_optional_json_object(row.get("extra_json"))
+        elements = _parse_id_list(extra_json.get("element_labels"))
+        if not elements:
+            elements = _parse_id_list(row.get("element_label"))
+        if not elements:
+            capability_row = capability_rows.get(_capability_key(row))
+            capability_extra = _parse_optional_json_object(
+                capability_row.get("extra_json") if capability_row else None
+            )
+            elements = _parse_id_list(capability_extra.get("element_labels"))
+            if elements:
+                warnings.append(
+                    {
+                        "code": "PARAMETER_ELEMENTS_FROM_CAPABILITY",
+                        "message": "参数记录没有 element_labels，已从 quantity_set_capability 中同名壳厚集合补齐",
+                        "parameter": parameter_name,
+                        "source_set_name": row.get("set_name"),
+                        "element_count": len(elements),
+                    }
+                )
+        if not elements:
+            warnings.append(
+                {
+                    "code": "PARAMETER_ELEMENTS_EMPTY",
+                    "message": "参数没有 element_labels，也没有 element_label，生成器后续无法为它创建 ELSET",
+                    "parameter": parameter_name,
+                    "source_set_name": row.get("set_name"),
+                }
+            )
+
+        item = {
+            "set_name": set_name,
+            "parameter": parameter_name,
+            "elements": elements,
+        }
+        if resolved_value_mode == "explicit":
+            current_value = _jsonable_scalar(row.get("scalar_value"))
+            item["value"] = current_value
+            if current_value is None:
+                warnings.append(
+                    {
+                        "code": "PARAMETER_VALUE_EMPTY",
+                        "message": "explicit 模式要求写入 value，但参数 current_value 为空",
+                        "parameter": parameter_name,
+                        "set_name": set_name,
+                    }
+                )
+
+        element_sets.append(item)
+
+    if resolved_value_mode == "inherit":
+        warnings.append(
+            {
+                "code": "INHERIT_MODE_REQUIRES_UNIQUE_ORIGINAL_THICKNESS",
+                "message": "inherit 模式依赖原始 inp 中这些单元能继承到唯一壳厚；如果一个参数覆盖多个原始 section 且厚度不同，后续生成 inp 会报错",
+            }
+        )
+
+    responses = []
+    for idx, row in enumerate(response_rows, start=1):
+        region_type = str(row.get("region_type") or "").strip().upper()
+        if region_type == "NODE":
+            response_type = "node"
+        elif region_type == "ELEMENT":
+            response_type = "element"
+        else:
+            response_type = ""
+            warnings.append(
+                {
+                    "code": "RESPONSE_REGION_TYPE_UNSUPPORTED",
+                    "message": "响应 region_type 不是 NODE 或 ELEMENT，预览中保留该记录但 type 为空",
+                    "response_no": row.get("response_no"),
+                    "request_no": row.get("request_no"),
+                    "region_type": row.get("region_type"),
+                }
+            )
+
+        set_name = str(row.get("set_name") or "").strip()
+        if not set_name:
+            warnings.append(
+                {
+                    "code": "RESPONSE_SET_NAME_EMPTY",
+                    "message": "响应 set_name 为空，生成器后续无法引用响应集合",
+                    "response_no": row.get("response_no"),
+                    "request_no": row.get("request_no"),
+                }
+            )
+
+        variables = row.get("variables")
+        if variables is None:
+            variables_json = row.get("variables_json")
+            try:
+                variables = json.loads(variables_json) if variables_json else []
+            except json.JSONDecodeError:
+                variables = []
+        variables = [str(item).strip() for item in (variables or []) if str(item).strip()]
+        if not variables:
+            warnings.append(
+                {
+                    "code": "RESPONSE_VARIABLES_EMPTY",
+                    "message": "响应 variables_json 为空或不是非空列表，生成器后续无法创建 DESIGN RESPONSE",
+                    "response_no": row.get("response_no"),
+                    "request_no": row.get("request_no"),
+                    "set_name": set_name,
+                }
+            )
+
+        response_item = {
+            "type": response_type,
+            "set": set_name,
+            "variables": variables,
+        }
+        responses.append(response_item)
+
+    config_json = {
+        "include_file": "include.inp",
+        "main_output": "model_dsa.inp",
+        "element_sets": element_sets,
+        "node_sets": [],
+        "responses": responses,
+    }
+
+    return {
+        "project_id": int(project_id),
+        "value_mode": resolved_value_mode,
+        "config_json": config_json,
+        "parameter_count": len(element_sets),
+        "response_count": len(responses),
+        "warnings": warnings,
+    }
+
+
 def _generate_sensitivity_inp_from_project_db(
         *,
         project_id: int,

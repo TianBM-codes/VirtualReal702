@@ -219,6 +219,11 @@ class SensitivityOverviewRequest(BaseModel):
     workspace: str
 
 
+class SensitivityDsaConfigPreviewRequest(BaseModel):
+    project_id: int
+    value_mode: str = "inherit"
+
+
 class SensitivityTableRequest(BaseModel):
     workspace: str
     step: Optional[str] = None
