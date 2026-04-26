@@ -296,3 +296,84 @@ def test_compute_static_correlation_reads_latest_static_test_data_json(monkeypat
             "sensor_type_id": None,
         },
     ]
+
+
+class _StaticJsonSingleKeyCursor(_StaticJsonCursor):
+    def fetchall(self):
+        sql = self.last_sql
+        if "SELECT sensor_type, data FROM t_mt_static_test_data" in sql:
+            return [
+                {
+                    "sensor_type": "浣嶇Щ",
+                    "data": json.dumps(
+                        [
+                            {"WY1": "1.5"},
+                            {"WY2": "2.5"},
+                        ],
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
+        return super().fetchall()
+
+
+class _StaticJsonSingleKeyConnection:
+    def __init__(self):
+        self.cursor_obj = _StaticJsonSingleKeyCursor()
+
+    def cursor(self, dictionary=False):
+        return self.cursor_obj
+
+    def close(self):
+        return None
+
+
+def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
+    fake_conn = _StaticJsonSingleKeyConnection()
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.compute_static_correlation(project_id=202)
+
+    assert result["project_id"] == 202
+    assert result["aligned_point_count"] == 2
+    assert result["value_count"] == 6
+    assert result["dac"] == 100.0
+    assert result["dsf"] == 1.0
+    assert result["analysis_error_preview"][:3] == [
+        {
+            "load_case_no": 1,
+            "result_no": 1,
+            "point_no": "WY1",
+            "node_no": "PART-1-1::1001",
+            "component_name": "UX",
+            "point_value": 0.0,
+            "initial_node_value": 0.0,
+            "initial_relative_error": 0.0,
+            "initial_abs_error": 0.0,
+            "sensor_type_id": None,
+        },
+        {
+            "load_case_no": 1,
+            "result_no": 1,
+            "point_no": "WY1",
+            "node_no": "PART-1-1::1001",
+            "component_name": "UY",
+            "point_value": 1.5,
+            "initial_node_value": 1.5,
+            "initial_relative_error": 0.0,
+            "initial_abs_error": 0.0,
+            "sensor_type_id": None,
+        },
+        {
+            "load_case_no": 1,
+            "result_no": 1,
+            "point_no": "WY1",
+            "node_no": "PART-1-1::1001",
+            "component_name": "UZ",
+            "point_value": 0.0,
+            "initial_node_value": 0.0,
+            "initial_relative_error": 0.0,
+            "initial_abs_error": 0.0,
+            "sensor_type_id": None,
+        },
+    ]

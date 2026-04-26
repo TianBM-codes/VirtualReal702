@@ -3091,7 +3091,24 @@ def _iter_static_test_payload_entries(payload) -> List[dict]:
         entries = []
         for item in payload:
             if isinstance(item, dict):
-                entries.append(dict(item))
+                normalized = dict(item)
+                if not _is_static_test_sensor_entry(normalized):
+                    candidates = [
+                        (str(key), value)
+                        for key, value in normalized.items()
+                        if str(key or "").strip() not in {
+                            "project_id",
+                            "sensor_type",
+                            "timestamp",
+                            "time",
+                            "created_at",
+                            "updated_at",
+                        }
+                    ]
+                    if len(candidates) == 1:
+                        sensor_label, reading = candidates[0]
+                        normalized = {"sensor_label": sensor_label, "value": reading}
+                entries.append(normalized)
         return entries
 
     if isinstance(payload, dict):
