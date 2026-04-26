@@ -142,7 +142,8 @@ async function loadSensGroups() {
   if (!store.activeOdbId) return
   try {
     const res = await http.get(`${store.baseUrl}/api/odb/${store.activeOdbId}/sensitivity/result_groups`)
-    sensResultGroups.value = res.data?.data?.result_groups ?? []
+    // interceptor 已把 axios res.data 展开为 JSON body，res.data 即内层 data 字段
+    sensResultGroups.value = res.data?.result_groups ?? []
   } catch (e) {
     console.warn('loadSensGroups failed', e)
   }
@@ -158,7 +159,7 @@ async function onSensGroupChange() {
     const res = await http.get(
       `${store.baseUrl}/api/odb/${store.activeOdbId}/sensitivity/fields?${params}`
     )
-    sensFields.value = res.data?.data?.fields ?? []
+    sensFields.value = res.data?.fields ?? []
   } catch (e) {
     console.warn('onSensGroupChange failed', e)
   }
