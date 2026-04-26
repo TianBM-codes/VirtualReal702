@@ -10,6 +10,7 @@ from services.model_update.analysis.sensitivity_service import (
     get_stored_sensitivity_matrix_payload,
     get_stored_sensitivity_table_points,
     get_sensitivity_overview,
+    merge_dsa_sensitivity_fields,
     run_sensitivity_inp_and_store,
     store_dsa_sensitivity_results,
 )
@@ -23,6 +24,7 @@ from ..models import (
     SensitivityExportDsaVtuRequest,
     SensitivityExportVtuRequest,
     SensitivityGenerateRunAndStoreRequest,
+    SensitivityMergeFieldsRequest,
     SensitivityOverviewRequest,
     SensitivityRunAndStoreRequest,
     SensitivityStoredQueryRequest,
@@ -106,6 +108,8 @@ def _run_and_store_kwargs(body: SensitivityRunAndStoreRequest) -> dict:
         "cloud_result_group": body.cloud_result_group,
         "cloud_step_name": body.cloud_step_name,
         "cloud_field_name": body.cloud_field_name,
+        "merge_fields": body.merge_fields,
+        "merge_result_group": body.merge_result_group,
     }
 
 
@@ -412,6 +416,41 @@ async def sensitivity_export_adjoint_vtu(request: Request, body: SensitivityExpo
             timeout=body.timeout,
         )
         return success_response(data, "伴随灵敏度 VTU 导出成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+def _merge_fields_kwargs(body: SensitivityMergeFieldsRequest) -> dict:
+    return {
+        "project_id": body.project_id,
+        "workspace": body.workspace,
+        "step": body.step,
+        "frame": body.frame,
+        "field_prefix": body.field_prefix,
+        "instances": body.instances,
+        "result_group": body.result_group,
+        "source_result_group": body.source_result_group,
+    }
+
+
+@router.post("/sensitivity/merge_fields")
+async def sensitivity_merge_fields(request: Request, body: SensitivityMergeFieldsRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _merge_fields_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="sensitivity.merge_fields",
+                fn=merge_dsa_sensitivity_fields,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "DSA 灵敏度场合并任务已提交")
+        data = merge_dsa_sensitivity_fields(**kwargs)
+        return success_response(data, "DSA 灵敏度场合并完成")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

@@ -540,7 +540,8 @@ def frame_scalars(
             render_idx     = idx.render_indices.get(instance)
             avd            = idx.averaging_data.get(instance)
 
-            if (local_node_idx is not None and render_idx is not None
+            if (render_mode != "flat"
+                    and local_node_idx is not None and render_idx is not None
                     and avd is not None and vtx_nr is not None):
                 fa = feature_angle if use_geometry_split else None
                 domain_id = _get_domain_ids(idx, instance, fa)
