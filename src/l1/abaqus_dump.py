@@ -56,12 +56,6 @@ except Exception:
         pass
 
 
-# ─── Feature switches ────────────────────────────────────────────────────────
-# Set to True only when the invariant pipeline (MISES / principals / etc.) is
-# fully validated end-to-end. While False, --invariants full is silently
-# ignored so dumps run faster.
-_EXTRACT_INVARIANTS_ENABLED = False
-
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 ELEM_TYPE_CODE = {
@@ -135,6 +129,21 @@ INV_ATTR_MAP = {
     'MIN_IN_PLANE_PRINCIPAL': 'minInPlanePrincipal',
     'OUT_OF_PLANE_PRINCIPAL': 'outOfPlanePrincipal',
 }
+
+# Invariant suffixes skipped even when --invariants full is passed.
+# Remove an entry once the viewer gains support for that invariant.
+_HIDDEN_INV_SUFFIXES = frozenset({
+    'MISES',
+    'TRESCA',
+    'PRESS',
+    'INV3',
+    'MAX_PRINCIPAL',
+    'MID_PRINCIPAL',
+    'MIN_PRINCIPAL',
+    'MAX_IN_PLANE_PRINCIPAL',
+    'MIN_IN_PLANE_PRINCIPAL',
+    'OUT_OF_PLANE_PRINCIPAL',
+})
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -904,7 +913,10 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
 
     No pre-averaging is done here — that is L3's responsibility.
     """
-    active_invs = [(inv, INV_ATTR_MAP[inv]) for inv in invariants if inv in INV_ATTR_MAP]
+    active_invs = [
+        (inv, INV_ATTR_MAP[inv]) for inv in invariants
+        if inv in INV_ATTR_MAP and inv not in _HIDDEN_INV_SUFFIXES
+    ]
     if not active_invs:
         return
 
@@ -1478,7 +1490,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 len(block_struct), _fmt_t(time.time() - t_field)))
 
             # ── Invariant extraction (--invariants full only) ──────────────────
-            if extract_invariants and invariants and _EXTRACT_INVARIANTS_ENABLED:
+            if extract_invariants and invariants:
                 _extract_ip_invariants(
                     step, step_name, field_name, first_field,
                     invariants, results_dir, safe_step, safe_field,
