@@ -62,10 +62,10 @@ function onStepChange() {
 watch(frameIdx, autoFillScale)
 
 async function autoFillScale() {
-  if (!store.currentInstance || !step.value) return
+  if (!step.value) return
   try {
     const suggested = await api.fetchDeformSuggestScale(
-      store.currentInstance, step.value, frameIdx.value,
+      step.value, frameIdx.value,
       store.activeResultGroup ?? undefined
     )
     scale.value = suggested

@@ -1,3 +1,4 @@
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Query
@@ -10,21 +11,53 @@ from ..response import ok
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["sensitivity"])
 
 _SENSITIVITY_PREFIX = "sensitivity_"
+# 原始 result_group: sensitivity_batch_<batch_no>_<job_name>_<ts>
+_RAW_RE = re.compile(r"^sensitivity_batch_")
+# 合并 result_group: sensitivity_<batch_no>_<field_prefix>  (第二段是数字)
+_MERGE_RE = re.compile(r"^sensitivity_\d+_")
+
+
+def _rg_kind(rg: str) -> str:
+    """区分 result_group 类型：'merge' | 'raw' | 'other'"""
+    if _RAW_RE.match(rg):
+        return "raw"
+    if _MERGE_RE.match(rg):
+        return "merge"
+    return "other"
 
 
 @router.get("/sensitivity/result_groups")
-async def list_sensitivity_result_groups(odb_id: str):
+async def list_sensitivity_result_groups(
+    odb_id: str,
+    merge_only: bool = Query(
+        default=False,
+        description="True = 只返回合并后的 result_group（供前端字段下拉使用）",
+    ),
+):
     """
     列出 workspace 内所有以 sensitivity_ 开头的 result_group。
-    前端用作第一个下拉：选择哪次灵敏度计算结果。
+
+    每项带 kind 字段区分：
+      - merge: sensitivity_{batch_no}_{field_prefix}，存放合并字段（d_4_U1_T 等）
+      - raw:   sensitivity_batch_{batch_no}_{job_name}_{ts}，存放原始 DSA 字段
+    merge_only=true 时只返回 merge 类型，前端字段下拉用这个。
     """
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     manifest = ManifestRepo(idx.workspace)
     all_groups = manifest.list_result_groups()
-    groups = [rg for rg in all_groups if str(rg).startswith(_SENSITIVITY_PREFIX)]
-    return ok({"result_groups": groups})
+
+    result_groups = []
+    for rg in all_groups:
+        if not str(rg).startswith(_SENSITIVITY_PREFIX):
+            continue
+        kind = _rg_kind(rg)
+        if merge_only and kind != "merge":
+            continue
+        result_groups.append({"result_group": rg, "kind": kind})
+
+    return ok({"result_groups": result_groups})
 
 
 @router.get("/sensitivity/fields")
@@ -82,7 +115,6 @@ async def list_sensitivity_fields(
 
 # ── 内部工具 ──────────────────────────────────────────────────────────────────
 
-import re
 _MERGED_FIELD_RE = re.compile(r"^d_(\d+)_(U[123])_T$", re.IGNORECASE)
 
 
