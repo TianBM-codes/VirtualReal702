@@ -45,6 +45,21 @@ class _FakeCursor:
                     "extra_json": None,
                 },
             ]
+        if "SELECT sensor_type, data FROM t_mt_static_test_data" in sql:
+            return [
+                {
+                    "sensor_type": "位移",
+                    "data": json.dumps(
+                        [
+                            {"sensor_label": "501", "data": {"ux": 1.0}},
+                            {"sensor_label": "502", "data": {"ux": 2.0}},
+                        ],
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
+        if "SELECT measuring_point_name, sensor_type_id FROM t_mt_measuring_point_info" in sql:
+            return []
         if "SELECT load_case_no, instance_name, part_name, fem_node_label," in sql:
             return [
                 {
@@ -372,6 +387,73 @@ def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
             "component_name": "UZ",
             "point_value": 0.0,
             "initial_node_value": 0.0,
+            "initial_relative_error": 0.0,
+            "initial_abs_error": 0.0,
+            "sensor_type_id": None,
+        },
+    ]
+
+
+class _PreferStaticDataCursor(_StaticJsonCursor):
+    def fetchall(self):
+        sql = self.last_sql
+        if "SELECT point, ux, uy, uz, rx, ry, rz, load_factor, extra_json FROM t_mt_py_test_static_result" in sql:
+            return [
+                {
+                    "point": "WY1",
+                    "ux": 999.0,
+                    "uy": 999.0,
+                    "uz": 999.0,
+                    "rx": None,
+                    "ry": None,
+                    "rz": None,
+                    "load_factor": 1.0,
+                    "extra_json": None,
+                }
+            ]
+        return super().fetchall()
+
+
+class _PreferStaticDataConnection:
+    def __init__(self):
+        self.cursor_obj = _PreferStaticDataCursor()
+
+    def cursor(self, dictionary=False):
+        return self.cursor_obj
+
+    def close(self):
+        return None
+
+
+def test_compute_static_correlation_prefers_static_test_data_over_legacy_result_table(monkeypatch):
+    fake_conn = _PreferStaticDataConnection()
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.compute_static_correlation(project_id=202, components=["UY"])
+
+    assert result["aligned_point_count"] == 2
+    assert result["value_count"] == 2
+    assert result["analysis_error_preview"] == [
+        {
+            "load_case_no": 1,
+            "result_no": 1,
+            "point_no": "WY1",
+            "node_no": "PART-1-1::1001",
+            "component_name": "UY",
+            "point_value": 1.5,
+            "initial_node_value": 1.5,
+            "initial_relative_error": 0.0,
+            "initial_abs_error": 0.0,
+            "sensor_type_id": None,
+        },
+        {
+            "load_case_no": 1,
+            "result_no": 1,
+            "point_no": "WY2",
+            "node_no": "PART-1-1::1002",
+            "component_name": "UY",
+            "point_value": 2.5,
+            "initial_node_value": 2.5,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
             "sensor_type_id": None,

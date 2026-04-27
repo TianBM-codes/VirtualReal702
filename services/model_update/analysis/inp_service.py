@@ -3312,6 +3312,37 @@ def _load_test_static_rows(cursor, project_id: int, load_case_no: int, result_no
     return _load_static_test_rows_from_data_table(cursor, int(project_id))
 
 
+def _resolve_static_case_selection_for_correlation(cursor, project_id: int, load_case_no=None, result_no=None):
+    cursor.execute("""
+        SELECT DISTINCT load_case_no
+        FROM t_mt_py_fem_static_result
+        WHERE pid = %s
+        ORDER BY load_case_no
+    """, (project_id,))
+    fem_cases = [int(row["load_case_no"]) for row in cursor.fetchall()]
+    if not fem_cases:
+        raise ValueError("未找到 FEM 静态结果")
+
+    if not _load_latest_static_test_data_row(cursor, project_id):
+        raise ValueError("未找到 t_mt_static_test_data 中的试验静态数据")
+
+    if load_case_no is None:
+        chosen_load_case_no = int(fem_cases[0])
+    else:
+        chosen_load_case_no = int(load_case_no)
+        if chosen_load_case_no not in fem_cases:
+            raise ValueError(f"fem static load_case_no not found: {chosen_load_case_no}")
+
+    if result_no is None:
+        chosen_result_no = 1
+    else:
+        chosen_result_no = int(result_no)
+        if chosen_result_no != 1:
+            raise ValueError("t_mt_static_test_data only supports result_no=1")
+
+    return chosen_load_case_no, chosen_result_no
+
+
 def _resolve_static_components(components=None, include_rotations=False):
     if components:
         names = [str(comp).upper() for comp in components]
@@ -3578,14 +3609,9 @@ def store_updated_static_analysis_error(
             components=components,
             include_rotations=include_rotations,
         )
-        test_rows_raw = _load_test_static_rows(
-            cursor,
-            project_id=int(project_id),
-            load_case_no=int(chosen_load_case_no),
-            result_no=int(chosen_result_no),
-        )
+        test_rows_raw = _load_static_test_rows_from_data_table(cursor, int(project_id))
         if not test_rows_raw:
-            raise ValueError("未找到所选试验静态结果记录")
+            raise ValueError("未找到 t_mt_static_test_data 中的试验静态数据记录")
         test_rows = {str(row["point"]): row for row in test_rows_raw}
 
         cursor.execute("""
@@ -3637,7 +3663,7 @@ def compute_static_correlation(
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        chosen_load_case_no, chosen_result_no = _resolve_static_case_selection(
+        chosen_load_case_no, chosen_result_no = _resolve_static_case_selection_for_correlation(
             cursor,
             project_id,
             load_case_no=load_case_no,
@@ -3648,14 +3674,9 @@ def compute_static_correlation(
             include_rotations=include_rotations,
         )
 
-        test_rows_raw = _load_test_static_rows(
-            cursor,
-            project_id=int(project_id),
-            load_case_no=int(chosen_load_case_no),
-            result_no=int(chosen_result_no),
-        )
+        test_rows_raw = _load_static_test_rows_from_data_table(cursor, int(project_id))
         if not test_rows_raw:
-            raise ValueError("未找到所选试验静态结果记录")
+            raise ValueError("未找到 t_mt_static_test_data 中的试验静态数据记录")
         test_rows = {str(row["point"]): row for row in test_rows_raw}
 
         cursor.execute("""
