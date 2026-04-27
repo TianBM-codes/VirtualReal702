@@ -17,6 +17,7 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from . import sensitivity_service as _sens
+from .project_status_service import update_work_condition_project_status
 
 # This module is the "model-update integration" layer around parsed INP data.
 # It converts the parsed model into database catalogs, builds the spatial cache
@@ -1885,6 +1886,11 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
                 item["y_offset"],
                 item["z_offset"],
             ))
+        update_work_condition_project_status(
+            int(project_id),
+            cursor=cursor,
+            space_match_status=1,
+        )
         conn.commit()
 
         return {
@@ -3358,7 +3364,10 @@ def _build_static_alignment(test_rows, fem_rows, node_matches):
         return aligned
 
     for point_id, test_row in test_rows.items():
-        label = int(point_id)
+        try:
+            label = int(point_id)
+        except (TypeError, ValueError):
+            continue
         if label in duplicate_labels:
             continue
         fem_row = fem_by_label.get(label)
@@ -3696,6 +3705,28 @@ def compute_static_correlation(
         conn.close()
 
 
+def _ensure_static_node_matches(project_id: int) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT test_node_id
+            FROM t_mt_py_fem_node_match
+            WHERE pid = %s
+            LIMIT 1
+        """, (int(project_id),))
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if row:
+        return False
+
+    match_test_nodes(int(project_id), overwrite=False)
+    return True
+
+
 def evaluate_static_correlation(
     project_id,
     load_case_no=None,
@@ -3703,6 +3734,7 @@ def evaluate_static_correlation(
     components=None,
     include_rotations=False,
 ):
+    _ensure_static_node_matches(int(project_id))
     result = compute_static_correlation(
         project_id=project_id,
         load_case_no=load_case_no,
@@ -3728,6 +3760,11 @@ def evaluate_static_correlation(
             float(result["dsf"]),
         ))
         _upsert_analysis_error_rows(cursor, project_id, analysis_error_rows, value_prefix="initial")
+        update_work_condition_project_status(
+            int(project_id),
+            cursor=cursor,
+            consistency_status=1,
+        )
         conn.commit()
     except Exception:
         conn.rollback()

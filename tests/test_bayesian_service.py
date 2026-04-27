@@ -2,8 +2,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from services.model_update.analysis import bayesian_service
+
+
+@pytest.fixture(autouse=True)
+def _stub_project_status_update(monkeypatch):
+    monkeypatch.setattr(
+        bayesian_service,
+        "update_work_condition_project_status",
+        lambda *args, **kwargs: None,
+    )
 
 
 def test_update_parameter_section_values_rewrites_parameter_block(tmp_path: Path):
@@ -887,6 +897,79 @@ P1=1.0
     assert result["iteration_results"][0]["source"]["workspace"] is None
     assert result["iteration_results"][0]["solver"] is None
     assert result["final_parameter_values"] == [1.1]
+
+
+def test_run_bayesian_update_workflow_marks_project_fix_status_done(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text(
+        """*Heading
+*PARAMETER
+P1=1.0
+*Step
+*Static
+*End Step
+""",
+        encoding="utf-8",
+    )
+
+    status_calls = []
+    monkeypatch.setattr(
+        bayesian_service,
+        "update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "build_dsa_normalized_sensitivity_matrix",
+        lambda **kwargs: {
+            "workspace": str(tmp_path / "initial_ws"),
+            "source_mode": "workspace",
+            "workspace_built": False,
+            "odb_id": None,
+            "matrix": [[1.0]],
+            "response_values": [10.0],
+            "parameter_values": [1.0],
+            "parameter_columns": [
+                {"field": "d_UR_P1", "parameter_name": "P1", "parameter_token": "P1", "parameter_value": 1.0}
+            ],
+            "response_rows": [
+                {"row_key": "r1", "response_label": "INST::10"}
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "bayesian_update_normalized",
+        lambda **kwargs: {
+            "delta_r": np.array([[1.0]]),
+            "y": np.array([[10.0]]),
+            "x": np.array([[0.1]]),
+            "dp": np.array([[0.1]]),
+            "p_new": np.array([1.1]),
+            "G_n": np.eye(1),
+        },
+    )
+    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", lambda **kwargs: None)
+
+    bayesian_service.run_bayesian_update_workflow(
+        project_id=7,
+        input_inp=str(inp_path),
+        workspace=str(tmp_path / "initial_ws"),
+        target_responses=[8.0],
+        output_dir=str(tmp_path / "out"),
+        iterations=1,
+        run_solver=False,
+    )
+
+    assert status_calls == [
+        (
+            7,
+            {
+                "fixes_cal_status": 1,
+                "fixes_result_status": 1,
+            },
+        )
+    ]
 
 
 def test_run_bayesian_update_from_text_reads_external_matrix_and_responses(tmp_path: Path):

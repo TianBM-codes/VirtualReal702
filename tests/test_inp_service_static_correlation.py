@@ -377,3 +377,30 @@ def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
             "sensor_type_id": None,
         },
     ]
+
+
+def test_build_static_alignment_skips_non_numeric_point_ids_in_label_fallback():
+    test_rows = {
+        "WY32": {"point": "WY32", "ux": 1.0},
+        "WY33": {"point": "WY33", "ux": 2.0},
+    }
+    fem_rows = [
+        {
+            "instance_name": "PART-1-1",
+            "fem_node_label": 32,
+            "u1": 1.0,
+        },
+        {
+            "instance_name": "PART-1-1",
+            "fem_node_label": 33,
+            "u1": 2.0,
+        },
+    ]
+
+    aligned = inp_service._build_static_alignment(
+        test_rows=test_rows,
+        fem_rows=fem_rows,
+        node_matches=[],
+    )
+
+    assert aligned == []

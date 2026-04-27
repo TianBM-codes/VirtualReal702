@@ -5,8 +5,8 @@ from src.l3.main import app
 from webapi.routes import router as model_update_router
 from services.model_update.analysis.inp_service import (
     build_fe_response_catalog,
-    compute_static_correlation,
     compute_modal_correlation,
+    evaluate_static_correlation,
     get_dof_matches,
     get_fe_modal_results,
     get_fe_response_catalog,
@@ -120,7 +120,7 @@ async def get_modal_correlation_api(request: Request):
 @app.post("/correlation/static/compute")
 async def compute_static_correlation_api(request: Request):
     body = await request.json()
-    result = compute_static_correlation(
+    result = evaluate_static_correlation(
         project_id=int(body["project_id"]),
         load_case_no=body.get("load_case_no"),
         result_no=body.get("result_no"),

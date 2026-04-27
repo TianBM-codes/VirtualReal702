@@ -1,12 +1,17 @@
 from services.model_update.analysis import inp_service
+import numpy as np
 
 
 class _WriteCursor:
     def __init__(self):
         self.executed = []
+        self.fetchone_result = None
 
     def execute(self, sql, params=None):
         self.executed.append((" ".join(sql.split()), params))
+
+    def fetchone(self):
+        return self.fetchone_result
 
     def close(self):
         return None
@@ -83,10 +88,43 @@ class _QueryConnection:
         return None
 
 
+class _NodeMatchCursor(_WriteCursor):
+    def __init__(self):
+        super().__init__()
+        self.last_sql = ""
+
+    def execute(self, sql, params=None):
+        self.last_sql = " ".join(sql.split())
+        self.executed.append((self.last_sql, params))
+
+    def fetchall(self):
+        sql = self.last_sql
+        if "SELECT measuring_point_name, x_position, y_position, z_position FROM t_mt_measuring_point_info" in sql:
+            return [
+                {"measuring_point_name": "WY1", "x_position": 1.0, "y_position": 2.0, "z_position": 3.0},
+                {"measuring_point_name": "WY2", "x_position": 4.0, "y_position": 5.0, "z_position": 6.0},
+            ]
+        return []
+
+    def fetchone(self):
+        sql = self.last_sql
+        if "FROM t_mt_py_fem_node_octree_cache" in sql:
+            return {"cache_file_path": "fake_cache.npz"}
+        return None
+
+
+class _NodeMatchConnection(_WriteConnection):
+    def __init__(self):
+        self.cursor_obj = _NodeMatchCursor()
+        self.committed = False
+        self.rolled_back = False
+
+
 def test_evaluate_static_correlation_stores_dac_dsf(monkeypatch):
     fake_conn = _WriteConnection()
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(inp_service, "_ensure_static_node_matches", lambda project_id: False)
     monkeypatch.setattr(
         inp_service,
         "compute_static_correlation",
@@ -110,6 +148,10 @@ def test_evaluate_static_correlation_stores_dac_dsf(monkeypatch):
         (
             "INSERT INTO t_mt_py_fem_dac_dsf (pid, dac, dsf) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE dac = VALUES(dac), dsf = VALUES(dsf)",
             (101, 98.5, 1.02),
+        ),
+        (
+            "UPDATE t_mt_work_condition_project SET consistency_status = %s WHERE project_id = %s",
+            (1, 101),
         )
     ]
 
@@ -118,6 +160,7 @@ def test_evaluate_static_correlation_stores_analysis_error_rows(monkeypatch):
     fake_conn = _WriteConnection()
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(inp_service, "_ensure_static_node_matches", lambda project_id: False)
     monkeypatch.setattr(
         inp_service,
         "compute_static_correlation",
@@ -160,7 +203,75 @@ def test_evaluate_static_correlation_stores_analysis_error_rows(monkeypatch):
             "INSERT INTO t_mt_py_fem_analysis_error (pid, load_case_no, result_no, point_no, node_no, component_name, point_value, initial_node_value, initial_relative_error, initial_abs_error, sensor_type_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE node_no = VALUES(node_no), point_value = VALUES(point_value), initial_node_value = VALUES(initial_node_value), initial_relative_error = VALUES(initial_relative_error), initial_abs_error = VALUES(initial_abs_error), sensor_type_id = VALUES(sensor_type_id)",
             (101, 1, 1, "WY1", "PART-1-1::1001", "UX", 1.0, 1.1, 10.0, 0.1, None),
         ),
+        (
+            "UPDATE t_mt_work_condition_project SET consistency_status = %s WHERE project_id = %s",
+            (1, 101),
+        ),
     ]
+
+
+def test_match_test_nodes_marks_space_match_status_done(monkeypatch):
+    fake_conn = _NodeMatchConnection()
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(inp_service, "_load_octree_cache", lambda path: {
+        "point_instances": ["PART-1-1", "PART-1-1"],
+        "point_labels": [501, 502],
+        "point_coords": np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64),
+    })
+    monkeypatch.setattr(inp_service, "_cache_part_lookup", lambda cache: {
+        ("PART-1-1", 501): "PART-1",
+        ("PART-1-1", 502): "PART-1",
+    })
+    monkeypatch.setattr(
+        inp_service,
+        "_octree_nearest",
+        lambda cache, point: (0, 0.0) if float(point[0]) < 2.0 else (1, 0.0),
+    )
+    monkeypatch.setattr(inp_service.os.path, "exists", lambda path: True)
+
+    result = inp_service.match_test_nodes(project_id=101, auto_translate=False, overwrite=False)
+
+    assert result["matched_points"] == 2
+    assert fake_conn.committed is True
+    assert fake_conn.cursor_obj.executed[-1] == (
+        "UPDATE t_mt_work_condition_project SET space_match_status = %s WHERE project_id = %s",
+        (1, 101),
+    )
+
+
+def test_ensure_static_node_matches_runs_auto_match_when_missing(monkeypatch):
+    fake_conn = _WriteConnection()
+    fake_conn.cursor_obj.fetchone_result = None
+    auto_match_calls = []
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(
+        inp_service,
+        "match_test_nodes",
+        lambda project_id, overwrite=False, **kwargs: auto_match_calls.append((project_id, overwrite, kwargs)) or {},
+    )
+
+    created = inp_service._ensure_static_node_matches(101)
+
+    assert created is True
+    assert auto_match_calls == [(101, False, {})]
+
+
+def test_ensure_static_node_matches_skips_auto_match_when_existing(monkeypatch):
+    fake_conn = _WriteConnection()
+    fake_conn.cursor_obj.fetchone_result = {"test_node_id": "WY32"}
+    auto_match_calls = []
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(
+        inp_service,
+        "match_test_nodes",
+        lambda project_id, overwrite=False, **kwargs: auto_match_calls.append((project_id, overwrite, kwargs)) or {},
+    )
+
+    created = inp_service._ensure_static_node_matches(101)
+
+    assert created is False
+    assert auto_match_calls == []
 
 
 def test_get_pair_node_point_result_keeps_sensor_and_node_order(monkeypatch):

@@ -21,6 +21,7 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from tools.odb_client import ODBClientError
 
 from . import inp_service as _inp
+from .project_status_service import update_work_condition_project_status
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
 
@@ -2773,6 +2774,11 @@ def run_bayesian_update_workflow(
                 "skipped": True,
                 "reason": str(exc),
             }
+        update_work_condition_project_status(
+            int(project_id),
+            fixes_cal_status=1,
+            fixes_result_status=1,
+        )
         return {
             "project_id": project_id,
             "batch_no": resolved_batch_no,
