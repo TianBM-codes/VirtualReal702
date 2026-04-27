@@ -53,9 +53,9 @@ _NASTRAN_ARTIFACT_SUFFIXES = (
 def _abs_file(path: str, field_name: str) -> Path:
     file_path = Path(path).expanduser().resolve()
     if not file_path.exists():
-        raise NotFoundError(f"{field_name} not found: {file_path}", {field_name: str(file_path)})
+        raise NotFoundError(f"未找到 {field_name}: {file_path}", {field_name: str(file_path)})
     if not file_path.is_file():
-        raise ValidationError(f"{field_name} must be a file", {field_name: str(file_path)})
+        raise ValidationError(f"{field_name} 必须是文件", {field_name: str(file_path)})
     return file_path
 
 
@@ -113,7 +113,7 @@ def _run_local_solver(
     # All solver wrappers eventually funnel through this helper so timeout,
     # stdout/stderr capture, and artifact collection behave consistently.
     if timeout_sec is not None and int(timeout_sec) <= 0:
-        raise ValidationError("timeout_sec must be > 0", {"timeout_sec": timeout_sec})
+        raise ValidationError("timeout_sec 必须大于 0", {"timeout_sec": timeout_sec})
 
     try:
         result = subprocess.run(
@@ -127,12 +127,12 @@ def _run_local_solver(
         )
     except FileNotFoundError as exc:
         raise ValidationError(
-            f"solver executable not found: {command[0]}",
+            f"未找到求解器可执行文件: {command[0]}",
             {"command": command, "workdir": str(workdir)},
         ) from exc
     except subprocess.TimeoutExpired as exc:
         raise ValidationError(
-            "solver execution timed out",
+            "求解器执行超时",
             {
                 "command": command,
                 "workdir": str(workdir),
@@ -168,7 +168,7 @@ def _build_abaqus_command(
         command.append("interactive")
     if cpus is not None:
         if int(cpus) <= 0:
-            raise ValidationError("cpus must be > 0", {"cpus": cpus})
+            raise ValidationError("cpus 必须大于 0", {"cpus": cpus})
         command.append(f"cpus={int(cpus)}")
     command.extend(_normalize_extra_args(extra_args))
     return command

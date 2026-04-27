@@ -71,7 +71,7 @@ def resolve_project_source_inp_path(project_id: int) -> str:
     proj = repo.get_project(str(project_id))
     if proj is None:
         raise NotFoundError(
-            f"project '{project_id}' not found in registry",
+            f"注册表中未找到项目 '{project_id}'",
             {"project_id": int(project_id)},
         )
 
@@ -85,7 +85,7 @@ def resolve_project_source_inp_path(project_id: int) -> str:
         return candidate
 
     raise NotFoundError(
-        f"source inp file not found for project_id={project_id}",
+        f"未找到 project_id={project_id} 对应的源 inp 文件",
         {
             "project_id": int(project_id),
             "stored_inp_path": stored_inp_path or None,

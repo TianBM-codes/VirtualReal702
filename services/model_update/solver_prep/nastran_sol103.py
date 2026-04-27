@@ -31,7 +31,7 @@ def find_begin_bulk(lines):
     for i, line in enumerate(lines):
         if line.strip().upper() == "BEGIN BULK":
             return i
-    raise ValueError("BEGIN BULK not found")
+    raise ValueError("未找到 BEGIN BULK 段")
 
 
 def split_bdf(lines):

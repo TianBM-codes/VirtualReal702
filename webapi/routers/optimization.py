@@ -156,8 +156,8 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
         set_names = _normalize_set_names(body.set_name)
         if (not body.candidate_code and not body.quantity_code) or not set_names:
             raise ValidationError(
-                "project_id, set_name and optimization parameter type are required; "
-                "use quantity_code, candidate_code is only a compatible alias"
+                "project_id、set_name 和优化参数类型不能为空；"
+                "请优先使用 quantity_code，candidate_code 仅作为兼容别名"
             )
 
         results = []
@@ -235,7 +235,7 @@ async def bayesian_task_status(task_id: str):
         if data is None:
             return error_response(
                 404,
-                f"Bayesian task '{task_id}' not found",
+                f"未找到 Bayesian 任务 '{task_id}'",
                 error_code="NOT_FOUND",
                 details={"task_id": str(task_id)},
             )

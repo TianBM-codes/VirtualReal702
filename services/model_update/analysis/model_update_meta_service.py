@@ -61,20 +61,20 @@ def add_manual_parameter(
 ) -> dict:
     parameter_name = str(parameter or "").strip()
     if not parameter_name:
-        raise ValueError("parameter is required")
+        raise ValueError("parameter 不能为空")
 
     resolved_type = str(parameter_type or "").strip().upper()
     if not resolved_type:
-        raise ValueError("type is required")
+        raise ValueError("type 不能为空")
 
     resolved_scatter = float(scatter)
     if resolved_scatter <= 0:
-        raise ValueError("scatter must be > 0")
+        raise ValueError("scatter 必须大于 0")
 
     upper_value = None if upper is None else float(upper)
     lower_value = None if lower is None else float(lower)
     if upper_value is not None and lower_value is not None and lower_value > upper_value:
-        raise ValueError("lower must be <= upper")
+        raise ValueError("lower 必须小于或等于 upper")
 
     ensure_tables_exist()
     conn = get_connection()
@@ -129,17 +129,17 @@ def add_manual_response(
 ) -> dict:
     resolved_type = str(response_type or "").strip().upper()
     if not resolved_type:
-        raise ValueError("type is required")
+        raise ValueError("type 不能为空")
 
     resolved_dof = str(dof or "").strip().upper()
     if not resolved_dof:
-        raise ValueError("dof is required")
+        raise ValueError("dof 不能为空")
 
     step_name = str(step).strip() if step is not None else ""
 
     resolved_scatter = float(scatter)
     if resolved_scatter <= 0:
-        raise ValueError("scatter must be > 0")
+        raise ValueError("scatter 必须大于 0")
 
     ensure_tables_exist()
     conn = get_connection()

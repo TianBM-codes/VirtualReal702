@@ -44,14 +44,14 @@ def _classify_unv_result(message, test_modes):
     has_static = bool(mode_types & static_types)
     has_dynamic = bool(mode_types & dynamic_types)
     if has_static and has_dynamic:
-        raise ValueError("mixed static and dynamic dataset 55 results are not supported in one UNV import")
+        raise ValueError("一次 UNV 导入中不支持同时包含静态和动态的 dataset 55 结果")
 
     if "is_static" in message:
         message_is_static = bool(message["is_static"])
         if message_is_static and has_dynamic:
-            raise ValueError("parser message indicates static data but mode content is dynamic")
+            raise ValueError("解析器消息显示为静态数据，但模态内容实际为动态数据")
         if (not message_is_static) and has_static:
-            raise ValueError("parser message indicates dynamic data but mode content is static")
+            raise ValueError("解析器消息显示为动态数据，但模态内容实际为静态数据")
         return "static" if message_is_static else "dynamic"
 
     if has_static:
@@ -235,7 +235,7 @@ def _insert_measuring_points(cursor, project_id, test_nodes):
         ))
         inserted_id = getattr(cursor, "lastrowid", None)
         if inserted_id is None:
-            raise ValueError("failed to resolve inserted measuring point id")
+            raise ValueError("无法获取新插入测点的 id")
         cursor.execute(update_name_sql, (f"WY{int(inserted_id)}", int(inserted_id)))
         row_count += 1
     return row_count
@@ -325,7 +325,7 @@ def _resolve_deform_rows(cursor, project_id, static_result_id=None, load_case_no
         rows = cursor.fetchall()
         if not rows:
             raise NotFoundError(
-                "test static result row not found",
+                "未找到试验静态结果记录",
                 {"project_id": project_id, "static_result_id": int(static_result_id)},
             )
         return rows
@@ -344,7 +344,7 @@ def _resolve_deform_rows(cursor, project_id, static_result_id=None, load_case_no
         pair = cursor.fetchone()
         if not pair:
             raise NotFoundError(
-                "test static result rows not found",
+                "未找到试验静态结果数据",
                 {"project_id": project_id},
             )
         load_case_no = int(pair["load_case_no"])
@@ -362,7 +362,7 @@ def _resolve_deform_rows(cursor, project_id, static_result_id=None, load_case_no
     rows = cursor.fetchall()
     if not rows:
         raise NotFoundError(
-            "test static result rows not found for the selected case",
+            "所选工况下未找到试验静态结果数据",
             {
                 "project_id": project_id,
                 "load_case_no": int(load_case_no),
