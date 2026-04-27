@@ -15,7 +15,8 @@ from fastapi.responses import Response
 
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
-from ...services.result_service import frame_colors, frame_scalars, frame_deformed_positions
+from ..response import ok
+from ...services.result_service import frame_colors, frame_scalars, frame_deformed_positions, suggest_deform_scale
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 
@@ -180,3 +181,28 @@ async def get_deformed_positions(
             "X-Scale":        str(scale),
         },
     )
+
+
+@router.get("/results/deform-suggest-scale")
+async def get_deform_suggest_scale(
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int = 0,
+    result_group: Optional[str] = Query(None, description="Result group (project mode)"),
+):
+    """
+    Return a suggested deformation scale factor for the given step/frame.
+
+    Computed as: maxBboxEdge / 10 / maxAbsDisplacement.
+    Returns 0 when displacement is zero or U field is unavailable.
+    """
+    scale = suggest_deform_scale(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame_idx=frame,
+        result_group=result_group,
+    )
+    return ok({"scale": scale})

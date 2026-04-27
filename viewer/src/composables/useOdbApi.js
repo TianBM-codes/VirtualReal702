@@ -116,6 +116,13 @@ export function useOdbApi() {
     return res.data
   }
 
+  async function fetchDeformSuggestScale(instance, step, frameIdx, resultGroup) {
+    const params = new URLSearchParams({ instance, step, frame: frameIdx })
+    if (resultGroup) params.set('result_group', resultGroup)
+    const res = await http.get(store.getApiUrl(`results/deform-suggest-scale?${params}`))
+    return res.data?.data?.scale ?? 0
+  }
+
   // ── Color Code ────────────────────────────────────────────────────────────
   function fetchColorSchemes(instance) {
     return http.get(store.getApiUrl(`color-code/${encodeURIComponent(instance)}/schemes`))
@@ -176,7 +183,7 @@ export function useOdbApi() {
     fetchNearestFace, fetchSurfacePatch,
     fetchSectionMesh,
     fetchColorSchemes, fetchColorCode,
-    fetchDeformedPositions,
+    fetchDeformedPositions, fetchDeformSuggestScale,
     fetchProjects, fetchProject, createProject,
     addResultGroup, renameResultGroup, deleteProject,
   }

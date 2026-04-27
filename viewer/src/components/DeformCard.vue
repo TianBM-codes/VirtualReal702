@@ -32,8 +32,10 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { useViewerStore } from '../store/viewer'
+import { useOdbApi }      from '../composables/useOdbApi'
 
 const store = useViewerStore()
+const api   = useOdbApi()
 const emit  = defineEmits(['apply', 'reset', 'play', 'stop'])
 
 const step     = ref('')
@@ -53,6 +55,21 @@ function onStepChange() {
   if (!stepInfo) return
   maxFrame.value = (stepInfo.num_frames || 1) - 1
   if (frameIdx.value > maxFrame.value) frameIdx.value = maxFrame.value
+  autoFillScale()
+}
+
+// Auto-fill scale when frame slider moves
+watch(frameIdx, autoFillScale)
+
+async function autoFillScale() {
+  if (!store.currentInstance || !step.value) return
+  try {
+    const suggested = await api.fetchDeformSuggestScale(
+      store.currentInstance, step.value, frameIdx.value,
+      store.activeResultGroup ?? undefined
+    )
+    scale.value = suggested
+  } catch (_) {}
 }
 
 function apply() {
