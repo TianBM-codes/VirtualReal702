@@ -1016,9 +1016,38 @@ async function applyColors({ field, componentVal, componentIdx, renderMode, step
 }
 
 // ── Apply Color Code ──────────────────────────────────────────────────────
+const INSTANCE_PALETTE = [
+  [0.27, 0.52, 0.95], [0.95, 0.42, 0.27], [0.27, 0.80, 0.50],
+  [0.90, 0.80, 0.20], [0.70, 0.27, 0.90], [0.27, 0.85, 0.90],
+  [0.95, 0.55, 0.80], [0.55, 0.75, 0.27], [0.90, 0.60, 0.27],
+  [0.27, 0.45, 0.70],
+]
+
 async function applyColorCode({ scheme, setNames }) {
   const instNames = Object.keys(store.instanceMeshes)
   if (instNames.length === 0) { store.setStatus('Load geometry first', 'err'); return }
+
+  if (scheme === 'instance') {
+    const legend = instNames.map((name, i) => {
+      const [r, g, b] = INSTANCE_PALETTE[i % INSTANCE_PALETTE.length]
+      return { name, r, g, b }
+    })
+    instNames.forEach((instName, i) => {
+      const im = store.instanceMeshes[instName]; if (!im) return
+      const [r, g, b] = INSTANCE_PALETTE[i % INSTANCE_PALETTE.length]
+      setColorMode(im, 'vertex')
+      for (const c of im.chunks) {
+        const cf = c.colorAttr.array
+        for (let j = 0; j < cf.length; j += 3) { cf[j] = r; cf[j+1] = g; cf[j+2] = b }
+        c.colorAttr.needsUpdate = true
+      }
+    })
+    requestRender()
+    emit('color-code-applied', { legend })
+    store.setStatus(`Color code applied — ${instNames.length} instances`, 'ok')
+    return
+  }
+
   store.setStatus(`Applying color code to ${instNames.length} instance(s)…`)
   try {
     let legend = []
@@ -1067,6 +1096,21 @@ function clearColorCode() {
   })
   emit('color-code-applied', { legend: [] })
   store.setStatus('Color code cleared', 'ok')
+}
+
+function resetColorCode() {
+  Object.values(store.instanceMeshes).forEach(im => {
+    setColorMode(im, 'uv')
+    for (const c of im.chunks) {
+      const uv = c.uvAttr.array
+      const n = uv.length / 2
+      for (let i = 0; i < n; i++) { uv[i*2] = UV_DEFAULT_U; uv[i*2+1] = UV_DATA_V }
+      c.uvAttr.needsUpdate = true
+    }
+  })
+  emit('color-code-applied', { legend: [] })
+  store.setStatus('Color code reset to initial', 'ok')
+  requestRender()
 }
 
 // ── BBox face collection ──────────────────────────────────────────────────
@@ -1617,5 +1661,5 @@ function resetModelTransform() {
   requestRender()
 }
 
-defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform })
+defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform })
 </script>
