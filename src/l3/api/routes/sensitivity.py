@@ -30,17 +30,14 @@ def _rg_kind(rg: str) -> str:
 async def list_sensitivity_result_groups(
     odb_id: str,
     merge_only: bool = Query(
-        default=False,
-        description="True = 只返回合并后的 result_group（供前端字段下拉使用）",
+        default=True,
+        # 默认只返回合并 result_group（sensitivity_<batch>_<field>）。
+        # 原始组（sensitivity_batch_*）仅供调试，前端字段下拉不需要它们。
+        description="False = 同时返回原始 DSA result_group（调试用）",
     ),
 ):
     """
     列出 workspace 内所有以 sensitivity_ 开头的 result_group。
-
-    每项带 kind 字段区分：
-      - merge: sensitivity_{batch_no}_{field_prefix}，存放合并字段（d_4_U1_T 等）
-      - raw:   sensitivity_batch_{batch_no}_{job_name}_{ts}，存放原始 DSA 字段
-    merge_only=true 时只返回 merge 类型，前端字段下拉用这个。
     """
     idx = registry.get(odb_id)
     if idx is None:
@@ -48,16 +45,15 @@ async def list_sensitivity_result_groups(
     manifest = ManifestRepo(idx.workspace)
     all_groups = manifest.list_result_groups()
 
-    result_groups = []
+    groups = []
     for rg in all_groups:
         if not str(rg).startswith(_SENSITIVITY_PREFIX):
             continue
-        kind = _rg_kind(rg)
-        if merge_only and kind != "merge":
+        if merge_only and _rg_kind(rg) != "merge":
             continue
-        result_groups.append({"result_group": rg, "kind": kind})
+        groups.append(rg)
 
-    return ok({"result_groups": result_groups})
+    return ok({"result_groups": groups})
 
 
 @router.get("/sensitivity/fields")
