@@ -8,7 +8,7 @@ GET /api/odb/{odb_id}/results/frame-scalars
 
 Pick 单面精确值复用已有 /query/pick 接口，无需重复实现。
 """
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
@@ -166,7 +166,7 @@ async def get_frame_scalar_range(
     frame: int = 0,
     component_idx: Optional[int] = Query(default=None, ge=0),
     mode: str = Query("smooth", pattern="^(smooth|flat)$"),
-    result_group: Optional[str] = Query(None),
+    result_group: Optional[List[str]] = Query(None),
     feature_angle: Optional[float] = Query(default=20.0),
     average_threshold: float = Query(default=0.75, ge=0.0, le=1.0),
     use_geometry_split: bool = Query(default=True),
@@ -177,9 +177,13 @@ async def get_frame_scalar_range(
     instances with a shared colormap.
 
     instances: comma-separated list of instance names.
+    result_group: one or more result group names (repeat the param). Each is tried
+                  in order; the first one that contains data for the given field wins.
     Returns JSON { global_min, global_max, instance_ranges: { name: [min, max] } }.
     """
     from ...core.errors import NotFoundError as _NFE
+
+    rg_list: List[Optional[str]] = result_group if result_group else [None]
 
     inst_list = [s.strip() for s in instances.split(",") if s.strip()]
     instance_ranges: dict = {}
@@ -187,23 +191,27 @@ async def get_frame_scalar_range(
     global_max = float("-inf")
 
     for inst in inst_list:
-        try:
-            rng = compute_scalar_range(
-                registry=registry,
-                odb_id=odb_id,
-                instance=inst,
-                step=step,
-                field=field,
-                frame_idx=frame,
-                component_idx=component_idx,
-                render_mode=mode,
-                result_group=result_group,
-                feature_angle=feature_angle,
-                average_threshold=average_threshold,
-                use_geometry_split=use_geometry_split,
-            )
-        except _NFE:
-            rng = None
+        rng = None
+        for rg in rg_list:
+            try:
+                rng = compute_scalar_range(
+                    registry=registry,
+                    odb_id=odb_id,
+                    instance=inst,
+                    step=step,
+                    field=field,
+                    frame_idx=frame,
+                    component_idx=component_idx,
+                    render_mode=mode,
+                    result_group=rg,
+                    feature_angle=feature_angle,
+                    average_threshold=average_threshold,
+                    use_geometry_split=use_geometry_split,
+                )
+                if rng is not None:
+                    break
+            except _NFE:
+                continue
 
         if rng is not None:
             v_min, v_max = rng
