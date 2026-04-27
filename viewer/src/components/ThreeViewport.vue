@@ -1050,15 +1050,14 @@ async function applyColorCode({ scheme, setNames }) {
 
   store.setStatus(`Applying color code to ${instNames.length} instance(s)…`)
   try {
-    let legend = []
+    const legendMap = new Map()   // name → {id, name, r, g, b}  — merged across all instances
     await Promise.all(instNames.map(async instName => {
       let url = store.getApiUrl(`color-code/${encodeURIComponent(instName)}?scheme=${scheme}`)
       if (scheme === 'elset' && setNames?.length) url += `&set_names=${encodeURIComponent(setNames.join(','))}`
       const res = await http.get(url, { responseType: 'arraybuffer' })
-      if (legend.length === 0) {
-        const lj = res.headers.get('X-Color-Legend')
-        legend = lj ? JSON.parse(lj) : []
-      }
+      const lj = res.headers.get('X-Color-Legend')
+      const instLegend = lj ? JSON.parse(lj) : []
+      instLegend.forEach(entry => { if (!legendMap.has(entry.name)) legendMap.set(entry.name, entry) })
       const sections = parseL3BE(res.data)
       const im = store.instanceMeshes[instName]; if (!im) return
       setColorMode(im, 'vertex')
@@ -1077,6 +1076,7 @@ async function applyColorCode({ scheme, setNames }) {
       }
       requestRender()
     }))
+    const legend = Array.from(legendMap.values())
     emit('color-code-applied', { legend })
     store.setStatus(`Color code applied — ${legend.length} categories`, 'ok')
   } catch (e) {
