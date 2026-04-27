@@ -350,7 +350,7 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     rc1, tail1 = _run_streaming(dump_cmd, odb_id, "abaqus_dump")
     logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
-    if rc1 != 0 and _is_odb_version_error(rc1, tail1):
+    if _is_odb_version_error(rc1, tail1):
         ok, upgrade_tail = _upgrade_odb(odb_path, odb_id)
         if not ok:
             _update_status(odb_id, "error",
@@ -566,7 +566,7 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
     rc1, tail1 = _run_streaming(dump_cmd, project_id, "project_abaqus_dump")
     logger.info("[%s] project_abaqus_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
 
-    if rc1 != 0 and _is_odb_version_error(rc1, tail1):
+    if _is_odb_version_error(rc1, tail1):
         ok, upgrade_tail = _upgrade_odb(odb_path, project_id)
         if not ok:
             msg = "ODB upgrade failed: " + upgrade_tail
