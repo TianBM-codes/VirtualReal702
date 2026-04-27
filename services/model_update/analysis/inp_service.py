@@ -37,6 +37,23 @@ DOF_COMPONENT_INDEX = {
     "U3": 2,
 }
 
+_DEVELOPER_INTERFACE_HINTS = {
+    "match_nodes": {"method": "POST", "path": "/match/nodes"},
+    "pair_node_point_result": {"method": "POST", "path": "/get/pair_node_point_result"},
+    "match_dofs": {"method": "POST", "path": "/match/dofs"},
+    "import_fem_modal": {"method": "POST", "path": "/import/fem/modal"},
+}
+
+
+def _required_operation_error(message: str, *, operation: str, interface_key: str) -> ValidationError:
+    return ValidationError(
+        message,
+        {
+            "required_operation": operation,
+            "developer_interface_hint": dict(_DEVELOPER_INTERFACE_HINTS[interface_key]),
+        },
+    )
+
 
 def _repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -703,7 +720,7 @@ def _extract_legacy_boundary_rows(model):
 _DEFAULT_PARAMETER_SCATTER = 0.25
 _SUPPORTED_CORRECTION_QUANTITIES = (
     {"quantity_code": "E", "quantity_name": "E", "unit": None, "enabled": 1, "sort_no": 1},
-    {"quantity_code": "H", "quantity_name": "H", "unit": None, "enabled": 1, "sort_no": 2},
+    {"quantity_code": "T", "quantity_name": "T", "unit": None, "enabled": 1, "sort_no": 2},
 )
 
 
@@ -711,9 +728,16 @@ def _quantity_description(quantity_code: str, quantity_name: Optional[str] = Non
     token = str(quantity_code or "").strip().upper()
     if token == "E":
         return "杨氏模量"
-    if token == "H":
+    if token == "T":
         return "壳单元厚度"
     return f"{str(quantity_name or token).strip()} parameter."
+
+
+def _normalize_quantity_code_for_compare(quantity_code: Optional[str]) -> str:
+    token = str(quantity_code or "").strip().upper()
+    if token == "H":
+        return "T"
+    return token
 
 
 def _append_unique_name(names: List[str], seen: set, value: Optional[str]) -> None:
@@ -738,12 +762,12 @@ def _build_inp_parameter_options(
     capability_rows = [dict(row) for row in (quantity_set_capabilities or [])]
     result = []
     for quantity in quantity_rows:
-        quantity_code = str(quantity.get("quantity_code") or "").strip().upper()
+        quantity_code = _normalize_quantity_code_for_compare(quantity.get("quantity_code"))
         quantity_name = str(quantity.get("quantity_name") or quantity_code).strip()
         description = _quantity_description(quantity_code, quantity_name)
         matched_capabilities = [
             row for row in capability_rows
-            if str(row.get("quantity_code") or "").strip().upper() == quantity_code
+            if _normalize_quantity_code_for_compare(row.get("quantity_code")) == quantity_code
         ]
         for level, support_key in (("GLOBAL", "supports_global"), ("LOCAL", "supports_local")):
             set_names = []
@@ -777,8 +801,10 @@ def _build_inp_parameter_options(
 
 def _normalize_quantity_code(quantity_code: str) -> str:
     value = str(quantity_code or "").strip().upper()
-    if value not in {"E", "H"}:
-        raise ValueError("quantity_code must be one of: E, H")
+    if value == "H":
+        return "T"
+    if value not in {"E", "T"}:
+        raise ValueError("quantity_code must be one of: E, T")
     return value
 
 
@@ -794,7 +820,7 @@ def _derive_quantity_code_from_candidate(candidate_code: Optional[str]) -> Optio
     if not token:
         return None
     if token.endswith(":THICKNESS"):
-        return "H"
+        return "T"
     if token.endswith(":E"):
         return "E"
     return None
@@ -844,7 +870,7 @@ def _target_keys_for_scope(set_scope: str, part_name: Optional[str], instance_na
 
 
 def _build_section_parameter_maps(model, parameter_defs: Dict[str, dict]):
-    quantity_maps = {"E": {}, "H": {}}
+    quantity_maps = {"E": {}, "T": {}}
     property_sets = {}
 
     for part_name, part in model.parts.items():
@@ -873,7 +899,7 @@ def _build_section_parameter_maps(model, parameter_defs: Dict[str, dict]):
                 "labels": labels,
                 "quantity_values": {
                     "E": e_value,
-                    "H": h_value,
+                    "T": h_value,
                 },
             }
 
@@ -882,7 +908,7 @@ def _build_section_parameter_maps(model, parameter_defs: Dict[str, dict]):
                 if e_value is not None:
                     quantity_maps["E"][key] = float(e_value)
                 if h_value is not None:
-                    quantity_maps["H"][key] = float(h_value)
+                    quantity_maps["T"][key] = float(h_value)
 
     return quantity_maps, property_sets
 
@@ -967,8 +993,8 @@ def _extract_quantity_set_capabilities(model) -> List[dict]:
                 set_role = "PROPERTY_SET"
                 section_type = property_info.get("section_type")
                 material_name = property_info.get("material_name")
-                if quantity_code == "H":
-                    if property_info["quantity_values"].get("H") is not None and element_family == "SHELL":
+                if quantity_code == "T":
+                    if property_info["quantity_values"].get("T") is not None and element_family == "SHELL":
                         supports_global = True
                         supports_local = True
                 elif quantity_code == "E":
@@ -977,7 +1003,7 @@ def _extract_quantity_set_capabilities(model) -> List[dict]:
                         supports_local = True
             elif element_family in {"SHELL", "SOLID", "BEAM"}:
                 set_role = "HOMOGENEOUS_TYPE_SET"
-                if quantity_code == "H":
+                if quantity_code == "T":
                     supports_local = element_family == "SHELL" and len(values_by_label) == len(labels)
                 elif quantity_code == "E":
                     supports_local = len(values_by_label) == len(labels)
@@ -1563,15 +1589,18 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         if resolved_lower > resolved_upper:
             raise ValueError("lower must be <= upper")
         resolved_prob_id = int(prob_id or 0)
+        quantity_code_candidates = [resolved_quantity_code]
+        if resolved_quantity_code == "T":
+            quantity_code_candidates.append("H")
 
-        query = """
+        query = f"""
             SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
                    set_role, element_family, section_type, material_name, member_count,
                    supports_global, supports_local, current_value, extra_json
             FROM t_mt_py_fem_quantity_set_capability
-            WHERE pid = %s AND quantity_code = %s AND set_name = %s
+            WHERE pid = %s AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))}) AND set_name = %s
         """
-        params = [project_id, resolved_quantity_code, set_name]
+        params = [project_id, *quantity_code_candidates, set_name]
         if set_type:
             query += " AND set_type = %s"
             params.append(set_type)
@@ -1619,11 +1648,11 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         if not element_labels or not target_keys:
             raise ValueError("selected capability row does not contain target element information")
 
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT quantity_code, extra_json
             FROM t_mt_py_fem_selected_parameter
-            WHERE pid = %s AND quantity_code = %s
-        """, (project_id, resolved_quantity_code))
+            WHERE pid = %s AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
+        """, (project_id, *quantity_code_candidates))
         incoming_overlap_keys = set(target_keys)
         for row in cursor.fetchall() or []:
             if incoming_overlap_keys & _extract_target_keys(row.get("extra_json")):
@@ -1986,7 +2015,11 @@ def get_pair_node_point_result(project_id):
         """, (project_id,))
         node_matches = cursor.fetchall()
         if not node_matches:
-            raise ValueError("未找到节点匹配结果，请先调用 /pair/node_point")
+            raise _required_operation_error(
+                "未找到节点匹配结果，请先完成测点与有限元节点的空间匹配操作",
+                operation="完成测点与有限元节点的空间匹配",
+                interface_key="pair_node_point_result",
+            )
 
         cursor.execute("""
             SELECT nid, x, y, z
@@ -2147,7 +2180,11 @@ def match_test_dofs(project_id, overwrite=True):
         """, (project_id,))
         node_matches = cursor.fetchall()
         if not node_matches:
-            raise ValueError("未找到节点匹配结果，请先调用 /match/nodes")
+            raise _required_operation_error(
+                "未找到节点匹配结果，请先完成测点与有限元节点的空间匹配操作",
+                operation="完成测点与有限元节点的空间匹配",
+                interface_key="match_nodes",
+            )
 
         octree_meta = _get_latest_octree_meta(cursor, project_id)
         cache = _load_octree_cache(octree_meta["cache_file_path"])
@@ -2155,7 +2192,12 @@ def match_test_dofs(project_id, overwrite=True):
         test_modal_points = _get_test_modal_point_ids(cursor, project_id)
         filtered_matches = [row for row in node_matches if not test_modal_points or str(row["test_node_id"]) in test_modal_points]
         if not filtered_matches:
-            raise ValueError("已匹配的试验节点中没有模态振型数据")
+            raise ValidationError(
+                "已匹配的试验节点中没有可用于自由度匹配的模态振型数据",
+                {
+                    "required_operation": "先导入试验模态振型数据，并确认已匹配测点包含对应振型结果",
+                },
+            )
 
         if overwrite:
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
@@ -3974,7 +4016,11 @@ def compute_modal_correlation(project_id, overwrite=True):
         """, (project_id,))
         dof_matches = cursor.fetchall()
         if not dof_matches:
-            raise ValueError("未找到自由度匹配结果，请先调用 /match/dofs")
+            raise _required_operation_error(
+                "未找到自由度匹配结果，请先完成试验自由度与有限元自由度的匹配操作",
+                operation="完成试验自由度与有限元自由度的匹配",
+                interface_key="match_dofs",
+            )
 
         test_modes = _load_test_mode_vectors(cursor, project_id)
         if not test_modes:
@@ -3983,7 +4029,11 @@ def compute_modal_correlation(project_id, overwrite=True):
         test_freqs = _load_test_modal_frequencies(cursor, project_id)
         fem_modes, fem_freqs = _load_fem_mode_vectors(cursor, project_id)
         if not fem_modes:
-            raise ValueError("未找到 FEM 模态结果，请先调用 /import/fem/modal")
+            raise _required_operation_error(
+                "未找到有限元模态结果，请先完成有限元模态结果导入操作",
+                operation="完成有限元模态结果导入",
+                interface_key="import_fem_modal",
+            )
 
         if overwrite:
             cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))

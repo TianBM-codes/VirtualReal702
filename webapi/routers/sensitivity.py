@@ -8,6 +8,8 @@ from services.model_update.analysis.sensitivity_service import (
     export_dsa_sensitivity_vtu,
     export_odb_sensitivity_vtu,
     generate_project_dsa_inp_from_db,
+    get_stored_sensitivity_parameter_curves,
+    get_stored_sensitivity_response_curves,
     generate_sensitivity_inp_and_store,
     get_stored_sensitivity_matrix_payload,
     get_stored_sensitivity_table_points,
@@ -296,6 +298,38 @@ async def sensitivity_stored_matrix(request: Request, body: SensitivityStoredQue
             batch_no=body.batch_no,
         )
         return success_response(data, "stored sensitivity matrix loaded")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/stored/curve/parameter")
+async def sensitivity_stored_parameter_curve(request: Request, body: SensitivityStoredQueryRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = get_stored_sensitivity_parameter_curves(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+        )
+        return success_response(data, "stored sensitivity parameter curves loaded")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/sensitivity/stored/curve/response")
+async def sensitivity_stored_response_curve(request: Request, body: SensitivityStoredQueryRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = get_stored_sensitivity_response_curves(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+        )
+        return success_response(data, "stored sensitivity response curves loaded")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

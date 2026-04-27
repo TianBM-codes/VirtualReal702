@@ -17,7 +17,7 @@ def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(mon
             {
                 "id": 1,
                 "parameter_name": "T1",
-                "quantity_code": "H",
+                "quantity_code": "T",
                 "set_name": "OLD_SET",
                 "element_label": None,
                 "scalar_value": 2.5,
@@ -70,7 +70,7 @@ def test_build_project_dsa_config_preview_inherit_omits_value_and_warns(monkeypa
             {
                 "id": 1,
                 "parameter_name": "T 1",
-                "quantity_code": "H",
+                "quantity_code": "T",
                 "set_name": "OLD_SET",
                 "element_label": 101,
                 "scalar_value": None,
@@ -112,7 +112,7 @@ def test_build_project_dsa_config_preview_falls_back_to_capability_element_label
             {
                 "id": 1,
                 "parameter_name": "T1",
-                "quantity_code": "H",
+                "quantity_code": "T",
                 "set_name": "SHELL1",
                 "set_type": "ELSET",
                 "set_scope": "PART",
@@ -193,7 +193,7 @@ def test_generate_project_dsa_inp_from_db_writes_include_and_main(monkeypatch, t
             {
                 "id": 1,
                 "parameter_name": "T1",
-                "quantity_code": "H",
+                "quantity_code": "T",
                 "set_name": "SHELL1",
                 "set_type": "ELSET",
                 "set_scope": "PART",

@@ -95,7 +95,7 @@ def test_extract_quantity_set_capabilities_marks_assembly_property_sets_as_globa
 
     assert {(row["quantity_code"], row["set_role"]) for row in assembly_rows} == {
         ("E", "PROPERTY_SET"),
-        ("H", "PROPERTY_SET"),
+        ("T", "PROPERTY_SET"),
     }
     assert all(row["supports_global"] is True for row in assembly_rows)
     assert all(row["supports_local"] is True for row in assembly_rows)
@@ -233,7 +233,7 @@ def test_build_import_inp_catalog_summary_returns_simplified_parameter_level_set
     result = inp_service._build_inp_parameter_options(
         supported_quantities=[
             {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
-            {"quantity_code": "H", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+            {"quantity_code": "T", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
         ],
         quantity_set_capabilities=[
             {
@@ -267,7 +267,7 @@ def test_build_import_inp_catalog_summary_returns_simplified_parameter_level_set
                 "supports_local": 1,
             },
             {
-                "quantity_code": "H",
+                "quantity_code": "T",
                 "set_name": "SET_SHELL",
                 "set_scope": "PART",
                 "set_type": "ELSET",
@@ -314,12 +314,12 @@ class _InpOptionsCursor:
         if "FROM t_mt_py_fem_supported_quantity" in self.last_sql:
             return [
                 {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
-                {"quantity_code": "H", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+                {"quantity_code": "T", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
             ]
         if "FROM t_mt_py_fem_quantity_set_capability" in self.last_sql:
             return [
                 {"quantity_code": "E", "set_name": "SET_A", "set_scope": "PART", "set_type": "ELSET", "instance_name": None, "part_name": "P1", "supports_global": 1, "supports_local": 0},
-                {"quantity_code": "H", "set_name": "SET_B", "set_scope": "PART", "set_type": "ELSET", "instance_name": None, "part_name": "P1", "supports_global": 1, "supports_local": 1},
+                {"quantity_code": "T", "set_name": "SET_B", "set_scope": "PART", "set_type": "ELSET", "instance_name": None, "part_name": "P1", "supports_global": 1, "supports_local": 1},
             ]
         return []
 

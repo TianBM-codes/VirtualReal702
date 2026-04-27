@@ -225,7 +225,7 @@ def _infer_temp_quantity_code_from_target(target_row: dict) -> str:
     component_name = str(target_row.get("component_name") or "").upper()
     source_keyword = str(target_row.get("source_keyword") or "").upper()
     if component_name == "THICKNESS" or component_name.startswith("DIM") or "SECTION" in source_keyword:
-        return "H"
+        return "T"
     return "DSA"
 
 
@@ -775,7 +775,7 @@ def _load_project_thickness_parameters(project_id: int) -> List[dict]:
     return [
         row
         for row in _load_project_optimization_parameters(project_id)
-        if str(row.get("quantity_code") or "").upper() == "H"
+        if str(row.get("quantity_code") or "").upper() in {"T", "H"}
     ]
 
 
@@ -797,7 +797,7 @@ def _load_project_thickness_capabilities(project_id: int) -> Dict[tuple, dict]:
             """
             SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name, extra_json
             FROM t_mt_py_fem_quantity_set_capability
-            WHERE pid = %s AND quantity_code = 'H'
+            WHERE pid = %s AND quantity_code IN ('T', 'H')
             """,
             (int(project_id),),
         )
@@ -2513,6 +2513,88 @@ def get_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional
         "summary": {
             "response_count": len(row_names),
             "parameter_count": len(col_names),
+        },
+    }
+
+
+def _build_curve_series(*, labels: List[str], xaxis: List[str], matrix: List[List[Optional[float]]]) -> List[dict]:
+    curves = []
+    for row_index, label in enumerate(labels):
+        current_row = matrix[row_index] if row_index < len(matrix) else []
+        points = []
+        for col_index, x_value in enumerate(xaxis):
+            y_value = current_row[col_index] if col_index < len(current_row) else None
+            points.append([str(x_value), y_value])
+        curves.append(
+            {
+                "data": points,
+                "label": str(label),
+                "xaxis": [str(item) for item in xaxis],
+            }
+        )
+    return curves
+
+
+def get_stored_sensitivity_parameter_curves(*, project_id: int, batch_no: Optional[str] = None) -> dict:
+    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    response_names = [str(item) for item in (payload.get("row_names") or [])]
+    parameter_names = [str(item) for item in (payload.get("col_names") or [])]
+    matrix = [list(row) for row in (payload.get("matrix") or [])]
+
+    curves = _build_curve_series(
+        labels=response_names,
+        xaxis=parameter_names,
+        matrix=matrix,
+    )
+
+    return {
+        "analysis_run_id": payload.get("analysis_run_id"),
+        "project_id": payload.get("project_id"),
+        "batch_no": payload.get("batch_no"),
+        "case_name": payload.get("case_name"),
+        "created_at": payload.get("created_at"),
+        "curve_type": "parameter",
+        "data": curves,
+        "summary": {
+            "response_count": len(response_names),
+            "parameter_count": len(parameter_names),
+            "curve_count": len(curves),
+        },
+    }
+
+
+def get_stored_sensitivity_response_curves(*, project_id: int, batch_no: Optional[str] = None) -> dict:
+    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    response_names = [str(item) for item in (payload.get("row_names") or [])]
+    parameter_names = [str(item) for item in (payload.get("col_names") or [])]
+    matrix = [list(row) for row in (payload.get("matrix") or [])]
+
+    transpose_matrix: List[List[Optional[float]]] = []
+    for col_index in range(len(parameter_names)):
+        transpose_row = []
+        for row_index in range(len(response_names)):
+            current_row = matrix[row_index] if row_index < len(matrix) else []
+            transpose_row.append(current_row[col_index] if col_index < len(current_row) else None)
+        transpose_matrix.append(transpose_row)
+
+    curves = _build_curve_series(
+        labels=parameter_names,
+        xaxis=response_names,
+        matrix=transpose_matrix,
+    )
+
+    return {
+        "analysis_run_id": payload.get("analysis_run_id"),
+        "project_id": payload.get("project_id"),
+        "batch_no": payload.get("batch_no"),
+        "case_name": payload.get("case_name"),
+        "created_at": payload.get("created_at"),
+        "curve_type": "response",
+        "data": curves,
+        "summary": {
+            "response_count": len(response_names),
+            "parameter_count": len(parameter_names),
+            "curve_count": len(curves),
         },
     }
 

@@ -77,7 +77,7 @@ def test_rebuild_selected_parameters_from_inp_replaces_project_rows(monkeypatch,
 
     assert result["selected_parameter_count"] == 1
     assert result["selected_parameters_preview"][0]["parameter_name"] == "T1"
-    assert result["selected_parameters_preview"][0]["quantity_code"] == "H"
+    assert result["selected_parameters_preview"][0]["quantity_code"] == "T"
     assert fake_conn.committed is True
     assert fake_conn.rolled_back is False
     assert fake_conn.cursor_obj.executed[0] == (
@@ -90,7 +90,7 @@ def test_rebuild_selected_parameters_from_inp_replaces_project_rows(monkeypatch,
     inserted = fake_conn.cursor_obj.executed[1][1]
     assert inserted[1] == "T1"
     assert inserted[2] == "T1"
-    assert inserted[3] == "H"
+    assert inserted[3] == "T"
     assert inserted[5] == "SHELL1"
     assert inserted[9] == "PART-1"
     assert inserted[11] == 0.01
