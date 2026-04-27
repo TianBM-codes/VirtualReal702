@@ -133,8 +133,10 @@ INV_ATTR_MAP = {
 
 # Invariant suffixes skipped even when --invariants full is passed.
 # Remove an entry once the viewer gains support for that invariant.
-# Currently active (extracted): MISES, TRESCA (stress), MAGNITUDE (U/UR vectors).
+# Currently active (extracted): MISES, TRESCA (stress tensors only).
+# MAGNITUDE is excluded — L3 computes it on-the-fly from components (identical result).
 _HIDDEN_INV_SUFFIXES = frozenset({
+    'MAGNITUDE',
     'PRESS',
     'INV3',
     'MAX_PRINCIPAL',
