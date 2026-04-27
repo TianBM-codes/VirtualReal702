@@ -240,6 +240,59 @@ def test_match_test_nodes_marks_space_match_status_done(monkeypatch):
     )
 
 
+def test_ensure_octree_cache_file_rebuilds_missing_cache(monkeypatch, tmp_path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    rebuilt_cache = tmp_path / "rebuilt.node_octree.npz"
+
+    class _CacheCursor:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, sql, params=None):
+            self.executed.append((" ".join(sql.split()), params))
+
+    cursor = _CacheCursor()
+    monkeypatch.setattr(inp_service.os.path, "exists", lambda path: str(path) == str(inp_path))
+    monkeypatch.setattr(inp_service, "parse_inp", lambda path, resolve_refs=True: {"dummy": True})
+    monkeypatch.setattr(
+        inp_service,
+        "_collect_global_nodes",
+        lambda model: {
+            "point_labels": np.array([1, 2], dtype=np.int64),
+            "entries": [{"instance_name": "INST"}, {"instance_name": "INST2"}],
+            "bbox_min": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+            "bbox_max": np.array([1.0, 1.0, 1.0], dtype=np.float64),
+        },
+    )
+    monkeypatch.setattr(inp_service, "_save_octree_cache", lambda **kwargs: str(rebuilt_cache))
+
+    path = inp_service._ensure_octree_cache_file(
+        cursor,
+        24,
+        {
+            "source_file_path": str(inp_path),
+            "cache_file_path": str(tmp_path / "missing.node_octree.npz"),
+        },
+    )
+
+    assert path == str(rebuilt_cache.resolve())
+    assert cursor.executed == [
+        (
+            "INSERT INTO t_mt_py_fem_node_octree_cache (pid, source_file_path, cache_file_path, node_count, instance_count, bbox_min, bbox_max, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW()) ON DUPLICATE KEY UPDATE cache_file_path = VALUES(cache_file_path), node_count = VALUES(node_count), instance_count = VALUES(instance_count), bbox_min = VALUES(bbox_min), bbox_max = VALUES(bbox_max), updated_at = NOW()",
+            (
+                24,
+                str(inp_path.resolve()),
+                str(rebuilt_cache.resolve()),
+                2,
+                2,
+                "[0.0, 0.0, 0.0]",
+                "[1.0, 1.0, 1.0]",
+            ),
+        )
+    ]
+
+
 def test_ensure_static_node_matches_runs_auto_match_when_missing(monkeypatch):
     fake_conn = _WriteConnection()
     fake_conn.cursor_obj.fetchone_result = None
@@ -301,6 +354,28 @@ def test_get_pair_node_point_result_keeps_sensor_and_node_order(monkeypatch):
         "sensor_name": ["WY1", "WY2"],
         "node_xyz": [[0.1, 0.2, 0.3], [0.5, 0.3, 0.5]],
     }
+
+
+def test_get_latest_octree_meta_normalizes_quoted_paths():
+    class _MetaCursor:
+        def execute(self, sql, params=None):
+            return None
+
+        def fetchone(self):
+            return {
+                "source_file_path": '"D:\\import\\code history\\static.inp"',
+                "cache_file_path": '"D:\\import\\code history\\static.node_octree.npz"',
+                "node_count": 1,
+                "instance_count": 1,
+                "bbox_min": None,
+                "bbox_max": None,
+                "updated_at": None,
+            }
+
+    meta = inp_service._get_latest_octree_meta(_MetaCursor(), 101)
+
+    assert meta["source_file_path"] == r"D:\import\code history\static.inp"
+    assert meta["cache_file_path"] == r"D:\import\code history\static.node_octree.npz"
 
 
 def test_save_transform_operation_upserts_matrix4(monkeypatch):

@@ -17,6 +17,7 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from . import sensitivity_service as _sens
+from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
 
 # This module is the "model-update integration" layer around parsed INP data.
@@ -63,6 +64,15 @@ def _json_loads(value):
     if isinstance(value, dict):
         return value
     return json.loads(value)
+
+
+def _normalize_stored_path(path_value) -> Optional[str]:
+    if path_value is None:
+        return None
+    text = str(path_value).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    return os.path.abspath(text) if text else None
 
 
 def _normalize_transform_type(transform_type: str) -> str:
@@ -1732,7 +1742,54 @@ def _get_latest_octree_meta(cursor, project_id):
     row = cursor.fetchone()
     if not row:
         raise ValueError("node octree cache not found, import inp first")
-    return row
+    meta = dict(row)
+    meta["source_file_path"] = _normalize_stored_path(meta.get("source_file_path"))
+    meta["cache_file_path"] = _normalize_stored_path(meta.get("cache_file_path"))
+    return meta
+
+
+def _ensure_octree_cache_file(cursor, project_id: int, octree_meta: dict) -> str:
+    cache_path = _normalize_stored_path(octree_meta.get("cache_file_path"))
+    if cache_path and os.path.exists(cache_path):
+        return cache_path
+
+    source_file_path = _normalize_stored_path(octree_meta.get("source_file_path"))
+    if not source_file_path or not os.path.exists(source_file_path):
+        source_file_path = resolve_project_source_inp_path(int(project_id))
+
+    model = parse_inp(source_file_path, resolve_refs=True)
+    node_data = _collect_global_nodes(model)
+    rebuilt_cache_path = _save_octree_cache(
+        project_id=int(project_id),
+        source_file_path=source_file_path,
+        node_data=node_data,
+        force_rebuild=True,
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO t_mt_py_fem_node_octree_cache
+        (pid, source_file_path, cache_file_path, node_count, instance_count, bbox_min, bbox_max, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+        ON DUPLICATE KEY UPDATE
+            cache_file_path = VALUES(cache_file_path),
+            node_count = VALUES(node_count),
+            instance_count = VALUES(instance_count),
+            bbox_min = VALUES(bbox_min),
+            bbox_max = VALUES(bbox_max),
+            updated_at = NOW()
+        """,
+        (
+            int(project_id),
+            os.path.abspath(source_file_path),
+            os.path.abspath(rebuilt_cache_path),
+            int(len(node_data["point_labels"])),
+            int(len(node_data["entries"])),
+            _json_dumps(node_data["bbox_min"].tolist()),
+            _json_dumps(node_data["bbox_max"].tolist()),
+        ),
+    )
+    return os.path.abspath(rebuilt_cache_path)
 
 
 def match_test_nodes(project_id, max_distance=None, overwrite=True,
@@ -1744,9 +1801,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
     cursor = conn.cursor(dictionary=True)
     try:
         octree_meta = _get_latest_octree_meta(cursor, project_id)
-        cache_path = octree_meta["cache_file_path"]
-        if not os.path.exists(cache_path):
-            raise ValueError(f"octree cache file not found: {cache_path}")
+        cache_path = _ensure_octree_cache_file(cursor, int(project_id), octree_meta)
 
         cursor.execute("""
             SELECT measuring_point_name, x_position, y_position, z_position

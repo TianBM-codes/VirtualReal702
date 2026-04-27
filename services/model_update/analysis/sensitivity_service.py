@@ -38,6 +38,7 @@ from .abaqusDSAInpGenerator import (
     remove_blank_lines,
 )
 from .model_update_meta_service import resolve_abaqus_command
+from .project_source_service import resolve_project_source_inp_path
 from .solver_service import delete_abaqus_process_files, run_abaqus_job, run_abaqus_sensitivity_job
 
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
@@ -2514,37 +2515,7 @@ def get_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional
 
 
 def _resolve_inp_path_from_project(project_id: int) -> str:
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    try:
-        cursor.execute(
-            """
-            SELECT source_file_path
-            FROM t_mt_py_fem_node_octree_cache
-            WHERE pid = %s
-            ORDER BY updated_at DESC, id DESC
-            LIMIT 1
-            """,
-            (project_id,),
-        )
-        row = cursor.fetchone()
-    finally:
-        cursor.close()
-        conn.close()
-
-    if not row or not row.get("source_file_path"):
-        raise NotFoundError(
-            f"no imported inp metadata found for project_id={project_id}",
-            {"project_id": project_id},
-        )
-
-    inp_path = os.path.abspath(str(row["source_file_path"]))
-    if not os.path.exists(inp_path):
-        raise NotFoundError(
-            f"inp file not found on disk: {inp_path}",
-            {"project_id": project_id, "inp_path": inp_path},
-        )
-    return inp_path
+    return resolve_project_source_inp_path(int(project_id))
 
 
 def _pick_export_position(field_meta: dict, requested_position: Optional[str]) -> str:
