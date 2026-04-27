@@ -266,16 +266,19 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
 
 # ── ODB version upgrade helpers ───────────────────────────────────────────────
 
-def _is_odb_version_error(tail: str) -> bool:
+def _is_odb_version_error(rc: int, tail: str) -> bool:
     """
-    Detect whether abaqus_dump output indicates an ODB version mismatch.
-    Abaqus prints messages like:
-      "Please run abaqus upgrade on this ODB"
-      "upgrade the odb"
-      "ODB version X is not compatible"
-      "incompatible odb version"
-    Heuristic: output contains "upgrade" and at least one of "odb"/"version".
+    Detect ODB version mismatch.
+
+    Primary:  abaqus_dump.py exits with code 2 when it catches an OdbError
+              containing 'previous release' or 'upgrade' — this is reliable
+              even when Abaqus writes output directly to the Windows console
+              and bypasses the stdout pipe.
+    Fallback: text scan of the captured tail for keyword hints, for cases
+              where the script exits with rc=1 and output was captured.
     """
+    if rc == 2:
+        return True
     t = tail.lower()
     return "upgrade" in t and ("odb" in t or "version" in t)
 
@@ -344,8 +347,9 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
     rc1, tail1 = _run_streaming(dump_cmd, odb_id, "abaqus_dump")
+    logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
-    if rc1 != 0 and _is_odb_version_error(tail1):
+    if rc1 != 0 and _is_odb_version_error(rc1, tail1):
         ok, upgrade_tail = _upgrade_odb(odb_path, odb_id)
         if not ok:
             _update_status(odb_id, "error",
@@ -353,6 +357,7 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
             return False
         logger.info("[%s] Retrying abaqus_dump.py after upgrade", odb_id)
         rc1, tail1 = _run_streaming(dump_cmd, odb_id, "abaqus_dump_retry")
+        logger.info("[%s] abaqus_dump retry rc=%d", odb_id, rc1)
 
     if rc1 != 0:
         log_hint = "\n[Check {}/abaqus.log for full Abaqus output]".format(workspace)
@@ -558,8 +563,9 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
     rc1, tail1 = _run_streaming(dump_cmd, project_id, "project_abaqus_dump")
+    logger.info("[%s] project_abaqus_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
 
-    if rc1 != 0 and _is_odb_version_error(tail1):
+    if rc1 != 0 and _is_odb_version_error(rc1, tail1):
         ok, upgrade_tail = _upgrade_odb(odb_path, project_id)
         if not ok:
             msg = "ODB upgrade failed: " + upgrade_tail
@@ -567,6 +573,7 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
             return False
         logger.info("[%s] Retrying abaqus_dump.py after upgrade", project_id)
         rc1, tail1 = _run_streaming(dump_cmd, project_id, "project_abaqus_dump_retry")
+        logger.info("[%s] project_abaqus_dump retry rc=%d", project_id, rc1)
 
     if rc1 != 0:
         msg = "abaqus_dump failed: " + tail1
