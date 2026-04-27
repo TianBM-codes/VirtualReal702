@@ -59,27 +59,21 @@ except Exception:
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 ELEM_TYPE_CODE = {
-    'S3': 0,   'S3R': 0,                          # linear TRI shell
-    'S4': 1,   'S4R': 1,   'S4R5': 1,             # linear QUAD shell
+    'S3': 0,   'S3R': 0,   'S6': 0,
+    'S4': 1,   'S4R': 1,   'S4R5': 1,  'S8R': 1,  'S8R5': 1,
     'C3D4': 2,  'C3D4H': 2,
     'C3D6': 3,  'C3D6H': 3,
     'C3D8': 4,  'C3D8R': 4,  'C3D8H': 4,  'C3D8RH': 4,
     'C3D10': 5, 'C3D10M': 5, 'C3D10H': 5,
     'C3D15': 6, 'C3D15H': 6,
     'C3D20': 7, 'C3D20R': 7, 'C3D20H': 7, 'C3D20RH': 7,
-    'S6': 8,   'S6R': 8,                           # quadratic TRI shell
-    'S8': 9,   'S8R': 9,   'S8R5': 9,             # quadratic QUAD shell
 }
 
-# For codes 8/9 n_corner covers all nodes (corners + mid-nodes) since these
-# elements store all nodes in face_node_conn for proper curved tessellation.
-ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8, 8: 6, 9: 8}
+ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8}
 
 HIGH_ORDER_CODES = {5, 6, 7}
 
-# Face definitions: code → list of face node-index lists (0-based into conn).
-# Codes 8/9 use perimeter order (corner, mid, corner, mid, ...) so that fan
-# triangulation in L2 produces geometrically correct sub-triangles.
+# Face definitions: code → list of face corner-node-index lists (0-based, corner only)
 FACE_DEFS = {
     0: [[0, 1, 2]],
     1: [[0, 1, 2, 3]],
@@ -91,15 +85,13 @@ FACE_DEFS = {
     6: [[0, 1, 2], [3, 5, 4], [0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5]],
     7: [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
         [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]],
-    # S6/S6R: nodes 0-2 corners, 3=mid(0-1), 4=mid(1-2), 5=mid(2-0) — perimeter order
-    8: [[0, 3, 1, 4, 2, 5]],
-    # S8/S8R: nodes 0-3 corners, 4=mid(0-1), 5=mid(1-2), 6=mid(2-3), 7=mid(3-0) — perimeter order
-    9: [[0, 4, 1, 5, 2, 6, 3, 7]],
 }
 
-# Mid-node column indices in full connectivity (0-based).
-# S6/S8R removed: their codes (8/9) store all nodes in conn directly.
+# Mid-node column indices in full connectivity (0-based)
 MIDNODE_INDICES = {
+    'S6':    [3, 4, 5],
+    'S8R':   [4, 5, 6, 7],
+    'S8R5':  [4, 5, 6, 7],
     'C3D10': [4, 5, 6, 7, 8, 9],
     'C3D10M':[4, 5, 6, 7, 8, 9],
     'C3D10H':[4, 5, 6, 7, 8, 9],

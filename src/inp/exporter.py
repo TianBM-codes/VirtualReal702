@@ -49,12 +49,9 @@ from src.l1.manifest_schema import MANIFEST_SCHEMA
 # ---------------------------------------------------------------------------
 
 _ELEM_TYPE_CODE: Dict[str, int] = {
-    # shells / membranes — linear
+    # shells / membranes mapped to S3 / S4 codes
     "S3": 0,  "S3R": 0, "STRI3": 0,
     "S4": 1,  "S4R": 1, "S4R5": 1,
-    # shells — quadratic (all nodes in face_node_conn; perimeter-ordered)
-    "S6": 8,  "S6R": 8,
-    "S8": 9,  "S8R": 9, "S8R5": 9,
     # solids
     "C3D4": 2,  "C3D4H": 2,
     "C3D6": 3,  "C3D6H": 3,
@@ -69,8 +66,7 @@ _ELEM_TYPE_CODE: Dict[str, int] = {
     "M3D3": 0,  "M3D4": 1,  "M3D4R": 1,
 }
 
-# Number of nodes per type code used to slice connectivity.
-# For codes 8/9 this covers all nodes (corners + mid-nodes).
+# Number of *corner* nodes per type code (used to slice connectivity)
 _CORNER_COUNTS: Dict[int, int] = {
     0: 3,   # S3 / TRI3
     1: 4,   # S4 / QUAD4
@@ -80,12 +76,9 @@ _CORNER_COUNTS: Dict[int, int] = {
     5: 4,   # C3D10 → 4 corner nodes
     6: 6,   # C3D15 → 6 corner nodes
     7: 8,   # C3D20 → 8 corner nodes
-    8: 6,   # S6 / TRI6 shell → all 6 nodes
-    9: 8,   # S8R / QUAD8 shell → all 8 nodes
 }
 
-# Face connectivity (0-based local node index lists, 1-based face_seq).
-# Codes 8/9 use perimeter order so fan triangulation produces correct sub-triangles.
+# Face connectivity (0-based local corner-node index lists, 1-based face_seq)
 _FACE_DEFS: Dict[int, List[List[int]]] = {
     0: [[0, 1, 2]],                               # S3 / TRI3: 1 face
     1: [[0, 1, 2, 3]],                            # S4 / QUAD4: 1 face
@@ -103,10 +96,6 @@ _FACE_DEFS: Dict[int, List[List[int]]] = {
     7: [[0, 1, 2, 3], [4, 5, 6, 7],             # C3D20 (same corner topology as C3D8)
         [0, 1, 5, 4], [1, 2, 6, 5],
         [2, 3, 7, 6], [3, 0, 4, 7]],
-    # S6/S6R: nodes 0-2 corners, 3=mid(0-1), 4=mid(1-2), 5=mid(2-0) — perimeter order
-    8: [[0, 3, 1, 4, 2, 5]],
-    # S8/S8R: nodes 0-3 corners, 4=mid(0-1), 5=mid(1-2), 6=mid(2-3), 7=mid(3-0) — perimeter order
-    9: [[0, 4, 1, 5, 2, 6, 3, 7]],
 }
 
 

@@ -118,11 +118,6 @@ _ALIASES: Dict[str, str] = {
     "COH2D4": "QUAD4",
     "SC6R":   "WEDGE6",
     "SC8R":   "HEX8",
-    "S6":     "TRI6",
-    "S6R":    "TRI6",
-    "S8":     "QUAD8",
-    "S8R":    "QUAD8",
-    "S8R5":   "QUAD8",
 }
 
 
