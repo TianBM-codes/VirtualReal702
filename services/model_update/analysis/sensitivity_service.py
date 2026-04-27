@@ -2327,8 +2327,10 @@ def run_sensitivity_inp_and_store(
                     source_result_group=source_rg,
                 )
                 result["merge_result"] = merge_result
+                result["merge_result_group"] = resolved_merge_result_group
             except Exception as exc:
                 result["merge_result"] = {"error": str(exc)}
+                result["merge_result_group"] = None
 
         return result
 
