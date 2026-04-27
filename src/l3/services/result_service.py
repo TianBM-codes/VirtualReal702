@@ -432,6 +432,113 @@ def frame_colors(
     return color_per_vertex, legend_range
 
 
+# ─── compute_scalar_range: range-only helper (no vertex scatter) ─────────────
+
+def compute_scalar_range(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    field: str,
+    frame_idx: int,
+    component_idx: Optional[int] = None,
+    render_mode: str = "smooth",
+    result_group: str = None,
+    feature_angle: Optional[float] = 20.0,
+    average_threshold: float = 0.75,
+    use_geometry_split: bool = True,
+) -> Optional[Tuple[float, float]]:
+    """
+    Return (val_min, val_max) for the given instance/field/frame using the same
+    range logic as frame_scalars(), but without building u_per_vertex.
+
+    Returns None if no result data is found for this instance.
+    Raises NotFoundError / NotReadyError / ValidationError on hard failures.
+    """
+    if frame_idx < 0:
+        raise ValidationError(
+            f"frame_idx must be >= 0, got {frame_idx}",
+            {"frame_idx": frame_idx},
+        )
+
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found")
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' is not render-ready yet")
+
+    src_node_rows = idx.source_node_rows.get(instance)
+    src_elem_row  = idx.render_source_elem_row.get(instance)
+    src_etype     = idx.source_elem_etype.get(instance)
+
+    if src_node_rows is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no render map",
+            {"instance": instance},
+        )
+
+    h5_path = _manifest_result_h5_path(idx.workspace, step, field, result_group)
+    if not os.path.exists(h5_path):
+        parent_field, mag_idx = _resolve_magnitude_field(
+            idx.workspace, step, field, result_group)
+        if parent_field is not None:
+            field = parent_field
+            component_idx = mag_idx
+            h5_path = _manifest_result_h5_path(idx.workspace, step, field, result_group)
+        if not os.path.exists(h5_path):
+            raise NotFoundError(
+                f"Result file not found for step='{step}' field='{field}'",
+                {"step": step, "field": field},
+            )
+
+    _manifest = ManifestRepo(idx.workspace)
+    geom_h5_path = _manifest.get_geom_path(instance)
+
+    with h5py.File(h5_path, "r") as f:
+
+        # ── NODAL ────────────────────────────────────────────────────────────
+        result = _scalar_nodal_by_idx(f, instance, frame_idx, component_idx)
+        if result is not None:
+            scalar_node, _ = result
+            finite = scalar_node[np.isfinite(scalar_node)]
+            if finite.size > 0:
+                return (float(finite.min()), float(finite.max()))
+            return None
+
+        # ── ELEMENT_NODAL ────────────────────────────────────────────────────
+        if src_etype is not None and src_elem_row is not None:
+            found_en = False
+            result = _scalar_elem_pos_by_idx(
+                f, "ELEMENT_NODAL", instance, frame_idx, component_idx,
+                src_etype, src_elem_row,
+            )
+            if result is not None:
+                found_en = True
+                _, _, surface_range = result
+                # Prefer full-model range (mirrors frame_scalars ELEMENT_NODAL override)
+                if geom_h5_path is not None:
+                    all_range = _compute_en_global_range(
+                        f, geom_h5_path, instance, frame_idx, component_idx,
+                        average_threshold,
+                    )
+                    if all_range is not None:
+                        return all_range
+                if surface_range is not None:
+                    return surface_range
+
+            # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
+            if not found_en:
+                result = _scalar_elem_pos_by_idx(
+                    f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
+                    src_etype, src_elem_row,
+                )
+                if result is not None:
+                    _, _, rng = result
+                    return rng
+
+    return None
+
+
 # ─── frame_scalars: backend returns t values, frontend applies colormap ───────
 
 def frame_scalars(
@@ -448,6 +555,8 @@ def frame_scalars(
     feature_angle: Optional[float] = 20.0,
     average_threshold: float = 0.75,
     use_geometry_split: bool = True,
+    override_min: Optional[float] = None,
+    override_max: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray, str]:
     """
     Returns (u_per_vertex [Nv] float32, legend_range [2] float32, result_position str).
@@ -459,6 +568,9 @@ def frame_scalars(
 
     component_idx=None → magnitude (L2 norm).
     component_idx=0,1,2,... → direct index into the result component axis.
+
+    override_min/override_max: when both are provided, skip per-instance range
+    computation and use these values directly (global normalization mode).
 
     Position fallback: NODAL → ELEMENT_NODAL (averaged) → INTEGRATION_POINT (flat).
     feature_angle: degrees for shell/membrane geometric splitting; None = section-only.
@@ -671,9 +783,10 @@ def frame_scalars(
 
     # NaN = element type has no data for this component (e.g. shell missing S33).
     # Preserve NaN through normalization so the frontend can render those faces grey.
-    # Use full-model range (computed above per code-path) so the legend matches Abaqus.
-    # Fall back to surface-only range only if no global range was captured.
-    if global_range is not None and np.isfinite(global_range[0]):
+    # Priority: caller-supplied override (global mode) > full-model range > surface fallback.
+    if override_min is not None and override_max is not None:
+        val_min, val_max = float(override_min), float(override_max)
+    elif global_range is not None and np.isfinite(global_range[0]):
         val_min, val_max = float(global_range[0]), float(global_range[1])
     else:
         finite = scalar_vertex[np.isfinite(scalar_vertex)]

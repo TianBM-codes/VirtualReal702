@@ -962,28 +962,33 @@ async function loadEdges(type) {
 async function applyColors({ field, componentVal, componentIdx, renderMode, step, frameIdx, resultGroup }) {
   const instNames = Object.keys(store.instanceMeshes)
   if (instNames.length === 0) { store.setStatus('Load geometry first', 'err'); return }
-  // component_idx: numeric index for non-U fields, or omit for magnitude (USUM)
   const compParam = componentIdx != null ? `&component_idx=${componentIdx}` : ''
-  store.setStatus(`Fetching scalars for ${instNames.length} instance(s)…`)
   // resultGroup override: per-call result_group takes precedence over store.activeResultGroup
   const resolvedRg = resultGroup !== undefined ? resultGroup : store.activeResultGroup
   try {
-    let globalMin = Infinity, globalMax = -Infinity
+    // Phase 1: fetch global min/max across all currently loaded instances
+    store.setStatus(`Fetching global range for ${instNames.length} instance(s)…`)
+    const rangeData = await api.fetchScalarRange(instNames, step, frameIdx, field, {
+      componentIdx,
+      renderMode,
+      resultGroup: resolvedRg,
+    })
+    const { global_min: globalMin, global_max: globalMax } = rangeData
+
+    // Phase 2: fetch per-instance scalars normalized against the global range
+    store.setStatus(`Fetching scalars for ${instNames.length} instance(s)…`)
     await Promise.all(instNames.map(async instName => {
       const base = `${store.baseUrl}/api/odb/${store.activeOdbId}/results/frame-scalars`
       const qstr = `instance=${encodeURIComponent(instName)}&step=${encodeURIComponent(step)}&frame=${frameIdx}&field=${field}${compParam}&mode=${renderMode}`
       const rgParam = resolvedRg ? `&result_group=${encodeURIComponent(resolvedRg)}` : ''
-      const url = `${base}?${qstr}${rgParam}`
+      const rangeParam = `&global_min=${globalMin}&global_max=${globalMax}`
+      const url = `${base}?${qstr}${rgParam}${rangeParam}`
       const res = await http.get(url, { responseType: 'arraybuffer' })
-      const vMin = parseFloat(res.headers['x-val-min'] ?? res.headers.get?.('X-Val-Min') ?? '0')
-      const vMax = parseFloat(res.headers['x-val-max'] ?? res.headers.get?.('X-Val-Max') ?? '1')
-      if (vMin < globalMin) globalMin = vMin
-      if (vMax > globalMax) globalMax = vMax
       const sections = parseL3BE(res.data)
       const tValues = new Float32Array(sections.u_per_vertex.data)   // [Nv_global]
       const im = store.instanceMeshes[instName]; if (!im) return
       setColorMode(im, 'uv')
-      // Scatter global tValues into each chunk's uv via vertexGlobalId map.
+      // Scatter tValues into each chunk's uv via vertexGlobalId map.
       // NaN = element type has no data for this component → grey (UV_CLEAR_V).
       for (const c of im.chunks) {
         const uv = c.uvAttr.array
@@ -1002,22 +1007,47 @@ async function applyColors({ field, componentVal, componentIdx, renderMode, step
       }
       requestRender()
     }))
-    if (globalMin !== Infinity) {
-      currentResultCtx = { step, field, frameIdx, componentIdx }
-      emit('colors-loaded', { vMin: globalMin, vMax: globalMax })
-      store.setStatus(`Colors applied — [${globalMin.toExponential(3)}, ${globalMax.toExponential(3)}]`, 'ok')
-    } else {
-      store.setStatus('No result data for loaded instances', 'err')
-    }
+    currentResultCtx = { step, field, frameIdx, componentIdx }
+    emit('colors-loaded', { vMin: globalMin, vMax: globalMax })
+    store.setStatus(`Colors applied — [${globalMin.toExponential(3)}, ${globalMax.toExponential(3)}]`, 'ok')
   } catch (e) {
     store.setStatus('Apply colors 失败: ' + e.message, 'err')
   }
 }
 
 // ── Apply Color Code ──────────────────────────────────────────────────────
+const INSTANCE_PALETTE = [
+  [0.27, 0.52, 0.95], [0.95, 0.42, 0.27], [0.27, 0.80, 0.50],
+  [0.90, 0.80, 0.20], [0.70, 0.27, 0.90], [0.27, 0.85, 0.90],
+  [0.95, 0.55, 0.80], [0.55, 0.75, 0.27], [0.90, 0.60, 0.27],
+  [0.27, 0.45, 0.70],
+]
+
 async function applyColorCode({ scheme, setNames }) {
   const instNames = Object.keys(store.instanceMeshes)
   if (instNames.length === 0) { store.setStatus('Load geometry first', 'err'); return }
+
+  if (scheme === 'instance') {
+    const legend = instNames.map((name, i) => {
+      const [r, g, b] = INSTANCE_PALETTE[i % INSTANCE_PALETTE.length]
+      return { name, r, g, b }
+    })
+    instNames.forEach((instName, i) => {
+      const im = store.instanceMeshes[instName]; if (!im) return
+      const [r, g, b] = INSTANCE_PALETTE[i % INSTANCE_PALETTE.length]
+      setColorMode(im, 'vertex')
+      for (const c of im.chunks) {
+        const cf = c.colorAttr.array
+        for (let j = 0; j < cf.length; j += 3) { cf[j] = r; cf[j+1] = g; cf[j+2] = b }
+        c.colorAttr.needsUpdate = true
+      }
+    })
+    requestRender()
+    emit('color-code-applied', { legend })
+    store.setStatus(`Color code applied — ${instNames.length} instances`, 'ok')
+    return
+  }
+
   store.setStatus(`Applying color code to ${instNames.length} instance(s)…`)
   try {
     let legend = []
@@ -1066,6 +1096,21 @@ function clearColorCode() {
   })
   emit('color-code-applied', { legend: [] })
   store.setStatus('Color code cleared', 'ok')
+}
+
+function resetColorCode() {
+  Object.values(store.instanceMeshes).forEach(im => {
+    setColorMode(im, 'uv')
+    for (const c of im.chunks) {
+      const uv = c.uvAttr.array
+      const n = uv.length / 2
+      for (let i = 0; i < n; i++) { uv[i*2] = UV_DEFAULT_U; uv[i*2+1] = UV_DATA_V }
+      c.uvAttr.needsUpdate = true
+    }
+  })
+  emit('color-code-applied', { legend: [] })
+  store.setStatus('Color code reset to initial', 'ok')
+  requestRender()
 }
 
 // ── BBox face collection ──────────────────────────────────────────────────
@@ -1616,5 +1661,5 @@ function resetModelTransform() {
   requestRender()
 }
 
-defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform })
+defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform })
 </script>

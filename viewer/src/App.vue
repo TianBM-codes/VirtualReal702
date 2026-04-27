@@ -33,6 +33,7 @@
         ref="colorCodeRef"
         @apply="opts => viewport?.applyColorCode(opts)"
         @clear="() => viewport?.clearColorCode()"
+        @reset="() => viewport?.resetColorCode()"
       />
 
       <MouseModeCard ref="mouseModeRef" @toggle-camera="onToggleCamera" />

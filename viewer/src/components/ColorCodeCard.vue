@@ -25,6 +25,7 @@
     <div class="row" style="margin-top:6px">
       <button class="primary" @click="apply">Apply</button>
       <button @click="emit('clear')">Clear</button>
+      <button @click="emit('reset')" title="Reset to loaded color">Reset</button>
     </div>
 
     <!-- 图例 -->
@@ -50,9 +51,9 @@ import { useOdbApi }      from '../composables/useOdbApi'
 
 const store = useViewerStore()
 const api   = useOdbApi()
-const emit  = defineEmits(['apply', 'clear'])
+const emit  = defineEmits(['apply', 'clear', 'reset'])
 
-const SCHEME_LABELS = { etype:'Element Type', section:'Averaging Regions', material:'Material', section_type:'Section Type', elset:'Elset Highlight' }
+const SCHEME_LABELS = { instance:'Instance', etype:'Element Type', section:'Averaging Regions', material:'Material', section_type:'Section Type', elset:'Elset Highlight' }
 
 const scheme         = ref('')
 const schemes        = ref([])
@@ -67,9 +68,12 @@ watch(() => store.currentInstance, async inst => {
   if (!inst) return
   try {
     const data = await api.fetchColorSchemes(inst)
-    schemes.value = data.data?.schemes ?? []
+    const backendSchemes = data.data?.schemes ?? []
+    schemes.value = ['instance', ...backendSchemes]
     elsets.value  = data.data?.elsets  ?? []
-  } catch (_) {}
+  } catch (_) {
+    schemes.value = ['instance']
+  }
 }, { immediate: true })
 
 function selectAllElsets() { selectedElsets.value = [...elsets.value] }
