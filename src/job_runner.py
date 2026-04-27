@@ -270,14 +270,15 @@ def _is_odb_version_error(rc: int, tail: str) -> bool:
     """
     Detect ODB version mismatch.
 
-    Primary:  abaqus_dump.py exits with code 2 when it catches an OdbError
-              containing 'previous release' or 'upgrade' — this is reliable
-              even when Abaqus writes output directly to the Windows console
-              and bypasses the stdout pipe.
-    Fallback: text scan of the captured tail for keyword hints, for cases
-              where the script exits with rc=1 and output was captured.
+    Primary:  look for the 'ODB_VERSION_ERROR' marker printed by _open_odb()
+              in abaqus_dump.py.  This string is specific enough to not false-
+              positive, and it is captured via stdout pipe reliably.
+              NOTE: 'abaqus python' wraps sys.exit() and always returns rc=0,
+              so exit-code detection is NOT used.
+    Fallback: text scan for 'upgrade' + 'odb'/'version' keywords (handles
+              any Abaqus version that prints the hint differently).
     """
-    if rc == 2:
+    if "ODB_VERSION_ERROR" in tail:
         return True
     t = tail.lower()
     return "upgrade" in t and ("odb" in t or "version" in t)
