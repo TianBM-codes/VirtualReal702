@@ -56,6 +56,12 @@ except Exception:
         pass
 
 
+# ─── Feature switches ────────────────────────────────────────────────────────
+# Set to True only when the invariant pipeline (MISES / principals / etc.) is
+# fully validated end-to-end. While False, --invariants full is silently
+# ignored so dumps run faster.
+_EXTRACT_INVARIANTS_ENABLED = False
+
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 ELEM_TYPE_CODE = {
@@ -1472,7 +1478,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 len(block_struct), _fmt_t(time.time() - t_field)))
 
             # ── Invariant extraction (--invariants full only) ──────────────────
-            if extract_invariants and invariants:
+            if extract_invariants and invariants and _EXTRACT_INVARIANTS_ENABLED:
                 _extract_ip_invariants(
                     step, step_name, field_name, first_field,
                     invariants, results_dir, safe_step, safe_field,
