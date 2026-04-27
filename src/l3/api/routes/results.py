@@ -16,7 +16,13 @@ from fastapi.responses import Response
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ..response import ok
-from ...services.result_service import frame_colors, frame_scalars, frame_deformed_positions, suggest_deform_scale
+from ...services.result_service import (
+    compute_scalar_range,
+    frame_colors,
+    frame_scalars,
+    frame_deformed_positions,
+    suggest_deform_scale,
+)
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 
@@ -91,6 +97,8 @@ async def get_frame_scalars(
         default=True,
         description="False = section-only domains, ignore feature_angle.",
     ),
+    global_min: Optional[float] = Query(None, description="Override normalization min (global mode)."),
+    global_max: Optional[float] = Query(None, description="Override normalization max (global mode)."),
 ):
     """
     Return per-vertex normalized scalar t ∈ [0,1] + legend range.
@@ -103,6 +111,8 @@ async def get_frame_scalars(
     feature_angle: angle threshold for shell/membrane domain splitting (default 20°).
     average_threshold: 0.75 = Abaqus default 75% threshold for conditional averaging.
     use_geometry_split: set to false to split only by section, ignoring geometry.
+    global_min/global_max: when both provided, skip per-instance range and normalize
+                           against the supplied global range (multi-instance mode).
     """
     u, legend, result_position = frame_scalars(
         registry=registry,
@@ -118,7 +128,11 @@ async def get_frame_scalars(
         feature_angle=feature_angle,
         average_threshold=average_threshold,
         use_geometry_split=use_geometry_split,
+        override_min=global_min,
+        override_max=global_max,
     )
+
+    norm_scope = "global" if (global_min is not None and global_max is not None) else "instance"
 
     payload = l3be_build([
         ("u_per_vertex", u),       # [Nv] float32
@@ -131,7 +145,7 @@ async def get_frame_scalars(
         headers={
             "X-Payload-Type":         "frame_scalars_v1",
             "X-Result-Position":      result_position,
-            "X-Normalization-Scope":  "instance",
+            "X-Normalization-Scope":  norm_scope,
             "X-Val-Min":              str(float(legend[0])),
             "X-Val-Max":              str(float(legend[1])),
             "X-Component-Idx":        str(component_idx) if component_idx is not None else "mag",
@@ -141,6 +155,76 @@ async def get_frame_scalars(
             "X-Use-Geometry-Split":   str(use_geometry_split).lower(),
         },
     )
+
+
+@router.get("/results/frame-scalar-range")
+async def get_frame_scalar_range(
+    odb_id: str,
+    instances: str,
+    step: str,
+    field: str,
+    frame: int = 0,
+    component_idx: Optional[int] = Query(default=None, ge=0),
+    mode: str = Query("smooth", pattern="^(smooth|flat)$"),
+    result_group: Optional[str] = Query(None),
+    feature_angle: Optional[float] = Query(default=20.0),
+    average_threshold: float = Query(default=0.75, ge=0.0, le=1.0),
+    use_geometry_split: bool = Query(default=True),
+):
+    """
+    Compute the union min/max across the given instances for use as a global
+    normalization range.  Call this before frame-scalars when displaying multiple
+    instances with a shared colormap.
+
+    instances: comma-separated list of instance names.
+    Returns JSON { global_min, global_max, instance_ranges: { name: [min, max] } }.
+    """
+    from ...core.errors import NotFoundError as _NFE
+
+    inst_list = [s.strip() for s in instances.split(",") if s.strip()]
+    instance_ranges: dict = {}
+    global_min = float("inf")
+    global_max = float("-inf")
+
+    for inst in inst_list:
+        try:
+            rng = compute_scalar_range(
+                registry=registry,
+                odb_id=odb_id,
+                instance=inst,
+                step=step,
+                field=field,
+                frame_idx=frame,
+                component_idx=component_idx,
+                render_mode=mode,
+                result_group=result_group,
+                feature_angle=feature_angle,
+                average_threshold=average_threshold,
+                use_geometry_split=use_geometry_split,
+            )
+        except _NFE:
+            rng = None
+
+        if rng is not None:
+            v_min, v_max = rng
+            instance_ranges[inst] = [v_min, v_max]
+            if v_min < global_min:
+                global_min = v_min
+            if v_max > global_max:
+                global_max = v_max
+
+    if not instance_ranges:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=404,
+            detail=f"No result data found for field '{field}' in any of the requested instances.",
+        )
+
+    return ok({
+        "global_min": global_min,
+        "global_max": global_max,
+        "instance_ranges": instance_ranges,
+    })
 
 
 @router.get("/results/deformed-positions")

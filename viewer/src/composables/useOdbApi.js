@@ -106,6 +106,31 @@ export function useOdbApi() {
     return res.data
   }
 
+  // ── Scalar Range (global normalization) ──────────────────────────────────
+  async function fetchScalarRange(instances, step, frameIdx, field, {
+    componentIdx = null,
+    renderMode = 'smooth',
+    resultGroup = null,
+    featureAngle = null,
+    averageThreshold = null,
+    useGeometrySplit = null,
+  } = {}) {
+    const params = new URLSearchParams({
+      instances: instances.join(','),
+      step,
+      frame: frameIdx,
+      field,
+      mode: renderMode,
+    })
+    if (componentIdx != null)      params.set('component_idx',      componentIdx)
+    if (resultGroup)               params.set('result_group',        resultGroup)
+    if (featureAngle != null)      params.set('feature_angle',       featureAngle)
+    if (averageThreshold != null)  params.set('average_threshold',   averageThreshold)
+    if (useGeometrySplit != null)  params.set('use_geometry_split',  useGeometrySplit)
+    const res = await http.get(store.getApiUrl(`results/frame-scalar-range?${params}`))
+    return res.data  // { global_min, global_max, instance_ranges }
+  }
+
   // ── Deformed Shape ───────────────────────────────────────────────────────
   async function fetchDeformedPositions(instance, step, frameIdx, scale) {
     const params = new URLSearchParams({ instance, step, frame: frameIdx, scale })
@@ -179,6 +204,7 @@ export function useOdbApi() {
     fetchMeta,
     fetchGeometry, fetchEdges,
     fetchFieldColors,
+    fetchScalarRange,
     fetchPick, fetchElementOutline, fetchRenderFaces,
     fetchNearestFace, fetchSurfacePatch,
     fetchSectionMesh,
