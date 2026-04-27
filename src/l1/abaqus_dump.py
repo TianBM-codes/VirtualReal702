@@ -1484,6 +1484,26 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
     print("  Results done. ({} total)".format(_fmt_t(time.time() - t_results)))
 
 
+# ─── ODB open helper ──────────────────────────────────────────────────────────
+
+# Exit code 2 signals job_runner to run 'abaqus -upgrade' and retry.
+_ODB_VERSION_EXIT_CODE = 2
+
+def _open_odb(odb_path, read_only=True):
+    """
+    Open an ODB file, exiting with code 2 on version mismatch.
+    job_runner treats exit code 2 as 'upgrade needed' and retries after upgrade.
+    """
+    try:
+        return odbAccess.openOdb(path=odb_path, readOnly=read_only)
+    except Exception as exc:
+        err = str(exc)
+        if 'previous release' in err or 'upgrade' in err.lower():
+            print("ODB_VERSION_ERROR: {}".format(err))
+            sys.exit(_ODB_VERSION_EXIT_CODE)
+        raise
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1523,7 +1543,7 @@ def main():
             wid, step_name, sorted(field_names)))
         t0 = time.time()
         print("Opening ODB (readOnly) ...")
-        odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+        odb = _open_odb(odb_path)
         print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
         try:
             meta = {}
@@ -1547,7 +1567,7 @@ def main():
 
     t0 = time.time()
     print("Opening ODB ...")
-    odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+    odb = _open_odb(odb_path)
     print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
 
     try:
@@ -1602,7 +1622,7 @@ def _run_consistency_check(args, odb_path, workspace):
     print("  ODB: {}".format(odb_path))
 
     t0 = time.time()
-    odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+    odb = _open_odb(odb_path)
     print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
 
     assembly = odb.rootAssembly
@@ -1685,7 +1705,7 @@ def _run_extract(args, odb_path, workspace):
     print("  raw_dir: {}".format(raw_dir))
 
     t0 = time.time()
-    odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+    odb = _open_odb(odb_path)
     print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
 
     try:

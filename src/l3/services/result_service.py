@@ -131,6 +131,26 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
 _COMP_IDX = {"U1": 0, "U2": 1, "U3": 2}
 
 
+def _resolve_magnitude_field(workspace: str, step: str, field: str,
+                             result_group: str = None):
+    """
+    If field ends with '_MAGNITUDE' and the parent field's H5 exists, return
+    (parent_field, None) so the caller can compute L2 norm on the fly.
+    Returns (None, None) if the pattern doesn't match or the parent doesn't exist.
+
+    Example: 'U_MAGNITUDE' → ('U', None)  — component_idx=None means L2 norm
+    """
+    if not field.endswith("_MAGNITUDE"):
+        return None, None
+    parent = field[: -len("_MAGNITUDE")]
+    if not parent:
+        return None, None
+    parent_path = _manifest_result_h5_path(workspace, step, parent, result_group)
+    if os.path.exists(parent_path):
+        return parent, None
+    return None, None
+
+
 def _result_h5_path(workspace: str, step: str, field: str,
                     result_group: str = None) -> str:
     def safe(s):
@@ -469,10 +489,19 @@ def frame_scalars(
 
     h5_path = _manifest_result_h5_path(idx.workspace, step, field, result_group)
     if not os.path.exists(h5_path):
-        raise NotFoundError(
-            f"Result file not found for step='{step}' field='{field}'",
-            {"step": step, "field": field},
-        )
+        # Transparent fallback: PARENT_MAGNITUDE → PARENT + compute L2 norm.
+        # e.g. field='U_MAGNITUDE' → open U.h5 with component_idx=None.
+        parent_field, mag_idx = _resolve_magnitude_field(
+            idx.workspace, step, field, result_group)
+        if parent_field is not None:
+            field = parent_field
+            component_idx = mag_idx  # None → L2 norm in _extract_component
+            h5_path = _manifest_result_h5_path(idx.workspace, step, field, result_group)
+        if not os.path.exists(h5_path):
+            raise NotFoundError(
+                f"Result file not found for step='{step}' field='{field}'",
+                {"step": step, "field": field},
+            )
 
     _manifest = ManifestRepo(idx.workspace)
     geom_h5_path = _manifest.get_geom_path(instance)

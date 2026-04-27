@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-04-23
+更新时间：2026-04-27
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -124,7 +124,7 @@ project_id + result_group
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/api/projects` | 列出 project 及 result groups |
-| POST | `/api/projects` | 创建 project，提交 INP 几何解析 |
+| POST | `/api/projects` | 创建 project，提交 `.inp` 几何解析或 `.odb` 全量解析 |
 | POST | `/api/projects/{source_project_id}/clone` | 克隆 project workspace 和 registry 记录 |
 | POST | `/api/projects/{project_id}/results` | 给 project 追加 ODB 结果组 |
 | GET | `/api/projects/{project_id}` | 查询 project 详情 |
@@ -273,15 +273,25 @@ project_id + result_group
 ```json
 {
   "project_id": "proj-001",
-  "source_path": "/data/model.inp"
+  "source_path": "/data/model.inp",
+  "source_type": "inp"
 }
 ```
 
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `project_id` | 是 | 由调用方提供的唯一 ID（UUID 推荐） |
+| `source_path` | 是 | 服务端本地路径 **或** `http(s)://` URL；支持 `.inp` 和 `.odb` |
+| `source_type` | 否 | `"inp"` 或 `"odb"`；省略时从文件扩展名自动推断 |
+
 说明：
 
-- `project_id` 由调用方提供。
 - 服务端会校验 workspace id，避免路径穿越。
-- 创建后 `geom_status=pending`，由 runner 解析 INP 并生成 L1/L2 几何。
+- `source_path` 为 URL 时，runner 在处理时下载到 workspace，API 不会立即校验 URL 可达性。
+- 创建后 `geom_status=pending`，由 runner 异步处理：
+  - `.inp` → 解析 INP 几何，生成 L1/L2 render 数据
+  - `.odb` → 运行 `abaqus_dump.py` + `l1_pack.py` + `ingest.py`（需 Abaqus license）
+- **重试**：若同 `project_id` 已存在且 `geom_status='error'`，本接口会清空 workspace 并重置为 `pending`，无需先 DELETE。`pending/running` 状态返回 409。
 
 响应：
 
@@ -290,6 +300,7 @@ project_id + result_group
   "code": 200,
   "data": {
     "project_id": "proj-001",
+    "source_type": "inp",
     "geom_status": "pending"
   },
   "message": ""
@@ -1200,3 +1211,39 @@ def decode_l3be(data: bytes) -> dict:
         result[name] = arr
     return result
 ```
+
+---
+
+## 附录：Job Runner 行为说明
+
+`src/job_runner.py` 是后台处理进程，负责从 SQLite 注册表认领并执行 L1/L2 管线任务。以下行为对前端排查问题有参考价值。
+
+### 任务状态流转
+
+```
+projects 表:   pending → running → ready
+                                 ↘ error
+
+result_groups: pending → running → ready
+                                 ↘ error
+```
+
+### 崩溃恢复
+
+runner 每次**启动时**会扫描注册表，将所有卡在 `running` 状态的 project 和 result_group 重置为 `pending`，确保进程意外终止（OOM、SIGKILL）后重启能自动续跑，无需人工干预。
+
+### ODB 版本自动升级
+
+当 `abaqus_dump.py` 因 ODB 文件版本过旧失败时（输出含 `upgrade` + `odb`/`version` 关键词），runner 会自动执行：
+
+```
+abaqus upgrade -job <odb路径（不含.odb后缀）>
+```
+
+Abaqus 会将原文件备份为 `<name>_old.odb`，并将升级后的版本写回原路径。升级完成后 runner 重试一次 `abaqus_dump.py`。若升级本身失败，错误信息写入 `geom_status='error'`。
+
+### URL 下载失败处理
+
+`source_path` 为 HTTP URL 时，runner 在认领任务后下载文件。若 URL 不可达或返回非 200，下载失败会将状态设为 `error`，runner 进程**不会崩溃**，继续处理下一个任务。
+
+前端重新提交正确 URL 时，只需用同一 `project_id` 再次 `POST /api/projects`，服务端检测到 `geom_status='error'` 后自动清空 workspace 并重置为 `pending`。
