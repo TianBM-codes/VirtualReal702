@@ -128,7 +128,24 @@ INV_ATTR_MAP = {
     'MAX_IN_PLANE_PRINCIPAL': 'maxInPlanePrincipal',
     'MIN_IN_PLANE_PRINCIPAL': 'minInPlanePrincipal',
     'OUT_OF_PLANE_PRINCIPAL': 'outOfPlanePrincipal',
+    'MAGNITUDE':              'magnitude',
 }
+
+# Invariant suffixes skipped even when --invariants full is passed.
+# Remove an entry once the viewer gains support for that invariant.
+# Currently active (extracted): MISES, TRESCA (stress tensors only).
+# MAGNITUDE is excluded — L3 computes it on-the-fly from components (identical result).
+_HIDDEN_INV_SUFFIXES = frozenset({
+    'MAGNITUDE',
+    'PRESS',
+    'INV3',
+    'MAX_PRINCIPAL',
+    'MID_PRINCIPAL',
+    'MIN_PRINCIPAL',
+    'MAX_IN_PLANE_PRINCIPAL',
+    'MIN_IN_PLANE_PRINCIPAL',
+    'OUT_OF_PLANE_PRINCIPAL',
+})
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -830,6 +847,11 @@ def _compute_invariants_numpy(comp, inv_name):
     4-component (in-plane shell: 11,22,33,12, treats 13=23=0).
     """
     ncomp = comp.shape[-1]
+
+    if inv_name == 'MAGNITUDE':
+        result = np.sqrt(np.sum(comp.astype(np.float64) ** 2, axis=-1))
+        return result[..., np.newaxis].astype(np.float32)
+
     if ncomp < 4:
         return None
 
@@ -898,7 +920,10 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
 
     No pre-averaging is done here — that is L3's responsibility.
     """
-    active_invs = [(inv, INV_ATTR_MAP[inv]) for inv in invariants if inv in INV_ATTR_MAP]
+    active_invs = [
+        (inv, INV_ATTR_MAP[inv]) for inv in invariants
+        if inv in INV_ATTR_MAP and inv not in _HIDDEN_INV_SUFFIXES
+    ]
     if not active_invs:
         return
 
@@ -946,11 +971,27 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
             'ip_labels': ip_labels,
         }
 
-    if not en_blocks and not ip_blocks:
-        print("    [inv] no EN or IP blocks found, skipping invariant extraction")
+    # ── Discover NODAL blocks from parent block_struct ───────────────────────────
+    nodal_blocks = {}  # {(iname, etype, sp_num_key): {'labels': arr}}
+    for (iname, pos, etype, sp_num_key) in list(block_struct.keys()):
+        if pos != 'NODAL':
+            continue
+        bd_parts = [parent_field_dir, safe(iname), 'NODAL']
+        if etype:
+            bd_parts.append(safe(etype))
+        if sp_num_key is not None:
+            bd_parts.append('sp{}'.format(sp_num_key))
+        bd = os.path.join(*bd_parts)
+        lbl_path = os.path.join(bd, 'labels.npy')
+        if not os.path.exists(lbl_path):
+            continue
+        nodal_blocks[(iname, etype, sp_num_key)] = {'labels': np.load(lbl_path)}
+
+    if not en_blocks and not ip_blocks and not nodal_blocks:
+        print("    [inv] no EN, IP or NODAL blocks found, skipping invariant extraction")
         return
 
-    insts = list({k[0] for k in list(en_blocks.keys()) + list(ip_blocks.keys())})
+    insts = list({k[0] for k in list(en_blocks.keys()) + list(ip_blocks.keys()) + list(nodal_blocks.keys())})
 
     # ── Create synthetic field dirs and write static index files ─────────────
     inv_field_dirs = {}
@@ -988,6 +1029,17 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
             sp_arr = (np.array([sp_num_key], dtype=np.int32)
                       if sp_num_key is not None else np.array([], dtype=np.int32))
             npsave(os.path.join(bd, 'sp_labels.npy'), sp_arr)
+
+    for (iname, etype, sp_num_key), info in nodal_blocks.items():
+        for inv_name in inv_field_dirs:
+            bd_parts = [inv_field_dirs[inv_name], safe(iname), 'NODAL']
+            if etype:
+                bd_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_parts.append('sp{}'.format(sp_num_key))
+            bd = os.path.join(*bd_parts)
+            mkdirs(bd)
+            npsave(os.path.join(bd, 'labels.npy'), info['labels'])
 
     # ── Per-frame invariant computation (numpy, no .values API calls) ────────
     # Component data was already saved by dump_results as f{frame_idx:04d}.npy.
@@ -1074,6 +1126,38 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_parts.append('sp{}'.format(sp_num_key))
                 npsave(os.path.join(*(bd_parts + ['f{:04d}.npy'.format(frame_idx)])), inv_data)
 
+        # NODAL: load component npy [N_nodes, ncomp] → compute invariants → [N_nodes, 1]
+        for (iname, etype, sp_num_key), info in nodal_blocks.items():
+            canon = info['labels']
+
+            bd_comp_parts = [parent_field_dir, safe(iname), 'NODAL']
+            if etype:
+                bd_comp_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_comp_parts.append('sp{}'.format(sp_num_key))
+            comp_path = os.path.join(*(bd_comp_parts + ['f{:04d}.npy'.format(frame_idx)]))
+            if not os.path.exists(comp_path):
+                continue
+            comp = np.load(comp_path)  # [N_nodes, ncomp]
+
+            for inv_name, _ in active_invs:
+                inv_data = _compute_invariants_numpy(comp, inv_name)
+                if inv_data is None:
+                    inv_data = np.full((len(canon), 1), np.nan, dtype=np.float32)
+                else:
+                    if inv_data.shape[0] != len(canon):
+                        tmp = np.full((len(canon), 1), np.nan, dtype=np.float32)
+                        r = min(inv_data.shape[0], len(canon))
+                        tmp[:r, :] = inv_data[:r, :]
+                        inv_data = tmp
+
+                bd_inv_parts = [inv_field_dirs[inv_name], safe(iname), 'NODAL']
+                if etype:
+                    bd_inv_parts.append(safe(etype))
+                if sp_num_key is not None:
+                    bd_inv_parts.append('sp{}'.format(sp_num_key))
+                npsave(os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)])), inv_data)
+
     # ── Write meta.json for each synthetic invariant field ────────────────────
     for inv_name, _ in active_invs:
         fdir      = inv_field_dirs[inv_name]
@@ -1099,6 +1183,15 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                 'n_entities': len(info['labels']),
                 'n_ip':       len(info['ip_labels']),
                 'n_sp':       0,
+            })
+        for (iname, etype, sp_num_key), info in nodal_blocks.items():
+            blocks.append({
+                'inst_name':  iname,
+                'position':   'NODAL',
+                'elem_type':  etype,
+                'sp_num':     sp_num_key,
+                'ncomp':      1,
+                'n_entities': len(info['labels']),
             })
         jdump(os.path.join(fdir, 'meta.json'), {
             'step_name':   step_name,

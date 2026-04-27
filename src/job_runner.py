@@ -268,20 +268,11 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
 
 def _is_odb_version_error(rc: int, tail: str) -> bool:
     """
-    Detect ODB version mismatch.
-
-    Primary:  look for the 'ODB_VERSION_ERROR' marker printed by _open_odb()
-              in abaqus_dump.py.  This string is specific enough to not false-
-              positive, and it is captured via stdout pipe reliably.
-              NOTE: 'abaqus python' wraps sys.exit() and always returns rc=0,
-              so exit-code detection is NOT used.
-    Fallback: text scan for 'upgrade' + 'odb'/'version' keywords (handles
-              any Abaqus version that prints the hint differently).
+    Detect ODB version mismatch via the explicit marker printed by _open_odb()
+    in abaqus_dump.py.  Reliable and specific — no keyword heuristics that
+    could match ODB filenames containing 'upgrade' or 'odb'.
     """
-    if "ODB_VERSION_ERROR" in tail:
-        return True
-    t = tail.lower()
-    return "upgrade" in t and ("odb" in t or "version" in t)
+    return "ODB_VERSION_ERROR" in tail
 
 
 def _upgrade_odb(odb_path: str, label: str) -> tuple:
@@ -313,6 +304,11 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
     rc, tail = _run_streaming(cmd, label, "odb_upgrade", cwd=odb_dir)
     if rc != 0:
         logger.error("[%s] ODB upgrade failed (rc=%d)", label, rc)
+        return False, odb_abs, tail
+
+    # Abaqus -upgrade may exit 0 even on failure — check output for error markers
+    if "ODB FILE UPGRADE FAILED" in tail.upper():
+        logger.error("[%s] ODB upgrade failed (rc=0 but error in output)", label)
         return False, odb_abs, tail
 
     if not os.path.exists(tmp_odb):
