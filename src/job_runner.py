@@ -287,13 +287,11 @@ def _is_odb_version_error(rc: int, tail: str) -> bool:
 def _upgrade_odb(odb_path: str, label: str) -> tuple:
     """
     Run 'abaqus -upgrade -job <tmp_base> -odb <source.odb>' in the ODB's directory.
-    Output is written as <tmp_base>.odb, then renamed over the original.
-    Returns (success: bool, tail: str).
+    Returns (success: bool, upgraded_path: str, tail: str).
 
-    Abaqus upgrade syntax (from the OdbError hint):
-        abaqus -upgrade -job <newFileName> -odb <oldOdbFileName>
-    where -job is the output base name (no .odb extension) and
-          -odb  is the source file (with .odb extension).
+    upgraded_path is the path callers should use for the retry:
+    - If the upgraded file could be renamed over the original → original path
+    - If rename fails (Windows file lock) → the temp file path
     """
     odb_abs  = os.path.abspath(odb_path)
     odb_dir  = os.path.dirname(odb_abs)
@@ -315,22 +313,22 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
     rc, tail = _run_streaming(cmd, label, "odb_upgrade", cwd=odb_dir)
     if rc != 0:
         logger.error("[%s] ODB upgrade failed (rc=%d)", label, rc)
-        return False, tail
+        return False, odb_abs, tail
 
     if not os.path.exists(tmp_odb):
         msg = "Upgraded ODB not found at expected path: {}".format(tmp_odb)
         logger.error("[%s] %s", label, msg)
-        return False, msg
+        return False, odb_abs, msg
 
+    # Try to replace the original; if Windows locks it, use the temp file directly
     try:
         os.replace(tmp_odb, odb_abs)
+        logger.info("[%s] ODB upgraded successfully — replaced %s", label, odb_abs)
+        return True, odb_abs, tail
     except Exception as exc:
-        msg = "Failed to replace ODB with upgraded version: {}".format(exc)
-        logger.error("[%s] %s", label, msg)
-        return False, msg
-
-    logger.info("[%s] ODB upgraded successfully — replaced %s", label, odb_abs)
-    return True, tail
+        logger.warning("[%s] Could not replace original ODB (%s); "
+                       "using upgraded temp file %s for retry", label, exc, tmp_odb)
+        return True, tmp_odb, tail
 
 
 # ── L1 pipeline (two phases) ──────────────────────────────────────────────────
@@ -351,13 +349,18 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
-        ok, upgrade_tail = _upgrade_odb(odb_path, odb_id)
+        ok, upgraded_path, upgrade_tail = _upgrade_odb(odb_path, odb_id)
         if not ok:
             _update_status(odb_id, "error",
                            error_msg="ODB upgrade failed: " + upgrade_tail)
             return False
-        logger.info("[%s] Retrying abaqus_dump.py after upgrade", odb_id)
-        rc1, tail1 = _run_streaming(dump_cmd, odb_id, "abaqus_dump_retry")
+        logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
+                    odb_id, upgraded_path)
+        retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+                     "--odb", upgraded_path, "--out", workspace]
+        if INVARIANTS_MODE == "full":
+            retry_cmd += ["--invariants", "full"]
+        rc1, tail1 = _run_streaming(retry_cmd, odb_id, "abaqus_dump_retry")
         logger.info("[%s] abaqus_dump retry rc=%d", odb_id, rc1)
 
     if rc1 != 0:
@@ -567,13 +570,18 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
     logger.info("[%s] project_abaqus_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
-        ok, upgrade_tail = _upgrade_odb(odb_path, project_id)
+        ok, upgraded_path, upgrade_tail = _upgrade_odb(odb_path, project_id)
         if not ok:
             msg = "ODB upgrade failed: " + upgrade_tail
             _update_project_geom_status(project_id, "error", msg)
             return False
-        logger.info("[%s] Retrying abaqus_dump.py after upgrade", project_id)
-        rc1, tail1 = _run_streaming(dump_cmd, project_id, "project_abaqus_dump_retry")
+        logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
+                    project_id, upgraded_path)
+        retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+                     "--odb", upgraded_path, "--out", workspace]
+        if INVARIANTS_MODE == "full":
+            retry_cmd += ["--invariants", "full"]
+        rc1, tail1 = _run_streaming(retry_cmd, project_id, "project_abaqus_dump_retry")
         logger.info("[%s] project_abaqus_dump retry rc=%d", project_id, rc1)
 
     if rc1 != 0:
