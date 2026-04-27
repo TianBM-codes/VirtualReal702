@@ -200,8 +200,8 @@ class ManifestRepo:
             )
             fields = _safe(
                 conn,
-                "SELECT DISTINCT field_name, components, positions, source FROM result_files"
-                " WHERE {}".format(rg_clause),
+                "SELECT DISTINCT field_name, components, invariants, positions, source"
+                " FROM result_files WHERE {}".format(rg_clause),
                 rg_params,
             )
         # Deserialize JSON-string columns in instances
@@ -227,6 +227,11 @@ class ManifestRepo:
         A field is an invariant of parent P when its components list is empty,
         its name starts with P + "_", and P exists in the same list.
         """
+        # MAGNITUDE is the only invariant computable on the fly at L3 query time
+        # (L2 norm of any NODAL vector field — e.g. U, RF, V).
+        # Other invariants (MISES, principal, …) need --invariants full pre-extraction.
+        _ONTHEFLY_INVARIANTS = {"MAGNITUDE"}
+
         parsed = []
         for f in fields:
             raw = f.get("components", "[]") or "[]"
@@ -234,7 +239,12 @@ class ManifestRepo:
                 comps = json.loads(raw) if isinstance(raw, str) else (raw or [])
             except Exception:
                 comps = []
-            parsed.append({**f, "_comps": comps})
+            raw_db_inv = f.get("invariants", "[]") or "[]"
+            try:
+                db_invs = json.loads(raw_db_inv) if isinstance(raw_db_inv, str) else (raw_db_inv or [])
+            except Exception:
+                db_invs = []
+            parsed.append({**f, "_comps": comps, "_db_invs": db_invs})
 
         field_name_set = {f["field_name"] for f in parsed}
 
@@ -263,9 +273,16 @@ class ManifestRepo:
         for f in parsed:
             if f["field_name"] in inv_parent:
                 continue  # absorbed into parent's invariants list
-            field_copy = {k: v for k, v in f.items() if k != "_comps"}
+            field_copy = {k: v for k, v in f.items() if k not in ("_comps", "_db_invs", "invariants")}
             field_copy["components"] = f["_comps"]
-            field_copy["invariants"] = inv_suffixes.get(f["field_name"], [])
+            synthetic_invs = list(inv_suffixes.get(f["field_name"], []))
+            # Also surface on-the-fly-computable invariants from the DB column
+            # (only for vector fields that have components — not for scalar fields)
+            if f["_comps"]:
+                for inv in f["_db_invs"]:
+                    if inv in _ONTHEFLY_INVARIANTS and inv not in synthetic_invs:
+                        synthetic_invs.append(inv)
+            field_copy["invariants"] = synthetic_invs
             # positions is stored as a JSON string in the DB — deserialize it
             raw_pos = f.get("positions", "[]") or "[]"
             try:
