@@ -26,6 +26,7 @@ _SHELL_TRI3 = frozenset({
     "M3D3", "CPS3", "CPE3", "CAX3",
 })
 _SHELL_TRI6 = frozenset({
+    "S6", "S6R",
     "CPS6", "CPE6", "CAX6",
 })
 _SHELL_QUAD4 = frozenset({

@@ -36,9 +36,12 @@ OCTREE_LEAF_THRESHOLD = 1000
 
 # Keep in sync with src/inp/exporter.py _ELEM_TYPE_CODE.
 ELEM_TYPE_CODE = {
-    # shells / membranes
-    'S3': 0,  'S3R': 0,  'S6': 0,   'STRI3': 0,
-    'S4': 1,  'S4R': 1,  'S4R5': 1, 'S8R': 1, 'S8R5': 1,
+    # shells / membranes — linear
+    'S3': 0,  'S3R': 0,  'STRI3': 0,
+    'S4': 1,  'S4R': 1,  'S4R5': 1,
+    # shells — quadratic (all nodes in face_node_conn; perimeter-ordered)
+    'S6': 8,  'S6R': 8,
+    'S8': 9,  'S8R': 9,  'S8R5': 9,
     # solids
     'C3D4': 2,  'C3D4H': 2,
     'C3D6': 3,  'C3D6H': 3,
