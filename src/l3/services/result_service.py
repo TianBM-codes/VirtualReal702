@@ -1324,15 +1324,16 @@ def frame_deformed_positions(
 def suggest_deform_scale(
     registry: OdbRegistry,
     odb_id: str,
-    instance: str,
     step: str,
     frame_idx: int,
     result_group: str = None,
 ) -> float:
     """
-    Compute a sensible deformation scale factor for the given frame:
-      maxScalarDisp = max(|U_min|, |U_max|) across all three displacement directions
-      maxScalarSize = longest edge of the instance bounding box
+    Compute a globally consistent deformation scale factor for the given step/frame.
+
+    Aggregates across ALL instances regardless of which are currently displayed:
+      maxScalarSize = longest edge of the assembly-level bounding box (union of all instance bboxes)
+      maxScalarDisp = max(|U|) across all three displacement directions across all instances
       scale = maxScalarSize / 10 / maxScalarDisp  (returns 0 if maxScalarDisp == 0)
     """
     import json as _json
@@ -1344,43 +1345,54 @@ def suggest_deform_scale(
         raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
 
     manifest = ManifestRepo(idx.workspace)
-    row = manifest.get_instance_info(instance)
-    if row is None:
-        raise NotFoundError(f"Instance '{instance}' not found", {"instance": instance})
-
-    bbox_min_raw = row["bbox_min"]
-    bbox_max_raw = row["bbox_max"]
-    if bbox_min_raw is None or bbox_max_raw is None:
+    all_instances = manifest.list_instances()
+    if not all_instances:
         return 0.0
-    lower_boundary = np.array(
-        _json.loads(bbox_min_raw) if isinstance(bbox_min_raw, str) else bbox_min_raw,
-        dtype=np.float64,
-    )
-    upper_boundary = np.array(
-        _json.loads(bbox_max_raw) if isinstance(bbox_max_raw, str) else bbox_max_raw,
-        dtype=np.float64,
-    )
-    max_scalar_size = float(np.max(upper_boundary - lower_boundary))
+
+    # Aggregate assembly-level bbox across all instances
+    global_min = None
+    global_max = None
+    for row in all_instances:
+        bbox_min_raw = row.get("bbox_min")
+        bbox_max_raw = row.get("bbox_max")
+        if bbox_min_raw is None or bbox_max_raw is None:
+            continue
+        lo = np.array(
+            _json.loads(bbox_min_raw) if isinstance(bbox_min_raw, str) else bbox_min_raw,
+            dtype=np.float64,
+        )
+        hi = np.array(
+            _json.loads(bbox_max_raw) if isinstance(bbox_max_raw, str) else bbox_max_raw,
+            dtype=np.float64,
+        )
+        global_min = lo if global_min is None else np.minimum(global_min, lo)
+        global_max = hi if global_max is None else np.maximum(global_max, hi)
+
+    if global_min is None:
+        return 0.0
+    max_scalar_size = float(np.max(global_max - global_min))
 
     h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
     if not os.path.exists(h5_path):
         return 0.0
 
+    # Aggregate max displacement across all instances
+    max_scalar_disp = 0.0
     with h5py.File(h5_path, "r") as f:
-        ds_path = f"/NODAL/{instance}/data"
-        if ds_path not in f:
-            return 0.0
-        ds = f[ds_path]
-        if frame_idx < 0 or frame_idx >= ds.shape[0]:
-            return 0.0
-        disp_node = ds[frame_idx].astype(np.float64)   # [N_nodes, 3]
-
-    if disp_node.ndim != 2 or disp_node.shape[1] < 3:
-        return 0.0
-
-    lower_disp = disp_node.min(axis=0)   # [3]
-    upper_disp = disp_node.max(axis=0)   # [3]
-    max_scalar_disp = float(np.max(np.maximum(np.abs(lower_disp), np.abs(upper_disp))))
+        for row in all_instances:
+            inst = row["instance_name"]
+            ds_path = f"/NODAL/{inst}/data"
+            if ds_path not in f:
+                continue
+            ds = f[ds_path]
+            if frame_idx < 0 or frame_idx >= ds.shape[0]:
+                continue
+            disp_node = ds[frame_idx].astype(np.float64)   # [N_nodes, 3]
+            if disp_node.ndim != 2 or disp_node.shape[1] < 3:
+                continue
+            inst_max = float(np.max(np.abs(disp_node)))
+            if inst_max > max_scalar_disp:
+                max_scalar_disp = inst_max
 
     if max_scalar_disp == 0.0:
         return 0.0

@@ -270,7 +270,6 @@ async def get_deformed_positions(
 @router.get("/results/deform-suggest-scale")
 async def get_deform_suggest_scale(
     odb_id: str,
-    instance: str,
     step: str,
     frame: int = 0,
     result_group: Optional[str] = Query(None, description="Result group (project mode)"),
@@ -278,13 +277,13 @@ async def get_deform_suggest_scale(
     """
     Return a suggested deformation scale factor for the given step/frame.
 
-    Computed as: maxBboxEdge / 10 / maxAbsDisplacement.
+    Computed globally across ALL instances (independent of which instances are displayed):
+      maxBboxEdge of assembly / 10 / maxAbsDisplacement across all instances.
     Returns 0 when displacement is zero or U field is unavailable.
     """
     scale = suggest_deform_scale(
         registry=registry,
         odb_id=odb_id,
-        instance=instance,
         step=step,
         frame_idx=frame,
         result_group=result_group,

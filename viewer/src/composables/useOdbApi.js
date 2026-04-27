@@ -141,8 +141,8 @@ export function useOdbApi() {
     return res.data
   }
 
-  async function fetchDeformSuggestScale(instance, step, frameIdx, resultGroup) {
-    const params = new URLSearchParams({ instance, step, frame: frameIdx })
+  async function fetchDeformSuggestScale(step, frameIdx, resultGroup) {
+    const params = new URLSearchParams({ step, frame: frameIdx })
     if (resultGroup) params.set('result_group', resultGroup)
     const res = await http.get(store.getApiUrl(`results/deform-suggest-scale?${params}`))
     return res.data?.scale ?? 0
