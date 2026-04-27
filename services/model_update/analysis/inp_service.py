@@ -1741,7 +1741,7 @@ def _get_latest_octree_meta(cursor, project_id):
     """, (project_id,))
     row = cursor.fetchone()
     if not row:
-        raise ValueError("node octree cache not found, import inp first")
+        raise ValueError("未找到节点八叉树缓存，请先导入 inp")
     meta = dict(row)
     meta["source_file_path"] = _normalize_stored_path(meta.get("source_file_path"))
     meta["cache_file_path"] = _normalize_stored_path(meta.get("cache_file_path"))
@@ -1811,7 +1811,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
         """, (project_id,))
         test_nodes = cursor.fetchall()
         if not test_nodes:
-            raise ValueError("test nodes not found, import UNV test data first")
+            raise ValueError("未找到试验节点，请先导入 UNV 试验数据")
 
         cache = _load_octree_cache(cache_path)
         part_lookup = _cache_part_lookup(cache)
@@ -1986,7 +1986,7 @@ def get_pair_node_point_result(project_id):
         """, (project_id,))
         node_matches = cursor.fetchall()
         if not node_matches:
-            raise ValueError("node matches not found, run /pair/node_point first")
+            raise ValueError("未找到节点匹配结果，请先调用 /pair/node_point")
 
         cursor.execute("""
             SELECT nid, x, y, z
@@ -2107,7 +2107,7 @@ def get_transform_auto_info(project_id: int, transform_type: str = None):
             )
         row = cursor.fetchone()
         if not row:
-            raise ValueError("transform operation not found")
+            raise ValueError("未找到变换操作记录")
         return {
             "type": str(row["transform_type"]),
             "matrix4": _normalize_matrix4(_json_loads(row["matrix4_json"])),
@@ -2147,7 +2147,7 @@ def match_test_dofs(project_id, overwrite=True):
         """, (project_id,))
         node_matches = cursor.fetchall()
         if not node_matches:
-            raise ValueError("node matches not found, run /match/nodes first")
+            raise ValueError("未找到节点匹配结果，请先调用 /match/nodes")
 
         octree_meta = _get_latest_octree_meta(cursor, project_id)
         cache = _load_octree_cache(octree_meta["cache_file_path"])
@@ -2155,7 +2155,7 @@ def match_test_dofs(project_id, overwrite=True):
         test_modal_points = _get_test_modal_point_ids(cursor, project_id)
         filtered_matches = [row for row in node_matches if not test_modal_points or str(row["test_node_id"]) in test_modal_points]
         if not filtered_matches:
-            raise ValueError("no matched test nodes have modal shape data")
+            raise ValueError("已匹配的试验节点中没有模态振型数据")
 
         if overwrite:
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
@@ -2316,7 +2316,7 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
             """, (project_id,))
             dof_rows = cursor.fetchall()
             if not dof_rows and not rows:
-                raise ValueError("no test modes or dof matches found to build response catalog")
+                raise ValueError("未找到试验模态或自由度匹配结果，无法构建响应目录")
 
             for row in dof_rows:
                 response_code = (
@@ -2428,7 +2428,7 @@ def _load_modal_payload(file_path=None, modes=None) -> List[dict]:
             payload = json.load(fp)
         modes = payload.get("modes", []) if isinstance(payload, dict) else payload
     if not modes:
-        raise ValueError("modes payload is empty")
+        raise ValueError("modes 数据为空")
     return [dict(item) for item in modes]
 
 
@@ -3343,11 +3343,11 @@ def _resolve_static_case_selection(cursor, project_id: int, load_case_no=None, r
     """, (project_id,))
     fem_cases = [int(row["load_case_no"]) for row in cursor.fetchall()]
     if not fem_cases:
-        raise ValueError("fem static results not found")
+        raise ValueError("未找到 FEM 静态结果")
 
     if not test_pairs:
         if not _load_latest_static_test_data_row(cursor, project_id):
-            raise ValueError("test static results not found")
+            raise ValueError("未找到试验静态结果")
         if load_case_no is None:
             chosen_load_case_no = int(fem_cases[0])
         else:
@@ -3551,7 +3551,7 @@ def store_updated_static_analysis_error(
         """, (project_id,))
         test_pairs = cursor.fetchall()
         if not test_pairs:
-            raise ValueError("test static results not found")
+            raise ValueError("未找到试验静态结果")
 
         test_case_to_results = {}
         for row in test_pairs:
@@ -3585,7 +3585,7 @@ def store_updated_static_analysis_error(
             result_no=int(chosen_result_no),
         )
         if not test_rows_raw:
-            raise ValueError("selected test static result rows not found")
+            raise ValueError("未找到所选试验静态结果记录")
         test_rows = {str(row["point"]): row for row in test_rows_raw}
 
         cursor.execute("""
@@ -3598,7 +3598,7 @@ def store_updated_static_analysis_error(
 
         aligned_rows = _build_static_alignment(test_rows, list(fem_rows or []), node_matches)
         if not aligned_rows:
-            raise ValueError("no aligned static rows found between test and updated fem results")
+            raise ValueError("试验静态结果与修正后 FEM 静态结果之间未找到可对齐的数据行")
 
         error_rows = _build_static_analysis_error_rows(
             aligned_rows=aligned_rows,
@@ -3655,7 +3655,7 @@ def compute_static_correlation(
             result_no=int(chosen_result_no),
         )
         if not test_rows_raw:
-            raise ValueError("selected test static result rows not found")
+            raise ValueError("未找到所选试验静态结果记录")
         test_rows = {str(row["point"]): row for row in test_rows_raw}
 
         cursor.execute("""
@@ -3667,7 +3667,7 @@ def compute_static_correlation(
         """, (project_id, chosen_load_case_no))
         fem_rows = cursor.fetchall()
         if not fem_rows:
-            raise ValueError("selected fem static result rows not found")
+            raise ValueError("未找到所选 FEM 静态结果记录")
 
         cursor.execute("""
             SELECT test_node_id, instance_name, fem_node_label
@@ -3679,7 +3679,7 @@ def compute_static_correlation(
 
         aligned_rows = _build_static_alignment(test_rows, fem_rows, node_matches)
         if not aligned_rows:
-            raise ValueError("no aligned static rows found between test and fem results")
+            raise ValueError("试验静态结果与 FEM 静态结果之间未找到可对齐的数据行")
 
         test_values = []
         fem_values = []
@@ -3725,7 +3725,7 @@ def compute_static_correlation(
                     })
 
         if len(test_values) < 2:
-            raise ValueError("not enough aligned static values to compute dac/dsf")
+            raise ValueError("可对齐的静态值数量不足，无法计算 dac/dsf")
 
         metrics = _compute_dac_dsf(
             np.asarray(test_values, dtype=np.complex128),
@@ -3920,7 +3920,7 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
     test_energy = float(np.vdot(test_vec, test_vec).real)
     fem_energy = float(np.vdot(fem_vec, fem_vec).real)
     if test_energy <= 1e-18 or fem_energy <= 1e-18:
-        raise ValueError("vector energy is zero")
+        raise ValueError("向量能量为 0")
 
     cross = np.vdot(test_vec, fem_vec)
     scale = np.vdot(fem_vec, test_vec) / np.vdot(test_vec, test_vec)
@@ -3953,16 +3953,16 @@ def compute_modal_correlation(project_id, overwrite=True):
         """, (project_id,))
         dof_matches = cursor.fetchall()
         if not dof_matches:
-            raise ValueError("dof matches not found, run /match/dofs first")
+            raise ValueError("未找到自由度匹配结果，请先调用 /match/dofs")
 
         test_modes = _load_test_mode_vectors(cursor, project_id)
         if not test_modes:
-            raise ValueError("test modal shapes not found")
+            raise ValueError("未找到试验模态振型数据")
 
         test_freqs = _load_test_modal_frequencies(cursor, project_id)
         fem_modes, fem_freqs = _load_fem_mode_vectors(cursor, project_id)
         if not fem_modes:
-            raise ValueError("fem modal results not found, run /import/fem/modal first")
+            raise ValueError("未找到 FEM 模态结果，请先调用 /import/fem/modal")
 
         if overwrite:
             cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
@@ -4068,7 +4068,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                 ))
 
         if not results:
-            raise ValueError("no valid modal correlation pairs were produced")
+            raise ValueError("未生成有效的模态相关性配对结果")
 
         best_pair = max(results, key=lambda row: row["dac"])
         # Keep the single strongest modal pair in the legacy static-shape pair
