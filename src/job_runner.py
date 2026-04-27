@@ -235,11 +235,12 @@ def _heartbeat_loop() -> None:
 
 # ── Subprocess helper ─────────────────────────────────────────────────────────
 
-def _run_streaming(cmd: list, odb_id: str, label: str) -> tuple:
+def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple:
     """Run a subprocess, printing each output line as it arrives. Returns (returncode, stderr_tail)."""
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, encoding='utf-8', errors='replace', bufsize=1)
+                                text=True, encoding='utf-8', errors='replace', bufsize=1,
+                                cwd=cwd)
     except FileNotFoundError:
         msg = (
             f"Command not found: {cmd[0]!r}\n"
@@ -281,18 +282,50 @@ def _is_odb_version_error(tail: str) -> bool:
 
 def _upgrade_odb(odb_path: str, label: str) -> tuple:
     """
-    Run 'abaqus upgrade -job <path_without_ext>' to upgrade an ODB in-place.
-    Abaqus creates a backup as <name>_old.odb and overwrites <name>.odb.
+    Run 'abaqus -upgrade -job <tmp_base> -odb <source.odb>' in the ODB's directory.
+    Output is written as <tmp_base>.odb, then renamed over the original.
     Returns (success: bool, tail: str).
+
+    Abaqus upgrade syntax (from the OdbError hint):
+        abaqus -upgrade -job <newFileName> -odb <oldOdbFileName>
+    where -job is the output base name (no .odb extension) and
+          -odb  is the source file (with .odb extension).
     """
-    job_path = os.path.splitext(os.path.abspath(odb_path))[0]
-    cmd = [ABAQUS_CMD, "upgrade", "-job", job_path]
-    logger.info("[%s] ODB version mismatch — upgrading: %s", label, " ".join(cmd))
-    rc, tail = _run_streaming(cmd, label, "odb_upgrade")
+    odb_abs  = os.path.abspath(odb_path)
+    odb_dir  = os.path.dirname(odb_abs)
+    base     = os.path.splitext(os.path.basename(odb_abs))[0]
+    tmp_base = base + "_upgraded_tmp"
+    tmp_odb  = os.path.join(odb_dir, tmp_base + ".odb")
+
+    # Remove stale temp file from a previous failed attempt
+    if os.path.exists(tmp_odb):
+        try:
+            os.remove(tmp_odb)
+        except Exception:
+            pass
+
+    # Run from odb_dir so Abaqus writes tmp_base.odb there
+    cmd = [ABAQUS_CMD, "-upgrade", "-job", tmp_base, "-odb", odb_abs]
+    logger.info("[%s] ODB version mismatch — upgrading (cwd=%s): %s",
+                label, odb_dir, " ".join(cmd))
+    rc, tail = _run_streaming(cmd, label, "odb_upgrade", cwd=odb_dir)
     if rc != 0:
         logger.error("[%s] ODB upgrade failed (rc=%d)", label, rc)
         return False, tail
-    logger.info("[%s] ODB upgrade succeeded", label)
+
+    if not os.path.exists(tmp_odb):
+        msg = "Upgraded ODB not found at expected path: {}".format(tmp_odb)
+        logger.error("[%s] %s", label, msg)
+        return False, msg
+
+    try:
+        os.replace(tmp_odb, odb_abs)
+    except Exception as exc:
+        msg = "Failed to replace ODB with upgraded version: {}".format(exc)
+        logger.error("[%s] %s", label, msg)
+        return False, msg
+
+    logger.info("[%s] ODB upgraded successfully — replaced %s", label, odb_abs)
     return True, tail
 
 
