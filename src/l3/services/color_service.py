@@ -1,8 +1,9 @@
 """
 Color-code service: per-face attribute coloring for the viewer.
 
-Supports four schemes:
+Supports five schemes:
   etype        — color by element type string (always available)
+  section      — color by section assignment name (requires section_names in geometry H5)
   material     — color by material name (requires INP-exported material_name attr)
   section_type — color by section type (SOLID/SHELL/...) (requires INP export)
   elset        — highlight a named element set; set_name query param required
@@ -63,6 +64,7 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
     if os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
+            has_section_names = "section_names" in f
             for etype in f.get("elements", {}):
                 grp = f[f"elements/{etype}"]
                 has_mat = "material_name" in grp
@@ -70,6 +72,8 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
                 break
             else:
                 has_mat = has_sec = False
+        if has_section_names:
+            schemes.append("section")
         if has_mat:
             schemes.append("material")
         if has_sec:
@@ -118,8 +122,9 @@ def get_color_code(
 
     if scheme == "etype":
         labels = _labels_from_etype(etype_arr)
+    elif scheme == "section":
+        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
     elif scheme in ("material", "section_type"):
-        # Map scheme name → actual HDF5 dataset name
         attr_name = "material_name" if scheme == "material" else "section_type"
         labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
     elif scheme == "elset":
@@ -180,6 +185,57 @@ def _labels_from_etype(etype_arr: np.ndarray) -> List[str]:
     return [
         b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
         for b in etype_arr
+    ]
+
+
+def _labels_from_section_id(
+    idx: ModelIndex,
+    instance: str,
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+) -> List[str]:
+    """
+    Color by section assignment name (averaging region).
+
+    Reads section_id per element and maps it to the section name via the
+    section_names array stored in the geometry H5.
+    """
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    if not os.path.exists(geom_h5):
+        raise NotFoundError(f"Geometry H5 not found for '{instance}'", {})
+
+    Rf = len(etype_arr)
+    section_idx = np.zeros(Rf, dtype=np.int32)  # section_id per face
+
+    etype_strs = np.array([
+        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+        for b in etype_arr
+    ])
+
+    with h5py.File(geom_h5, "r") as f:
+        # section_names[k] = name of section assignment k
+        raw_names = f.get("section_names")
+        if raw_names is None:
+            return ["(none)"] * Rf
+        sec_names: List[str] = [
+            (s.decode("utf-8", errors="replace") if isinstance(s, (bytes, np.bytes_)) else str(s))
+            for s in raw_names[:]
+        ]
+
+        for etype_str in np.unique(etype_strs):
+            mask = (etype_strs == etype_str)
+            grp  = f.get(f"elements/{etype_str}")
+            if grp is None or "section_id" not in grp:
+                continue
+            sid_data           = grp["section_id"][:]
+            section_idx[mask]  = sid_data[elem_row_arr[mask]]
+
+    n_secs = len(sec_names)
+    return [
+        sec_names[i] if 0 <= i < n_secs else "(none)"
+        for i in section_idx
     ]
 
 
