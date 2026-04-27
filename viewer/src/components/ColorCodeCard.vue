@@ -28,12 +28,18 @@
     </div>
 
     <!-- 图例 -->
-    <div v-if="legend.length > 0" style="margin-top:6px">
-      <div v-for="item in legend" :key="item.name" style="display:flex;align-items:center;gap:5px;margin:2px 0;font-size:11px;color:#c9d1d9">
-        <div :style="`width:13px;height:13px;border-radius:2px;flex-shrink:0;background:rgb(${r(item.r)},${r(item.g)},${r(item.b)})`" />
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ item.name }}</span>
+    <template v-if="legend.length > 0">
+      <div style="display:flex;align-items:center;margin-top:6px;margin-bottom:2px">
+        <span style="font-size:10px;color:#8b949e;flex:1">Legend</span>
+        <span style="font-size:10px;color:#8b949e">{{ legend.length }} regions</span>
       </div>
-    </div>
+      <div style="max-height:120px;overflow-y:auto;border:1px solid #30363d;border-radius:4px;padding:3px 5px">
+        <div v-for="item in legend" :key="item.name" style="display:flex;align-items:center;gap:5px;margin:2px 0;font-size:11px;color:#c9d1d9">
+          <div :style="`width:11px;height:11px;border-radius:2px;flex-shrink:0;background:rgb(${r(item.r)},${r(item.g)},${r(item.b)})`" />
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ item.name }}</span>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 

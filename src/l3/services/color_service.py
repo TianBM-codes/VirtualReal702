@@ -64,7 +64,10 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
     if os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
-            has_section_names = "section_names" in f
+            has_section_id = any(
+                "section_id" in f[f"elements/{e}"]
+                for e in f.get("elements", {})
+            )
             for etype in f.get("elements", {}):
                 grp = f[f"elements/{etype}"]
                 has_mat = "material_name" in grp
@@ -72,7 +75,7 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
                 break
             else:
                 has_mat = has_sec = False
-        if has_section_names:
+        if has_section_id:
             schemes.append("section")
         if has_mat:
             schemes.append("material")
@@ -195,10 +198,11 @@ def _labels_from_section_id(
     elem_row_arr: np.ndarray,
 ) -> List[str]:
     """
-    Color by section assignment name (averaging region).
+    Color by averaging region (refined section domain).
 
-    Reads section_id per element and maps it to the section name via the
-    section_names array stored in the geometry H5.
+    After l1_pack's shell refinement pass, section_id values are reassigned
+    to new integer domain IDs that no longer correspond to section_names indices.
+    We just number unique domain IDs in sorted order: Region 1, Region 2, ...
     """
     from ..infra.manifest_repo import ManifestRepo
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
@@ -207,7 +211,7 @@ def _labels_from_section_id(
         raise NotFoundError(f"Geometry H5 not found for '{instance}'", {})
 
     Rf = len(etype_arr)
-    section_idx = np.zeros(Rf, dtype=np.int32)  # section_id per face
+    domain_per_face = np.full(Rf, -1, dtype=np.int32)
 
     etype_strs = np.array([
         b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
@@ -215,28 +219,23 @@ def _labels_from_section_id(
     ])
 
     with h5py.File(geom_h5, "r") as f:
-        # section_names[k] = name of section assignment k
-        raw_names = f.get("section_names")
-        if raw_names is None:
-            return ["(none)"] * Rf
-        sec_names: List[str] = [
-            (s.decode("utf-8", errors="replace") if isinstance(s, (bytes, np.bytes_)) else str(s))
-            for s in raw_names[:]
-        ]
-
+        has_any = False
         for etype_str in np.unique(etype_strs):
             mask = (etype_strs == etype_str)
             grp  = f.get(f"elements/{etype_str}")
             if grp is None or "section_id" not in grp:
                 continue
-            sid_data           = grp["section_id"][:]
-            section_idx[mask]  = sid_data[elem_row_arr[mask]]
+            has_any = True
+            sid_data              = grp["section_id"][:]
+            domain_per_face[mask] = sid_data[elem_row_arr[mask]]
+        if not has_any:
+            return ["(none)"] * Rf
 
-    n_secs = len(sec_names)
-    return [
-        sec_names[i] if 0 <= i < n_secs else "(none)"
-        for i in section_idx
-    ]
+    # Map each unique domain ID → human-readable label "Region N" (sorted order).
+    unique_ids = sorted(set(int(v) for v in domain_per_face if v >= 0))
+    id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
+
+    return [id_to_label.get(int(v), "(none)") for v in domain_per_face]
 
 
 def _labels_from_elem_attr(
