@@ -1641,6 +1641,7 @@ def build_dsa_normalized_sensitivity_matrix(
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
+        result_group: Optional[str] = None,
 ) -> dict:
     if aggregation not in _sens._AGGREGATIONS and aggregation != "first":
         raise ValidationError(
@@ -1804,6 +1805,7 @@ def build_dsa_normalized_sensitivity_matrix(
                         aggregation=aggregation,
                         component=candidate_component,
                         component_index=candidate_component_index,
+                        result_group=result_group,
                     )
                 else:
                     candidate_dsa_map = client.get_result_label_map(
@@ -1854,6 +1856,7 @@ def build_dsa_normalized_sensitivity_matrix(
                             aggregation=aggregation,
                             component=candidate_component,
                             component_index=candidate_component_index,
+                            result_group=result_group,
                         )
                     else:
                         cached_response_map = client.get_result_label_map(

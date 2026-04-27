@@ -2287,6 +2287,7 @@ def run_sensitivity_inp_and_store(
             python3=python3,
             keep_raw=keep_raw,
             timeout=timeout,
+            result_group=project_result_parse["result_group"] if project_result_parse else None,
         )
 
         result = _finalize_sensitivity_store_result(
