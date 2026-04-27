@@ -315,6 +315,11 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
         logger.error("[%s] ODB upgrade failed (rc=%d)", label, rc)
         return False, odb_abs, tail
 
+    # Abaqus -upgrade may exit 0 even on failure — check output for error markers
+    if "ODB FILE UPGRADE FAILED" in tail.upper():
+        logger.error("[%s] ODB upgrade failed (rc=0 but error in output)", label)
+        return False, odb_abs, tail
+
     if not os.path.exists(tmp_odb):
         msg = "Upgraded ODB not found at expected path: {}".format(tmp_odb)
         logger.error("[%s] %s", label, msg)
