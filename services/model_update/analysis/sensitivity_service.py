@@ -2448,7 +2448,24 @@ def generate_sensitivity_inp_and_store(
 
 
 def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[str] = None) -> dict:
-    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    try:
+        payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    except NotFoundError:
+        return {
+            "analysis_run_id": None,
+            "project_id": int(project_id),
+            "batch_no": _normalize_batch_no(batch_no),
+            "case_name": None,
+            "created_at": None,
+            "rows": [],
+            "column": [],
+            "data": [],
+            "summary": {
+                "response_count": 0,
+                "parameter_count": 0,
+                "point_count": 0,
+            },
+        }
     response_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     parameter_names = list(payload.get("col_names") or [])
     matrix = [list(row) for row in (payload.get("matrix") or [])]

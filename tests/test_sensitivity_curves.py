@@ -168,6 +168,24 @@ def test_get_stored_sensitivity_matrix_payload_returns_empty_when_not_found(monk
     assert result["summary"] == {"response_count": 0, "parameter_count": 0}
 
 
+def test_get_stored_sensitivity_table_points_returns_empty_when_not_found(monkeypatch):
+    def _raise_not_found(**kwargs):
+        raise NotFoundError("missing")
+
+    monkeypatch.setattr(sensitivity_service, "_load_stored_sensitivity_run", _raise_not_found)
+
+    result = sensitivity_service.get_stored_sensitivity_table_points(
+        project_id=1001,
+        batch_no="2",
+    )
+
+    assert result["analysis_run_id"] is None
+    assert result["rows"] == []
+    assert result["column"] == []
+    assert result["data"] == []
+    assert result["summary"] == {"response_count": 0, "parameter_count": 0, "point_count": 0}
+
+
 def test_get_stored_sensitivity_parameter_curves_returns_empty_when_not_found(monkeypatch):
     def _raise_not_found(**kwargs):
         raise NotFoundError("missing")

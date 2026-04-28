@@ -281,7 +281,10 @@ async def sensitivity_stored_table(request: Request, body: SensitivityStoredQuer
             project_id=body.project_id,
             batch_no=body.batch_no,
         )
-        return success_response(data, "stored sensitivity table loaded")
+        message = "stored sensitivity table loaded"
+        if not data.get("data"):
+            message = "暂无数据，需要先计算灵敏度"
+        return success_response(data, message)
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
