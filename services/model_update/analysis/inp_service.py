@@ -2123,7 +2123,11 @@ def get_transform_auto_info(project_id: int, transform_type: str = None):
             )
         row = cursor.fetchone()
         if not row:
-            raise ValueError("未找到变换操作记录")
+            # raise ValueError("未找到变换操作记录")
+            return {
+                "type": "fem",
+                "matrix4": np.eye(4, dtype=np.int32).tolist(),
+            }
         return {
             "type": str(row["transform_type"]),
             "matrix4": _normalize_matrix4(_json_loads(row["matrix4_json"])),
