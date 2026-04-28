@@ -686,10 +686,25 @@ def _normalize_batch_no(batch_no: Optional[str]) -> str:
     return value or "1"
 
 
+def _normalize_response_display_name(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    parts = text.split("|")
+    if len(parts) != 5:
+        return text
+    instance_name = str(parts[0]).strip()
+    response_label = str(parts[4]).strip()
+    prefix = f"{instance_name}::"
+    if instance_name and response_label.startswith(prefix):
+        parts[4] = response_label[len(prefix):]
+    return "|".join(parts)
+
+
 def _response_display_name(row_meta: dict) -> str:
     row_key = str(row_meta.get("row_key") or "").strip()
     if row_key:
-        return row_key
+        return _normalize_response_display_name(row_key)
     parts = [
         str(row_meta.get("instance") or "").strip(),
         str(row_meta.get("response_field") or "").strip(),
@@ -697,7 +712,7 @@ def _response_display_name(row_meta: dict) -> str:
         str(row_meta.get("response_position") or "").strip(),
         str(row_meta.get("response_label") or "").strip(),
     ]
-    return "|".join(parts)
+    return _normalize_response_display_name("|".join(parts))
 
 
 def _ensure_finite_float(value, *, context: str, details: Optional[dict] = None) -> float:
@@ -1995,7 +2010,7 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
             continue
         matrix[row_idx][col_idx] = float(row["sensitivity_value"])
 
-    row_names = [str(row["response_name"]) for row in response_rows]
+    row_names = [_normalize_response_display_name(row["response_name"]) for row in response_rows]
     col_names = [str(row["param_name"]) for row in parameter_rows]
     return {
         "analysis_run_id": analysis_run_id,
@@ -2454,7 +2469,7 @@ def generate_sensitivity_inp_and_store(
 
 def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[str] = None) -> dict:
     payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
-    row_names = list(payload.get("row_names") or [])
+    row_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     col_names = list(payload.get("col_names") or [])
     matrix = list(payload.get("matrix") or [])
 
@@ -2487,7 +2502,7 @@ def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[s
 
 def get_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional[str] = None) -> dict:
     payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
-    row_names = list(payload.get("row_names") or [])
+    row_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     col_names = list(payload.get("col_names") or [])
     matrix = list(payload.get("matrix") or [])
 
@@ -2537,7 +2552,7 @@ def _build_curve_series(*, labels: List[str], xaxis: List[str], matrix: List[Lis
 
 def get_stored_sensitivity_parameter_curves(*, project_id: int, batch_no: Optional[str] = None) -> dict:
     payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
-    response_names = [str(item) for item in (payload.get("row_names") or [])]
+    response_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     parameter_names = [str(item) for item in (payload.get("col_names") or [])]
     matrix = [list(row) for row in (payload.get("matrix") or [])]
 
@@ -2565,7 +2580,7 @@ def get_stored_sensitivity_parameter_curves(*, project_id: int, batch_no: Option
 
 def get_stored_sensitivity_response_curves(*, project_id: int, batch_no: Optional[str] = None) -> dict:
     payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
-    response_names = [str(item) for item in (payload.get("row_names") or [])]
+    response_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     parameter_names = [str(item) for item in (payload.get("col_names") or [])]
     matrix = [list(row) for row in (payload.get("matrix") or [])]
 
