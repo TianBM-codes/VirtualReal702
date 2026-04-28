@@ -781,9 +781,20 @@ def _build_inp_parameter_options(
     ]
     quantity_rows.sort(key=lambda row: (int(row.get("sort_no", 0) or 0), str(row.get("quantity_code") or "")))
 
+    canonical_quantity_rows = []
+    seen_quantity_codes = set()
+    for quantity in quantity_rows:
+        quantity_code = _normalize_quantity_code_for_compare(quantity.get("quantity_code"))
+        if not quantity_code or quantity_code in seen_quantity_codes:
+            continue
+        seen_quantity_codes.add(quantity_code)
+        canonical_quantity = dict(quantity)
+        canonical_quantity["quantity_code"] = quantity_code
+        canonical_quantity_rows.append(canonical_quantity)
+
     capability_rows = [dict(row) for row in (quantity_set_capabilities or [])]
     result = []
-    for quantity in quantity_rows:
+    for quantity in canonical_quantity_rows:
         quantity_code = _normalize_quantity_code_for_compare(quantity.get("quantity_code"))
         quantity_name = str(quantity.get("quantity_name") or quantity_code).strip()
         description = _quantity_description(quantity_code, quantity_name)
@@ -791,33 +802,32 @@ def _build_inp_parameter_options(
             row for row in capability_rows
             if _normalize_quantity_code_for_compare(row.get("quantity_code")) == quantity_code
         ]
-        for level, support_key in (("GLOBAL", "supports_global"), ("LOCAL", "supports_local")):
-            set_names = []
-            seen_names = set()
-            ordered_rows = sorted(
-                matched_capabilities,
-                key=lambda row: (
-                    str(row.get("set_scope") or ""),
-                    str(row.get("set_type") or ""),
-                    str(row.get("set_name") or ""),
-                    str(row.get("instance_name") or ""),
-                    str(row.get("part_name") or ""),
-                ),
-            )
-            for row in ordered_rows:
-                if not row.get(support_key):
-                    continue
-                _append_unique_name(set_names, seen_names, row.get("set_name"))
-            if not set_names:
+        set_names = []
+        seen_names = set()
+        ordered_rows = sorted(
+            matched_capabilities,
+            key=lambda row: (
+                str(row.get("set_scope") or ""),
+                str(row.get("set_type") or ""),
+                str(row.get("set_name") or ""),
+                str(row.get("instance_name") or ""),
+                str(row.get("part_name") or ""),
+            ),
+        )
+        for row in ordered_rows:
+            if not row.get("supports_global") and not row.get("supports_local"):
                 continue
-            result.append(
-                {
-                    "parameter_name": quantity_name,
-                    "description": description,
-                    "level": level,
-                    "sets": [{"rows": val} for val in set_names],
-                }
-            )
+            _append_unique_name(set_names, seen_names, row.get("set_name"))
+        if not set_names:
+            continue
+        result.append(
+            {
+                "parameter_name": quantity_code,
+                "description": description,
+                "level": "GLOBAL",
+                "sets": [{"rows": val} for val in set_names],
+            }
+        )
     return result
 
 

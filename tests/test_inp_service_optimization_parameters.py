@@ -231,10 +231,12 @@ def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch
 
 
 def test_build_import_inp_catalog_summary_returns_simplified_parameter_level_sets():
+    e_description = inp_service._quantity_description("E", "E")
+    t_description = inp_service._quantity_description("T", "T")
     result = inp_service._build_inp_parameter_options(
         supported_quantities=[
             {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
-            {"quantity_code": "T", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+            {"quantity_code": "T", "quantity_name": "鍘氬害", "enabled": 1, "sort_no": 2},
         ],
         quantity_set_capabilities=[
             {
@@ -283,21 +285,15 @@ def test_build_import_inp_catalog_summary_returns_simplified_parameter_level_set
     assert result == [
         {
             "parameter_name": "E",
-            "description": "杨氏模量",
+            "description": e_description,
             "level": "GLOBAL",
-            "sets": ["SET_A"],
+            "sets": [{"rows": "SET_A"}, {"rows": "SET_B"}],
         },
         {
-            "parameter_name": "E",
-            "description": "杨氏模量",
-            "level": "LOCAL",
-            "sets": ["SET_A", "SET_B"],
-        },
-        {
-            "parameter_name": "厚度",
-            "description": "壳单元厚度",
+            "parameter_name": "T",
+            "description": t_description,
             "level": "GLOBAL",
-            "sets": ["SET_SHELL"],
+            "sets": [{"rows": "SET_SHELL"}],
         },
     ]
 
@@ -315,7 +311,7 @@ class _InpOptionsCursor:
         if "FROM t_mt_py_fem_supported_quantity" in self.last_sql:
             return [
                 {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
-                {"quantity_code": "T", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+                {"quantity_code": "T", "quantity_name": "鍘氬害", "enabled": 1, "sort_no": 2},
             ]
         if "FROM t_mt_py_fem_quantity_set_capability" in self.last_sql:
             return [
@@ -340,6 +336,8 @@ class _InpOptionsConnection:
 
 
 def test_get_inp_parameter_options_reads_from_database(monkeypatch):
+    e_description = inp_service._quantity_description("E", "E")
+    t_description = inp_service._quantity_description("T", "T")
     monkeypatch.setattr(inp_service, "get_connection", lambda: _InpOptionsConnection())
 
     result = inp_service.get_inp_parameter_options(101)
@@ -347,23 +345,19 @@ def test_get_inp_parameter_options_reads_from_database(monkeypatch):
     assert result == [
         {
             "parameter_name": "E",
-            "description": "杨氏模量",
+            "description": e_description,
             "level": "GLOBAL",
-            "sets": ["SET_A"],
+            "sets": [{"rows": "SET_A"}],
         },
         {
-            "parameter_name": "厚度",
-            "description": "壳单元厚度",
+            "parameter_name": "T",
+            "description": t_description,
             "level": "GLOBAL",
-            "sets": ["SET_B"],
-        },
-        {
-            "parameter_name": "厚度",
-            "description": "壳单元厚度",
-            "level": "LOCAL",
-            "sets": ["SET_B"],
+            "sets": [{"rows": "SET_B"}],
         },
     ]
+
+
 def test_extract_legacy_material_rows_accepts_iso_elastic_type_alias():
     model = SimpleNamespace(
         materials={
@@ -430,4 +424,45 @@ def test_extract_legacy_property_rows_includes_shell_element_set(tmp_path: Path)
             "theta": 0.0,
             "element_set": "SET_SHELL",
         }
+    ]
+
+
+def test_build_inp_parameter_options_uses_canonical_t_name_for_legacy_h_rows():
+    description = inp_service._quantity_description("T", "T")
+    result = inp_service._build_inp_parameter_options(
+        supported_quantities=[
+            {"quantity_code": "H", "quantity_name": "H", "enabled": 1, "sort_no": 1},
+            {"quantity_code": "T", "quantity_name": "T", "enabled": 1, "sort_no": 2},
+        ],
+        quantity_set_capabilities=[
+            {
+                "quantity_code": "H",
+                "set_name": "SET_H",
+                "set_scope": "PART",
+                "set_type": "ELSET",
+                "instance_name": None,
+                "part_name": "P1",
+                "supports_global": 1,
+                "supports_local": 1,
+            },
+            {
+                "quantity_code": "T",
+                "set_name": "SET_T",
+                "set_scope": "PART",
+                "set_type": "ELSET",
+                "instance_name": None,
+                "part_name": "P1",
+                "supports_global": 1,
+                "supports_local": 0,
+            },
+        ],
+    )
+
+    assert result == [
+        {
+            "parameter_name": "T",
+            "description": description,
+            "level": "GLOBAL",
+            "sets": [{"rows": "SET_H"}, {"rows": "SET_T"}],
+        },
     ]
