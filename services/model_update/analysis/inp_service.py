@@ -3530,6 +3530,31 @@ def _analysis_error_node_no(fem_row: dict) -> str:
     return str(fem_node_label)
 
 
+def _load_measuring_point_sensor_type_map(cursor, project_id: int) -> Dict[str, Optional[int]]:
+    try:
+        cursor.execute(
+            """
+            SELECT measuring_point_name, sensor_type_id
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id, measuring_point_name
+            """,
+            (int(project_id),),
+        )
+        rows = cursor.fetchall() or []
+    except Exception:
+        return {}
+
+    result: Dict[str, Optional[int]] = {}
+    for row in rows:
+        measuring_point_name = row.get("measuring_point_name")
+        if measuring_point_name in (None, ""):
+            continue
+        sensor_type_id = row.get("sensor_type_id")
+        result[str(measuring_point_name)] = None if sensor_type_id is None else int(sensor_type_id)
+    return result
+
+
 def _build_static_analysis_error_rows(
     *,
     aligned_rows,
@@ -3537,11 +3562,15 @@ def _build_static_analysis_error_rows(
     load_case_no: int,
     result_no: int,
     value_prefix: str,
+    sensor_type_map: Optional[Dict[str, Optional[int]]] = None,
 ) -> List[dict]:
     rows: List[dict] = []
     for test_row, fem_row, _match in aligned_rows:
         point_no = str(test_row["point"])
         node_no = _analysis_error_node_no(fem_row)
+        sensor_type_id = None
+        if sensor_type_map:
+            sensor_type_id = sensor_type_map.get(point_no)
         for component_name in component_names:
             test_col, fem_col = STATIC_COMPONENT_MAP[component_name]
             point_value = test_row.get(test_col)
@@ -3561,7 +3590,7 @@ def _build_static_analysis_error_rows(
                     f"{value_prefix}_node_value": node_value,
                     f"{value_prefix}_relative_error": _relative_error_percent(node_value, point_value),
                     f"{value_prefix}_abs_error": float(abs(node_value - point_value)),
-                    "sensor_type_id": None,
+                    "sensor_type_id": sensor_type_id,
                 }
             )
     return rows
@@ -3668,12 +3697,14 @@ def store_updated_static_analysis_error(
         if not aligned_rows:
             raise ValueError("试验静态结果与修正后 FEM 静态结果之间未找到可对齐的数据行")
 
+        sensor_type_map = _load_measuring_point_sensor_type_map(cursor, int(project_id))
         error_rows = _build_static_analysis_error_rows(
             aligned_rows=aligned_rows,
             component_names=component_names,
             load_case_no=chosen_load_case_no,
             result_no=chosen_result_no,
             value_prefix="updated",
+            sensor_type_map=sensor_type_map,
         )
         _upsert_analysis_error_rows(cursor, project_id, error_rows, value_prefix="updated")
         conn.commit()
@@ -3744,6 +3775,7 @@ def compute_static_correlation(
         if not aligned_rows:
             raise ValueError("试验静态结果与 FEM 静态结果之间未找到可对齐的数据行")
 
+        sensor_type_map = _load_measuring_point_sensor_type_map(cursor, int(project_id))
         test_values = []
         fem_values = []
         anchors = []
@@ -3773,7 +3805,7 @@ def compute_static_correlation(
                         "initial_node_value": float(fem_val),
                         "initial_relative_error": _relative_error_percent(float(fem_val), float(test_val)),
                         "initial_abs_error": float(abs(float(fem_val) - float(test_val))),
-                        "sensor_type_id": None,
+                        "sensor_type_id": sensor_type_map.get(str(test_row["point"])),
                     }
                 )
                 if len(anchors) < 50:

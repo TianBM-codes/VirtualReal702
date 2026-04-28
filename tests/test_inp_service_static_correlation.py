@@ -284,7 +284,7 @@ def test_compute_static_correlation_reads_latest_static_test_data_json(monkeypat
             "initial_node_value": 0.0,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
         {
             "load_case_no": 1,
@@ -296,7 +296,7 @@ def test_compute_static_correlation_reads_latest_static_test_data_json(monkeypat
             "initial_node_value": 1.5,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
         {
             "load_case_no": 1,
@@ -308,7 +308,7 @@ def test_compute_static_correlation_reads_latest_static_test_data_json(monkeypat
             "initial_node_value": 0.0,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
     ]
 
@@ -365,7 +365,7 @@ def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
             "initial_node_value": 0.0,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
         {
             "load_case_no": 1,
@@ -377,7 +377,7 @@ def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
             "initial_node_value": 1.5,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
         {
             "load_case_no": 1,
@@ -389,7 +389,7 @@ def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
             "initial_node_value": 0.0,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
     ]
 
@@ -444,7 +444,7 @@ def test_compute_static_correlation_prefers_static_test_data_over_legacy_result_
             "initial_node_value": 1.5,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
         {
             "load_case_no": 1,
@@ -456,7 +456,7 @@ def test_compute_static_correlation_prefers_static_test_data_over_legacy_result_
             "initial_node_value": 2.5,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
-            "sensor_type_id": None,
+            "sensor_type_id": 21,
         },
     ]
 
@@ -486,3 +486,26 @@ def test_build_static_alignment_skips_non_numeric_point_ids_in_label_fallback():
     )
 
     assert aligned == []
+
+
+def test_build_static_analysis_error_rows_uses_sensor_type_lookup():
+    rows = inp_service._build_static_analysis_error_rows(
+        aligned_rows=[
+            (
+                {"point": "WY1", "uy": 1.5},
+                {"instance_name": "PART-1-1", "fem_node_label": 1001, "u2": 1.4},
+                {},
+            )
+        ],
+        component_names=["UY"],
+        load_case_no=1,
+        result_no=1,
+        value_prefix="updated",
+        sensor_type_map={"WY1": 21},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["point_no"] == "WY1"
+    assert rows[0]["node_no"] == "PART-1-1::1001"
+    assert rows[0]["component_name"] == "UY"
+    assert rows[0]["sensor_type_id"] == 21

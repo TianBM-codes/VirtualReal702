@@ -21,6 +21,9 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from tools.odb_client import ODBClientError
 
 from . import inp_service as _inp
+from .ccmetrics import build_ccdis as _build_ccdis
+from .ccmetrics import build_ccmean as _build_ccmean
+from .ccmetrics import build_cctot as _build_cctot
 from .project_status_service import update_work_condition_project_status
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
@@ -378,12 +381,22 @@ def _build_iteration_metrics(
         abs(_response_difference_percent(calculated, target))
         for calculated, target in zip(r_model.tolist(), r_target.tolist())
     ]
+    ccabs = build_ccabs(r_target, r_model, response_scatter, eps=eps)
+    ccmean = _build_ccmean(r_target, r_model, response_scatter, eps=eps)
+    ccdisp = _build_ccdis(r_target, r_model, response_scatter, eps=eps)
+    cctotal = _build_cctot(ccabs, ccdisp)
 
     return {
         "ra_norm": float(np.linalg.norm(r_model)),
         "re_norm": target_norm,
         "dr_norm": residual_norm,
-        "ccabs": build_ccabs(r_target, r_model, response_scatter, eps=eps),
+        "ccabs": ccabs,
+        "ccmean": ccmean,
+        "ccdisp": ccdisp,
+        "ccdis": ccdisp,
+        "cctotal": cctotal,
+        "cctot": cctotal,
+        "ccdsf": 0.0,
         "rel_res": float(residual_norm / (target_norm + float(eps))),
         "dx_norm": float(np.linalg.norm(parameter_step_arr)),
         "max_abs_dparam": float(np.max(np.abs(parameter_step_arr))) if parameter_step_arr.size else 0.0,
@@ -539,6 +552,10 @@ def _history_html_content(
             f"<td>{float(row['max_abs_response_diff']):.6g}</td>"
             f"<td>{float(row['parameter_step_norm']):.6g}</td>"
             f"<td>{float(row.get('ccabs', 0.0)):.6g}</td>"
+            f"<td>{float(row.get('ccmean', 0.0)):.6g}</td>"
+            f"<td>{float(row.get('ccdisp', 0.0)):.6g}</td>"
+            f"<td>{float(row.get('cctotal', 0.0)):.6g}</td>"
+            f"<td>{float(row.get('ccdsf', 0.0)):.6g}</td>"
             f"<td>{float(row.get('rel_res', 0.0)):.6g}</td>"
             "</tr>"
         )
@@ -653,6 +670,10 @@ def _history_html_content(
               <th>Max Abs Diff (%)</th>
               <th>Parameter Step Norm</th>
               <th>CCABS</th>
+              <th>CCMEAN</th>
+              <th>CCDISP</th>
+              <th>CCTOTAL</th>
+              <th>CCDSF</th>
               <th>Relative Residual</th>
             </tr>
           </thead>
@@ -749,6 +770,10 @@ def _save_bayesian_history_artifacts(
                 "max_abs_response_diff": float(metrics["max_abs_response_diff"]),
                 "parameter_step_norm": float(np.linalg.norm(parameter_step)) if parameter_step.size else 0.0,
                 "ccabs": float(metrics["ccabs"]),
+                "ccmean": float(metrics.get("ccmean", 0.0)),
+                "ccdisp": float(metrics.get("ccdisp", metrics.get("ccdis", 0.0))),
+                "cctotal": float(metrics.get("cctotal", metrics.get("cctot", 0.0))),
+                "ccdsf": float(metrics.get("ccdsf", 0.0)),
                 "rel_res": float(metrics["rel_res"]),
                 "ra_norm": float(metrics["ra_norm"]),
                 "re_norm": float(metrics["re_norm"]),
@@ -787,6 +812,10 @@ def _save_bayesian_history_artifacts(
                 "max_abs_response_diff",
                 "parameter_step_norm",
                 "ccabs",
+                "ccmean",
+                "ccdisp",
+                "cctotal",
+                "ccdsf",
                 "rel_res",
                 "ra_norm",
                 "re_norm",
@@ -858,6 +887,7 @@ def _persist_bayesian_tracking_results(*, project_id: int, batch_no: int, iterat
         for table_name in (
                 "t_mt_py_fem_tracking_iteration",
                 "t_mt_py_fem_bayesian_iteration_metric",
+                "t_mt_py_fem_relevance_tracking",
                 "t_mt_py_fem_response_difference",
                 "t_mt_py_fem_parameter_variation",
                 "t_mt_py_fem_tracking_value",
@@ -867,6 +897,8 @@ def _persist_bayesian_tracking_results(*, project_id: int, batch_no: int, iterat
                     f"DELETE FROM {table_name} WHERE project_id = %s AND batch_no = %s",
                     (int(project_id), resolved_batch_no),
                 )
+            elif table_name == "t_mt_py_fem_relevance_tracking":
+                cursor.execute(f"DELETE FROM {table_name} WHERE pid = %s", (int(project_id),))
             else:
                 cursor.execute(f"DELETE FROM {table_name} WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no))
 
@@ -922,6 +954,25 @@ def _persist_bayesian_tracking_results(*, project_id: int, batch_no: int, iterat
                     float(metrics["max_abs_response_diff"]),
                 ),
             )
+            for relevance_type, relevance_value in (
+                ("CCABS", float(metrics["ccabs"])),
+                ("CCMEAN", float(metrics.get("ccmean", 0.0))),
+                ("CCDISP", float(metrics.get("ccdisp", metrics.get("ccdis", 0.0)))),
+                ("CCTOTAL", float(metrics.get("cctotal", metrics.get("cctot", 0.0)))),
+                ("CCDSF", float(metrics.get("ccdsf", 0.0))),
+            ):
+                cursor.execute(
+                    """
+                    INSERT INTO t_mt_py_fem_relevance_tracking (pid, iteration, type, value)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        int(project_id),
+                        iteration_no,
+                        relevance_type,
+                        relevance_value,
+                    ),
+                )
             for row_index, row_meta in enumerate(response_rows):
                 response_name = _response_tracking_name(dict(row_meta), row_index + 1)
                 calculated = float(response_values[row_index])

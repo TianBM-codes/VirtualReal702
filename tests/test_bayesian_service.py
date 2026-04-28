@@ -83,6 +83,12 @@ def test_build_iteration_metrics_uses_ccabs_style_summary():
     )
 
     assert np.isclose(result["ccabs"], 37.5)
+    assert np.isclose(result["ccmean"], 37.5)
+    assert np.isclose(result["ccdisp"], 0.25)
+    assert np.isclose(result["ccdis"], 0.25)
+    assert np.isclose(result["cctotal"], 37.75)
+    assert np.isclose(result["cctot"], 37.75)
+    assert np.isclose(result["ccdsf"], 0.0)
     assert np.isclose(result["rel_res"], 0.25)
     assert np.isclose(result["ra_norm"], np.linalg.norm([10.0, 20.0]))
     assert np.isclose(result["re_norm"], np.linalg.norm([8.0, 16.0]))
@@ -155,7 +161,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
     )
     monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
 
-    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None):
+    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None, result_group=None):
         if field == "d_U_T1" and component == "U2":
             return {"INST::10": 1.0, "INST::20": 2.0}
         if field == "d_U_T2" and component == "U2":
@@ -238,7 +244,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_componen
     )
     monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
 
-    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None):
+    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None, result_group=None):
         if field == "d_UR_T1":
             assert component == "U2"
             return {"INST::10": 1.0}
@@ -1132,7 +1138,7 @@ def test_persist_bayesian_tracking_results_overwrites_same_batch_and_writes_expe
     )
 
     delete_params = [params for sql, params in executed if sql.startswith("DELETE FROM")]
-    assert delete_params == [(12, 1), (12, 1), (12, 1), (12, 1), (12, 1)]
+    assert delete_params == [(12, 1), (12, 1), (12,), (12, 1), (12, 1), (12, 1)]
 
     inserts = [(sql, params) for sql, params in executed if sql.startswith("INSERT INTO")]
     assert inserts[0][1] == (12, 1, 1)
@@ -1140,9 +1146,17 @@ def test_persist_bayesian_tracking_results_overwrites_same_batch_and_writes_expe
     assert metric_insert[:4] == (12, 1, 1, 25.0)
     assert np.isclose(metric_insert[4], 0.25)
     assert metric_insert[5:] == (5.0, 4.0, 1.0, 0.5, 0.5, 25.0, 25.0)
-    assert inserts[2][1] == (12, 1, "response_1", 1, 5.0, 4.0, 25.0)
-    assert inserts[3][1] == (12, 1, "Response", "response_1", 1, 5.0)
-    assert inserts[4][1] == (12, 1, "Parameter", "P1", 1, 1.5)
-    assert inserts[5][1] == (12, 1, "P1", "default", "default", "SET1", 1.0, 1.5, 0.5)
+    relevance_inserts = [params for sql, params in inserts if "t_mt_py_fem_relevance_tracking" in sql]
+    assert relevance_inserts == [
+        (12, 1, "CCABS", 25.0),
+        (12, 1, "CCMEAN", 25.0),
+        (12, 1, "CCDISP", 0.25),
+        (12, 1, "CCTOTAL", 25.25),
+        (12, 1, "CCDSF", 0.0),
+    ]
+    assert inserts[7][1] == (12, 1, "response_1", 1, 5.0, 4.0, 25.0)
+    assert inserts[8][1] == (12, 1, "Response", "response_1", 1, 5.0)
+    assert inserts[9][1] == (12, 1, "Parameter", "P1", 1, 1.5)
+    assert inserts[10][1] == (12, 1, "P1", "default", "default", "SET1", 1.0, 1.5, 0.5)
     assert fake_conn.committed is True
     assert fake_conn.rolled_back is False
