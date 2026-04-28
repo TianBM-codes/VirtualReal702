@@ -59,13 +59,13 @@ async def get_color_code(
 
     etype_arr = idx.source_elem_etype.get(instance)
     Rf = len(etype_arr) if etype_arr is not None else 0
-    payload = l3be_build([("color_per_vertex", colors)])
+    legend_bytes = np.frombuffer(json.dumps(legend).encode("utf-8"), dtype=np.uint8)
+    payload = l3be_build([("color_per_vertex", colors), ("legend", legend_bytes)])
 
     return Response(
         content=payload,
         media_type="application/octet-stream",
         headers={
-            "X-Face-Count":   str(Rf),
-            "X-Color-Legend": json.dumps(legend),
+            "X-Face-Count": str(Rf),
         },
     )

@@ -1055,10 +1055,10 @@ async function applyColorCode({ scheme, setNames }) {
       let url = store.getApiUrl(`color-code/${encodeURIComponent(instName)}?scheme=${scheme}`)
       if (scheme === 'elset' && setNames?.length) url += `&set_names=${encodeURIComponent(setNames.join(','))}`
       const res = await http.get(url, { responseType: 'arraybuffer' })
-      const lj = res.headers.get('X-Color-Legend')
-      const instLegend = lj ? JSON.parse(lj) : []
-      instLegend.forEach(entry => { if (!legendMap.has(entry.name)) legendMap.set(entry.name, entry) })
       const sections = parseL3BE(res.data)
+      const legendBytes = sections.legend?.data
+      const instLegend = legendBytes ? JSON.parse(new TextDecoder().decode(legendBytes)) : []
+      instLegend.forEach(entry => { if (!legendMap.has(entry.name)) legendMap.set(entry.name, entry) })
       const im = store.instanceMeshes[instName]; if (!im) return
       setColorMode(im, 'vertex')
       const src = new Float32Array(sections.color_per_vertex.data)   // [Nv_global, 3]
