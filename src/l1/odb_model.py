@@ -257,3 +257,97 @@ def _load_element_sets(
         # abaqus_dump.py 写入的是 Abaqus 单元标签，直接使用
         element_sets[sname] = esets_grp[sname][:].astype(np.int32)
     return element_sets
+
+
+# ---------------------------------------------------------------------------
+# InpModel-compatible loader  (供 import_inp_catalog 直接使用)
+# ---------------------------------------------------------------------------
+
+def load_as_inp_model(workspace: str):
+    """
+    从 L1 HDF5 加载 ODB 数据，返回 InpModel 兼容对象。
+
+    返回值可直接传给 import_inp_catalog(file_path, project_id, model=...)，
+    无需修改 inp_service.py。
+
+    ODB 节点坐标在 abaqus_dump.py 中已是全局坐标，
+    因此 Instance 不设 transform_matrix，_collect_global_nodes 会直接使用坐标原值。
+    """
+    from src.inp.model import (
+        InpModel, Part, Assembly, Instance,
+        Node, Element, Nset, Elset,
+        Section, Material, ElasticData,
+    )
+    from src.inp.model import ABAQUS_TO_FACTORY
+
+    odb = load_odb_model(workspace)
+
+    parts: Dict[str, Part] = {}
+    asm_instances: Dict[str, Instance] = {}
+    all_materials: Dict[str, Material] = {}
+
+    for inst_name, inst in odb.instances.items():
+        # ── Nodes ────────────────────────────────────────────────────────────
+        nodes: Dict[int, Node] = {}
+        for i in range(len(inst.node_labels)):
+            lbl = int(inst.node_labels[i])
+            c   = inst.node_coords[i]
+            nodes[lbl] = Node(label=lbl, x=float(c[0]), y=float(c[1]), z=float(c[2]))
+
+        # ── Elements ─────────────────────────────────────────────────────────
+        elements: Dict[int, Element] = {}
+        for etype_safe, eg in inst.element_groups.items():
+            factory = ABAQUS_TO_FACTORY.get(etype_safe.upper(), "")
+            for j in range(len(eg.elem_labels)):
+                lbl   = int(eg.elem_labels[j])
+                nconn = [int(nl) for nl in eg.conn_labels[j] if int(nl) >= 0]
+                elements[lbl] = Element(
+                    label=lbl,
+                    abaqus_type=etype_safe,
+                    factory_type=factory,
+                    node_labels=nconn,
+                )
+
+        # ── Sections ─────────────────────────────────────────────────────────
+        sections: List[Section] = [
+            Section(
+                section_type=s.section_type or "SOLID",
+                elset_name=s.elset_name,
+                material_name=s.material_name,
+                thickness=s.thickness,
+                extra={},
+            )
+            for s in inst.sections
+        ]
+
+        # ── Nsets / Elsets ───────────────────────────────────────────────────
+        nsets  = {n: Nset(name=n,  node_labels=arr.tolist()) for n, arr in inst.node_sets.items()}
+        elsets = {n: Elset(name=n, elem_labels=arr.tolist()) for n, arr in inst.element_sets.items()}
+
+        parts[inst_name] = Part(
+            name=inst_name,
+            nodes=nodes,
+            elements=elements,
+            nsets=nsets,
+            elsets=elsets,
+            sections=sections,
+        )
+
+        # ── Assembly instance（不设 transform_matrix → 坐标原值即全局坐标）───
+        asm_instances[inst_name] = Instance(name=inst_name, part_name=inst_name)
+
+        # ── Materials ────────────────────────────────────────────────────────
+        for mat_name, mat in inst.materials.items():
+            if mat_name in all_materials:
+                continue
+            elastic = None
+            if mat.elastic_table is not None and len(mat.elastic_table) > 0:
+                rows = [tuple(float(v) for v in row) for row in mat.elastic_table]
+                elastic = ElasticData(elastic_type="ISOTROPIC", data=rows)
+            all_materials[mat_name] = Material(name=mat_name, elastic=elastic)
+
+    return InpModel(
+        parts=parts,
+        assembly=Assembly(name="Assembly", instances=asm_instances),
+        materials=all_materials,
+    )

@@ -599,14 +599,14 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
 
     # --- Catalog import (optional: only available in combined deployment) ---
     try:
-        from services.model_update.analysis.odb_service import import_odb_catalog
-        from src.l1.odb_model import load_odb_model
-        logger.info("[%s] Project ODB: importing ODB catalog", project_id)
-        odb_model = load_odb_model(workspace)
-        import_odb_catalog(workspace, project_id, model=odb_model)
+        from services.model_update.analysis.inp_service import import_inp_catalog
+        from src.l1.odb_model import load_as_inp_model
+        logger.info("[%s] Project ODB: importing catalog (via inp_service)", project_id)
+        inp_model = load_as_inp_model(workspace)
+        import_inp_catalog(odb_path, project_id, model=inp_model)
         logger.info("[%s] Project ODB: catalog import done", project_id)
     except ImportError:
-        logger.info("[%s] Project ODB: odb_service not available — skipping catalog import", project_id)
+        logger.info("[%s] Project ODB: inp_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
 
