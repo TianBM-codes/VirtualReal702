@@ -530,7 +530,7 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         import_inp_catalog(inp_path, project_id, model=model)
         logger.info("[%s] Geom: catalog import done", project_id)
     except ImportError:
-        logger.debug("[%s] services.model_update not available — skipping catalog import", project_id)
+        logger.info("[%s] Geom: inp_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] Catalog import failed (non-fatal): %s", project_id, exc)
 
@@ -606,7 +606,7 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         import_odb_catalog(workspace, project_id, model=odb_model)
         logger.info("[%s] Project ODB: catalog import done", project_id)
     except ImportError:
-        logger.debug("[%s] services.model_update not available — skipping ODB catalog import", project_id)
+        logger.info("[%s] Project ODB: odb_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
 
