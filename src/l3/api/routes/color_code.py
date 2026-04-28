@@ -11,6 +11,8 @@ GET /api/odb/{odb_id}/color-code/{instance}?scheme=etype|material|section_type|e
 import json
 from typing import List
 
+import numpy as np
+
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
 
