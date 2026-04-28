@@ -392,3 +392,42 @@ def test_extract_legacy_material_rows_accepts_iso_elastic_type_alias():
             "ge": 0.0,
         }
     ]
+
+
+def test_extract_legacy_property_rows_includes_shell_element_set(tmp_path: Path):
+    inp_path = tmp_path / "shell_property.inp"
+    inp_path.write_text(
+        "\n".join(
+            [
+                "*Heading",
+                "*Material, name=MAT1",
+                "*Elastic",
+                "210000, 0.3",
+                "*Part, name=P1",
+                "*Node",
+                "1, 0, 0, 0",
+                "2, 1, 0, 0",
+                "3, 1, 1, 0",
+                "4, 0, 1, 0",
+                "*Element, type=S4, elset=SET_SHELL",
+                "1, 1, 2, 3, 4",
+                "*Shell Section, elset=SET_SHELL, material=MAT1",
+                "0.01",
+                "*End Part",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    model = parse_inp(str(inp_path))
+    result = inp_service._extract_legacy_property_rows(model)
+
+    assert result["shell_rows"] == [
+        {
+            "id": 1,
+            "thickness": 0.01,
+            "nsm": 0.0,
+            "theta": 0.0,
+            "element_set": "SET_SHELL",
+        }
+    ]

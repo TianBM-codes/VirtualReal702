@@ -162,6 +162,7 @@ CREATE_TABLE_SQL_LIST = [
         Thickness DOUBLE NOT NULL COMMENT '厚度',
         NSM DOUBLE NOT NULL COMMENT '非结构质量',
         THETA DOUBLE NOT NULL COMMENT '旋转角',
+        element_set VARCHAR(255) NULL COMMENT '单元集名称',
         PRIMARY KEY (Id, pid)
     ) COMMENT='有限元模型壳单元属性表'
     """,
@@ -830,6 +831,24 @@ def ensure_tables_exist():
     try:
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            LIMIT 1
+            """,
+            (DB_CONFIG["database"], "t_mt_py_fem_shell_property", "element_set"),
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                """
+                ALTER TABLE t_mt_py_fem_shell_property
+                ADD COLUMN element_set VARCHAR(255) NULL COMMENT '单元集名称'
+                """
+            )
         conn.commit()
     except Exception:
         conn.rollback()

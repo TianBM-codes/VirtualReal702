@@ -636,6 +636,7 @@ def _extract_legacy_property_rows(model):
                     "thickness": _safe_float_zero(section.thickness),
                     "nsm": _safe_float_zero(section.extra.get("nsm", 0.0)),
                     "theta": _safe_float_zero(section.extra.get("theta", 0.0)),
+                    "element_set": str(section.elset_name or "") or None,
                 })
             elif row["type"] == "BEAM":
                 dims = list(section.extra.get("dims", []) or [])
@@ -1165,12 +1166,13 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             ))
 
         shell_property_sql = """
-        INSERT INTO t_mt_py_fem_shell_property (Id, pid, Thickness, NSM, THETA)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO t_mt_py_fem_shell_property (Id, pid, Thickness, NSM, THETA, element_set)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             Thickness = VALUES(Thickness),
             NSM = VALUES(NSM),
-            THETA = VALUES(THETA)
+            THETA = VALUES(THETA),
+            element_set = VALUES(element_set)
         """
         for item in legacy_properties["shell_rows"]:
             cursor.execute(shell_property_sql, (
@@ -1179,6 +1181,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 item["thickness"],
                 item["nsm"],
                 item["theta"],
+                item.get("element_set"),
             ))
 
         beam_property_sql = """
