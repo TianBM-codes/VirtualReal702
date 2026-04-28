@@ -1,3 +1,5 @@
+import threading
+
 import mysql.connector
 
 try:
@@ -813,6 +815,9 @@ CREATE_TABLE_SQL_LIST = [
     """
 ]
 
+_tables_ensured = False
+_tables_ensure_lock = threading.Lock()
+
 def get_connection():
     return mysql.connector.connect(
         host=DB_CONFIG["host"],
@@ -826,6 +831,13 @@ def get_connection():
 
 
 def ensure_tables_exist():
+    global _tables_ensured
+    if _tables_ensured:
+        return
+    _tables_ensure_lock.acquire()
+    if _tables_ensured:
+        _tables_ensure_lock.release()
+        return
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -850,12 +862,15 @@ def ensure_tables_exist():
                 """
             )
         conn.commit()
+        _tables_ensured = True
     except Exception:
         conn.rollback()
         raise
     finally:
         cursor.close()
         conn.close()
+        if _tables_ensure_lock.locked():
+            _tables_ensure_lock.release()
 
 
 def clear_unv_tables(cursor, pid):

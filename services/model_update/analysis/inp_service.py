@@ -1561,6 +1561,23 @@ def _extract_target_keys(extra_json) -> set:
     return {str(item) for item in (payload.get("target_keys") or [])}
 
 
+def _set_identity_key(row: dict) -> Tuple[str, str, str, Optional[str], Optional[str]]:
+    return (
+        str(row.get("set_name") or ""),
+        str(row.get("set_type") or ""),
+        str(row.get("set_scope") or ""),
+        str(row.get("instance_name")) if row.get("instance_name") is not None else None,
+        str(row.get("part_name")) if row.get("part_name") is not None else None,
+    )
+
+
+def _scope_identity_filter(set_scope: str) -> Tuple[str, str]:
+    normalized_scope = str(set_scope or "").upper()
+    if normalized_scope == "ASSEMBLY":
+        return "instance_name", normalized_scope
+    return "part_name", normalized_scope
+
+
 def _resolve_selection_mode_from_capability(capability_row: dict, requested_mode: Optional[str]) -> str:
     if requested_mode:
         mode = _normalize_selection_mode(requested_mode)
@@ -1655,15 +1672,46 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         if not element_labels or not target_keys:
             raise ValueError("selected capability row does not contain target element information")
 
+        incoming_element_label_set = {int(label) for label in element_labels}
+        scope_identity_field, normalized_scope = _scope_identity_filter(capability_row.get("set_scope"))
+        scope_identity_value = capability_row.get(scope_identity_field)
         cursor.execute(f"""
-            SELECT quantity_code, extra_json
+            SELECT set_name, set_type, set_scope, instance_name, part_name, element_label
             FROM t_mt_py_fem_selected_parameter
-            WHERE pid = %s AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
-        """, (project_id, *quantity_code_candidates))
-        incoming_overlap_keys = set(target_keys)
+            WHERE pid = %s
+              AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
+              AND set_scope = %s
+              AND {scope_identity_field} <=> %s
+        """, (project_id, *quantity_code_candidates, normalized_scope, scope_identity_value))
+        overlap_global_set_keys = set()
         for row in cursor.fetchall() or []:
-            if incoming_overlap_keys & _extract_target_keys(row.get("extra_json")):
-                raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
+            element_label = row.get("element_label")
+            if element_label is not None:
+                if int(element_label) in incoming_element_label_set:
+                    raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
+                continue
+            overlap_global_set_keys.add(_set_identity_key(row))
+
+        if overlap_global_set_keys:
+            overlapping_set_names = sorted({key[0] for key in overlap_global_set_keys})
+            cursor.execute(f"""
+                SELECT set_name, set_type, set_scope, instance_name, part_name, extra_json
+                FROM t_mt_py_fem_quantity_set_capability
+                WHERE pid = %s
+                  AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
+                  AND set_scope = %s
+                  AND {scope_identity_field} <=> %s
+                  AND set_name IN ({", ".join(["%s"] * len(overlapping_set_names))})
+            """, (project_id, *quantity_code_candidates, normalized_scope, scope_identity_value, *overlapping_set_names))
+            for row in cursor.fetchall() or []:
+                if _set_identity_key(row) not in overlap_global_set_keys:
+                    continue
+                existing_extra = _json_loads(row.get("extra_json")) or {}
+                existing_labels = {
+                    int(label) for label in (existing_extra.get("element_labels") or [])
+                }
+                if incoming_element_label_set & existing_labels:
+                    raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
 
         insert_sql = """
         INSERT INTO t_mt_py_fem_selected_parameter
@@ -1672,9 +1720,10 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         created_parameters = []
+        insert_rows = []
         if resolved_mode == "GLOBAL":
             resolved_parameter_name = parameter_group_name
-            cursor.execute(insert_sql, (
+            insert_rows.append((
                 project_id,
                 parameter_group_name,
                 resolved_parameter_name,
@@ -1709,7 +1758,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 resolved_parameter_name = f"{parameter_group_name}#{int(element_label)}"
                 row_target_keys = target_keys_by_label.get(str(element_label)) or []
                 current_value = element_values.get(str(element_label), capability_row.get("current_value"))
-                cursor.execute(insert_sql, (
+                insert_rows.append((
                     project_id,
                     parameter_group_name,
                     resolved_parameter_name,
@@ -1739,6 +1788,13 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                         "current_value": current_value,
                     }
                 )
+        if len(insert_rows) == 1:
+            cursor.execute(insert_sql, insert_rows[0])
+        elif hasattr(cursor, "executemany"):
+            cursor.executemany(insert_sql, insert_rows)
+        else:
+            for row in insert_rows:
+                cursor.execute(insert_sql, row)
         conn.commit()
 
         return {
