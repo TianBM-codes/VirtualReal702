@@ -307,6 +307,19 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
             # Elements
             elems_raw = os.path.join(d, 'elems')
             if os.path.exists(elems_raw):
+                # Build section-id → material_name / section_type lookup for color-code datasets
+                _sec_names_list = []
+                _sec_info_dict  = {}
+                _sn_path = os.path.join(d, 'section_names.json')
+                _si_path = os.path.join(d, 'sections.json')
+                if os.path.exists(_sn_path) and os.path.exists(_si_path):
+                    _sec_names_list = load_json(_sn_path)
+                    _sec_info_dict  = load_json(_si_path)
+                _sid_to_mat = {i: _sec_info_dict.get(n, {}).get('material_name', '')
+                               for i, n in enumerate(_sec_names_list)}
+                _sid_to_sty = {i: _sec_info_dict.get(n, {}).get('type', '')
+                               for i, n in enumerate(_sec_names_list)}
+
                 for etype_safe in os.listdir(elems_raw):
                     td  = os.path.join(elems_raw, etype_safe)
                     grp = f.require_group('elements/{}'.format(etype_safe))
@@ -321,6 +334,18 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                         p = os.path.join(td, fname)
                         if os.path.exists(p):
                             grp.create_dataset(dsname, data=nload(p))
+                    # Per-element color-code datasets (mirrors INP exporter.py)
+                    sid_p = os.path.join(td, 'section_id.npy')
+                    if os.path.exists(sid_p) and _sec_names_list:
+                        _sid_arr = nload(sid_p).astype(np.int32)
+                        mat_arr = np.array(
+                            [_sid_to_mat.get(int(s), '').encode('ascii')[:63]
+                             for s in _sid_arr], dtype='S64')
+                        sec_arr = np.array(
+                            [_sid_to_sty.get(int(s), '').encode('ascii')[:15]
+                             for s in _sid_arr], dtype='S16')
+                        grp.create_dataset('material_name', data=mat_arr)
+                        grp.create_dataset('section_type',  data=sec_arr)
 
             # Sections
             sec_path = os.path.join(d, 'sections.json')

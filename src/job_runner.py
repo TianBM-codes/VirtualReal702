@@ -503,6 +503,11 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         logger.error(msg)
         _update_project_geom_status(project_id, "error", msg)
         return False
+    if not os.path.exists(inp_path):
+        msg = "INP file not found: {}".format(inp_path)
+        logger.error("[%s] %s", project_id, msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
 
     # --- L1: parse INP once, export geometry HDF5 + run catalog import ---
     logger.info("[%s] Geom: parsing INP %s", project_id, inp_path)
@@ -530,7 +535,7 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         import_inp_catalog(inp_path, project_id, model=model)
         logger.info("[%s] Geom: catalog import done", project_id)
     except ImportError:
-        logger.debug("[%s] services.model_update not available — skipping catalog import", project_id)
+        logger.info("[%s] Geom: inp_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] Catalog import failed (non-fatal): %s", project_id, exc)
 
@@ -555,6 +560,11 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
     if not odb_path:
         msg = "No ODB path stored for project {}".format(project_id)
         logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    if not os.path.exists(odb_path):
+        msg = "ODB file not found: {}".format(odb_path)
+        logger.error("[%s] %s", project_id, msg)
         _update_project_geom_status(project_id, "error", msg)
         return False
 
@@ -597,6 +607,19 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         logger.error("[%s] Project ODB phase 2 failed (rc=%d)", project_id, rc2)
         return False
 
+    # --- Catalog import (optional: only available in combined deployment) ---
+    try:
+        from services.model_update.analysis.inp_service import import_inp_catalog
+        from src.l1.odb_model import load_as_inp_model
+        logger.info("[%s] Project ODB: importing catalog (via inp_service)", project_id)
+        inp_model = load_as_inp_model(workspace)
+        import_inp_catalog(odb_path, project_id, model=inp_model)
+        logger.info("[%s] Project ODB: catalog import done", project_id)
+    except ImportError:
+        logger.info("[%s] Project ODB: inp_service not available — skipping catalog import", project_id)
+    except Exception as exc:
+        logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
+
     logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
     ret = subprocess.run(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
@@ -610,7 +633,60 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
 
     _update_project_geom_status(project_id, "ready")
     logger.info("[%s] Project ODB ready", project_id)
+    _adopt_odb_result_group(project_id, odb_path, workspace)
     return True
+
+
+def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> None:
+    """
+    ODB 全量解析完成后立即注册 result_group='default_result'（status='ready'）。
+    等效于 runner_thread._adopt_odb_default_results，避免依赖 L3 服务类。
+    """
+    rg_name = "default_result"
+    source_file = os.path.basename(odb_path) if odb_path else None
+    display_name = os.path.splitext(source_file)[0] if source_file else rg_name
+
+    # Step 1: 在 manifest.db 里把 result_group=NULL 的行打上 rg_name
+    manifest_path = os.path.join(workspace, "manifest.db")
+    if os.path.exists(manifest_path):
+        try:
+            with sqlite3.connect(manifest_path, timeout=5.0) as conn:
+                for tbl in ("steps", "frames", "result_files", "result_blocks"):
+                    try:
+                        conn.execute(
+                            "UPDATE {} SET result_group=? WHERE result_group IS NULL".format(tbl),
+                            (rg_name,),
+                        )
+                    except Exception:
+                        pass
+                # result_group_meta
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO result_group_meta"
+                        " (result_group, display_name, source_file, consistency_check, created_at)"
+                        " VALUES (?,?,?,'count-only',datetime('now'))",
+                        (rg_name, display_name, source_file or ""),
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("[%s] _adopt_odb_result_group: manifest update failed: %s", project_id, exc)
+
+    # Step 2: 在 registry.db 里插入 result_groups 行（status='ready'）
+    try:
+        now = _now_iso()
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO result_groups"
+                " (project_id, result_group, display_name, source_path, source_file,"
+                "  status, parse_options, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
+                (project_id, rg_name, display_name,
+                 odb_path or "", source_file or "", now, now),
+            )
+        logger.info("[%s] Registered result_group='%s' (status=ready)", project_id, rg_name)
+    except Exception as exc:
+        logger.warning("[%s] _adopt_odb_result_group: registry update failed: %s", project_id, exc)
 
 
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
@@ -687,6 +763,12 @@ def _run_result_group(project_id: str, result_group: str,
                       source_path: str, parse_options_json: str,
                       workspace: str) -> bool:
     label = "{}/{}".format(project_id, result_group)
+    if not source_path or not os.path.exists(source_path):
+        msg = "ODB file not found: {}".format(source_path)
+        logger.error("[%s] %s", label, msg)
+        _update_result_group_status(project_id, result_group, "error", msg)
+        return False
+
     parse_opts = {}
     if parse_options_json:
         try:

@@ -562,8 +562,8 @@ class EmbeddedRunner:
         return True
 
     def _adopt_odb_default_results(self, project_id: str, odb_path: str, workspace: str):
-        """Tag NULL result_group in manifest + register in registry.db as 'default'."""
-        rg_name = "default"
+        """Tag NULL result_group in manifest + register in registry.db as 'default_result'."""
+        rg_name = "default_result"
         source_file = os.path.basename(odb_path) if odb_path else None
         display_name = os.path.splitext(source_file)[0] if source_file else rg_name
         manifest = _ManifestRepo(workspace)
@@ -580,7 +580,7 @@ class EmbeddedRunner:
                     (project_id, rg_name, display_name,
                      odb_path or '', source_file or '', now, now),
                 )
-            logger.info("[%s] Adopted ODB results as result_group='default'", project_id)
+            logger.info("[%s] Adopted ODB results as result_group='default_result'", project_id)
 
     def _run_project(self, project_id: str, source_path: str,
                      source_type: str, workspace: str) -> bool:
