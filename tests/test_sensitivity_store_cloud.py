@@ -241,6 +241,7 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     output_dir.mkdir()
 
     workspace_calls = {}
+    matrix_calls = {}
     matrix_payload = {
         "workspace": str(output_dir / "job_a_workspace"),
         "step": "Step-1",
@@ -279,7 +280,7 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     monkeypatch.setattr(
         sensitivity_service,
         "_load_dsa_normalized_sensitivity_matrix",
-        lambda **kwargs: matrix_payload,
+        lambda **kwargs: matrix_calls.update(kwargs) or matrix_payload,
     )
     monkeypatch.setattr(
         sensitivity_service,
@@ -289,7 +290,10 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     monkeypatch.setattr(
         sensitivity_service,
         "_rebuild_selected_parameters_from_inp",
-        lambda **kwargs: {"selected_parameter_count": 1},
+        lambda **kwargs: {
+            "selected_parameter_count": 1,
+            "optimization_parameter_rows": [{"parameter_name": "T1", "scatter": 0.25}],
+        },
     )
 
     result = sensitivity_service.run_sensitivity_inp_and_store(
@@ -312,6 +316,7 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     assert result["odb_path"] == str((output_dir / "job_a.odb").resolve())
     assert result["workspace"] == str(output_dir / "job_a_workspace")
     assert result["deleted_process_files"] == [str(output_dir / "job_a.com")]
+    assert matrix_calls["optimization_parameter_rows"] == [{"parameter_name": "T1", "scatter": 0.25}]
 
 
 def test_run_sensitivity_inp_and_store_resets_project_status_on_failure(monkeypatch, tmp_path: Path):

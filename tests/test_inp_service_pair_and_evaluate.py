@@ -47,11 +47,6 @@ class _QueryCursor:
 
     def fetchall(self):
         sql = self.last_sql
-        if "SELECT nid, x, y, z FROM t_mt_py_test_node" in sql:
-            return [
-                {"nid": "1001", "x": 1.0, "y": 2.0, "z": 3.0},
-                {"nid": "1002", "x": 4.0, "y": 5.0, "z": 6.0},
-            ]
         if "SELECT id, measuring_point_name, x_position, y_position, z_position FROM t_mt_measuring_point_info" in sql:
             return [
                 {"id": 1, "measuring_point_name": "WY1", "x_position": 1.0, "y_position": 2.0, "z_position": 3.0},
@@ -59,8 +54,8 @@ class _QueryCursor:
             ]
         if "SELECT id, test_node_id, instance_name, fem_node_label FROM t_mt_py_fem_node_match" in sql:
             return [
-                {"id": 10, "test_node_id": "1001", "instance_name": "PART-1-1", "fem_node_label": 501},
-                {"id": 11, "test_node_id": "1002", "instance_name": "PART-1-1", "fem_node_label": 502},
+                {"id": 10, "test_node_id": "WY1", "instance_name": "PART-1-1", "fem_node_label": 501},
+                {"id": 11, "test_node_id": "WY2", "instance_name": "PART-1-1", "fem_node_label": 502},
             ]
         return []
 

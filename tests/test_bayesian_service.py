@@ -268,6 +268,95 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_componen
     assert [item["response_component"] for item in result["response_rows"]] == ["U2"]
 
 
+def test_build_dsa_normalized_sensitivity_matrix_uses_in_memory_optimization_parameter_rows(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "fake.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    model = SimpleNamespace(
+        parts={},
+        assembly=None,
+        parameters={},
+        design_parameters=[],
+        design_responses=[
+            SimpleNamespace(
+                step_name="Step-1",
+                frequency=1,
+                requests=[
+                    SimpleNamespace(region_type="NODE", set_name="NSET4", variables=["UY"]),
+                ],
+            )
+        ],
+    )
+
+    monkeypatch.setattr(bayesian_service, "parse_inp", lambda path: model)
+    monkeypatch.setattr(bayesian_service._sens, "_resolve_inp_path_from_project", lambda project_id: str(inp_path))
+    monkeypatch.setattr(bayesian_service._sens, "_workspace_path", lambda path: str(Path(path).resolve()))
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_discover_sensitivity_fields_from_workspace",
+        lambda workspace, **kwargs: {
+            "workspace": workspace,
+            "step": "Step-1",
+            "instances": ["INST"],
+            "per_instance": {
+                "INST": [
+                    {"field": "d_U_1", "position": "NODAL", "components": []},
+                ]
+            },
+            "field_names": ["d_U_1"],
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_load_project_optimization_parameters",
+        lambda project_id: (_ for _ in ()).throw(AssertionError("db optimization rows should not be loaded")),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_resolve_response_field_meta",
+        lambda **kwargs: {"field": "U", "components": ["U1", "U2", "U3"], "positions": ["NODAL"]},
+    )
+    monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_resolve_dsa_parameter_scalar_value",
+        lambda model, *, parameter_name, target_rows: float(target_rows[0]["scalar_value"]),
+    )
+
+    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None, result_group=None):
+        if field == "d_U_1" and component == "U2":
+            return {"INST::10": 1.0}
+        if field == "U" and component == "U2":
+            return {"INST::10": 10.0}
+        return {}
+
+    monkeypatch.setattr(bayesian_service._sens, "_workspace_result_label_map", fake_label_map)
+
+    result = bayesian_service.build_dsa_normalized_sensitivity_matrix(
+        project_id=1,
+        inp_path=str(inp_path),
+        workspace=str(workspace),
+        field_prefix="d_U_",
+        optimization_parameter_rows=[
+            {
+                "parameter_name": "T1",
+                "set_name": "SET_A",
+                "set_type": "ELSET",
+                "set_scope": "PART",
+                "scalar_value": 2.0,
+                "scatter": 0.15,
+            }
+        ],
+    )
+
+    assert result["matrix"] == [[0.2]]
+    assert result["parameter_values"] == [2.0]
+    assert result["parameter_columns"][0]["parameter_name"] == "T1"
+    assert result["parameter_columns"][0]["scatter"] == 0.15
+
+
 def test_run_iteration_solver_deletes_abaqus_process_files_after_workspace_build(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "model_iter0.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
@@ -454,10 +543,12 @@ P2=2.0
         update_calls.append(kwargs)
         return updates[len(update_calls) - 1]
 
-    persisted = {}
+    persisted_calls = []
 
     def fake_persist(**kwargs):
-        persisted.update(kwargs)
+        snapshot = dict(kwargs)
+        snapshot["iteration_results"] = list(kwargs.get("iteration_results") or [])
+        persisted_calls.append(snapshot)
 
     monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", fake_build_matrix)
     monkeypatch.setattr(bayesian_service, "_run_iteration_solver", fake_run_iteration_solver)
@@ -482,9 +573,11 @@ P2=2.0
     assert len(update_calls) == 2
     assert result["batch_no"] == 3
     assert result["final_parameter_values"] == [1.3, 2.6]
-    assert persisted["project_id"] == 1
-    assert persisted["batch_no"] == 3
-    assert len(persisted["iteration_results"]) == 2
+    assert len(persisted_calls) == 2
+    assert persisted_calls[0]["project_id"] == 1
+    assert persisted_calls[0]["batch_no"] == 3
+    assert len(persisted_calls[0]["iteration_results"]) == 1
+    assert len(persisted_calls[1]["iteration_results"]) == 2
 
     final_text = Path(result["final_updated_inp"]).read_text(encoding="utf-8")
     assert "P1=1.3" in final_text
@@ -537,7 +630,7 @@ P1=1.0
             {"row_key": "r1", "response_label": "INST::10"}
         ],
     }
-    captured = {}
+    captured = {"persist_calls": []}
 
     monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", lambda **kwargs: matrix_payload)
 
@@ -554,7 +647,16 @@ P1=1.0
         }
 
     monkeypatch.setattr(bayesian_service, "bayesian_update_normalized", fake_bayesian_update)
-    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(
+        bayesian_service,
+        "_persist_bayesian_tracking_results",
+        lambda **kwargs: captured["persist_calls"].append(
+            {
+                **dict(kwargs),
+                "iteration_results": list(kwargs.get("iteration_results") or []),
+            }
+        ),
+    )
 
     result = bayesian_service.run_bayesian_update_workflow(
         project_id=1,
@@ -568,7 +670,8 @@ P1=1.0
 
     assert captured["p_scatter"].tolist() == [0.25]
     assert captured["r_scatter"].tolist() == [0.01]
-    assert captured["batch_no"] == 1
+    assert len(captured["persist_calls"]) == 1
+    assert captured["persist_calls"][0]["batch_no"] == 1
     assert result["iteration_results"][0]["parameter_scatter"] == [0.25]
     assert result["iteration_results"][0]["response_scatter"] == [0.01]
     assert Path(result["saved_artifacts"]["files"]["iteration_summary_csv"]).exists()

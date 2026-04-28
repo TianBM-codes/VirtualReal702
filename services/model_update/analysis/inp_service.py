@@ -8,7 +8,7 @@ from src.inp.parameter_mapping import (
     extract_parameter_definition_rows,
     extract_parameter_target_rows,
 )
-from db import get_connection, ensure_tables_exist, clear_fem_tables
+from db import get_connection, ensure_tables_exist
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -81,6 +81,25 @@ def _json_loads(value):
     if isinstance(value, dict):
         return value
     return json.loads(value)
+
+
+def _clear_import_inp_catalog_tables(cursor, project_id: int) -> None:
+    # Importing a new INP should only refresh tables rebuilt from the INP
+    # itself. User-maintained selected-parameter / response tables stay intact.
+    tables = (
+        "t_mt_py_fem_material_overview",
+        "t_mt_py_fem_isotropic",
+        "t_mt_py_fem_property",
+        "t_mt_py_fem_shell_property",
+        "t_mt_py_fem_beam_property",
+        "t_mt_py_fem_boundary",
+        "t_mt_py_fem_parameter_definition",
+        "t_mt_py_fem_parameter_target",
+        "t_mt_py_fem_quantity_set_capability",
+        "t_mt_py_fem_node_octree_cache",
+    )
+    for table_name in tables:
+        cursor.execute(f"DELETE FROM {table_name} WHERE pid = %s", (project_id,))
 
 
 def _normalize_stored_path(path_value) -> Optional[str]:
@@ -575,8 +594,10 @@ def _extract_legacy_material_rows(model):
         })
 
         elastic = material.elastic
-        if elastic and str(elastic.elastic_type).upper() == "ISOTROPIC" and elastic.data:
-            row0 = list(elastic.data[0])
+        elastic_data = list(getattr(elastic, "data", []) or []) if elastic is not None else []
+        elastic_type = str(getattr(elastic, "elastic_type", "") or "").upper()
+        row0 = list(elastic_data[0]) if elastic_data else []
+        if elastic_type in {"ISOTROPIC", "ISO"} and row0:
             isotropic_rows.append({
                 "id": idx,
                 "rho": _safe_float_zero(material.density_data[0][0] if material.density_data else 0.0),
@@ -1094,18 +1115,9 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        if clear_before_insert:
-            # Full refresh for the FEM-side catalog tables when a new INP is
-            # imported for the same project.
-            clear_fem_tables(cursor, project_id)
-        else:
-            # Keep unrelated FEM imports intact, but replace the parameter and
-            # response metadata derived directly from the current INP file.
-            cursor.execute("DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = %s", (project_id,))
-            cursor.execute("DELETE FROM t_mt_py_fem_parameter_target WHERE pid = %s", (project_id,))
-            cursor.execute("DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = %s", (project_id,))
-            cursor.execute("DELETE FROM t_mt_py_fem_quantity_set_capability WHERE pid = %s", (project_id,))
-            cursor.execute("DELETE FROM t_mt_py_fem_selected_parameter WHERE pid = %s", (project_id,))
+        # Regardless of full-refresh mode, keep user-maintained optimization
+        # parameter / response tables untouched during INP import.
+        _clear_import_inp_catalog_tables(cursor, project_id)
 
         material_overview_sql = """
         INSERT INTO t_mt_py_fem_material_overview (Id, pid, Type)
@@ -1262,24 +1274,6 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 item["source_keyword"],
                 item["source_path"],
                 item.get("component_name"),
-                _json_dumps(item.get("extra_json") or {}),
-            ))
-
-        design_response_sql = """
-        INSERT INTO t_mt_py_fem_design_response_catalog
-        (pid, response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
-        for item in design_responses:
-            cursor.execute(design_response_sql, (
-                project_id,
-                item["response_no"],
-                item["request_no"],
-                item.get("step_name"),
-                item["frequency"],
-                item["region_type"],
-                item["set_name"],
-                _json_dumps(item.get("variables") or []),
                 _json_dumps(item.get("extra_json") or {}),
             ))
 
@@ -2022,27 +2016,16 @@ def get_pair_node_point_result(project_id):
             )
 
         cursor.execute("""
-            SELECT nid, x, y, z
-            FROM t_mt_py_test_node
-            WHERE pid = %s
-            ORDER BY nid
-        """, (project_id,))
-        test_nodes = cursor.fetchall()
-        test_node_lookup = {
-            str(row["nid"]): _coord_key([row["x"], row["y"], row["z"]])
-            for row in test_nodes
-        }
-
-        cursor.execute("""
             SELECT id, measuring_point_name, x_position, y_position, z_position
             FROM t_mt_measuring_point_info
             WHERE project_id = %s
             ORDER BY id
         """, (project_id,))
         measuring_rows = cursor.fetchall()
-        sensor_lookup = {
-            _coord_key([row["x_position"], row["y_position"], row["z_position"]]): str(row["measuring_point_name"])
+        test_node_lookup = {
+            str(row["measuring_point_name"]): _coord_key([row["x_position"], row["y_position"], row["z_position"]])
             for row in measuring_rows
+            if row.get("measuring_point_name") not in (None, "")
         }
 
         fem_coord_lookup = {}
@@ -2060,13 +2043,10 @@ def get_pair_node_point_result(project_id):
             coord_key = test_node_lookup.get(test_node_id)
             if coord_key is None:
                 continue
-            sensor_name = sensor_lookup.get(coord_key)
-            if not sensor_name:
-                continue
             fem_coord = fem_coord_lookup.get((str(row["instance_name"] or ""), int(row["fem_node_label"])))
             if fem_coord is None:
                 continue
-            sensor_names.append(sensor_name)
+            sensor_names.append(test_node_id)
             node_xyz.append(fem_coord)
 
         return {
@@ -3530,6 +3510,14 @@ def _analysis_error_node_no(fem_row: dict) -> str:
     return str(fem_node_label)
 
 
+def _should_store_static_analysis_error_row(*, sensor_type_id, component_name: str, point_value: float) -> bool:
+    resolved_component = str(component_name or "").upper()
+    if _is_displacement_static_test_sensor_type(sensor_type_id):
+        if resolved_component in {"UX", "UZ"} and abs(float(point_value)) <= 1e-12:
+            return False
+    return True
+
+
 def _load_measuring_point_sensor_type_map(cursor, project_id: int) -> Dict[str, Optional[int]]:
     try:
         cursor.execute(
@@ -3579,6 +3567,12 @@ def _build_static_analysis_error_rows(
                 continue
             node_value = float(node_value)
             point_value = float(point_value)
+            if not _should_store_static_analysis_error_row(
+                sensor_type_id=sensor_type_id,
+                component_name=str(component_name),
+                point_value=point_value,
+            ):
+                continue
             rows.append(
                 {
                     "load_case_no": int(load_case_no),
@@ -3794,20 +3788,26 @@ def compute_static_correlation(
                 test_values.append(complex(float(test_val), 0.0))
                 fem_values.append(complex(float(fem_val), 0.0))
                 component_counts[comp_name] += 1
-                analysis_error_rows.append(
-                    {
-                        "load_case_no": int(chosen_load_case_no),
-                        "result_no": int(chosen_result_no),
-                        "point_no": str(test_row["point"]),
-                        "node_no": _analysis_error_node_no(fem_row),
-                        "component_name": comp_name,
-                        "point_value": float(test_val),
-                        "initial_node_value": float(fem_val),
-                        "initial_relative_error": _relative_error_percent(float(fem_val), float(test_val)),
-                        "initial_abs_error": float(abs(float(fem_val) - float(test_val))),
-                        "sensor_type_id": sensor_type_map.get(str(test_row["point"])),
-                    }
-                )
+                sensor_type_id = sensor_type_map.get(str(test_row["point"]))
+                if _should_store_static_analysis_error_row(
+                    sensor_type_id=sensor_type_id,
+                    component_name=str(comp_name),
+                    point_value=float(test_val),
+                ):
+                    analysis_error_rows.append(
+                        {
+                            "load_case_no": int(chosen_load_case_no),
+                            "result_no": int(chosen_result_no),
+                            "point_no": str(test_row["point"]),
+                            "node_no": _analysis_error_node_no(fem_row),
+                            "component_name": comp_name,
+                            "point_value": float(test_val),
+                            "initial_node_value": float(fem_val),
+                            "initial_relative_error": _relative_error_percent(float(fem_val), float(test_val)),
+                            "initial_abs_error": float(abs(float(fem_val) - float(test_val))),
+                            "sensor_type_id": sensor_type_id,
+                        }
+                    )
                 if len(anchors) < 50:
                     anchors.append({
                         "test_point": str(test_row["point"]),

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -362,4 +363,32 @@ def test_get_inp_parameter_options_reads_from_database(monkeypatch):
             "level": "LOCAL",
             "sets": ["SET_B"],
         },
+    ]
+def test_extract_legacy_material_rows_accepts_iso_elastic_type_alias():
+    model = SimpleNamespace(
+        materials={
+            "MAT1": SimpleNamespace(
+                elastic=SimpleNamespace(elastic_type="ISO", data=[(210000.0, 0.3)]),
+                density_data=[(7.85e-09,)],
+            )
+        }
+    )
+
+    result = inp_service._extract_legacy_material_rows(model)
+
+    assert result["overview_rows"] == [
+        {
+            "id": 1,
+            "type": "ISO",
+            "name": "MAT1",
+        }
+    ]
+    assert result["isotropic_rows"] == [
+        {
+            "id": 1,
+            "rho": 7.85e-09,
+            "e": 210000.0,
+            "nu": 0.3,
+            "ge": 0.0,
+        }
     ]

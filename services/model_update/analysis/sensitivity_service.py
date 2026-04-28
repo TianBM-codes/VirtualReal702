@@ -231,10 +231,9 @@ def _infer_temp_quantity_code_from_target(target_row: dict) -> str:
 
 def _rebuild_selected_parameters_from_inp(*, project_id: int, inp_path: str) -> dict:
     # Temporary compatibility path for /sensitivity/run_and_store:
-    # rebuild the selected-parameter table directly from the current INP so
+    # derive optimization-parameter rows from the current INP in memory so
     # DSA field discovery can proceed even when the project has no formal
     # user-selected optimization parameters yet.
-    ensure_tables_exist()
 
     resolved_inp_path = os.path.abspath(inp_path)
     if not os.path.exists(resolved_inp_path):
@@ -263,88 +262,68 @@ def _rebuild_selected_parameters_from_inp(*, project_id: int, inp_path: str) -> 
         seen_parameter_names.add(text)
         ordered_parameter_names.append(text)
 
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("DELETE FROM t_mt_py_fem_selected_parameter WHERE pid = %s", (int(project_id),))
+    created_rows = []
+    optimization_parameter_rows = []
+    for offset, parameter_name in enumerate(ordered_parameter_names, start=1):
+        definition = parameter_definitions.get(parameter_name)
+        scalar_value = getattr(definition, "scalar_value", None) if definition is not None else None
+        target_rows = [dict(row) for row in (target_map.get(parameter_name) or [])]
+        primary_target = dict(target_rows[0]) if target_rows else {}
+        quantity_code = _infer_temp_quantity_code_from_target(primary_target) if primary_target else "DSA"
 
-        insert_sql = """
-        INSERT INTO t_mt_py_fem_selected_parameter
-        (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
-         instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
+        set_name = str(primary_target.get("set_name") or f"TMP_PARAM_{offset}")
+        set_type = str(primary_target.get("set_type") or "ELSET")
+        set_scope = str(primary_target.get("set_scope") or "PART")
+        instance_name = primary_target.get("instance_name")
+        part_name = primary_target.get("part_name")
 
-        created_rows = []
-        for offset, parameter_name in enumerate(ordered_parameter_names, start=1):
-            definition = parameter_definitions.get(parameter_name)
-            scalar_value = getattr(definition, "scalar_value", None) if definition is not None else None
-            target_rows = [dict(row) for row in (target_map.get(parameter_name) or [])]
-            primary_target = dict(target_rows[0]) if target_rows else {}
-            quantity_code = _infer_temp_quantity_code_from_target(primary_target) if primary_target else "DSA"
-
-            set_name = str(primary_target.get("set_name") or f"TMP_PARAM_{offset}")
-            set_type = str(primary_target.get("set_type") or "ELSET")
-            set_scope = str(primary_target.get("set_scope") or "PART")
-            instance_name = primary_target.get("instance_name")
-            part_name = primary_target.get("part_name")
-
-            extra_json = {
-                "source": "run_and_store_temp",
-                "scalar_value": scalar_value,
-                "target_rows": target_rows,
-            }
-
-            cursor.execute(
-                insert_sql,
-                (
-                    int(project_id),
-                    str(parameter_name),
-                    str(parameter_name),
-                    quantity_code,
-                    "GLOBAL",
-                    set_name,
-                    set_type,
-                    set_scope,
-                    instance_name,
-                    part_name,
-                    None,
-                    scalar_value,
-                    float(scalar_value) if scalar_value is not None else 0.0,
-                    float(scalar_value) if scalar_value is not None else 0.0,
-                    0,
-                    float(_DEFAULT_PARAMETER_SCATTER),
-                    "temporary parameter rebuilt from inp for run_and_store",
-                    json.dumps(extra_json, ensure_ascii=False),
-                ),
-            )
-            created_rows.append(
-                {
-                    "parameter_name": str(parameter_name),
-                    "quantity_code": quantity_code,
-                    "set_name": set_name,
-                    "set_type": set_type,
-                    "set_scope": set_scope,
-                    "instance_name": instance_name,
-                    "part_name": part_name,
-                    "scalar_value": scalar_value,
-                    "target_row_count": len(target_rows),
-                }
-            )
-
-        conn.commit()
-        return {
-            "project_id": int(project_id),
-            "inp_path": resolved_inp_path,
-            "selected_parameter_count": len(created_rows),
-            "selected_parameters_preview": created_rows[:20],
+        extra_json = {
+            "source": "run_and_store_temp",
+            "scalar_value": scalar_value,
+            "target_rows": target_rows,
         }
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        cursor.close()
-        conn.close()
+        optimization_parameter_rows.append(
+            {
+                "id": offset,
+                "parameter_group_name": str(parameter_name),
+                "parameter_name": str(parameter_name),
+                "quantity_code": quantity_code,
+                "selection_mode": "GLOBAL",
+                "set_name": set_name,
+                "set_type": set_type,
+                "set_scope": set_scope,
+                "instance_name": instance_name,
+                "part_name": part_name,
+                "element_label": None,
+                "lower": float(scalar_value) if scalar_value is not None else 0.0,
+                "upper": float(scalar_value) if scalar_value is not None else 0.0,
+                "prob_id": 0,
+                "scatter": float(_DEFAULT_PARAMETER_SCATTER),
+                "scalar_value": scalar_value,
+                "extra_json": extra_json,
+            }
+        )
+        created_rows.append(
+            {
+                "parameter_name": str(parameter_name),
+                "quantity_code": quantity_code,
+                "set_name": set_name,
+                "set_type": set_type,
+                "set_scope": set_scope,
+                "instance_name": instance_name,
+                "part_name": part_name,
+                "scalar_value": scalar_value,
+                "target_row_count": len(target_rows),
+            }
+        )
+
+    return {
+        "project_id": int(project_id),
+        "inp_path": resolved_inp_path,
+        "selected_parameter_count": len(created_rows),
+        "selected_parameters_preview": created_rows[:20],
+        "optimization_parameter_rows": optimization_parameter_rows,
+    }
 
 
 def build_workspace_from_odb(
@@ -2303,6 +2282,7 @@ def run_sensitivity_inp_and_store(
             keep_raw=keep_raw,
             timeout=timeout,
             result_group=project_result_parse["result_group"] if project_result_parse else None,
+            optimization_parameter_rows=list(temp_selected_parameters.get("optimization_parameter_rows") or []),
         )
 
         result = _finalize_sensitivity_store_result(
@@ -2469,15 +2449,23 @@ def generate_sensitivity_inp_and_store(
 
 def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[str] = None) -> dict:
     payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
-    row_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
-    col_names = list(payload.get("col_names") or [])
-    matrix = list(payload.get("matrix") or [])
+    response_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
+    parameter_names = list(payload.get("col_names") or [])
+    matrix = [list(row) for row in (payload.get("matrix") or [])]
+
+    transpose_matrix: List[List[Optional[float]]] = []
+    for col_index in range(len(parameter_names)):
+        transpose_row = []
+        for row_index in range(len(response_names)):
+            current_row = matrix[row_index] if row_index < len(matrix) else []
+            transpose_row.append(current_row[col_index] if col_index < len(current_row) else None)
+        transpose_matrix.append(transpose_row)
 
     points = []
-    for row_index, row_name in enumerate(row_names):
-        current_row = matrix[row_index] if row_index < len(matrix) else []
+    for row_index, _parameter_name in enumerate(parameter_names):
+        current_row = transpose_matrix[row_index] if row_index < len(transpose_matrix) else []
         columns_value = {}
-        for col_index, col_name in enumerate(col_names):
+        for col_index, col_name in enumerate(response_names):
             value = current_row[col_index] if col_index < len(current_row) else None
             columns_value[col_name] = value
 
@@ -2489,19 +2477,41 @@ def get_stored_sensitivity_table_points(*, project_id: int, batch_no: Optional[s
         "batch_no": payload.get("batch_no"),
         "case_name": payload.get("case_name"),
         "created_at": payload.get("created_at"),
-        "rows": row_names,
-        "column": col_names,
+        "rows": parameter_names,
+        "column": response_names,
         "data": points,
         "summary": {
-            "response_count": len(row_names),
-            "parameter_count": len(col_names),
+            "response_count": len(response_names),
+            "parameter_count": len(parameter_names),
             "point_count": len(points),
         },
     }
 
 
+def _build_empty_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional[str] = None) -> dict:
+    return {
+        "analysis_run_id": None,
+        "project_id": int(project_id),
+        "batch_no": _normalize_batch_no(batch_no),
+        "case_name": None,
+        "created_at": None,
+        "data": {
+            "column": [],
+            "rows": [],
+            "data": [],
+        },
+        "summary": {
+            "response_count": 0,
+            "parameter_count": 0,
+        },
+    }
+
+
 def get_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional[str] = None) -> dict:
-    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    try:
+        payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    except NotFoundError:
+        return _build_empty_stored_sensitivity_matrix_payload(project_id=project_id, batch_no=batch_no)
     row_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     col_names = list(payload.get("col_names") or [])
     matrix = list(payload.get("matrix") or [])
@@ -2512,7 +2522,8 @@ def get_stored_sensitivity_matrix_payload(*, project_id: int, batch_no: Optional
 
     for ii in range(row_count):
         for jj in range(column_count):
-            data.append([ii, jj, matrix[ii][jj]])
+            current_row = matrix[ii] if ii < len(matrix) else []
+            data.append([ii, jj, current_row[jj] if jj < len(current_row) else None])
 
     sensitivity = {"column": col_names,
                    "rows": row_names,
@@ -2550,8 +2561,37 @@ def _build_curve_series(*, labels: List[str], xaxis: List[str], matrix: List[Lis
     return curves
 
 
+def _build_empty_stored_sensitivity_curve_payload(
+        *,
+        project_id: int,
+        batch_no: Optional[str] = None,
+        curve_type: str,
+) -> dict:
+    return {
+        "analysis_run_id": None,
+        "project_id": int(project_id),
+        "batch_no": _normalize_batch_no(batch_no),
+        "case_name": None,
+        "created_at": None,
+        "curve_type": str(curve_type),
+        "data": [],
+        "summary": {
+            "response_count": 0,
+            "parameter_count": 0,
+            "curve_count": 0,
+        },
+    }
+
+
 def get_stored_sensitivity_parameter_curves(*, project_id: int, batch_no: Optional[str] = None) -> dict:
-    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    try:
+        payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    except NotFoundError:
+        return _build_empty_stored_sensitivity_curve_payload(
+            project_id=project_id,
+            batch_no=batch_no,
+            curve_type="parameter",
+        )
     response_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     parameter_names = [str(item) for item in (payload.get("col_names") or [])]
     matrix = [list(row) for row in (payload.get("matrix") or [])]
@@ -2579,7 +2619,14 @@ def get_stored_sensitivity_parameter_curves(*, project_id: int, batch_no: Option
 
 
 def get_stored_sensitivity_response_curves(*, project_id: int, batch_no: Optional[str] = None) -> dict:
-    payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    try:
+        payload = _load_stored_sensitivity_run(project_id=project_id, batch_no=batch_no)
+    except NotFoundError:
+        return _build_empty_stored_sensitivity_curve_payload(
+            project_id=project_id,
+            batch_no=batch_no,
+            curve_type="response",
+        )
     response_names = [_normalize_response_display_name(item) for item in (payload.get("row_names") or [])]
     parameter_names = [str(item) for item in (payload.get("col_names") or [])]
     matrix = [list(row) for row in (payload.get("matrix") or [])]

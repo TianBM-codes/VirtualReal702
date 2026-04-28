@@ -297,7 +297,10 @@ async def sensitivity_stored_matrix(request: Request, body: SensitivityStoredQue
             project_id=body.project_id,
             batch_no=body.batch_no,
         )
-        return success_response(data, "stored sensitivity matrix loaded")
+        message = "stored sensitivity matrix loaded"
+        if not (data.get("data") or {}).get("data"):
+            message = "暂无数据，需要先计算灵敏度"
+        return success_response(data, message)
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -313,7 +316,10 @@ async def sensitivity_stored_parameter_curve(request: Request, body: Sensitivity
             project_id=body.project_id,
             batch_no=body.batch_no,
         )
-        return success_response(data, "stored sensitivity parameter curves loaded")
+        message = "stored sensitivity parameter curves loaded"
+        if not data.get("data"):
+            message = "暂无数据，需要先计算灵敏度"
+        return success_response(data, message)
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -329,7 +335,10 @@ async def sensitivity_stored_response_curve(request: Request, body: SensitivityS
             project_id=body.project_id,
             batch_no=body.batch_no,
         )
-        return success_response(data, "stored sensitivity response curves loaded")
+        message = "stored sensitivity response curves loaded"
+        if not data.get("data"):
+            message = "暂无数据，需要先计算灵敏度"
+        return success_response(data, message)
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

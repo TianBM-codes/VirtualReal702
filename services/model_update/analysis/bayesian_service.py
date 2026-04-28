@@ -1693,6 +1693,7 @@ def build_dsa_normalized_sensitivity_matrix(
         keep_raw: bool = False,
         timeout: int = 60,
         result_group: Optional[str] = None,
+        optimization_parameter_rows: Optional[List[dict]] = None,
 ) -> dict:
     if aggregation not in _sens._AGGREGATIONS and aggregation != "first":
         raise ValidationError(
@@ -1767,7 +1768,11 @@ def build_dsa_normalized_sensitivity_matrix(
     # DSA columns come from result fields, then are mapped back to design parameters
     # and finally to INP target sets/sections.
     dsa_model = parse_inp(resolved_inp_path)
-    dsa_parameter_rows = _sens._load_project_optimization_parameters(project_id)
+    dsa_parameter_rows = (
+        [dict(row) for row in optimization_parameter_rows]
+        if optimization_parameter_rows is not None
+        else _sens._load_project_optimization_parameters(project_id)
+    )
     dsa_parameter_map = (
         _sens._build_dsa_parameter_row_map(dsa_parameter_rows, field_prefix, discovery["field_names"])
         if dsa_parameter_rows
@@ -2769,15 +2774,15 @@ def run_bayesian_update_workflow(
             if save_results:
                 iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)
             iteration_results.append(iteration_result)
+            _persist_bayesian_tracking_results(
+                project_id=project_id,
+                batch_no=resolved_batch_no,
+                iteration_results=iteration_results,
+            )
             if stopped_early:
                 break
 
         final_iteration = iteration_results[-1]
-        _persist_bayesian_tracking_results(
-            project_id=project_id,
-            batch_no=resolved_batch_no,
-            iteration_results=iteration_results,
-        )
         cloud_result = None
         if write_cloud_result:
             resolved_cloud_odb_id = cloud_export_odb_id or _resolve_loaded_odb_id_for_workspace(last_resolved_workspace)

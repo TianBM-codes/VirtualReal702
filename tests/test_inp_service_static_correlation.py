@@ -273,19 +273,7 @@ def test_compute_static_correlation_reads_latest_static_test_data_json(monkeypat
     assert result["dac"] == 100.0
     assert result["dsf"] == 1.0
     assert result["component_value_counts"] == {"UX": 2, "UY": 2, "UZ": 2}
-    assert result["analysis_error_preview"][:3] == [
-        {
-            "load_case_no": 1,
-            "result_no": 1,
-            "point_no": "WY1",
-            "node_no": "PART-1-1::1001",
-            "component_name": "UX",
-            "point_value": 0.0,
-            "initial_node_value": 0.0,
-            "initial_relative_error": 0.0,
-            "initial_abs_error": 0.0,
-            "sensor_type_id": 21,
-        },
+    assert result["analysis_error_preview"] == [
         {
             "load_case_no": 1,
             "result_no": 1,
@@ -301,11 +289,11 @@ def test_compute_static_correlation_reads_latest_static_test_data_json(monkeypat
         {
             "load_case_no": 1,
             "result_no": 1,
-            "point_no": "WY1",
-            "node_no": "PART-1-1::1001",
-            "component_name": "UZ",
-            "point_value": 0.0,
-            "initial_node_value": 0.0,
+            "point_no": "WY2",
+            "node_no": "PART-1-1::1002",
+            "component_name": "UY",
+            "point_value": 2.5,
+            "initial_node_value": 2.5,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
             "sensor_type_id": 21,
@@ -354,19 +342,7 @@ def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
     assert result["value_count"] == 6
     assert result["dac"] == 100.0
     assert result["dsf"] == 1.0
-    assert result["analysis_error_preview"][:3] == [
-        {
-            "load_case_no": 1,
-            "result_no": 1,
-            "point_no": "WY1",
-            "node_no": "PART-1-1::1001",
-            "component_name": "UX",
-            "point_value": 0.0,
-            "initial_node_value": 0.0,
-            "initial_relative_error": 0.0,
-            "initial_abs_error": 0.0,
-            "sensor_type_id": 21,
-        },
+    assert result["analysis_error_preview"] == [
         {
             "load_case_no": 1,
             "result_no": 1,
@@ -382,11 +358,11 @@ def test_compute_static_correlation_reads_single_key_sensor_json(monkeypatch):
         {
             "load_case_no": 1,
             "result_no": 1,
-            "point_no": "WY1",
-            "node_no": "PART-1-1::1001",
-            "component_name": "UZ",
-            "point_value": 0.0,
-            "initial_node_value": 0.0,
+            "point_no": "WY2",
+            "node_no": "PART-1-1::1002",
+            "component_name": "UY",
+            "point_value": 2.5,
+            "initial_node_value": 2.5,
             "initial_relative_error": 0.0,
             "initial_abs_error": 0.0,
             "sensor_type_id": 21,
