@@ -623,7 +623,60 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
 
     _update_project_geom_status(project_id, "ready")
     logger.info("[%s] Project ODB ready", project_id)
+    _adopt_odb_result_group(project_id, odb_path, workspace)
     return True
+
+
+def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> None:
+    """
+    ODB 全量解析完成后立即注册 result_group='default_result'（status='ready'）。
+    等效于 runner_thread._adopt_odb_default_results，避免依赖 L3 服务类。
+    """
+    rg_name = "default_result"
+    source_file = os.path.basename(odb_path) if odb_path else None
+    display_name = os.path.splitext(source_file)[0] if source_file else rg_name
+
+    # Step 1: 在 manifest.db 里把 result_group=NULL 的行打上 rg_name
+    manifest_path = os.path.join(workspace, "manifest.db")
+    if os.path.exists(manifest_path):
+        try:
+            with sqlite3.connect(manifest_path, timeout=5.0) as conn:
+                for tbl in ("steps", "frames", "result_files", "result_blocks"):
+                    try:
+                        conn.execute(
+                            "UPDATE {} SET result_group=? WHERE result_group IS NULL".format(tbl),
+                            (rg_name,),
+                        )
+                    except Exception:
+                        pass
+                # result_group_meta
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO result_group_meta"
+                        " (result_group, display_name, source_file, consistency_check, created_at)"
+                        " VALUES (?,?,?,'count-only',datetime('now'))",
+                        (rg_name, display_name, source_file or ""),
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("[%s] _adopt_odb_result_group: manifest update failed: %s", project_id, exc)
+
+    # Step 2: 在 registry.db 里插入 result_groups 行（status='ready'）
+    try:
+        now = _now_iso()
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO result_groups"
+                " (project_id, result_group, display_name, source_path, source_file,"
+                "  status, parse_options, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
+                (project_id, rg_name, display_name,
+                 odb_path or "", source_file or "", now, now),
+            )
+        logger.info("[%s] Registered result_group='%s' (status=ready)", project_id, rg_name)
+    except Exception as exc:
+        logger.warning("[%s] _adopt_odb_result_group: registry update failed: %s", project_id, exc)
 
 
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
