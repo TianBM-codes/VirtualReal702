@@ -503,6 +503,11 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         logger.error(msg)
         _update_project_geom_status(project_id, "error", msg)
         return False
+    if not os.path.exists(inp_path):
+        msg = "INP file not found: {}".format(inp_path)
+        logger.error("[%s] %s", project_id, msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
 
     # --- L1: parse INP once, export geometry HDF5 + run catalog import ---
     logger.info("[%s] Geom: parsing INP %s", project_id, inp_path)
@@ -555,6 +560,11 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
     if not odb_path:
         msg = "No ODB path stored for project {}".format(project_id)
         logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    if not os.path.exists(odb_path):
+        msg = "ODB file not found: {}".format(odb_path)
+        logger.error("[%s] %s", project_id, msg)
         _update_project_geom_status(project_id, "error", msg)
         return False
 
@@ -753,6 +763,12 @@ def _run_result_group(project_id: str, result_group: str,
                       source_path: str, parse_options_json: str,
                       workspace: str) -> bool:
     label = "{}/{}".format(project_id, result_group)
+    if not source_path or not os.path.exists(source_path):
+        msg = "ODB file not found: {}".format(source_path)
+        logger.error("[%s] %s", label, msg)
+        _update_result_group_status(project_id, result_group, "error", msg)
+        return False
+
     parse_opts = {}
     if parse_options_json:
         try:
