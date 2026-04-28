@@ -597,6 +597,19 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         logger.error("[%s] Project ODB phase 2 failed (rc=%d)", project_id, rc2)
         return False
 
+    # --- Catalog import (optional: only available in combined deployment) ---
+    try:
+        from services.model_update.analysis.odb_service import import_odb_catalog
+        from src.l1.odb_model import load_odb_model
+        logger.info("[%s] Project ODB: importing ODB catalog", project_id)
+        odb_model = load_odb_model(workspace)
+        import_odb_catalog(workspace, project_id, model=odb_model)
+        logger.info("[%s] Project ODB: catalog import done", project_id)
+    except ImportError:
+        logger.debug("[%s] services.model_update not available — skipping ODB catalog import", project_id)
+    except Exception as exc:
+        logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
+
     logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
     ret = subprocess.run(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
