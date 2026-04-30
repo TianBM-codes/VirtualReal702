@@ -15,17 +15,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Backend service for visualizing Abaqus ODB (Output Database) finite element analysis simulation files. Handles large-scale FEM data (up to ~10M nodes, ~30 frames) and serves it to a Three.js frontend for 3D visualization.
+本项目是一个 FEM（有限元）后处理与模型修正平台，包含两条并行主线，共用同一个 FastAPI 进程（`app.py`）：
 
-**Implementation status**: L1 implemented; L2 substantially implemented (surface extraction + Triangle Soup + Feature Edges + Octree done, Partitioning missing); L3 core skeleton implemented (health + pick + bbox + frame-colors endpoints). L3 does not yet load or use L2 octree/feature-edge data.
+**主线 1 — ODB 可视化服务**：读取 Abaqus ODB 仿真文件，通过三层流水线（L1 提取 → L2 预处理 → L3 服务）将大规模 FEM 数据（最多 ~10M 节点、~30 帧）推送给 Three.js 前端做 3D 云图渲染。
 
-**主设计文档**：`ODB-Service-Architecture.md`（v5，项目内最高权威）。所有实现细节、HDF5 schema、算法伪代码、manifest.db schema 均以该文档为准。遇到歧义时以该文档为准，不以代码为准。
+**主线 2 — 模型修正服务**：基于试验数据（UNV 模态、BDF 静力）与仿真结果的对比，计算灵敏度矩阵，通过贝叶斯优化迭代修正 FEM 模型参数（材料属性、壳厚等），结果写回 MySQL。
+
+**ODB 可视化实现状态**：L1 已完成；L2 基本完成（表面提取 + Triangle Soup + Feature Edges + Octree，缺 Partitioning）；L3 核心骨架已完成（health/pick/bbox/frame-colors 等端点），L3 尚未加载 L2 的 octree/feature-edge 数据。
+
+**主设计文档**：`ODB-Service-Architecture.md`（v5，项目内最高权威）。所有 ODB 可视化的实现细节、HDF5 schema、算法伪代码、manifest.db schema 均以该文档为准。遇到歧义时以该文档为准，不以代码为准。
 
 ## Git 工作流
 
-本项目托管在 GitHub 私有仓库：`https://github.com/syouro/odb-service-design`（`syouro/odb-service-design`）。
+本项目托管在私有 Gitea 实例：`ssh://git@62.234.179.217:43128/RealVirtual/--702.git`。
 
-通过 Git+HTTPS 与开发者本地机器同步。**每次修改完必须提交并推送**，开发者通过 `git pull` 取最新代码。
+通过 Git+SSH 与开发者本地机器同步。**每次修改完必须提交并推送**，开发者通过 `git pull` 取最新代码。
 
 ```bash
 git add <files>
@@ -43,11 +47,24 @@ git push
 python3 -m pytest tests/ -v
 ```
 
-写完测试代码后直接 commit + push，等开发者反馈结果。
+`tests/` 下包含两条主线的测试（ODB 可视化 + 模型修正），conftest.py 提供公用 fixture。写完测试代码后直接 commit + push，等开发者反馈结果。
 
 ## Running the Code
 
 There is no build system. All execution is manual.
+
+**正常启动（Windows，双进程）：**
+```bat
+start.bat          # 同时打开两个 cmd 窗口，分别运行下面两条命令
+```
+等价于：
+```bash
+python app.py              # 进程 1：Web 服务，默认端口 5000
+python src/job_runner.py   # 进程 2：L1/L2 流水线 runner（可嵌入 app.py，见下）
+```
+`app.py` 是真正入口：它以 L3 的 FastAPI app 为基础，再挂载模型修正的所有路由。
+
+**配置**：服务从 `service_config.json`（项目根目录）读取，也可以用环境变量覆盖。关键字段：`DB_HOST/PORT/USER/PASSWORD/DATABASE`（MySQL），`APP_PORT`（默认 5000），`APP_EMBEDDED_RUNNER`（1=job_runner 作为 app.py 的后台线程自动启动，0=需要手动启另一个进程，Windows 默认 0）。
 
 **L1 Extraction (requires Abaqus license):**
 ```bash
@@ -58,13 +75,15 @@ abaqus python src/l1/abaqus_dump.py --odb /path/to/model.odb --out /data/<odb_id
 python src/l1/l1_pack.py --workspace /data/<odb_id>/
 ```
 
-**L2 preprocessing and L3 service are not yet implemented.** When built:
+**L2（已实现）：**
 ```bash
-python src/l2/ingest.py --workspace /data/<odb_id>/          # L2 (planned)
-gunicorn src.l3.main:app -w 4 -k uvicorn.workers.UvicornWorker  # L3 (planned)
+python src/l2/ingest.py --workspace /data/<odb_id>/
 ```
 
-No tests or linting infrastructure exists yet.
+**前端（Three.js，开发模式）：**
+```bash
+cd viewer && npm install && npm run dev
+```
 
 ## Three-Layer Architecture
 
@@ -125,6 +144,101 @@ Job lifecycle tracked in manifest: `submitted → l1_running → l1_done → l2_
 - **Memory model:** L3 loads 2–3 active ODB workspaces (~2 GB each); Gunicorn workers share static numpy indices via copy-on-write fork.
 - **No result caching in L3:** Reads directly from L1 HDF5 each request.
 
+## Model Update Service（模型修正主线）
+
+模型修正流程：导入试验数据 → 与仿真节点匹配 → 计算灵敏度矩阵 → 贝叶斯迭代优化参数 → 将修正后结果写回 L3 外部字段接口。
+
+### 目录结构
+
+```
+services/model_update/
+  analysis/
+    inp_service.py            — INP目录提取、测点匹配、DOF匹配、响应目录构建、DAC/DSF计算
+    sensitivity_service.py    — 灵敏度计算编排（DSA工作流、结果存储）
+    bayesian_service.py       — 贝叶斯模型修正迭代主逻辑
+    solver_service.py         — 求解器调度（Abaqus/Nastran）
+    inp_tree_service.py       — INP 文件树状结构解析
+    model_update_meta_service.py  — 项目元数据管理
+    project_source_service.py / project_status_service.py
+  importers/
+    bdf_service.py            — Nastran BDF 文件导入
+    unv_service.py            — UNV 试验模态数据导入
+  solver_prep/
+    abaqus_sensitivity.py     — 生成 Abaqus DSA inp 文件
+    abaqus_adjoint.py         — 生成 Abaqus adjoint inp 文件
+    nastran_sol103.py         — 转换 Nastran SOL103 输入文件
+
+webapi/                       — 模型修正 REST API（挂载到 app.py 的 FastAPI app）
+  routes.py                   — 汇总所有子路由
+  models.py                   — Pydantic 请求/响应模型（所有接口入参定义都在这里）
+  routers/
+    fem.py          — /import/bdf, /import/inp/catalog, /catalog/inp, /tools/inp/tree
+    test_data.py    — /import/unv, /get/sensor_position, /get/deform_sensor_position
+    matching.py     — /pair/node_point, /get/pair_node_point_result, /transform/*
+    sensitivity.py  — /sensitivity/* （计算、导出、workspace 管理）
+    optimization.py — /optimization/parameter/create, /optimization/bayesian/run, /add/response
+    solver.py       — Abaqus/Nastran 求解器直接触发接口
+    system.py       — 健康检查等
+```
+
+### 主要接口分组（app.py 中直接定义的）
+
+```
+/match/dofs                   — DOF 匹配
+/catalog/response/build       — 构建响应目录
+/import/fem/modal             — 导入 FE 模态结果
+/import/fem/static            — 导入 FE 静力结果
+/correlation/modal/compute    — 计算模态相关性（MAC）
+/correlation/static/compute   — 计算静力相关性（DAC/DSF）
+```
+
+### MySQL 数据库（`db.py`）
+
+连接配置来自 `config.py`（读 `service_config.json` 或环境变量）。`db.py` 中定义所有建表 DDL 和公共查询函数，`ensure_tables_exist()` 在服务启动时调用。主要表：
+
+| 表名前缀 | 存储内容 |
+|---|---|
+| `t_mt_py_test_*` | 试验测点坐标、试验模态频率/振型、试验静力结果 |
+| `t_mt_py_fem_*` | FE 模态/静力导入结果、节点匹配、DAC/DSF、参数变化、迭代追踪 |
+| `t_mt_measuring_point_info` | 测点基础信息（坐标、传感器类型） |
+| `t_mt_py_optimization_*` | 优化参数定义、响应定义 |
+| `t_mt_py_sensitivity_*` | 灵敏度矩阵存储 |
+
+## INP 解析器（`src/inp/`）
+
+Abaqus INP 文件的纯 Python 解析器，被模型修正服务广泛使用：
+
+```
+src/inp/
+  lexer.py          — 词法分析（处理 include、注释、续行）
+  parser.py         — 语法分析，生成 AST
+  model.py          — 数据模型（节点、单元、Section、Set、Step 等）
+  resolver.py       — 处理 *INCLUDE 文件展开、路径解析
+  topology.py       — 从解析结果提取拓扑关系（单元-节点连接）
+  parameter_mapping.py — 提取设计参数、响应定义（用于灵敏度/优化）
+  summary.py / diagnostics.py / exporter.py — 辅助工具
+  abaqus_sensitivity_tool.py — 生成 Abaqus 灵敏度分析的 INP 模板
+```
+
+## 独立模态服务（`src/modal_service/`）
+
+独立的 FastAPI 服务，端口 8001，提供模态振型 JSON 数据和对应的静态前端页面（`tools/modal_viewer.html`）。与主 `app.py` **相互独立**，单独启动：
+
+```bash
+uvicorn src.modal_service.main:app --reload --port 8001
+```
+
+## 根目录工具文件
+
+| 文件 | 作用 |
+|---|---|
+| `MeshElementFactory.py` | 单元类型工厂，按 Abaqus 单元名称返回角节点数、面连接等信息 |
+| `FemToolsUNVParser.py` | UNV 格式解析器（FEMTools 试验数据） |
+| `BDFParserPyNastran.py` | pyNastran 的 BDF 读取封装 |
+| `CustomException.py` | 项目级自定义异常 |
+| `FemNode.py` | 有限元节点数据类 |
+| `utils/VirtualRealUtils.py` | 通用工具函数 |
+
 ## Known Blockers
 
 - **Blocker A (Shell Sections):** PoC needed for `getSubset(position=NODAL)` on shell mid-surface/bottom/top points in Abaqus Python API.
@@ -142,3 +256,7 @@ Job lifecycle tracked in manifest: `submitted → l1_running → l1_done → l2_
 | `docs/l3/L3-Module-Boundary.md` | Router/Service/Repository responsibility separation |
 | `docs/l1/abaqus_dump_guide.md` | Practical guide for running L1 extraction |
 | `temp/` | Historical design iterations (v1–v4) and review notes; not authoritative |
+| `docs/model_update/模型修正接口清单.md` | 模型修正全部接口清单（可能部分过时，以代码为准） |
+| `docs/model_update/DSA-Config-Preview-Design.md` | 灵敏度 DSA 配置预览设计 |
+| `docs/model_update/DSA-Merge-Field-Design.md` | 灵敏度字段合并设计 |
+| `全部测试流程.md` | 开发迭代记录（需求 checklist），**不是权威文档，以代码为准** |
