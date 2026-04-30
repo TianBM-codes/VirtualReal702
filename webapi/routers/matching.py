@@ -35,6 +35,7 @@ async def match_nodes_api(request: Request, body: MatchNodesRequest):
             max_distance=body.max_distance,
             overwrite=body.overwrite,
             auto_translate=body.auto_translate,
+            auto_rotate=body.auto_rotate,
             translation=body.translation,
             rotation=model_to_dict(body.rotation) if body.rotation else None,
         )

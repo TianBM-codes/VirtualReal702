@@ -177,7 +177,8 @@ class MatchNodesRequest(BaseModel):
     project_id: int
     max_distance: Optional[float] = None
     overwrite: bool = True
-    auto_translate: bool = True
+    auto_translate: bool = False
+    auto_rotate: bool = False
     translation: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
     rotation: Optional[RotationRequest] = None
 

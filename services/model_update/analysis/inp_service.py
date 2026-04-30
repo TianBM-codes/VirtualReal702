@@ -1885,7 +1885,7 @@ def _ensure_octree_cache_file(cursor, project_id: int, octree_meta: dict) -> str
 
 
 def match_test_nodes(project_id, max_distance=None, overwrite=True,
-                     auto_translate=True, translation=None, rotation=None, auto_rotate=True):
+                     auto_translate=False, translation=None, rotation=None, auto_rotate=False):
     # Match imported test nodes onto the FE node cloud stored in the octree
     # cache. The saved mapping is reused by DOF matching and correlation steps.
     ensure_tables_exist()
