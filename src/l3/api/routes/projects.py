@@ -14,7 +14,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from typing import Optional
 
@@ -373,6 +373,29 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
 
 
 # ── GET /api/projects/{project_id} ────────────────────────────────────────────
+
+@router.get("/{project_id}/logs")
+async def get_project_logs(
+    project_id: str,
+    since_id: int = Query(0, ge=0, description="只返回 id > since_id 的行，用于增量轮询"),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """
+    返回 project 的解析进度日志，支持增量轮询。
+
+    覆盖范围：几何管道（INP/ODB L1+L2）和所有结果组（result_group）的解析日志。
+    result_group 相关行的 stage 以 'rg_' 开头，message 中包含结果组名称。
+
+    level 取值：step / info / warn / error
+    """
+    repo = _repo()
+    if repo.get_project(project_id) is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+    rows = repo.get_job_logs(project_id, since_id=since_id, limit=limit)
+    items = [dict(r) for r in rows]
+    next_since = items[-1]["id"] if items else since_id
+    return ok({"logs": items, "next_since_id": next_since})
+
 
 @router.get("/{project_id}")
 async def get_project(project_id: str):

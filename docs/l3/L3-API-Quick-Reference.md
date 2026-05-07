@@ -132,6 +132,7 @@ project_id + result_group
 | POST | `/api/projects` | 创建 project，提交 `.inp` 几何解析或 `.odb` 全量解析 |
 | POST | `/api/projects/{source_project_id}/clone` | 克隆 project workspace 和 registry 记录 |
 | POST | `/api/projects/{project_id}/results` | 给 project 追加 ODB 结果组 |
+| GET | `/api/projects/{project_id}/logs` | 查询解析进度日志，支持增量轮询 |
 | GET | `/api/projects/{project_id}` | 查询 project 详情 |
 | GET | `/api/projects/{project_id}/summary` | 读取 `model_summary.json` |
 | PATCH | `/api/projects/{project_id}/results/{result_group}` | 修改结果组显示名 |
@@ -597,6 +598,60 @@ async function pollLogs(odbId) {
   "message": ""
 }
 ```
+
+### `GET /api/projects/{project_id}/logs`
+
+查询 project 解析进度日志，支持增量轮询。与 `GET /api/jobs/{odb_id}/logs` 格式完全相同。
+
+**覆盖范围**：几何管道（INP 解析或 ODB L1+L2）+ 所有结果组（result_group）的解析日志，统一按 `project_id` 索引。
+
+查询参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `since_id` | `0` | 只返回 `id > since_id` 的行 |
+| `limit` | `200` | 最多返回行数，上限 1000 |
+
+响应格式同 `GET /api/jobs/{odb_id}/logs`：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "logs": [
+      {"id": 1,  "ts": "...", "level": "step", "stage": "l1_dump",    "message": "L1 阶段 1：Abaqus 导出启动"},
+      {"id": 2,  "ts": "...", "level": "info", "stage": "l1_dump",    "message": "  ODB opened. (0.3s)"},
+      {"id": 15, "ts": "...", "level": "step", "stage": "l2_done",    "message": "ODB 解析全部完成，已就绪"},
+      {"id": 16, "ts": "...", "level": "step", "stage": "rg_preflight", "message": "[case1] 结果组解析开始：一致性校验"},
+      {"id": 17, "ts": "...", "level": "info", "stage": "rg_extract",   "message": "  Step 'Step-1': 10 frames"},
+      {"id": 30, "ts": "...", "level": "step", "stage": "rg_done",      "message": "[case1] 结果组解析完成，已就绪"}
+    ],
+    "next_since_id": 30
+  },
+  "message": ""
+}
+```
+
+`stage` 取值说明（Project 模式）：
+
+| stage | 对应阶段 |
+|---|---|
+| `l1_inp` | INP 路径：解析 INP + 导出几何 HDF5 |
+| `l1_dump` | ODB 路径：`abaqus_dump.py` 导出 npy |
+| `l1_pack` | ODB 路径：`l1_pack.py` 打包 HDF5 |
+| `l1_done` | L1 完成汇总 |
+| `catalog` | INP/ODB catalog 导入（测点/参数，非致命） |
+| `l2_ingest` | `ingest.py`：三角面提取、特征边、Octree |
+| `l2_done` | 几何管道完成 |
+| `rg_preflight` | 结果组一致性校验 |
+| `rg_extract` | 结果组数据提取 |
+| `rg_l1_pack` | 结果组打包 HDF5 |
+| `rg_done` | 结果组解析完成 |
+
+注意事项：
+- 几何管道和所有结果组的日志都写入同一个 `project_id` 下，不需要分别查询。
+- result_group 相关行的 `message` 中包含结果组名称（如 `[case1] ...`），可按此过滤。
+- 删除 project 时日志随 `job_logs` 记录一并删除。
 
 ## 5. Metadata
 

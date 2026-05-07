@@ -402,6 +402,7 @@ class RegistryRepo:
 
     def delete_project(self, project_id: str) -> None:
         with self._connect() as conn:
+            conn.execute("DELETE FROM job_logs WHERE odb_id=?", (project_id,))
             conn.execute("DELETE FROM result_groups WHERE project_id=?", (project_id,))
             conn.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
 
