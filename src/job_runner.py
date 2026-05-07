@@ -121,6 +121,41 @@ logger = logging.getLogger("job_runner")
 
 _current_odb_id: list = [None]   # [0] = odb_id currently being processed, or None
 
+# ── job_logs helpers ───────────────────────────────────────────────────────────
+
+_JOB_LOGS_DDL = """
+CREATE TABLE IF NOT EXISTS job_logs (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    odb_id  TEXT    NOT NULL,
+    ts      TEXT    NOT NULL,
+    level   TEXT    NOT NULL DEFAULT 'info',
+    stage   TEXT,
+    message TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_logs_odb ON job_logs(odb_id, id);
+"""
+
+
+def _ensure_job_logs_schema() -> None:
+    """Create job_logs table if not present (needed for standalone runner without L3)."""
+    try:
+        with _connect() as conn:
+            conn.executescript(_JOB_LOGS_DDL)
+    except Exception:
+        pass
+
+
+def _log_job(odb_id: str, level: str, message: str, stage: str = None) -> None:
+    """Persist one log line to job_logs. Never raises — logging must not break the pipeline."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO job_logs (odb_id, ts, level, stage, message) VALUES (?,?,?,?,?)",
+                (odb_id, _now_iso(), level, stage, message),
+            )
+    except Exception:
+        pass
+
 
 # ── Timestamp helper ──────────────────────────────────────────────────────────
 
@@ -248,10 +283,12 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
             f"Example: {{\"APP_ABAQUS_CMD\": \"C:\\\\SIMULIA\\\\Commands\\\\abaqus.bat\"}}"
         )
         logger.error("[%s] %s: %s", odb_id, label, msg)
+        _log_job(odb_id, "error", msg, stage=label)
         return 1, msg
     except OSError as exc:
         msg = f"Failed to launch {cmd[0]!r}: {exc}"
         logger.error("[%s] %s: %s", odb_id, label, msg)
+        _log_job(odb_id, "error", msg, stage=label)
         return 1, msg
 
     stderr_lines = []
@@ -260,6 +297,7 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
         if line:
             logger.info("[%s] %s: %s", odb_id, label, line)
             stderr_lines.append(line)
+            _log_job(odb_id, "info", line, stage=label)
     proc.wait()
     return proc.returncode, "\n".join(stderr_lines[-50:])
 
@@ -338,33 +376,40 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     in-place and abaqus_dump.py is retried once.
     """
     logger.info("[%s] L1 phase 1: abaqus_dump.py", odb_id)
+    _log_job(odb_id, "step", "L1 阶段 1：Abaqus 导出（abaqus_dump.py）启动", stage="l1_dump")
     dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
-    rc1, tail1 = _run_streaming(dump_cmd, odb_id, "abaqus_dump")
+    rc1, tail1 = _run_streaming(dump_cmd, odb_id, "l1_dump")
     logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
+        _log_job(odb_id, "warn", "ODB 版本不匹配，正在升级 ODB 文件…", stage="l1_dump")
         ok, upgraded_path, upgrade_tail = _upgrade_odb(odb_path, odb_id)
         if not ok:
             _update_status(odb_id, "error",
                            error_msg="ODB upgrade failed: " + upgrade_tail)
+            _log_job(odb_id, "error", "ODB 升级失败：" + upgrade_tail[-500:], stage="l1_dump")
             return False
         logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
                     odb_id, upgraded_path)
+        _log_job(odb_id, "step", "ODB 升级完成，重试 abaqus_dump.py", stage="l1_dump")
         retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
             retry_cmd += ["--invariants", "full"]
-        rc1, tail1 = _run_streaming(retry_cmd, odb_id, "abaqus_dump_retry")
+        rc1, tail1 = _run_streaming(retry_cmd, odb_id, "l1_dump")
         logger.info("[%s] abaqus_dump retry rc=%d", odb_id, rc1)
 
     if rc1 != 0:
         log_hint = "\n[Check {}/abaqus.log for full Abaqus output]".format(workspace)
-        _update_status(odb_id, "error", error_msg="abaqus_dump failed: " + tail1 + log_hint)
+        err = "abaqus_dump failed: " + tail1 + log_hint
+        _update_status(odb_id, "error", error_msg=err)
+        _log_job(odb_id, "error", f"L1 阶段 1 失败 (rc={rc1})：" + tail1[-500:], stage="l1_dump")
         logger.error("[%s] L1 phase 1 failed (rc=%d)", odb_id, rc1)
         return False
 
+    _log_job(odb_id, "step", "L1 阶段 1 完成，开始打包 HDF5（l1_pack.py）", stage="l1_pack")
     logger.info("[%s] L1 phase 2: l1_pack.py", odb_id)
     rc2, tail2 = _run_streaming(
         [sys.executable, str(PACK_SCRIPT), "--workspace", workspace],
@@ -372,6 +417,7 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     )
     if rc2 != 0:
         _update_status(odb_id, "error", error_msg="l1_pack failed: " + tail2)
+        _log_job(odb_id, "error", f"L1 阶段 2 失败 (rc={rc2})：" + tail2[-500:], stage="l1_pack")
         logger.error("[%s] L1 phase 2 failed (rc=%d)", odb_id, rc2)
         return False
 
@@ -384,6 +430,7 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
     No Abaqus license required.
     """
     logger.info("[%s] L1 (INP): parsing %s", odb_id, inp_path)
+    _log_job(odb_id, "step", f"L1（INP）：解析 {os.path.basename(inp_path)}", stage="l1_inp")
     try:
         from src.inp import parse_inp
         from src.inp.exporter import export_l1
@@ -391,8 +438,10 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
         export_l1(model, workspace)
     except Exception as exc:
         _update_status(odb_id, "error", error_msg=f"INP parse/export failed: {exc}")
+        _log_job(odb_id, "error", f"INP 解析失败：{exc}", stage="l1_inp")
         logger.exception("[%s] INP L1 failed", odb_id)
         return False
+    _log_job(odb_id, "step", "L1（INP）解析完成", stage="l1_inp")
     logger.info("[%s] L1 (INP) done", odb_id)
     return True
 
@@ -419,6 +468,9 @@ def _run_l1(odb_id: str, source_path: str, workspace: str) -> bool:
         node_count=node_count,
         instance_count=instance_count,
     )
+    _log_job(odb_id, "step",
+             f"L1 完成（节点数 {node_count:,}，实例数 {instance_count}），开始 L2 预处理",
+             stage="l1_done")
     logger.info("[%s] L1 done (nodes=%d, instances=%d)", odb_id, node_count, instance_count)
     return True
 
@@ -433,23 +485,26 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     """
     if not INGEST_SCRIPT.exists():
         logger.info("[%s] L2 script not found, skipping L2 — marking ready", odb_id)
+        _log_job(odb_id, "warn", "L2 脚本不存在，跳过 L2，直接标记就绪", stage="l2_ingest")
         _update_status(odb_id, "ready", l2_done_at=_now_iso())
         return True
 
     _update_status(odb_id, "l2_running", l2_started_at=_now_iso())
     logger.info("[%s] L2: ingest.py", odb_id)
+    _log_job(odb_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…", stage="l2_ingest")
 
-    ret = subprocess.run(
+    rc, tail = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        capture_output=True, text=True,
+        odb_id, "l2_ingest",
     )
-    if ret.returncode != 0:
-        _update_status(odb_id, "error",
-            error_msg="[L2] ingest failed: " + ret.stderr[-2000:])
-        logger.error("[%s] L2 failed (rc=%d)", odb_id, ret.returncode)
+    if rc != 0:
+        _update_status(odb_id, "error", error_msg="[L2] ingest failed: " + tail[-2000:])
+        _log_job(odb_id, "error", f"L2 预处理失败 (rc={rc})：" + tail[-500:], stage="l2_ingest")
+        logger.error("[%s] L2 failed (rc=%d)", odb_id, rc)
         return False
 
     _update_status(odb_id, "ready", l2_done_at=_now_iso())
+    _log_job(odb_id, "step", "解析全部完成，已就绪", stage="l2_done")
     logger.info("[%s] ready", odb_id)
     return True
 
@@ -541,14 +596,14 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
 
     # --- L2: ingest (subprocess, keeps numpy/HDF5 isolated) ---
     logger.info("[%s] Geom: ingest.py (L2)", project_id)
-    ret = subprocess.run(
+    rc_l2, tail_l2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        capture_output=True, encoding="utf-8", errors="replace",
+        project_id, "l2_ingest",
     )
-    if ret.returncode != 0:
-        msg = "ingest failed: " + ret.stderr[-2000:]
+    if rc_l2 != 0:
+        msg = "ingest failed: " + tail_l2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
-        logger.error("[%s] L2 failed (rc=%d)", project_id, ret.returncode)
+        logger.error("[%s] L2 failed (rc=%d)", project_id, rc_l2)
         return False
 
     _update_project_geom_status(project_id, "ready")
@@ -621,14 +676,14 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
 
     logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
-    ret = subprocess.run(
+    rc_l2, tail_l2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        capture_output=True, encoding="utf-8", errors="replace",
+        project_id, "l2_ingest",
     )
-    if ret.returncode != 0:
-        msg = "ingest failed: " + ret.stderr[-2000:]
+    if rc_l2 != 0:
+        msg = "ingest failed: " + tail_l2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
-        logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, ret.returncode)
+        logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, rc_l2)
         return False
 
     _update_project_geom_status(project_id, "ready")
@@ -872,6 +927,7 @@ def _recover_stuck_running_states() -> None:
 def main() -> None:
     logger.info("job_runner starting (registry=%s)", REGISTRY_DB)
 
+    _ensure_job_logs_schema()
     _recover_stuck_running_states()
 
     # Start heartbeat daemon

@@ -29,6 +29,16 @@ CREATE TABLE IF NOT EXISTS odb_jobs (
     instance_count   INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS job_logs (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    odb_id  TEXT    NOT NULL,
+    ts      TEXT    NOT NULL,
+    level   TEXT    NOT NULL DEFAULT 'info',
+    stage   TEXT,
+    message TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_logs_odb ON job_logs(odb_id, id);
+
 CREATE TABLE IF NOT EXISTS projects (
     project_id   TEXT PRIMARY KEY,
     workspace    TEXT NOT NULL,
@@ -134,7 +144,31 @@ class RegistryRepo:
 
     def delete_job(self, odb_id: str) -> None:
         with self._connect() as conn:
+            conn.execute("DELETE FROM job_logs WHERE odb_id=?", (odb_id,))
             conn.execute("DELETE FROM odb_jobs WHERE odb_id=?", (odb_id,))
+
+    # ── job_logs ─────────────────────────────────────────────────────────────
+
+    def append_job_log(self, odb_id: str, level: str, message: str,
+                       stage: str = None) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO job_logs (odb_id, ts, level, stage, message)"
+                    " VALUES (?,?,?,?,?)",
+                    (odb_id, _now_iso(), level, stage, message),
+                )
+        except Exception:
+            pass
+
+    def get_job_logs(self, odb_id: str, since_id: int = 0,
+                     limit: int = 500) -> list:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT id, ts, level, stage, message FROM job_logs"
+                " WHERE odb_id=? AND id>? ORDER BY id LIMIT ?",
+                (odb_id, since_id, limit),
+            ).fetchall()
 
     def mark_stuck_jobs_as_error(self, timeout_minutes: int = 10) -> int:
         """

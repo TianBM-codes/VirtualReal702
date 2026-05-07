@@ -12,7 +12,7 @@ import shutil
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, model_validator
 
 from ...core.config import settings
@@ -152,6 +152,34 @@ async def delete_job(
         shutil.rmtree(workspace, ignore_errors=True)
 
     return ok({"hard": hard})
+
+
+@router.get("/{odb_id}/logs")
+async def get_job_logs(
+    odb_id: str,
+    since_id: int = Query(0, ge=0, description="只返回 id > since_id 的行，用于增量轮询"),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """
+    返回该 job 的进度日志，支持增量轮询。
+
+    level 取值：
+      - 'step'  — 流水线阶段切换（如"L1 phase 1 开始"）
+      - 'info'  — 子进程普通输出
+      - 'warn'  — 警告（如 ODB 版本不匹配）
+      - 'error' — 错误行
+
+    前端轮询示例：
+      首次：GET /api/jobs/{id}/logs
+      后续：GET /api/jobs/{id}/logs?since_id={next_since_id}
+    """
+    repo = _repo()
+    if repo.get_job(odb_id) is None:
+        raise NotFoundError(f"Job '{odb_id}' not found")
+    rows = repo.get_job_logs(odb_id, since_id=since_id, limit=limit)
+    items = [dict(r) for r in rows]
+    next_since = items[-1]["id"] if items else since_id
+    return ok({"logs": items, "next_since_id": next_since})
 
 
 @router.post("/{odb_id}/retry")
