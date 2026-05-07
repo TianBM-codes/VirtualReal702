@@ -171,6 +171,9 @@ def parse_args():
     p.add_argument('--check-mode', choices=['count-only', 'label-only'],
                    default='count-only',
                    help='Consistency check depth (consistency-check mode only)')
+    p.add_argument('--geom-source', choices=['odb', 'inp'], default='odb',
+                   help='How project geometry was extracted: odb=hard-fail on count mismatch, '
+                        'inp=warn only (INP parser may miss connector/special elements)')
     p.add_argument('--invariants', choices=['none', 'full'], default='none',
                    help=('none=skip invariants (fast, default); '
                          'full=extract all validInvariants via .values iteration '
@@ -1862,7 +1865,7 @@ def _run_consistency_check(args, odb_path, workspace):
         _fmt_t(time.time() - t0)))
 
 
-def _consistency_check_inline(odb, workspace, result_group, check_mode):
+def _consistency_check_inline(odb, workspace, result_group, check_mode, geom_source='odb'):
     """
     Consistency check merged into extract: counts nodes/elements per instance,
     writes check.json, then validates against manifest.db.
@@ -1953,16 +1956,20 @@ def _consistency_check_inline(odb, workspace, result_group, check_mode):
                 "{}: elem_count geom={} odb={}".format(inst, g_elems, o['elem_count']))
 
     if mismatches:
-        print("ERROR: consistency check failed:")
-        for m in mismatches:
-            print("  " + m)
-        # Print machine-readable sentinel — Abaqus Python exit codes are not
-        # reliably propagated on Windows, so job_runner detects failures via
-        # output text (same pattern as ODB_VERSION_ERROR).
-        print("ODB_CONSISTENCY_FAIL: " + " | ".join(mismatches))
-        sys.exit(1)
-
-    print("  consistency check passed ({}).".format(check_mode))
+        if geom_source == 'inp':
+            # INP parser and ODB may count nodes/elements differently (e.g. connector
+            # or special elements not parsed from INP). Warn but do not block.
+            print("WARNING: consistency check mismatch (INP vs ODB, non-fatal):")
+            for m in mismatches:
+                print("  " + m)
+        else:
+            print("ERROR: consistency check failed:")
+            for m in mismatches:
+                print("  " + m)
+            print("ODB_CONSISTENCY_FAIL: " + " | ".join(mismatches))
+            sys.exit(1)
+    else:
+        print("  consistency check passed ({}).".format(check_mode))
 
 
 def _run_extract(args, odb_path, workspace):
@@ -1990,7 +1997,9 @@ def _run_extract(args, odb_path, workspace):
 
     # Inline consistency check (replaces separate --mode consistency-check call)
     try:
-        _consistency_check_inline(odb, workspace, result_group, args.check_mode)
+        _consistency_check_inline(odb, workspace, result_group,
+                                   args.check_mode,
+                                   geom_source=getattr(args, 'geom_source', 'odb'))
     except SystemExit:
         odb.close()
         raise

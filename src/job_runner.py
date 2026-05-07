@@ -313,6 +313,18 @@ def _is_odb_version_error(rc: int, tail: str) -> bool:
     return "ODB_VERSION_ERROR" in tail
 
 
+def _project_used_inp_geom(project_id: str) -> bool:
+    """Return True if this project's geometry was extracted from INP (not ODB)."""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT source_type FROM projects WHERE project_id=?", (project_id,)
+            ).fetchone()
+            return row is not None and row["source_type"] != "odb"
+    except Exception:
+        return False
+
+
 def _is_consistency_fail(rc: int, tail: str) -> bool:
     """
     Detect geometry-ODB mismatch via sentinel printed by _consistency_check_inline().
@@ -892,6 +904,10 @@ def _run_result_group(project_id: str, result_group: str,
                    "--result-group", result_group,
                    "--mode", "extract",
                    "--check-mode", check_mode]
+    # INP-derived geometry may have count differences vs ODB (connector/special elements);
+    # downgrade consistency mismatch to warning instead of hard fail.
+    if _project_used_inp_geom(project_id):
+        extract_cmd += ["--geom-source", "inp"]
     if inv_mode == "full":
         extract_cmd += ["--invariants", "full"]
     _append_extract_filters(extract_cmd, parse_opts)
