@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-07
+更新时间：2026-05-07（步骤/帧接口）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -143,6 +143,9 @@ project_id + result_group
 | 分组 | Method | Path |
 |---|---|---|
 | meta | GET | `/api/odb/{odb_id}/meta/overview` |
+| meta | GET | `/api/odb/{odb_id}/steps` |
+| meta | GET | `/api/odb/{odb_id}/steps/{step_name}/frames` |
+| meta | GET | `/api/odb/{odb_id}/steps/{step_name}/frames/{frame_idx}` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/render-buffers` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/element-mesh-edges` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/feature-edges` |
@@ -694,6 +697,132 @@ async function pollLogs(odbId) {
 - `steps` / `fields` 会按 `result_group` 过滤。
 - `fields[*].source` 可能是 `odb` 或 `external`。
 - `components` / `positions` 当前通常是 JSON 字符串，前端需要解析。
+
+### `GET /api/odb/{odb_id}/steps`
+
+列出该 ODB 的所有分析步。
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "step_name": "sag",
+      "step_number": 1,
+      "procedure": "STATIC",
+      "num_frames": 20,
+      "description": "Static sag load"
+    },
+    {
+      "step_name": "eigenfrequency",
+      "step_number": 2,
+      "procedure": "FREQUENCY",
+      "num_frames": 5,
+      "description": null
+    }
+  ],
+  "message": ""
+}
+```
+
+说明：
+- 按 `step_number` 排序（即 ODB 中定义顺序）。
+- `description` 来自 ODB `step.description` 属性；旧版 manifest.db 中该列不存在时返回 `null`，不会报错。
+
+---
+
+### `GET /api/odb/{odb_id}/steps/{step_name}/frames`
+
+列出指定步骤的所有帧（轻量，供下拉列表使用）。
+
+路径参数：
+
+| 参数 | 说明 |
+|---|---|
+| `step_name` | 步骤名，如 `sag` |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {"frame_idx": 0, "frame_value": 0.05, "description": "Increment 1: Step Time = 0.05"},
+    {"frame_idx": 19, "frame_value": 1.0,  "description": "Increment 20: Step Time = 1.000"}
+  ],
+  "message": ""
+}
+```
+
+模态步示例：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {"frame_idx": 0, "frame_value": 1.0, "description": "Mode 1: Value = 12345.  Freq = 17.69  (cycles/time)"},
+    {"frame_idx": 4, "frame_value": 5.0, "description": "Mode 5: Value = 85255.  Freq = 46.47  (cycles/time)"}
+  ],
+  "message": ""
+}
+```
+
+---
+
+### `GET /api/odb/{odb_id}/steps/{step_name}/frames/{frame_idx}`
+
+获取单帧完整元数据。
+
+路径参数：
+
+| 参数 | 说明 |
+|---|---|
+| `step_name` | 步骤名 |
+| `frame_idx` | 帧索引（0-based，重索引后的序号） |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "frame_idx": 4,
+    "frame_value": 5.0,
+    "description": "Mode 5: Value = 85255.  Freq = 46.471  (cycles/time)",
+    "domain": "MODAL",
+    "frequency": 46.471,
+    "mode_number": 5,
+    "increment_number": 1,
+    "is_imaginary": 0,
+    "frame_id": 1,
+    "cyclic_mode_number": null,
+    "load_case": null
+  },
+  "message": ""
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|---|---|
+| `frame_idx` | 重索引后的 0-based 序号（与结果查询接口的 `frame` 参数对应） |
+| `frame_value` | 时间轴值（静力步为时间，模态步为模态阶次） |
+| `description` | ODB 帧描述文本 |
+| `domain` | `TIME` / `MODAL` / `FREQUENCY`；旧库返回 `null` |
+| `frequency` | 模态频率（Hz）；非模态步为 `null` |
+| `mode_number` | 模态阶次；非模态步为 `null` |
+| `increment_number` | 增量步号；旧库返回 `null` |
+| `is_imaginary` | 是否虚部帧（复数频响），`0` 或 `1`；旧库返回 `null` |
+| `frame_id` | ODB 原始帧 ID（可能与 `frame_idx` 不同）；旧库返回 `null` |
+| `cyclic_mode_number` | 循环对称模态号，通常为 `null` |
+| `load_case` | 载荷工况，通常为 `null` |
+
+步骤或帧不存在时返回 404。
+
+---
 
 ## 6. Geometry
 
