@@ -810,10 +810,20 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
         frames_meta = []
         all_field_names = set()
         for fi, frame in enumerate(step.frames):
+            _domain = getattr(frame, 'domain', None)
+            _lc = getattr(frame, 'loadCase', None)
             frames_meta.append({
-                'frame_idx':   fi,
-                'frame_value': float(frame.frameValue),
-                'description': frame.description,
+                'frame_idx':          fi,
+                'frame_value':        float(frame.frameValue),
+                'description':        frame.description,
+                'domain':             str(_domain) if _domain is not None else None,
+                'frequency':          getattr(frame, 'frequency', None),
+                'mode_number':        getattr(frame, 'mode', None),
+                'increment_number':   getattr(frame, 'incrementNumber', None),
+                'is_imaginary':       int(getattr(frame, 'isImaginary', False) or False),
+                'frame_id':           getattr(frame, 'frameId', None),
+                'cyclic_mode_number': getattr(frame, 'cyclicModeNumber', None),
+                'load_case':          str(_lc) if _lc is not None else None,
             })
             all_field_names.update(frame.fieldOutputs.keys())
 
@@ -1277,10 +1287,20 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
 
         frames_meta = []
         for fi, (_, frame) in enumerate(selected_frames):
+            _domain = getattr(frame, 'domain', None)
+            _lc = getattr(frame, 'loadCase', None)
             frames_meta.append({
-                'frame_idx':   fi,
-                'frame_value': float(frame.frameValue),
-                'description': frame.description,
+                'frame_idx':          fi,
+                'frame_value':        float(frame.frameValue),
+                'description':        frame.description,
+                'domain':             str(_domain) if _domain is not None else None,
+                'frequency':          getattr(frame, 'frequency', None),
+                'mode_number':        getattr(frame, 'mode', None),
+                'increment_number':   getattr(frame, 'incrementNumber', None),
+                'is_imaginary':       int(getattr(frame, 'isImaginary', False) or False),
+                'frame_id':           getattr(frame, 'frameId', None),
+                'cyclic_mode_number': getattr(frame, 'cyclicModeNumber', None),
+                'load_case':          str(_lc) if _lc is not None else None,
             })
 
         steps_meta[step_name] = {

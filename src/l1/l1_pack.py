@@ -598,9 +598,12 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
         )
         for fm in sm['frames']:
             db_conn.execute(
-                "INSERT OR REPLACE INTO frames VALUES (?,?,?,?,?)",
+                "INSERT OR REPLACE INTO frames VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (result_group, step_name,
-                 fm['frame_idx'], fm['frame_value'], fm['description'])
+                 fm['frame_idx'], fm['frame_value'], fm['description'],
+                 fm.get('domain'), fm.get('frequency'), fm.get('mode_number'),
+                 fm.get('increment_number'), fm.get('is_imaginary'),
+                 fm.get('frame_id'), fm.get('cyclic_mode_number'), fm.get('load_case'))
             )
     db_conn.commit()
 

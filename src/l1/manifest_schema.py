@@ -33,11 +33,19 @@ CREATE TABLE IF NOT EXISTS steps (
     PRIMARY KEY (result_group, step_name)
 );
 CREATE TABLE IF NOT EXISTS frames (
-    result_group TEXT,
-    step_name    TEXT,
-    frame_idx    INTEGER,
-    frame_value  REAL,
-    description  TEXT,
+    result_group       TEXT,
+    step_name          TEXT,
+    frame_idx          INTEGER,
+    frame_value        REAL,
+    description        TEXT,
+    domain             TEXT,
+    frequency          REAL,
+    mode_number        INTEGER,
+    increment_number   INTEGER,
+    is_imaginary       INTEGER,
+    frame_id           INTEGER,
+    cyclic_mode_number INTEGER,
+    load_case          TEXT,
     PRIMARY KEY (result_group, step_name, frame_idx)
 );
 CREATE TABLE IF NOT EXISTS result_files (
