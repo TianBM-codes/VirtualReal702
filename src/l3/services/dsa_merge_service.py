@@ -135,7 +135,18 @@ def _resolve_element_labels(
     element_label = param_row.get("element_label")
     if element_label is not None:
         instance_name = param_row.get("instance_name") or ""
-        result[instance_name] = [int(element_label)]
+        if instance_name:
+            result[instance_name] = [int(element_label)]
+            return result
+        # instance_name is NULL in DB: resolve via part_name, or fall back to all instances.
+        # An element label is scoped to an instance, so we must not use "" as the key.
+        part_name = param_row.get("part_name")
+        if part_name:
+            for inst in repo.get_instances_by_part_name(part_name):
+                result[str(inst)] = [int(element_label)]
+        else:
+            for inst_row in repo.list_instances():
+                result[str(inst_row["instance_name"])] = [int(element_label)]
         return result
 
     set_name = str(param_row.get("set_name") or "")
