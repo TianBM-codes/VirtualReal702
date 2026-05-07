@@ -1862,10 +1862,110 @@ def _run_consistency_check(args, odb_path, workspace):
         _fmt_t(time.time() - t0)))
 
 
+def _consistency_check_inline(odb, workspace, result_group, check_mode):
+    """
+    Consistency check merged into extract: counts nodes/elements per instance,
+    writes check.json, then validates against manifest.db.
+    Calls sys.exit(1) on mismatch so the caller can odb.close() first.
+    Python 2/3 compatible (sqlite3 is stdlib in both).
+    """
+    import sqlite3 as _sqlite3
+
+    out_dir = os.path.join(workspace, 'l1_raw', 'consistency', safe(result_group))
+    mkdirs(out_dir)
+
+    assembly = odb.rootAssembly
+    instances_out = {}
+
+    for inst_name, instance in assembly.instances.items():
+        node_count = len(instance.nodes)
+        elem_count = len(instance.elements)
+        inst_entry = {'node_count': node_count, 'elem_count': elem_count}
+
+        if check_mode == 'label-only':
+            raw_labels = np.array([n.label for n in instance.nodes], dtype=np.int32)
+            nl_path = os.path.join(out_dir, '{}_node_labels.npy'.format(safe(inst_name)))
+            npsave(nl_path, np.sort(raw_labels))
+            inst_entry['node_labels_path'] = os.path.relpath(nl_path, workspace)
+
+            elem_by_type = {}
+            for elem in instance.elements:
+                t = elem.type
+                if t not in elem_by_type:
+                    elem_by_type[t] = []
+                elem_by_type[t].append(elem.label)
+
+            elem_labels_paths = {}
+            for etype, labels in elem_by_type.items():
+                el_path = os.path.join(
+                    out_dir, '{}_{}_elem_labels.npy'.format(safe(inst_name), safe(etype)))
+                npsave(el_path, np.array(sorted(labels), dtype=np.int32))
+                elem_labels_paths[etype] = os.path.relpath(el_path, workspace)
+            inst_entry['element_labels'] = elem_labels_paths
+
+        instances_out[inst_name] = inst_entry
+        print("  {}: nodes={} elems={}".format(inst_name, node_count, elem_count))
+
+    jdump(os.path.join(out_dir, 'check.json'), {
+        'mode': check_mode,
+        'warning': (
+            'Count-only validation does not verify label or row mapping. '
+            'Mismatched labels with matching counts will not be detected.'
+        ),
+        'instances': instances_out,
+    })
+
+    # Validate against manifest.db (node/elem counts must match geometry)
+    manifest = os.path.join(workspace, 'manifest.db')
+    if not os.path.exists(manifest):
+        print("  WARNING: manifest.db not found, skipping count validation")
+        return
+
+    try:
+        _conn = _sqlite3.connect(manifest, timeout=5.0)
+        _rows = _conn.execute(
+            "SELECT instance_name, node_count, elem_count FROM instances"
+        ).fetchall()
+        _conn.close()
+    except Exception as _e:
+        print("  WARNING: cannot read manifest.db ({}), skipping validation".format(_e))
+        return
+
+    if not _rows:
+        print("  WARNING: no instances in manifest.db, skipping validation")
+        return
+
+    geom_inst = {r[0]: (r[1], r[2]) for r in _rows}
+
+    if set(geom_inst) != set(instances_out):
+        print("ERROR: instance list mismatch: geom={} odb={}".format(
+            sorted(geom_inst), sorted(instances_out)))
+        sys.exit(1)
+
+    mismatches = []
+    for inst, (g_nodes, g_elems) in geom_inst.items():
+        o = instances_out[inst]
+        if g_nodes is not None and g_nodes != o['node_count']:
+            mismatches.append(
+                "{}: node_count geom={} odb={}".format(inst, g_nodes, o['node_count']))
+        if g_elems is not None and g_elems != o['elem_count']:
+            mismatches.append(
+                "{}: elem_count geom={} odb={}".format(inst, g_elems, o['elem_count']))
+
+    if mismatches:
+        print("ERROR: consistency check failed:")
+        for m in mismatches:
+            print("  " + m)
+        sys.exit(1)
+
+    print("  consistency check passed ({}).".format(check_mode))
+
+
 def _run_extract(args, odb_path, workspace):
     """
-    --mode extract: 只提取结果，跳过几何/assembly/sets。
+    --mode extract: consistency check + 结果提取 + sections 提取，一次 ODB 打开完成。
     输出: <workspace>/l1_raw/rg_<result_group>/ （供 l1_pack.py --result-group 读取）
+          <workspace>/l1_raw/consistency/<result_group>/check.json
     """
     result_group = args.result_group
     if not result_group:
@@ -1883,6 +1983,18 @@ def _run_extract(args, odb_path, workspace):
     t0 = time.time()
     odb = _open_odb(odb_path)
     print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
+
+    # Inline consistency check (replaces separate --mode consistency-check call)
+    try:
+        _consistency_check_inline(odb, workspace, result_group, args.check_mode)
+    except SystemExit:
+        odb.close()
+        raise
+    except Exception:
+        print("ERROR during consistency check:")
+        traceback.print_exc()
+        odb.close()
+        sys.exit(1)
 
     try:
         step_names = _parse_csv_names(args.steps)

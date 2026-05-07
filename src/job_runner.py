@@ -872,37 +872,17 @@ def _run_result_group(project_id: str, result_group: str,
     display_name = parse_opts.get("display_name", result_group)
     source_file = os.path.basename(source_path)
 
-    # Step 1: consistency check
-    logger.info("[%s] preflight (%s)", label, check_mode)
+    # Step 1: extract results (consistency check is now inline at start of extract)
+    logger.info("[%s] extract (check-mode=%s)", label, check_mode)
     _log_job(project_id, "step",
-             "[{}] 结果组解析开始：一致性校验（{}）".format(result_group, check_mode),
-             stage="rg_preflight")
-    rc, tail = _run_streaming(
-        [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
-         "--odb", source_path, "--out", workspace,
-         "--result-group", result_group,
-         "--mode", "consistency-check",
-         "--check-mode", check_mode],
-        project_id, "rg_preflight",
-    )
-    if rc != 0:
-        msg = "consistency-check failed: " + tail
-        _update_result_group_status(project_id, result_group, "error", msg)
-        _log_job(project_id, "error",
-                 "[{}] 一致性校验失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
-                 stage="rg_preflight")
-        return False
-
-    # Step 2: extract results
-    logger.info("[%s] extract", label)
-    _log_job(project_id, "step",
-             "[{}] 提取结果数据（abaqus_dump extract）".format(result_group),
+             "[{}] 结果组解析：一致性校验 + 提取（abaqus_dump extract）".format(result_group),
              stage="rg_extract")
     inv_mode = parse_opts.get("invariants", INVARIANTS_MODE)
     extract_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
                    "--odb", source_path, "--out", workspace,
                    "--result-group", result_group,
-                   "--mode", "extract"]
+                   "--mode", "extract",
+                   "--check-mode", check_mode]
     if inv_mode == "full":
         extract_cmd += ["--invariants", "full"]
     _append_extract_filters(extract_cmd, parse_opts)
