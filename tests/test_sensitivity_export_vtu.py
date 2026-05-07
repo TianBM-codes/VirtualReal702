@@ -72,6 +72,7 @@ def test_build_workspace_from_odb_returns_text_stdout(monkeypatch, tmp_path: Pat
     )
 
     result = sensitivity_service.build_workspace_from_odb(
+        project_id=None,
         odb_path=str(odb_path),
         workspace=str(workspace),
     )

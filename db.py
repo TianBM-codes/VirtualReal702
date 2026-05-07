@@ -9,6 +9,14 @@ except ImportError:  # pragma: no cover - local direct run fallback
 
 CREATE_TABLE_SQL_LIST = [
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_console_log (
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        `time` BIGINT NOT NULL COMMENT '日志时间戳(毫秒)',
+        log_text VARCHAR(2048) NOT NULL COMMENT 'HTML格式日志内容',
+        KEY idx_pid_time (pid, `time`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='控制台日志表';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_test_node (
         nid VARCHAR(100) NOT NULL COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',

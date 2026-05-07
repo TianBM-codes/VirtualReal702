@@ -17,6 +17,7 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from . import sensitivity_service as _sens
+from .console_log_service import safe_write_console_event
 from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
 
@@ -1370,7 +1371,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             ))
 
         conn.commit()
-        return {
+        result = {
             "file_path": os.path.abspath(file_path),
             "project_id": project_id,
             "material_count": len(legacy_materials["overview_rows"]),
@@ -1394,6 +1395,18 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "supported_quantities_preview": supported_quantities[:10],
             "quantity_set_capabilities_preview": quantity_set_capabilities[:10],
         }
+        safe_write_console_event(
+            int(project_id),
+            "INP导入完成",
+            [
+                f"文件: {os.path.abspath(file_path)}",
+                f"节点数: {int(len(node_data['point_labels']))}",
+                f"实例数: {len(node_data['entries'])}",
+                f"设计参数数: {len(parameter_definitions)}",
+                f"设计响应数: {len(design_responses)}",
+            ],
+        )
+        return result
     except Exception:
         conn.rollback()
         raise

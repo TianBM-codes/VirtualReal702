@@ -207,6 +207,7 @@ class TransformAutoInfoRequest(BaseModel):
 
 
 class SensitivityBuildWorkspaceRequest(BaseModel):
+    project_id: Optional[int] = None
     odb_path: str
     workspace: str
     abaqus: Optional[str] = None

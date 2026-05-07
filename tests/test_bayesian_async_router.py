@@ -33,3 +33,42 @@ def test_bayesian_run_kwargs_uses_service_config_defaults(monkeypatch):
     assert kwargs["output_dir"] == "D:/temp/bayesian"
     assert kwargs["abaqus"] == "C:/SIMULIA/Commands/abaqus.bat"
     assert kwargs["python3"] == "C:/Python/python.exe"
+
+
+def test_run_bayesian_update_workflow_compact_wraps_sensitivity_status(monkeypatch):
+    captured = {}
+
+    def fake_wrapper(project_id, fn):
+        captured["project_id"] = project_id
+        return fn()
+
+    monkeypatch.setattr(optimization._sens, "_run_with_project_sensitivity_status", fake_wrapper)
+    monkeypatch.setattr(
+        optimization,
+        "run_bayesian_update_workflow",
+        lambda **kwargs: {
+            "project_id": kwargs["project_id"],
+            "batch_no": kwargs.get("batch_no"),
+            "input_inp": kwargs["input_inp"],
+            "output_dir": "D:/temp/bayesian",
+            "save_results": True,
+            "iterations": 1,
+            "requested_iterations": 1,
+            "stopped_early": False,
+            "exit_diff_percent": None,
+            "final_updated_inp": "D:/temp/bayesian/iter1.inp",
+            "saved_artifacts": {"history_dir": "D:/temp/bayesian/history", "files": {}},
+            "cloud_result": None,
+            "final_static_output": None,
+            "iteration_results": [],
+        },
+    )
+
+    result = optimization._run_bayesian_update_workflow_compact(
+        project_id=12,
+        input_inp="D:/demo/model.inp",
+        target_responses={"R1": 1.0},
+    )
+
+    assert captured["project_id"] == 12
+    assert result["project_id"] == 12

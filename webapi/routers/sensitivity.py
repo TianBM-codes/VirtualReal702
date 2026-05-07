@@ -356,6 +356,7 @@ async def build_sensitivity_workspace(request: Request, body: SensitivityBuildWo
     await log_request(request, model_to_dict(body))
     try:
         data = build_workspace_from_odb(
+            project_id=body.project_id,
             odb_path=body.odb_path,
             workspace=body.workspace,
             abaqus=body.abaqus,

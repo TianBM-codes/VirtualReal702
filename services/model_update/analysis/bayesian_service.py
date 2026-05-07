@@ -24,6 +24,7 @@ from . import inp_service as _inp
 from .ccmetrics import build_ccdis as _build_ccdis
 from .ccmetrics import build_ccmean as _build_ccmean
 from .ccmetrics import build_cctot as _build_cctot
+from .console_log_service import safe_write_console_event
 from .project_status_service import update_work_condition_project_status
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
@@ -50,6 +51,26 @@ def _clone_jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_clone_jsonable(item) for item in value]
     return value
+
+
+def _write_bayesian_iteration_console_log(
+    *,
+    project_id: int,
+    batch_no: int,
+    iteration_result: dict,
+    stopped_early: bool,
+) -> None:
+    metrics = dict(iteration_result.get("metrics") or {})
+    exit_check = dict(iteration_result.get("exit_check") or {})
+    lines = [
+        f"批次号: {batch_no}",
+        f"迭代步: {iteration_result.get('iteration')}",
+        f"响应相对残差: {metrics.get('rel_res')}",
+        f"最大响应偏差(%): {metrics.get('max_abs_response_diff')}",
+    ]
+    if exit_check:
+        lines.append(f"满足提前终止: {'是' if stopped_early else '否'}")
+    safe_write_console_event(project_id, "模型修正迭代完成", lines)
 
 
 def read_row_from_m_n(file_path: str, m: int, n: int) -> np.ndarray:
@@ -1718,6 +1739,7 @@ def build_dsa_normalized_sensitivity_matrix(
             workspace_parent.mkdir(parents=True, exist_ok=True)
             resolved_workspace = str((workspace_parent / f"{Path(odb_abs).stem}_workspace").resolve())
         _sens.build_workspace_from_odb(
+            project_id=None,
             odb_path=odb_abs,
             workspace=resolved_workspace,
             abaqus=abaqus,
@@ -2202,6 +2224,7 @@ def _run_iteration_solver(
 
     workspace_dir = (output_dir / f"workspace_iter{iteration}").resolve()
     workspace_info = _sens.build_workspace_from_odb(
+        project_id=None,
         odb_path=odb_path,
         workspace=str(workspace_dir),
         abaqus=abaqus,
@@ -2774,6 +2797,12 @@ def run_bayesian_update_workflow(
             if save_results:
                 iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)
             iteration_results.append(iteration_result)
+            _write_bayesian_iteration_console_log(
+                project_id=int(project_id),
+                batch_no=resolved_batch_no,
+                iteration_result=iteration_result,
+                stopped_early=stopped_early,
+            )
             _persist_bayesian_tracking_results(
                 project_id=project_id,
                 batch_no=resolved_batch_no,
@@ -2838,7 +2867,7 @@ def run_bayesian_update_workflow(
             fixes_cal_status=1,
             fixes_result_status=1,
         )
-        return {
+        result = {
             "project_id": project_id,
             "batch_no": resolved_batch_no,
             "input_inp": str(input_path),
@@ -2861,6 +2890,17 @@ def run_bayesian_update_workflow(
             "cloud_result": cloud_result,
             "final_static_output": final_static_output,
         }
+        safe_write_console_event(
+            int(project_id),
+            "模型修正完成",
+            [
+                f"批次号: {resolved_batch_no}",
+                f"迭代次数: {len(iteration_results)}",
+                f"提前终止: {'是' if stopped_early else '否'}",
+                f"输出目录: {str(root_dir) if save_results else '-'}",
+            ],
+        )
+        return result
     finally:
         if cleanup_root_dir is not None:
             shutil.rmtree(cleanup_root_dir, ignore_errors=True)

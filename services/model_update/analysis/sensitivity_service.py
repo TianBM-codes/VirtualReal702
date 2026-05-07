@@ -37,6 +37,7 @@ from .abaqusDSAInpGenerator import (
     patch_static_step_to_dsa,
     remove_blank_lines,
 )
+from .console_log_service import safe_write_console_event
 from .model_update_meta_service import resolve_abaqus_command
 from .project_source_service import resolve_project_source_inp_path
 from .solver_service import delete_abaqus_process_files, run_abaqus_job, run_abaqus_sensitivity_job
@@ -327,6 +328,7 @@ def _rebuild_selected_parameters_from_inp(*, project_id: int, inp_path: str) -> 
 
 
 def build_workspace_from_odb(
+        project_id: Optional[int],
         odb_path: str,
         workspace: str,
         abaqus: Optional[str] = None,
@@ -381,12 +383,22 @@ def build_workspace_from_odb(
         )
 
     manifest = os.path.join(workspace_abs, "manifest.db")
-    return {
+    result = {
         "odb_path": odb_abs,
         "workspace": workspace_abs,
         "manifest_db": manifest if os.path.exists(manifest) else None,
         "stdout_tail": stdout[-4000:],
     }
+    if project_id is not None:
+        safe_write_console_event(
+            int(project_id),
+            "ODB导入完成",
+            [
+                f"ODB文件: {odb_abs}",
+                f"工作区: {workspace_abs}",
+            ],
+        )
+    return result
 
 
 def get_sensitivity_overview(workspace: str) -> dict:
@@ -1479,6 +1491,17 @@ def _finalize_sensitivity_store_result(
     }
     if extra_payload:
         result.update(extra_payload)
+    safe_write_console_event(
+        int(project_id),
+        "灵敏度计算完成",
+        [
+            f"批次号: {batch_no}",
+            f"分析ID: {persisted['analysis_run_id']}",
+            f"响应数: {persisted['response_count']}",
+            f"参数数: {persisted['parameter_count']}",
+            f"工作区: {result.get('workspace') or '-'}",
+        ],
+    )
     return result
 
 
@@ -2250,6 +2273,7 @@ def run_sensitivity_inp_and_store(
         else:
             resolved_workspace = _default_solver_workspace(output_dir_abs, resolved_job_name)
             build_workspace_from_odb(
+                project_id=int(project_id),
                 odb_path=str(resolved_odb_path),
                 workspace=resolved_workspace,
                 abaqus=abaqus,
@@ -3808,6 +3832,7 @@ def _export_sensitivity_vtu(
                 {"odb_path": odb_path},
             )
         build_workspace_from_odb(
+            project_id=None,
             odb_path=odb_path,
             workspace=workspace,
             abaqus=abaqus,
