@@ -20,6 +20,7 @@ from typing import Optional
 
 from ...core.config import settings
 from ...core.errors import ConflictError, NotFoundError, ValidationError
+from ...core.state import registry
 from ...infra.registry_repo import RegistryRepo
 from ...infra.manifest_repo import ManifestRepo
 from ...infra.workspace_safety import (
@@ -404,6 +405,12 @@ async def get_project(project_id: str):
     proj = repo.get_project(project_id)
     if proj is None:
         raise NotFoundError(f"Project '{project_id}' not found")
+    # Eagerly load into registry if ready but not yet in memory.
+    # Closes the 10-second poll gap: frontend sees geom_status=ready here,
+    # then immediately calls /meta/overview — registry must have the entry by then.
+    if proj["geom_status"] == "ready" and registry.get(project_id) is None:
+        workspace = _resolve_workspace(proj["workspace"], project_id)
+        registry.load(project_id, workspace, "ready")
     return ok(_build_project_response(proj, repo))
 
 
