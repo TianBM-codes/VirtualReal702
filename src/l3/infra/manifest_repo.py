@@ -685,17 +685,18 @@ class ManifestRepo:
     # ── Simright adapter helpers ───────────────────────────────────────────────
 
     def list_steps(self):
-        """Return all steps ordered by rowid, each as a dict."""
+        """Return all steps ordered by step_number, each as a dict."""
         try:
             with self._get_conn() as conn:
                 return [dict(r) for r in conn.execute(
-                    "SELECT rowid, step_name, procedure, num_frames FROM steps ORDER BY rowid"
+                    "SELECT step_name, step_number, procedure, num_frames, description"
+                    " FROM steps ORDER BY step_number"
                 ).fetchall()]
         except Exception:
             return []
 
     def list_frames(self, step_name: str):
-        """Return frames for a step ordered by frame_idx."""
+        """Return lightweight frame list for a step (idx + description only)."""
         try:
             with self._get_conn() as conn:
                 return [dict(r) for r in conn.execute(
@@ -705,6 +706,18 @@ class ManifestRepo:
                 ).fetchall()]
         except Exception:
             return []
+
+    def get_frame(self, step_name: str, frame_idx: int):
+        """Return full metadata for a single frame, or None if not found."""
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM frames WHERE step_name=? AND frame_idx=?",
+                    (step_name, frame_idx),
+                ).fetchone()
+                return dict(row) if row else None
+        except Exception:
+            return None
 
     def list_result_files(self, step_name: str = None):
         """Return result_files rows, optionally filtered by step."""

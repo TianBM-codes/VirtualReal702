@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS steps (
     step_number  INTEGER,
     procedure    TEXT,
     num_frames   INTEGER,
+    description  TEXT,
     PRIMARY KEY (result_group, step_name)
 );
 CREATE TABLE IF NOT EXISTS frames (
