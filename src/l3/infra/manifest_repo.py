@@ -688,10 +688,21 @@ class ManifestRepo:
         """Return all steps ordered by step_number, each as a dict."""
         try:
             with self._get_conn() as conn:
-                return [dict(r) for r in conn.execute(
-                    "SELECT step_name, step_number, procedure, num_frames, description"
-                    " FROM steps ORDER BY step_number"
-                ).fetchall()]
+                try:
+                    rows = conn.execute(
+                        "SELECT step_name, step_number, procedure, num_frames, description"
+                        " FROM steps ORDER BY step_number"
+                    ).fetchall()
+                except Exception:
+                    # Old manifest.db without description column
+                    rows = conn.execute(
+                        "SELECT step_name, step_number, procedure, num_frames"
+                        " FROM steps ORDER BY step_number"
+                    ).fetchall()
+                result = [dict(r) for r in rows]
+                for r in result:
+                    r.setdefault("description", None)
+                return result
         except Exception:
             return []
 
