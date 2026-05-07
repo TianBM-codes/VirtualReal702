@@ -1716,6 +1716,67 @@ def main():
 
 # ─── New project-grouping modes ───────────────────────────────────────────────
 
+def _extract_sections_to_dir(odb, out_dir):
+    """
+    Extract section assignments + element-set labels for all instances.
+    Called from _run_extract so we piggyback on the already-open ODB.
+    Output layout (under out_dir/sections/<inst_safe>/):
+      sections.json          { sectionName: {element_set, material_name, type, thickness} }
+      section_names.json     [ sectionName, ... ]  (ordered by sectionAssignments index)
+      isets/elem_sets/<safe_eset>.npy   sorted int32 element labels
+    Used by l1_pack.py to patch sections into INP-derived geometry H5 files.
+    Python 2/3 compatible (no f-strings, no walrus).
+    """
+    for iname, instance in odb.rootAssembly.instances.items():
+        inst_safe = safe(iname)
+        d = os.path.join(out_dir, 'sections', inst_safe)
+
+        _sec_region_names = set()
+        section_names_list = []
+        sections_info = {}
+        try:
+            for sa in instance.sectionAssignments:
+                sname = sa.sectionName
+                section_names_list.append(sname)
+                rname = getattr(getattr(sa, 'region', None), 'name', '') or ''
+                if rname:
+                    _sec_region_names.add(rname)
+                entry = {
+                    'element_set':   rname,
+                    'material_name': '',
+                    'type':          '',
+                    'thickness':     None,
+                }
+                try:
+                    sec = odb.sections[sname]
+                    entry['type'] = type(sec).__name__
+                    if hasattr(sec, 'material'):
+                        entry['material_name'] = sec.material
+                    if hasattr(sec, 'thickness'):
+                        entry['thickness'] = float(sec.thickness)
+                except Exception:
+                    pass
+                sections_info[sname] = entry
+        except AttributeError:
+            pass
+
+        if not sections_info:
+            continue
+
+        mkdirs(d)
+        isd = os.path.join(d, 'isets', 'elem_sets')
+        for eset_name, es in instance.elementSets.items():
+            if eset_name in _sec_region_names:
+                mkdirs(isd)
+                lbls = np.array(sorted([e.label for e in es.elements]), dtype=np.int32)
+                npsave(os.path.join(isd, safe(eset_name) + '.npy'), lbls)
+
+        jdump(os.path.join(d, 'sections.json'), sections_info)
+        jdump(os.path.join(d, 'section_names.json'), section_names_list)
+
+    print("  sections extracted.")
+
+
 def _run_consistency_check(args, odb_path, workspace):
     """
     --mode consistency-check: preflight 校验，不提取结果。
@@ -1861,6 +1922,14 @@ def _run_extract(args, odb_path, workspace):
         traceback.print_exc()
         odb.close()
         sys.exit(1)
+
+    # Piggyback: extract section assignments while ODB is open.
+    # l1_pack will use this to patch sections into INP-derived geometry H5 files.
+    try:
+        _extract_sections_to_dir(odb, raw_dir)
+    except Exception:
+        print("  WARNING: sections extraction failed (non-fatal):")
+        traceback.print_exc()
 
     odb.close()
     jdump(os.path.join(raw_dir, 'dump_meta.json'), meta)

@@ -837,6 +837,81 @@ def write_meta(workspace, db_conn):
     print(f"  meta: node_count={node_count}, instance_count={instance_count}")
 
 
+# ─── Sections patch (INP+ODB mode) ───────────────────────────────────────────
+
+def patch_sections_into_geom(raw_dir, workspace):
+    """
+    Patch sections data extracted by abaqus_dump into INP-derived geometry H5 files.
+
+    Reads from raw_dir/sections/<inst_safe>/:
+      sections.json, section_names.json, isets/elem_sets/<safe>.npy
+    Writes into workspace/l1/geometry/<inst_safe>.h5:
+      sections/<name>  (group attrs: element_set, material_name, type, thickness)
+      section_names    (dataset)
+      instance_sets/element_sets/<safe>  (dataset, only if not already present)
+
+    Returns True if at least one H5 was patched (caller should re-run L2).
+    Skips any instance whose geometry H5 already has a 'sections' group.
+    """
+    sections_root = os.path.join(raw_dir, 'sections')
+    if not os.path.exists(sections_root):
+        return False
+
+    geom_dir = os.path.join(workspace, 'l1', 'geometry')
+    patched_any = False
+
+    for inst_safe in os.listdir(sections_root):
+        d = os.path.join(sections_root, inst_safe)
+        if not os.path.isdir(d):
+            continue
+        sec_path = os.path.join(d, 'sections.json')
+        if not os.path.exists(sec_path):
+            continue
+
+        h5_path = os.path.join(geom_dir, inst_safe + '.h5')
+        if not os.path.exists(h5_path):
+            print("  WARNING: geometry H5 not found for {}, skipping".format(inst_safe))
+            continue
+
+        with h5py.File(h5_path, 'r') as _rf:
+            if 'sections' in _rf:
+                continue  # already present, skip
+
+        sections_info   = load_json(sec_path)
+        snames_path     = os.path.join(d, 'section_names.json')
+        section_names   = load_json(snames_path) if os.path.exists(snames_path) else []
+        isets_elem_dir  = os.path.join(d, 'isets', 'elem_sets')
+
+        print("  Patching sections → {}".format(inst_safe + '.h5'))
+        with h5py.File(h5_path, 'a') as f:
+            for sname, sinfo in sections_info.items():
+                sg = f.require_group('sections/{}'.format(sname))
+                sg.attrs['element_set']   = sinfo.get('element_set', '')
+                sg.attrs['material_name'] = sinfo.get('material_name', '')
+                sg.attrs['type']          = sinfo.get('type', '')
+                sg.attrs['thickness']     = float(sinfo.get('thickness') or float('nan'))
+
+            if section_names:
+                if 'section_names' in f:
+                    del f['section_names']
+                f.create_dataset('section_names',
+                                 data=np.array(section_names, dtype=object),
+                                 dtype=h5py.special_dtype(vlen=str))
+
+            if os.path.exists(isets_elem_dir):
+                for fname in os.listdir(isets_elem_dir):
+                    if not fname.endswith('.npy'):
+                        continue
+                    eset_safe = fname[:-4]
+                    key = 'instance_sets/element_sets/{}'.format(eset_safe)
+                    if key not in f:
+                        f.create_dataset(key, data=nload(os.path.join(isets_elem_dir, fname)))
+
+        patched_any = True
+
+    return patched_any
+
+
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 def cleanup_raw(raw_dir):
@@ -899,6 +974,18 @@ def main():
             sys.exit(1)
 
         db_conn.close()
+
+        # Patch sections into geometry H5 if abaqus_dump wrote them (INP+ODB mode).
+        # Writes a marker so job_runner knows to re-run L2.
+        try:
+            if patch_sections_into_geom(raw_dir, workspace):
+                marker = os.path.join(workspace, 'l1', 'geometry', '.sections_patched')
+                open(marker, 'w').close()
+                print("  sections patched — L2 re-run marker written")
+        except Exception:
+            import traceback as _tb
+            print("  WARNING: sections patch failed (non-fatal):")
+            _tb.print_exc()
 
         if not args.keep_raw:
             print("Cleaning up {} ...".format(raw_dir))

@@ -937,6 +937,35 @@ def _run_result_group(project_id: str, result_group: str,
                  stage="rg_l1_pack")
         return False
 
+    # If l1_pack patched sections into geometry H5 (INP+ODB mode), re-run L2
+    # so averaging domains are rebuilt with correct section boundaries.
+    marker = os.path.join(workspace, 'l1', 'geometry', '.sections_patched')
+    if os.path.exists(marker):
+        try:
+            os.remove(marker)
+        except Exception:
+            pass
+        _log_job(project_id, "step",
+                 "[{}] 截面数据已补入几何，重跑 L2 重建平均域…".format(result_group),
+                 stage="rg_rerun_l2")
+        logger.info("[%s] sections patched — re-running L2", label)
+        rc_l2r, tail_l2r = _run_streaming(
+            [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+            project_id, "rg_rerun_l2",
+        )
+        if rc_l2r != 0:
+            _log_job(project_id, "warn",
+                     "[{}] L2 重跑失败（非致命，平均域可能不完整）：{}".format(
+                         result_group, tail_l2r[-300:]),
+                     stage="rg_rerun_l2")
+            logger.warning("[%s] L2 re-run failed (rc=%d), averaging domains may be incomplete",
+                           label, rc_l2r)
+        else:
+            _log_job(project_id, "step",
+                     "[{}] L2 重跑完成，平均域已更新".format(result_group),
+                     stage="rg_rerun_l2")
+            logger.info("[%s] L2 re-run complete", label)
+
     _update_result_group_status(project_id, result_group, "ready")
     _log_job(project_id, "step",
              "[{}] 结果组解析完成，已就绪".format(result_group),
