@@ -313,6 +313,15 @@ def _is_odb_version_error(rc: int, tail: str) -> bool:
     return "ODB_VERSION_ERROR" in tail
 
 
+def _is_consistency_fail(rc: int, tail: str) -> bool:
+    """
+    Detect geometry-ODB mismatch via sentinel printed by _consistency_check_inline().
+    Abaqus Python exit codes are not reliably propagated on Windows, so we check
+    output text rather than rc alone.
+    """
+    return rc != 0 or "ODB_CONSISTENCY_FAIL:" in tail
+
+
 def _upgrade_odb(odb_path: str, label: str) -> tuple:
     """
     Run 'abaqus -upgrade -job <tmp_base> -odb <source.odb>' in the ODB's directory.
@@ -887,6 +896,13 @@ def _run_result_group(project_id: str, result_group: str,
         extract_cmd += ["--invariants", "full"]
     _append_extract_filters(extract_cmd, parse_opts)
     rc, tail = _run_streaming(extract_cmd, project_id, "rg_extract")
+    if _is_consistency_fail(rc, tail):
+        msg = "consistency check failed: " + tail[-500:]
+        _update_result_group_status(project_id, result_group, "error", msg)
+        _log_job(project_id, "error",
+                 "[{}] 一致性校验失败（ODB 与几何不匹配）".format(result_group),
+                 stage="rg_extract")
+        return False
     if rc != 0:
         msg = "extract failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)

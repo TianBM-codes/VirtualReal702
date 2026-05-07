@@ -1956,6 +1956,10 @@ def _consistency_check_inline(odb, workspace, result_group, check_mode):
         print("ERROR: consistency check failed:")
         for m in mismatches:
             print("  " + m)
+        # Print machine-readable sentinel — Abaqus Python exit codes are not
+        # reliably propagated on Windows, so job_runner detects failures via
+        # output text (same pattern as ODB_VERSION_ERROR).
+        print("ODB_CONSISTENCY_FAIL: " + " | ".join(mismatches))
         sys.exit(1)
 
     print("  consistency check passed ({}).".format(check_mode))
