@@ -23,6 +23,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **ODB 可视化实现状态**：L1 已完成；L2 基本完成（表面提取 + Triangle Soup + Feature Edges + Octree，缺 Partitioning）；L3 核心骨架已完成（health/pick/bbox/frame-colors 等端点），L3 尚未加载 L2 的 octree/feature-edge 数据。
 
+**当前主要入口（前端实际走的链路）**：`POST /api/projects`（2.3 Projects 分支）。前端通过 project 模式提交 ODB/INP，所有查询也带 `project_id`。`POST /api/jobs`（2.2 Legacy ODB Jobs）是旧接口，仅保留兼容性，新功能不在此分支迭代。进度日志接口 `GET /api/jobs/{odb_id}/logs` 目前仅覆盖 legacy jobs，project 分支进度暂未接入。
+
 **主设计文档**：`ODB-Service-Architecture.md`（v5，项目内最高权威）。所有 ODB 可视化的实现细节、HDF5 schema、算法伪代码、manifest.db schema 均以该文档为准。遇到歧义时以该文档为准，不以代码为准。
 
 ## Git 工作流
@@ -250,7 +252,8 @@ uvicorn src.modal_service.main:app --reload --port 8001
 |---|---|
 | `ODB-Service-Architecture.md` | Comprehensive v5 design doc — authoritative reference for all layers |
 | `FEM-Viewer-Primer.md` | FEM concepts, ODB structure, Three.js rendering relationship |
-| `docs/l3/L3-API-Contract.md` | REST endpoint specifications |
+| `docs/l3/L3-API-Quick-Reference.md` | **当前权威接口文档**（面向前端/调用方，与代码同步） |
+| `docs/l3/L3-API-Contract.md` | 旧版接口设计文档（格式与实现已有出入，仅供参考） |
 | `docs/l3/Binary-Payload-Spec.md` | Binary envelope protocol for large array responses |
 | `docs/l3/L3-Render-Assembly-Design.md` | How L3 assembles render buffers from L1/L2 data |
 | `docs/l3/L3-Module-Boundary.md` | Router/Service/Repository responsibility separation |

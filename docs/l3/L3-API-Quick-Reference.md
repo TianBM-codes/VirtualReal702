@@ -111,6 +111,8 @@ project_id + result_group
 
 ### 2.2 Legacy ODB Jobs
 
+> **⚠️ 旧接口，仅保留兼容性。** 当前前端主流程走 [2.3 Projects](#23-projects)，新功能不在此分支迭代。
+
 | Method | Path | 说明 |
 |---|---|---|
 | POST | `/api/jobs` | 提交独立 ODB 作业 |
@@ -121,6 +123,8 @@ project_id + result_group
 | POST | `/api/jobs/{odb_id}/retry` | 重试 error 状态作业 |
 
 ### 2.3 Projects
+
+> **✅ 当前主要入口。** 前端通过 project 模式提交 ODB/INP，所有查询带 `project_id`。详见 [1.4 Project 模式](#14-project-模式)。
 
 | Method | Path | 说明 |
 |---|---|---|
