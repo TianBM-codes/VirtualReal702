@@ -408,9 +408,20 @@ async def get_project(project_id: str):
     # Eagerly load into registry if ready but not yet in memory.
     # Closes the 10-second poll gap: frontend sees geom_status=ready here,
     # then immediately calls /meta/overview — registry must have the entry by then.
-    if proj["geom_status"] == "ready" and registry.get(project_id) is None:
-        workspace = _resolve_workspace(proj["workspace"], project_id)
-        registry.load(project_id, workspace, "ready")
+    workspace = _resolve_workspace(proj["workspace"], project_id)
+    if proj["geom_status"] == "ready":
+        if registry.get(project_id) is None:
+            registry.load(project_id, workspace, "ready")
+        else:
+            # L2 may have been re-run after initial load (sections patch in INP+ODB mode).
+            # If so, reload averaging data from the updated render.h5 files.
+            _reload_marker = os.path.join(workspace, "l2", "render", ".reload_needed")
+            if os.path.exists(_reload_marker):
+                try:
+                    os.remove(_reload_marker)
+                except OSError:
+                    pass
+                registry.upgrade(project_id)
     return ok(_build_project_response(proj, repo))
 
 

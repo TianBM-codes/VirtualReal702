@@ -977,6 +977,14 @@ def _run_result_group(project_id: str, result_group: str,
                      "[{}] L2 重跑完成，平均域已更新".format(result_group),
                      stage="rg_rerun_l2")
             logger.info("[%s] L2 re-run complete", label)
+            # Signal L3 registry to reload render data on next GET request.
+            # (render.h5 was updated; the in-memory averaging_data is now stale.)
+            try:
+                _reload_dir = os.path.join(workspace, 'l2', 'render')
+                if os.path.isdir(_reload_dir):
+                    open(os.path.join(_reload_dir, '.reload_needed'), 'w').close()
+            except Exception:
+                pass
 
     _update_result_group_status(project_id, result_group, "ready")
     _log_job(project_id, "step",
