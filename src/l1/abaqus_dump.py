@@ -553,17 +553,31 @@ def dump_assembly(odb, raw_dir, meta):
         for dc_name, csys in assembly.datumCsyses.items():
             try:
                 origin = [float(x) for x in csys.origin]
+                # coordSysType: CARTESIAN / CYLINDRICAL / SPHERICAL (Abaqus version dependent)
+                sys_type = 'RECTANGULAR'
+                if hasattr(csys, 'coordSysType'):
+                    t = str(csys.coordSysType).upper()
+                    if 'CYL' in t:
+                        sys_type = 'CYLINDRICAL'
+                    elif 'SPH' in t:
+                        sys_type = 'SPHERICAL'
+
                 e1 = e2 = None
-                for attr1, attr2 in [('xAxis', 'yAxis'), ('axis1', 'axis2')]:
+                # Try known attribute name variants across Abaqus versions
+                for attr1, attr2 in [('xAxis', 'yAxis'), ('axis1', 'axis2'),
+                                      ('axis_1', 'axis_2'), ('X', 'Y')]:
                     if hasattr(csys, attr1) and hasattr(csys, attr2):
                         e1 = [float(x) for x in getattr(csys, attr1)]
                         e2 = [float(x) for x in getattr(csys, attr2)]
                         break
+
                 if e1 is None:
-                    print("WARNING: datumCsys '{}' — unknown axis attributes, skipping".format(dc_name))
+                    print("WARNING: datumCsys '{}' — could not read axes. "
+                          "Available attrs: {}".format(dc_name,
+                          [a for a in dir(csys) if not a.startswith('_')]))
                     continue
                 datum_csyses[dc_name] = {
-                    'system':  'RECTANGULAR',
+                    'system':  sys_type,
                     'origin':  origin,
                     'point_a': [origin[i] + e1[i] for i in range(3)],
                     'point_b': [origin[i] + e2[i] for i in range(3)],
