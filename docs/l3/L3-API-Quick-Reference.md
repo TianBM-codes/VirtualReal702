@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（新增 geometry lines/points/couplings 端点；新增 POST /api/projects/{project_id}/rerun-l2）
+更新时间：2026-05-08（新增 geometry orientations 端点）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -154,6 +154,7 @@ project_id + result_group
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/lines` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/points` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/couplings` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/orientations` |
 | geometry | POST | `/api/odb/{odb_id}/geometry/{instance}/render-buffers-subset` |
 | results | GET | `/api/odb/{odb_id}/results/frame-colors` |
 | results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
@@ -902,6 +903,31 @@ L3BE sections：
 ### `GET /api/odb/{odb_id}/geometry/{instance}/feature-edges`
 
 返回格式与 `element-mesh-edges` 相同，但只包含边界和折痕等 feature edges。
+
+### `GET /api/odb/{odb_id}/geometry/orientations`
+
+返回模型级别的命名坐标系（来自 INP 的 `*ORIENTATION` 或 ODB 的 `datumCsyses`）。
+
+响应 JSON：
+
+```json
+{
+  "orientations": [
+    {
+      "name":   "ORI-1",
+      "system": "RECTANGULAR",
+      "origin": [0.0, 0.0, 0.0],
+      "axes":   [[1,0,0], [0,1,0], [0,0,1]]
+    }
+  ]
+}
+```
+
+- `axes[0]` = 局部 1 轴（X，前端显示为红色）
+- `axes[1]` = 局部 2 轴（Y，前端显示为绿色）
+- `axes[2]` = 局部 3 轴（Z，前端显示为蓝色）
+- 无命名坐标系时返回 `{"orientations": []}`，不报错。
+- 前端渲染：每个坐标系在 origin 处画三条 RGB 彩线，线长 = bbox 对角线的 5%。
 
 ### `GET /api/odb/{odb_id}/geometry/{instance}/lines`
 

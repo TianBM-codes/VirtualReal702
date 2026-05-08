@@ -927,6 +927,77 @@ def build_octree(tri_positions, max_depth=OCTREE_MAX_DEPTH,
     }
 
 
+# ─── Model-level orientation processing ──────────────────────────────────────
+
+def _compute_orientation_axes(origin, point_a, point_b):
+    """
+    Compute orthonormal 3×3 axes from origin + two reference points.
+
+    Convention (matches Abaqus *ORIENTATION RECTANGULAR):
+      e1 = normalize(point_a - origin)          — local 1-axis
+      e3 = normalize(cross(e1, point_b - origin)) — normal to the 1-2 plane
+      e2 = cross(e3, e1)                         — local 2-axis
+    """
+    e1 = point_a - origin
+    n1 = np.linalg.norm(e1)
+    if n1 < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    e1 = e1 / n1
+
+    v = point_b - origin
+    n = np.cross(e1, v)
+    nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        perp = np.array([1., 0., 0.]) if abs(e1[0]) < 0.9 else np.array([0., 1., 0.])
+        n = np.cross(e1, perp)
+        nn = np.linalg.norm(n)
+    e3 = n / nn
+    e2 = np.cross(e3, e1)
+    return np.stack([e1, e2, e3])   # [3, 3] float64
+
+
+def process_orientations(workspace, asm_h5):
+    """Read raw orientations from assembly.h5, compute orthonormal axes, write l2/geometry/orientations.h5."""
+    if "orientations" not in asm_h5:
+        return
+
+    names_out, systems_out, origins_out, axes_out = [], [], [], []
+    for key in asm_h5["orientations"]:
+        grp    = asm_h5["orientations/{}".format(key)]
+        origin  = grp["origin"][:]
+        point_a = grp["point_a"][:]
+        point_b = grp["point_b"][:]
+        system  = grp.attrs.get("system", "RECTANGULAR")
+        name    = grp.attrs.get("original_name", key)
+        axes    = _compute_orientation_axes(origin, point_a, point_b)
+        names_out.append(name)
+        systems_out.append(system)
+        origins_out.append(origin.astype(np.float32))
+        axes_out.append(axes.astype(np.float32))
+
+    if not names_out:
+        return
+
+    l2_geom_dir = os.path.join(workspace, "l2", "geometry")
+    mkdirs(l2_geom_dir)
+    out_path = os.path.join(l2_geom_dir, "orientations.h5")
+
+    N = len(names_out)
+    origins_arr = np.stack(origins_out)   # [N, 3]
+    axes_arr    = np.stack(axes_out)      # [N, 3, 3]
+
+    with h5py.File(out_path, "w") as f:
+        # Fixed-length byte strings — avoids h5py vlen_str version differences
+        names_arr   = np.array([n.encode("utf-8")[:127] for n in names_out],   dtype="S128")
+        systems_arr = np.array([s.encode("utf-8")[:31]  for s in systems_out], dtype="S32")
+        f.create_dataset("names",   data=names_arr)
+        f.create_dataset("systems", data=systems_arr)
+        f.create_dataset("origins", data=origins_arr)
+        f.create_dataset("axes",    data=axes_arr)
+
+    logger.info("Orientations: {} written to {}".format(N, out_path))
+
+
 # ─── Per-instance processing ──────────────────────────────────────────────────
 
 def process_instance(workspace, db_conn, asm_h5, inst_name):
@@ -1231,6 +1302,7 @@ def main():
         with h5py.File(asm_path, "r") as asm_h5:
             for (inst_name,) in instances:
                 process_instance(workspace, conn, asm_h5, inst_name)
+            process_orientations(workspace, asm_h5)
     except Exception as e:
         logger.error("Layer 2 failed: {}".format(e), exc_info=True)
     finally:
