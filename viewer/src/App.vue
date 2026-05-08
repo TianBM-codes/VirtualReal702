@@ -34,6 +34,8 @@
         @apply="opts => viewport?.applyColorCode(opts)"
         @clear="() => viewport?.clearColorCode()"
         @reset="() => viewport?.resetColorCode()"
+        @region-highlight="opts => viewport?.loadRegionHighlight(opts.scheme, opts.region, opts.type)"
+        @clear-region-highlight="() => viewport?.clearRegionHighlight()"
       />
 
       <MouseModeCard ref="mouseModeRef" @toggle-camera="onToggleCamera" />

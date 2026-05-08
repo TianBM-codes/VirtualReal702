@@ -41,17 +41,33 @@
         </div>
       </div>
     </template>
+
+    <!-- Region Highlight (test) — only shown for section/etype schemes -->
+    <template v-if="highlightableRegions.length > 0">
+      <div style="border-top:1px solid #30363d;margin-top:8px;padding-top:8px">
+        <span style="font-size:10px;color:#8b949e">Region Highlight</span>
+        <select v-model="highlightRegion" style="margin-top:4px">
+          <option value="">— 选择区域 —</option>
+          <option v-for="item in highlightableRegions" :key="item.name" :value="item.name">{{ item.name }}</option>
+        </select>
+        <div class="row" style="margin-top:4px">
+          <button @click="applyRegionHighlight('mesh')" title="单元网格边（含内部边）">Mesh Edges</button>
+          <button @click="applyRegionHighlight('outline')" title="仅外轮廓边">Outline</button>
+          <button @click="emit('clear-region-highlight')">Clear</button>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useViewerStore } from '../store/viewer'
 import { useOdbApi }      from '../composables/useOdbApi'
 
 const store = useViewerStore()
 const api   = useOdbApi()
-const emit  = defineEmits(['apply', 'clear', 'reset'])
+const emit  = defineEmits(['apply', 'clear', 'reset', 'region-highlight', 'clear-region-highlight'])
 
 const SCHEME_LABELS = { instance:'Instance', etype:'Element Type', section:'Averaging Regions', material:'Material', section_type:'Section Type', elset:'Elset Highlight' }
 
@@ -60,6 +76,12 @@ const schemes        = ref([])
 const elsets         = ref([])
 const selectedElsets = ref([])
 const legend         = ref([])
+
+// Region highlight state
+const highlightRegion     = ref('')
+const highlightableRegions = computed(() =>
+  legend.value.filter(item => item.name !== '(none)' && item.name !== 'other')
+)
 
 const r = (v) => Math.round(v * 255)
 
@@ -85,7 +107,12 @@ function apply() {
 }
 
 // Receive legend back from parent (after applyColorCode returns)
-function setLegend(items) { legend.value = items }
+function setLegend(items) { legend.value = items; highlightRegion.value = '' }
+
+function applyRegionHighlight(type) {
+  if (!highlightRegion.value) { store.setStatus('请先选择一个区域', 'err'); return }
+  emit('region-highlight', { scheme: scheme.value, region: highlightRegion.value, type })
+}
 
 defineExpose({ setLegend })
 </script>
