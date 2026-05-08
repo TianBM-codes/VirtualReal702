@@ -981,7 +981,7 @@ async function loadOrientations(bbox) {
 
     // Axis line length = 5% of bbox diagonal, fallback to 1.0
     const scale = (bbox && !bbox.isEmpty())
-      ? bbox.min.distanceTo(bbox.max) * 0.10
+      ? bbox.min.distanceTo(bbox.max) * 0.35
       : 1.0
 
     // If origin is at/near (0,0,0) and outside the model bbox, relocate to bbox center.
