@@ -817,9 +817,22 @@ CREATE_TABLE_SQL_LIST = [
         x_position DOUBLE NOT NULL COMMENT 'X坐标',
         y_position DOUBLE NOT NULL COMMENT 'Y坐标',
         z_position DOUBLE NOT NULL COMMENT 'Z坐标',
+        x_angle DOUBLE NOT NULL COMMENT '角度x',
+        y_angle DOUBLE NOT NULL COMMENT '角度y',
+        z_angle DOUBLE NOT NULL COMMENT '角度z',
         data_source VARCHAR(32) NOT NULL COMMENT '数据来源',
         PRIMARY KEY (id, measuring_point_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='测点信息表'; 
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_channel_info (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        channel_name VARCHAR(64) NOT NULL COMMENT '通道名称',
+        project_id BIGINT NOT NULL COMMENT '项目ID',
+        direction INT NOT NULL COMMENT '方向:1-x, 2-y, 3-z',
+        data_operate CHAR(1) NOT NULL COMMENT '+ -',
+        PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通道信息表';
     """
 ]
 

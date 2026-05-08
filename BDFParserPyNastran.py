@@ -40,21 +40,20 @@ class BDFParser(object):
         self.all_edges = []
 
     def reset_parse_results(self):
-        def reset_parse_results(self):
-            self.parse_results = {
-                "coordinate_systems": [],
-                "materials_overview": [],
-                "isotropic_list": [],
-                "ortho2d_list": [],
-                "aniso3d_list": [],
-                "property_overview": [],
-                "shell_properties": [],
-                "bar_properties": [],
-                "solid_properties": [],
-                "layered_properties": [],
-                "layered_plies": [],
-                "boundary": []
-            }
+        self.parse_results = {
+            "coordinate_systems": [],
+            "materials_overview": [],
+            "isotropic_list": [],
+            "ortho2d_list": [],
+            "aniso3d_list": [],
+            "property_overview": [],
+            "shell_properties": [],
+            "bar_properties": [],
+            "solid_properties": [],
+            "layered_properties": [],
+            "layered_plies": [],
+            "boundary": []
+        }
 
     def parse(self):
         self.read_bdf()
