@@ -161,6 +161,12 @@ class RegistryRepo:
         except Exception:
             pass
 
+    def clear_job_logs(self, odb_id: str) -> int:
+        """删除指定 odb_id / project_id 的全部日志，返回删除行数。"""
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM job_logs WHERE odb_id=?", (odb_id,))
+            return cur.rowcount
+
     def get_job_logs(self, odb_id: str, since_id: int = 0,
                      limit: int = 500) -> list:
         with self._connect() as conn:

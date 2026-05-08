@@ -398,6 +398,16 @@ async def get_project_logs(
     return ok({"logs": items, "next_since_id": next_since})
 
 
+@router.post("/{project_id}/logs/clear")
+async def clear_project_logs(project_id: str):
+    """清空该 project 的全部解析日志（job_logs）。"""
+    repo = _repo()
+    if repo.get_project(project_id) is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+    deleted = repo.clear_job_logs(project_id)
+    return ok({"project_id": project_id, "deleted_count": deleted})
+
+
 @router.get("/{project_id}")
 async def get_project(project_id: str):
     """查询 project 状态及所有 result_groups 的详情。"""

@@ -134,6 +134,7 @@ project_id + result_group
 | POST | `/api/projects/{project_id}/results` | 给 project 追加 ODB 结果组 |
 | POST | `/api/projects/{project_id}/rerun-l2` | 重新运行 L2 预处理（刷新几何缓存） |
 | GET | `/api/projects/{project_id}/logs` | 查询解析进度日志，支持增量轮询 |
+| POST | `/api/projects/{project_id}/logs/clear` | 清空该 project 的全部日志 |
 | GET | `/api/projects/{project_id}` | 查询 project 详情 |
 | GET | `/api/projects/{project_id}/summary` | 读取 `model_summary.json` |
 | PATCH | `/api/projects/{project_id}/results/{result_group}` | 修改结果组显示名 |
@@ -580,7 +581,7 @@ async function pollLogs(odbId) {
 }
 ```
 
-进度通过 `GET /api/projects/{project_id}/logs` 实时查询，`stage` 为 `l2_ingest` 或 `l2_done`。
+进度通过 `GET /api/projects/{project_id}/logs` 实时查询，`stage` 为 `l2_ingest` 或 `l2_done`。重跑前可先调 `POST .../logs/clear` 清空旧日志。
 
 ### `GET /api/projects/{project_id}`
 
