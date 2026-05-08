@@ -3,7 +3,7 @@ import { reactive, ref } from 'vue'
 
 export const useViewerStore = defineStore('viewer', () => {
   // ── Connection ──────────────────────────────────────────────────────────
-  const baseUrl = ref('http://127.0.0.1:8000')
+  const baseUrl = ref('http://127.0.0.1:5000')
   const activeOdbId = ref(localStorage.getItem('activeOdbId') || null)
   const activeResultGroup = ref(localStorage.getItem('activeResultGroup') || null)
 
