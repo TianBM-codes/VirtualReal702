@@ -34,7 +34,7 @@
         @apply="opts => viewport?.applyColorCode(opts)"
         @clear="() => viewport?.clearColorCode()"
         @reset="() => viewport?.resetColorCode()"
-        @region-highlight="opts => viewport?.loadRegionHighlight(opts.scheme, opts.region, opts.types)"
+        @region-highlight="opts => viewport?.loadRegionHighlight(opts.scheme, opts.regions, opts.types)"
         @clear-region-highlight="() => viewport?.clearRegionHighlight()"
       />
 

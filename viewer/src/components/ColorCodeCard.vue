@@ -45,19 +45,27 @@
     <!-- Region Highlight (test) — only shown for section/etype schemes -->
     <template v-if="highlightableRegions.length > 0">
       <div style="border-top:1px solid #30363d;margin-top:8px;padding-top:8px">
-        <span style="font-size:10px;color:#8b949e">Region Highlight</span>
-        <select v-model="highlightRegion" style="margin-top:4px">
-          <option value="">— 选择区域 —</option>
-          <option v-for="item in highlightableRegions" :key="item.name" :value="item.name">{{ item.name }}</option>
-        </select>
+        <div style="display:flex;align-items:center;margin-bottom:3px">
+          <span style="font-size:10px;color:#8b949e;flex:1">Region Highlight</span>
+          <button @click="selectedRegions = highlightableRegions.map(i=>i.name)" style="font-size:10px;padding:1px 6px">全选</button>
+          <button @click="selectedRegions = []" style="font-size:10px;padding:1px 6px;margin-left:4px">全不选</button>
+        </div>
+        <div style="max-height:100px;overflow-y:auto;border:1px solid #30363d;border-radius:4px;padding:3px 5px">
+          <label v-for="item in highlightableRegions" :key="item.name"
+                 style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:2px 0;font-size:11px">
+            <input type="checkbox" :value="item.name" v-model="selectedRegions" />
+            <div :style="`width:9px;height:9px;border-radius:1px;flex-shrink:0;background:rgb(${r(item.r)},${r(item.g)},${r(item.b)})`" />
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ item.name }}</span>
+          </label>
+        </div>
         <div style="display:flex;gap:10px;margin-top:5px;font-size:11px">
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
             <input type="checkbox" v-model="showMeshEdges" />
-            <span style="color:#00ccff">Mesh Edges</span>
+            <span style="color:#aaaaaa">Mesh Edges</span>
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
             <input type="checkbox" v-model="showOutline" />
-            <span style="color:#ff8800">Outline</span>
+            <span style="color:#ffffff">Outline</span>
           </label>
         </div>
         <div class="row" style="margin-top:4px">
@@ -87,7 +95,7 @@ const selectedElsets = ref([])
 const legend         = ref([])
 
 // Region highlight state
-const highlightRegion      = ref('')
+const selectedRegions      = ref([])
 const showMeshEdges        = ref(false)
 const showOutline          = ref(true)
 const highlightableRegions = computed(() =>
@@ -118,15 +126,17 @@ function apply() {
 }
 
 // Receive legend back from parent (after applyColorCode returns)
-function setLegend(items) { legend.value = items; highlightRegion.value = '' }
+function setLegend(items) { legend.value = items; selectedRegions.value = [] }
 
 function applyRegionHighlight() {
-  if (!highlightRegion.value) { store.setStatus('请先选择一个区域', 'err'); return }
+  if (selectedRegions.value.length === 0) { store.setStatus('请至少选择一个区域', 'err'); return }
   if (!showMeshEdges.value && !showOutline.value) { store.setStatus('请至少勾选一种高亮类型', 'err'); return }
   const types = []
   if (showMeshEdges.value) types.push('mesh')
   if (showOutline.value)   types.push('outline')
-  emit('region-highlight', { scheme: scheme.value, region: highlightRegion.value, types })
+  // Pass full region info (name + color) so viewport can use legend colors
+  const regions = highlightableRegions.value.filter(item => selectedRegions.value.includes(item.name))
+  emit('region-highlight', { scheme: scheme.value, regions, types })
 }
 
 function clearHighlight() {

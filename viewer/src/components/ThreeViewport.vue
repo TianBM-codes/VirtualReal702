@@ -1119,54 +1119,65 @@ function resetColorCode() {
   requestRender()
 }
 
-// ── Region Highlight (mesh edges / outline for one averaging region) ─────
-async function loadRegionHighlight(scheme, region, types) {
+// ── Region Highlight (mesh edges / outline for one or more averaging regions) ──
+// regions: [{name, r, g, b}, ...]  — full legend entries so we can use their colors
+// types:   ['mesh'] | ['outline'] | ['mesh', 'outline']
+async function loadRegionHighlight(scheme, regions, types) {
   const instNames = Object.keys(store.instanceMeshes)
   if (instNames.length === 0) { store.setStatus('Load geometry first', 'err'); return }
 
   const TYPE_CFG = {
-    mesh:    { endpoint: 'region-mesh-edges', linesMap: regionMeshEdgesLines, color: 0x00ccff },
-    outline: { endpoint: 'region-outline',    linesMap: regionOutlineLines,   color: 0xff8800 },
+    mesh:    { endpoint: 'region-mesh-edges', linesMap: regionMeshEdgesLines, opacity: 0.55 },
+    outline: { endpoint: 'region-outline',    linesMap: regionOutlineLines,   opacity: 1.0  },
   }
 
-  // Dispose existing lines for ALL types first
+  // Clear all previous region highlights
   for (const cfg of Object.values(TYPE_CFG)) {
     for (const [k, l] of Object.entries(cfg.linesMap)) {
       modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete cfg.linesMap[k]
     }
   }
 
-  const typeList = Array.isArray(types) ? types : [types]
+  const regionList = Array.isArray(regions) ? regions : [regions]
+  const typeList   = Array.isArray(types)   ? types   : [types]
   let totalEdges = 0
 
-  for (const type of typeList) {
-    const { endpoint, linesMap, color } = TYPE_CFG[type] ?? {}
-    if (!endpoint) continue
+  store.setStatus(`Loading region highlight for ${regionList.length} region(s)…`)
 
-    store.setStatus(`Loading region ${type} for "${region}"…`)
+  for (const regionInfo of regionList) {
+    const { name: region, r, g, b } = regionInfo
+    const threeColor = new THREE.Color(r, g, b)
 
-    await Promise.all(instNames.map(async instName => {
-      try {
-        const params = new URLSearchParams({ scheme, region })
-        const res = await http.get(
-          store.getApiUrl(`color-code/${encodeURIComponent(instName)}/${endpoint}?${params}`),
-          { responseType: 'arraybuffer' }
-        )
-        const sec        = parseL3BE(res.data)
-        const edgePosArr = new Float32Array(sec.edge_positions.data)
-        if (edgePosArr.length === 0) return
+    for (const type of typeList) {
+      const { endpoint, linesMap, opacity } = TYPE_CFG[type] ?? {}
+      if (!endpoint) continue
 
-        const geo = new THREE.BufferGeometry()
-        geo.setAttribute('position', new THREE.BufferAttribute(edgePosArr, 3))
-        const mat = new THREE.LineBasicMaterial({ color, linewidth: 2, depthTest: false, transparent: true, opacity: 0.9 })
-        if (clipPlane) mat.clippingPlanes = [clipPlane]
-        const line = new THREE.LineSegments(geo, mat)
-        line.renderOrder = 1
-        modelGroup.add(line)
-        linesMap[instName] = line
-        totalEdges += edgePosArr.length / 6
-      } catch { /* instance has no data for this region */ }
-    }))
+      await Promise.all(instNames.map(async instName => {
+        try {
+          const params = new URLSearchParams({ scheme, region })
+          const res = await http.get(
+            store.getApiUrl(`color-code/${encodeURIComponent(instName)}/${endpoint}?${params}`),
+            { responseType: 'arraybuffer' }
+          )
+          const sec        = parseL3BE(res.data)
+          const edgePosArr = new Float32Array(sec.edge_positions.data)
+          if (edgePosArr.length === 0) return
+
+          const geo = new THREE.BufferGeometry()
+          geo.setAttribute('position', new THREE.BufferAttribute(edgePosArr, 3))
+          const mat = new THREE.LineBasicMaterial({
+            color: threeColor, linewidth: 2,
+            depthTest: false, transparent: opacity < 1, opacity,
+          })
+          if (clipPlane) mat.clippingPlanes = [clipPlane]
+          const line = new THREE.LineSegments(geo, mat)
+          line.renderOrder = 1
+          modelGroup.add(line)
+          linesMap[`${instName}__${region}`] = line
+          totalEdges += edgePosArr.length / 6
+        } catch { /* instance has no data for this region */ }
+      }))
+    }
   }
 
   store.setStatus(`Region highlight loaded: ${totalEdges} edges`, 'ok')
