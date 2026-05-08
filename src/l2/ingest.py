@@ -54,6 +54,8 @@ ELEM_TYPE_CODE = {
     # line elements (truss / beam) — no face data, silently ignored in collect_faces
     'T3D2':  9,  'B31':  9,  'B31OS': 9,  'PIPE31': 9,
     'T3D3': 10,  'B32': 10,  'B32OS':10,  'PIPE32':10,
+    # point elements — concentrated mass / rotary inertia
+    'MASS': 11,  'ROTARYI': 11,
     # plane / axisymmetric (treated as shell faces)
     'CPS3': 0, 'CPS4': 1, 'CPS4R': 1,
     'CPE3': 0, 'CPE4': 1, 'CPE4R': 1,

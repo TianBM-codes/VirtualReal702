@@ -132,10 +132,11 @@ def export_l1(model: InpModel, workspace: str) -> None:
     # --- geometry/<inst>.h5 + sets.h5 + manifest.db ---
     db_conn = _init_manifest(workspace)
     try:
-        if model.assembly is not None:
+        if model.assembly is not None and model.assembly.instances:
+            # Real assembly with defined instances
             inst_iter = model.assembly.instances.items()
         elif "PART-1-1" in model.parts:
-            # Flat-format INP: synthesize a single instance with identity transform
+            # Flat-format INP (may have a synthesized assembly with no instances)
             _synthetic = Instance(name="PART-1-1", part_name="PART-1-1")
             inst_iter = [("PART-1-1", _synthetic)]
         else:
