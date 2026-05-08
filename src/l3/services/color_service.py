@@ -63,22 +63,21 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
-    has_section_id = False
+    # section scheme: solely from render.h5 averaging_data (works for both ODB and INP+ODB)
+    avd = idx.averaging_data.get(instance)
+    if avd is not None and len(avd.get("default_domain_id", [])) > 0:
+        schemes.append("section")
+
     has_mat = False
     has_sec = False
 
     if os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
-            has_section_id = any(
-                "section_id" in f[f"elements/{e}"]
-                for e in f.get("elements", {})
-            )
             for etype in f.get("elements", {}):
                 grp = f[f"elements/{etype}"]
                 has_mat = "material_name" in grp
                 has_sec = "section_type" in grp
                 break
-            # Fallback for INP+ODB: check sections/<name> group attrs
             if not has_mat or not has_sec:
                 for sec_name in f.get("sections", {}):
                     sg = f[f"sections/{sec_name}"]
@@ -89,16 +88,6 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
                     if has_mat and has_sec:
                         break
 
-    # Fallback for section scheme: averaging_data already loaded from render.h5
-    # Covers INP+ODB mode where geometry H5 has no per-element section_id.
-    if not has_section_id and instance in idx.averaging_data:
-        avd = idx.averaging_data[instance]
-        sec_ids = avd.get("elem_section_id")
-        if sec_ids is not None and len(sec_ids) > 0 and int(np.max(sec_ids)) > 0:
-            has_section_id = True
-
-    if has_section_id:
-        schemes.append("section")
     if has_mat:
         schemes.append("material")
     if has_sec:
@@ -233,61 +222,26 @@ def _labels_from_section_id(
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
 ) -> List[str]:
-    """
-    Color by averaging region (refined section domain).
+    """Color by averaging region — domain ID from render.h5 averaging_data (in memory)."""
+    Rf  = len(etype_arr)
+    avd = idx.averaging_data.get(instance)
+    if avd is None:
+        return ["(none)"] * Rf
 
-    After l1_pack's shell refinement pass, section_id values are reassigned
-    to new integer domain IDs that no longer correspond to section_names indices.
-    We just number unique domain IDs in sorted order: Region 1, Region 2, ...
-    """
-    from ..infra.manifest_repo import ManifestRepo
-    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
-              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
-    if not os.path.exists(geom_h5):
-        raise NotFoundError(f"Geometry H5 not found for '{instance}'", {})
+    lookup: Dict[Tuple[bytes, int], int] = {
+        (avd["elem_etype"][i].tobytes().rstrip(b"\x00"), int(avd["elem_row"][i])): int(avd["default_domain_id"][i])
+        for i in range(len(avd["elem_etype"]))
+    }
+    domain_per_face = np.array([
+        lookup.get((etype_arr[fi].tobytes().rstrip(b"\x00"), int(elem_row_arr[fi])), -1)
+        for fi in range(Rf)
+    ], dtype=np.int32)
 
-    Rf = len(etype_arr)
-    domain_per_face = np.full(Rf, -1, dtype=np.int32)
+    if not np.any(domain_per_face >= 0):
+        return ["(none)"] * Rf
 
-    etype_strs = np.array([
-        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
-        for b in etype_arr
-    ])
-
-    with h5py.File(geom_h5, "r") as f:
-        has_any = False
-        for etype_str in np.unique(etype_strs):
-            mask = (etype_strs == etype_str)
-            grp  = f.get(f"elements/{etype_str}")
-            if grp is None or "section_id" not in grp:
-                continue
-            has_any = True
-            sid_data              = grp["section_id"][:]
-            domain_per_face[mask] = sid_data[elem_row_arr[mask]]
-
-    if not has_any:
-        # INP+ODB fallback: use averaging_data loaded from render.h5.
-        # averaging_data["elem_*"] arrays are indexed over unique surface elements.
-        avd = idx.averaging_data.get(instance)
-        if avd is None:
-            return ["(none)"] * Rf
-        av_etype  = avd["elem_etype"]          # [E] S8
-        av_row    = avd["elem_row"]             # [E] int32
-        av_domain = avd["default_domain_id"]    # [E] int32
-        lookup: Dict[Tuple[bytes, int], int] = {
-            (av_etype[i].tobytes().rstrip(b"\x00"), int(av_row[i])): int(av_domain[i])
-            for i in range(len(av_etype))
-        }
-        for fi in range(Rf):
-            key = (etype_arr[fi].tobytes().rstrip(b"\x00"), int(elem_row_arr[fi]))
-            domain_per_face[fi] = lookup.get(key, -1)
-        if not np.any(domain_per_face >= 0):
-            return ["(none)"] * Rf
-
-    # Map each unique domain ID → human-readable label "Region N" (sorted order).
     unique_ids = sorted(set(int(v) for v in domain_per_face if v >= 0))
     id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
-
     return [id_to_label.get(int(v), "(none)") for v in domain_per_face]
 
 
