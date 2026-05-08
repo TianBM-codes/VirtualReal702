@@ -353,6 +353,64 @@ async def get_feature_edges(odb_id: str, instance: str):
     )
 
 
+@router.get("/geometry/{instance}/lines")
+async def get_line_elements(odb_id: str, instance: str):
+    """
+    Return beam/truss line element segments for one instance as L3BE binary.
+
+    Line elements (B31, B32, T3D2, T3D3, PIPE31, PIPE32, …) have no surface
+    faces and are not included in the triangle render buffers.  This endpoint
+    returns their endpoint positions so the frontend can render them as
+    THREE.LineSegments overlaid on the surface mesh.
+
+    Section layout:
+      - "line_positions": [N*2, 3] float32
+            Interleaved endpoint pairs — row 2i and 2i+1 are the two endpoints
+            of segment i.  Ready to feed into a Three.js LineSegments geometry.
+      - "elem_labels":    [N]   int32
+            Abaqus element label for each segment (for picking).
+
+    Header:
+      X-Line-Count: number of line segments N (not rows)
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        raise NotFoundError(
+            f"Surface geometry not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(surface_h5, "r") as f:
+        if "lines/positions" not in f:
+            empty_pos = np.zeros((0, 3), dtype=np.float32)
+            empty_lbl = np.zeros(0, dtype=np.int32)
+            payload = l3be_build([("line_positions", empty_pos),
+                                   ("elem_labels", empty_lbl)])
+            return Response(
+                content=payload,
+                media_type="application/octet-stream",
+                headers={"X-Line-Count": "0"},
+            )
+
+        positions   = f["lines/positions"][:]    # [N, 2, 3] float32
+        elem_labels = f["lines/elem_labels"][:]  # [N] int32
+
+    N = len(positions)
+    line_positions = np.ascontiguousarray(positions.reshape(N * 2, 3))
+
+    payload = l3be_build([("line_positions", line_positions),
+                           ("elem_labels", elem_labels)])
+    return Response(
+        content=payload,
+        media_type="application/octet-stream",
+        headers={"X-Line-Count": str(N)},
+    )
+
+
 @router.post("/geometry/{instance}/render-buffers-subset")
 async def get_render_buffers_subset(
     odb_id: str,
