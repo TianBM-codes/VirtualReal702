@@ -48,6 +48,10 @@ const featureEdgesLines = {}   // instName → LineSegments
 const meshEdgeVtxIdxs    = {}  // instName → Uint32Array [E*2]  vertex indices for sync
 const featureEdgeVtxIdxs = {}
 
+// ── Region highlight lines (separate from global edge lines) ──────────────
+const regionMeshEdgesLines = {}   // instName → LineSegments
+const regionOutlineLines   = {}   // instName → LineSegments
+
 let _deformAnimActive = false  // animation loop guard
 
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
@@ -836,6 +840,8 @@ async function loadGeometry(instances) {
   // Dispose old
   for (const [k, l] of Object.entries(meshEdgesLines))    { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete meshEdgesLines[k];    delete meshEdgeVtxIdxs[k] }
   for (const [k, l] of Object.entries(featureEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete featureEdgesLines[k]; delete featureEdgeVtxIdxs[k] }
+  for (const [k, l] of Object.entries(regionMeshEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionMeshEdgesLines[k] }
+  for (const [k, l] of Object.entries(regionOutlineLines))   { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionOutlineLines[k] }
   Object.values(store.instanceMeshes).forEach(im => _disposeInstance(im))
   Object.keys(store.instanceMeshes).forEach(k => delete store.instanceMeshes[k])
   Object.keys(origPositions).forEach(k => delete origPositions[k])
@@ -1110,6 +1116,81 @@ function resetColorCode() {
   })
   emit('color-code-applied', { legend: [] })
   store.setStatus('Color code reset to initial', 'ok')
+  requestRender()
+}
+
+// ── Region Highlight (mesh edges / outline for one or more averaging regions) ──
+// regions: [{name, r, g, b}, ...]  — full legend entries so we can use their colors
+// types:   ['mesh'] | ['outline'] | ['mesh', 'outline']
+async function loadRegionHighlight(scheme, regions, types) {
+  const instNames = Object.keys(store.instanceMeshes)
+  if (instNames.length === 0) { store.setStatus('Load geometry first', 'err'); return }
+
+  const TYPE_CFG = {
+    mesh:    { endpoint: 'region-mesh-edges', linesMap: regionMeshEdgesLines, opacity: 0.55 },
+    outline: { endpoint: 'region-outline',    linesMap: regionOutlineLines,   opacity: 1.0  },
+  }
+
+  // Clear all previous region highlights
+  for (const cfg of Object.values(TYPE_CFG)) {
+    for (const [k, l] of Object.entries(cfg.linesMap)) {
+      modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete cfg.linesMap[k]
+    }
+  }
+
+  const regionList = Array.isArray(regions) ? regions : [regions]
+  const typeList   = Array.isArray(types)   ? types   : [types]
+  let totalEdges = 0
+
+  store.setStatus(`Loading region highlight for ${regionList.length} region(s)…`)
+
+  for (const regionInfo of regionList) {
+    const { name: region, r, g, b } = regionInfo
+    const threeColor = new THREE.Color(r, g, b)
+
+    for (const type of typeList) {
+      const { endpoint, linesMap, opacity } = TYPE_CFG[type] ?? {}
+      if (!endpoint) continue
+
+      await Promise.all(instNames.map(async instName => {
+        try {
+          const params = new URLSearchParams({ scheme, region })
+          const res = await http.get(
+            store.getApiUrl(`color-code/${encodeURIComponent(instName)}/${endpoint}?${params}`),
+            { responseType: 'arraybuffer' }
+          )
+          const sec        = parseL3BE(res.data)
+          const edgePosArr = new Float32Array(sec.edge_positions.data)
+          if (edgePosArr.length === 0) return
+
+          const geo = new THREE.BufferGeometry()
+          geo.setAttribute('position', new THREE.BufferAttribute(edgePosArr, 3))
+          const mat = new THREE.LineBasicMaterial({
+            color: threeColor, linewidth: 2,
+            depthTest: false, transparent: opacity < 1, opacity,
+          })
+          if (clipPlane) mat.clippingPlanes = [clipPlane]
+          const line = new THREE.LineSegments(geo, mat)
+          line.renderOrder = 1
+          modelGroup.add(line)
+          linesMap[`${instName}__${region}`] = line
+          totalEdges += edgePosArr.length / 6
+        } catch { /* instance has no data for this region */ }
+      }))
+    }
+  }
+
+  store.setStatus(`Region highlight loaded: ${totalEdges} edges`, 'ok')
+  requestRender()
+}
+
+function clearRegionHighlight() {
+  for (const linesMap of [regionMeshEdgesLines, regionOutlineLines]) {
+    for (const [k, l] of Object.entries(linesMap)) {
+      modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete linesMap[k]
+    }
+  }
+  store.setStatus('Region highlight cleared', 'ok')
   requestRender()
 }
 
@@ -1661,5 +1742,5 @@ function resetModelTransform() {
   requestRender()
 }
 
-defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform })
+defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform, loadRegionHighlight, clearRegionHighlight })
 </script>

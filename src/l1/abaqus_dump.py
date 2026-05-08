@@ -171,6 +171,9 @@ def parse_args():
     p.add_argument('--check-mode', choices=['count-only', 'label-only'],
                    default='count-only',
                    help='Consistency check depth (consistency-check mode only)')
+    p.add_argument('--geom-source', choices=['odb', 'inp'], default='odb',
+                   help='How project geometry was extracted: odb=hard-fail on count mismatch, '
+                        'inp=warn only (INP parser may miss connector/special elements)')
     p.add_argument('--invariants', choices=['none', 'full'], default='none',
                    help=('none=skip invariants (fast, default); '
                          'full=extract all validInvariants via .values iteration '
@@ -810,10 +813,20 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
         frames_meta = []
         all_field_names = set()
         for fi, frame in enumerate(step.frames):
+            _domain = getattr(frame, 'domain', None)
+            _lc = getattr(frame, 'loadCase', None)
             frames_meta.append({
-                'frame_idx':   fi,
-                'frame_value': float(frame.frameValue),
-                'description': frame.description,
+                'frame_idx':          fi,
+                'frame_value':        float(frame.frameValue),
+                'description':        frame.description,
+                'domain':             str(_domain) if _domain is not None else None,
+                'frequency':          getattr(frame, 'frequency', None),
+                'mode_number':        getattr(frame, 'mode', None),
+                'increment_number':   getattr(frame, 'incrementNumber', None),
+                'is_imaginary':       int(getattr(frame, 'isImaginary', False) or False),
+                'frame_id':           getattr(frame, 'frameId', None),
+                'cyclic_mode_number': getattr(frame, 'cyclicModeNumber', None),
+                'load_case':          str(_lc) if _lc is not None else None,
             })
             all_field_names.update(frame.fieldOutputs.keys())
 
@@ -821,6 +834,7 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
             'step_number': step_num,
             'procedure':   procedure,
             'num_frames':  num_frames,
+            'description': getattr(step, 'description', None),
             'frames':      frames_meta,
         }
         field_list = sorted(all_field_names)
@@ -1277,16 +1291,27 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
 
         frames_meta = []
         for fi, (_, frame) in enumerate(selected_frames):
+            _domain = getattr(frame, 'domain', None)
+            _lc = getattr(frame, 'loadCase', None)
             frames_meta.append({
-                'frame_idx':   fi,
-                'frame_value': float(frame.frameValue),
-                'description': frame.description,
+                'frame_idx':          fi,
+                'frame_value':        float(frame.frameValue),
+                'description':        frame.description,
+                'domain':             str(_domain) if _domain is not None else None,
+                'frequency':          getattr(frame, 'frequency', None),
+                'mode_number':        getattr(frame, 'mode', None),
+                'increment_number':   getattr(frame, 'incrementNumber', None),
+                'is_imaginary':       int(getattr(frame, 'isImaginary', False) or False),
+                'frame_id':           getattr(frame, 'frameId', None),
+                'cyclic_mode_number': getattr(frame, 'cyclicModeNumber', None),
+                'load_case':          str(_lc) if _lc is not None else None,
             })
 
         steps_meta[step_name] = {
             'step_number': step_num,
             'procedure':   procedure,
             'num_frames':  num_frames,
+            'description': getattr(step, 'description', None),
             'frames':      frames_meta,
         }
 
@@ -1694,6 +1719,67 @@ def main():
 
 # ─── New project-grouping modes ───────────────────────────────────────────────
 
+def _extract_sections_to_dir(odb, out_dir):
+    """
+    Extract section assignments + element-set labels for all instances.
+    Called from _run_extract so we piggyback on the already-open ODB.
+    Output layout (under out_dir/sections/<inst_safe>/):
+      sections.json          { sectionName: {element_set, material_name, type, thickness} }
+      section_names.json     [ sectionName, ... ]  (ordered by sectionAssignments index)
+      isets/elem_sets/<safe_eset>.npy   sorted int32 element labels
+    Used by l1_pack.py to patch sections into INP-derived geometry H5 files.
+    Python 2/3 compatible (no f-strings, no walrus).
+    """
+    for iname, instance in odb.rootAssembly.instances.items():
+        inst_safe = safe(iname)
+        d = os.path.join(out_dir, 'sections', inst_safe)
+
+        _sec_region_names = set()
+        section_names_list = []
+        sections_info = {}
+        try:
+            for sa in instance.sectionAssignments:
+                sname = sa.sectionName
+                section_names_list.append(sname)
+                rname = getattr(getattr(sa, 'region', None), 'name', '') or ''
+                if rname:
+                    _sec_region_names.add(rname)
+                entry = {
+                    'element_set':   rname,
+                    'material_name': '',
+                    'type':          '',
+                    'thickness':     None,
+                }
+                try:
+                    sec = odb.sections[sname]
+                    entry['type'] = type(sec).__name__
+                    if hasattr(sec, 'material'):
+                        entry['material_name'] = sec.material
+                    if hasattr(sec, 'thickness'):
+                        entry['thickness'] = float(sec.thickness)
+                except Exception:
+                    pass
+                sections_info[sname] = entry
+        except AttributeError:
+            pass
+
+        if not sections_info:
+            continue
+
+        mkdirs(d)
+        isd = os.path.join(d, 'isets', 'elem_sets')
+        for eset_name, es in instance.elementSets.items():
+            if eset_name in _sec_region_names:
+                mkdirs(isd)
+                lbls = np.array(sorted([e.label for e in es.elements]), dtype=np.int32)
+                npsave(os.path.join(isd, safe(eset_name) + '.npy'), lbls)
+
+        jdump(os.path.join(d, 'sections.json'), sections_info)
+        jdump(os.path.join(d, 'section_names.json'), section_names_list)
+
+    print("  sections extracted.")
+
+
 def _run_consistency_check(args, odb_path, workspace):
     """
     --mode consistency-check: preflight 校验，不提取结果。
@@ -1779,10 +1865,118 @@ def _run_consistency_check(args, odb_path, workspace):
         _fmt_t(time.time() - t0)))
 
 
+def _consistency_check_inline(odb, workspace, result_group, check_mode, geom_source='odb'):
+    """
+    Consistency check merged into extract: counts nodes/elements per instance,
+    writes check.json, then validates against manifest.db.
+    Calls sys.exit(1) on mismatch so the caller can odb.close() first.
+    Python 2/3 compatible (sqlite3 is stdlib in both).
+    """
+    import sqlite3 as _sqlite3
+
+    out_dir = os.path.join(workspace, 'l1_raw', 'consistency', safe(result_group))
+    mkdirs(out_dir)
+
+    assembly = odb.rootAssembly
+    instances_out = {}
+
+    for inst_name, instance in assembly.instances.items():
+        node_count = len(instance.nodes)
+        elem_count = len(instance.elements)
+        inst_entry = {'node_count': node_count, 'elem_count': elem_count}
+
+        if check_mode == 'label-only':
+            raw_labels = np.array([n.label for n in instance.nodes], dtype=np.int32)
+            nl_path = os.path.join(out_dir, '{}_node_labels.npy'.format(safe(inst_name)))
+            npsave(nl_path, np.sort(raw_labels))
+            inst_entry['node_labels_path'] = os.path.relpath(nl_path, workspace)
+
+            elem_by_type = {}
+            for elem in instance.elements:
+                t = elem.type
+                if t not in elem_by_type:
+                    elem_by_type[t] = []
+                elem_by_type[t].append(elem.label)
+
+            elem_labels_paths = {}
+            for etype, labels in elem_by_type.items():
+                el_path = os.path.join(
+                    out_dir, '{}_{}_elem_labels.npy'.format(safe(inst_name), safe(etype)))
+                npsave(el_path, np.array(sorted(labels), dtype=np.int32))
+                elem_labels_paths[etype] = os.path.relpath(el_path, workspace)
+            inst_entry['element_labels'] = elem_labels_paths
+
+        instances_out[inst_name] = inst_entry
+        print("  {}: nodes={} elems={}".format(inst_name, node_count, elem_count))
+
+    jdump(os.path.join(out_dir, 'check.json'), {
+        'mode': check_mode,
+        'warning': (
+            'Count-only validation does not verify label or row mapping. '
+            'Mismatched labels with matching counts will not be detected.'
+        ),
+        'instances': instances_out,
+    })
+
+    # Validate against manifest.db (node/elem counts must match geometry)
+    manifest = os.path.join(workspace, 'manifest.db')
+    if not os.path.exists(manifest):
+        print("  WARNING: manifest.db not found, skipping count validation")
+        return
+
+    try:
+        _conn = _sqlite3.connect(manifest, timeout=5.0)
+        _rows = _conn.execute(
+            "SELECT instance_name, node_count, elem_count FROM instances"
+        ).fetchall()
+        _conn.close()
+    except Exception as _e:
+        print("  WARNING: cannot read manifest.db ({}), skipping validation".format(_e))
+        return
+
+    if not _rows:
+        print("  WARNING: no instances in manifest.db, skipping validation")
+        return
+
+    geom_inst = {r[0]: (r[1], r[2]) for r in _rows}
+
+    if set(geom_inst) != set(instances_out):
+        print("ERROR: instance list mismatch: geom={} odb={}".format(
+            sorted(geom_inst), sorted(instances_out)))
+        sys.exit(1)
+
+    mismatches = []
+    for inst, (g_nodes, g_elems) in geom_inst.items():
+        o = instances_out[inst]
+        if g_nodes is not None and g_nodes != o['node_count']:
+            mismatches.append(
+                "{}: node_count geom={} odb={}".format(inst, g_nodes, o['node_count']))
+        if g_elems is not None and g_elems != o['elem_count']:
+            mismatches.append(
+                "{}: elem_count geom={} odb={}".format(inst, g_elems, o['elem_count']))
+
+    if mismatches:
+        if geom_source == 'inp':
+            # INP parser and ODB may count nodes/elements differently (e.g. connector
+            # or special elements not parsed from INP). Warn but do not block.
+            print("WARNING: consistency check mismatch (INP vs ODB, non-fatal):")
+            for m in mismatches:
+                print("  " + m)
+        else:
+            print("ERROR: consistency check failed:")
+            for m in mismatches:
+                print("  " + m)
+            print("ODB_CONSISTENCY_FAIL: " + " | ".join(mismatches))
+            sys.exit(1)
+    else:
+        print("  consistency check passed ({}).".format(check_mode))
+
+
 def _run_extract(args, odb_path, workspace):
     """
-    --mode extract: 只提取结果，跳过几何/assembly/sets。
+    --mode extract: consistency check + 结果提取 + sections 提取，一次 ODB 打开完成。
     输出: <workspace>/l1_raw/rg_<result_group>/ （供 l1_pack.py --result-group 读取）
+          <workspace>/l1_raw/consistency/<result_group>/check.json
     """
     result_group = args.result_group
     if not result_group:
@@ -1800,6 +1994,20 @@ def _run_extract(args, odb_path, workspace):
     t0 = time.time()
     odb = _open_odb(odb_path)
     print("  ODB opened. ({})".format(_fmt_t(time.time() - t0)))
+
+    # Inline consistency check (replaces separate --mode consistency-check call)
+    try:
+        _consistency_check_inline(odb, workspace, result_group,
+                                   args.check_mode,
+                                   geom_source=getattr(args, 'geom_source', 'odb'))
+    except SystemExit:
+        odb.close()
+        raise
+    except Exception:
+        print("ERROR during consistency check:")
+        traceback.print_exc()
+        odb.close()
+        sys.exit(1)
 
     try:
         step_names = _parse_csv_names(args.steps)
@@ -1839,6 +2047,14 @@ def _run_extract(args, odb_path, workspace):
         traceback.print_exc()
         odb.close()
         sys.exit(1)
+
+    # Piggyback: extract section assignments while ODB is open.
+    # l1_pack will use this to patch sections into INP-derived geometry H5 files.
+    try:
+        _extract_sections_to_dir(odb, raw_dir)
+    except Exception:
+        print("  WARNING: sections extraction failed (non-fatal):")
+        traceback.print_exc()
 
     odb.close()
     jdump(os.path.join(raw_dir, 'dump_meta.json'), meta)

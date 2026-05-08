@@ -30,14 +30,23 @@ CREATE TABLE IF NOT EXISTS steps (
     step_number  INTEGER,
     procedure    TEXT,
     num_frames   INTEGER,
+    description  TEXT,
     PRIMARY KEY (result_group, step_name)
 );
 CREATE TABLE IF NOT EXISTS frames (
-    result_group TEXT,
-    step_name    TEXT,
-    frame_idx    INTEGER,
-    frame_value  REAL,
-    description  TEXT,
+    result_group       TEXT,
+    step_name          TEXT,
+    frame_idx          INTEGER,
+    frame_value        REAL,
+    description        TEXT,
+    domain             TEXT,
+    frequency          REAL,
+    mode_number        INTEGER,
+    increment_number   INTEGER,
+    is_imaginary       INTEGER,
+    frame_id           INTEGER,
+    cyclic_mode_number INTEGER,
+    load_case          TEXT,
     PRIMARY KEY (result_group, step_name, frame_idx)
 );
 CREATE TABLE IF NOT EXISTS result_files (
@@ -90,6 +99,13 @@ CREATE TABLE IF NOT EXISTS result_group_meta (
     source_file        TEXT,
     consistency_check  TEXT NOT NULL DEFAULT 'count-only',
     created_at         TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS display_names (
+    instance     TEXT NOT NULL,
+    scheme       TEXT NOT NULL,
+    legend_key   TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    PRIMARY KEY (instance, scheme, legend_key)
 );
 """
 # user_sets / user_set_instances tables are NOT created here.

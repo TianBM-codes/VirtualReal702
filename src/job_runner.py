@@ -121,6 +121,41 @@ logger = logging.getLogger("job_runner")
 
 _current_odb_id: list = [None]   # [0] = odb_id currently being processed, or None
 
+# ── job_logs helpers ───────────────────────────────────────────────────────────
+
+_JOB_LOGS_DDL = """
+CREATE TABLE IF NOT EXISTS job_logs (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    odb_id  TEXT    NOT NULL,
+    ts      TEXT    NOT NULL,
+    level   TEXT    NOT NULL DEFAULT 'info',
+    stage   TEXT,
+    message TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_logs_odb ON job_logs(odb_id, id);
+"""
+
+
+def _ensure_job_logs_schema() -> None:
+    """Create job_logs table if not present (needed for standalone runner without L3)."""
+    try:
+        with _connect() as conn:
+            conn.executescript(_JOB_LOGS_DDL)
+    except Exception:
+        pass
+
+
+def _log_job(odb_id: str, level: str, message: str, stage: str = None) -> None:
+    """Persist one log line to job_logs. Never raises — logging must not break the pipeline."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO job_logs (odb_id, ts, level, stage, message) VALUES (?,?,?,?,?)",
+                (odb_id, _now_iso(), level, stage, message),
+            )
+    except Exception:
+        pass
+
 
 # ── Timestamp helper ──────────────────────────────────────────────────────────
 
@@ -248,10 +283,12 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
             f"Example: {{\"APP_ABAQUS_CMD\": \"C:\\\\SIMULIA\\\\Commands\\\\abaqus.bat\"}}"
         )
         logger.error("[%s] %s: %s", odb_id, label, msg)
+        _log_job(odb_id, "error", msg, stage=label)
         return 1, msg
     except OSError as exc:
         msg = f"Failed to launch {cmd[0]!r}: {exc}"
         logger.error("[%s] %s: %s", odb_id, label, msg)
+        _log_job(odb_id, "error", msg, stage=label)
         return 1, msg
 
     stderr_lines = []
@@ -260,6 +297,7 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
         if line:
             logger.info("[%s] %s: %s", odb_id, label, line)
             stderr_lines.append(line)
+            _log_job(odb_id, "info", line, stage=label)
     proc.wait()
     return proc.returncode, "\n".join(stderr_lines[-50:])
 
@@ -273,6 +311,27 @@ def _is_odb_version_error(rc: int, tail: str) -> bool:
     could match ODB filenames containing 'upgrade' or 'odb'.
     """
     return "ODB_VERSION_ERROR" in tail
+
+
+def _project_used_inp_geom(project_id: str) -> bool:
+    """Return True if this project's geometry was extracted from INP (not ODB)."""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT source_type FROM projects WHERE project_id=?", (project_id,)
+            ).fetchone()
+            return row is not None and row["source_type"] != "odb"
+    except Exception:
+        return False
+
+
+def _is_consistency_fail(rc: int, tail: str) -> bool:
+    """
+    Detect geometry-ODB mismatch via sentinel printed by _consistency_check_inline().
+    Abaqus Python exit codes are not reliably propagated on Windows, so we check
+    output text rather than rc alone.
+    """
+    return rc != 0 or "ODB_CONSISTENCY_FAIL:" in tail
 
 
 def _upgrade_odb(odb_path: str, label: str) -> tuple:
@@ -338,33 +397,40 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     in-place and abaqus_dump.py is retried once.
     """
     logger.info("[%s] L1 phase 1: abaqus_dump.py", odb_id)
+    _log_job(odb_id, "step", "L1 阶段 1：Abaqus 导出（abaqus_dump.py）启动", stage="l1_dump")
     dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
-    rc1, tail1 = _run_streaming(dump_cmd, odb_id, "abaqus_dump")
+    rc1, tail1 = _run_streaming(dump_cmd, odb_id, "l1_dump")
     logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
+        _log_job(odb_id, "warn", "ODB 版本不匹配，正在升级 ODB 文件…", stage="l1_dump")
         ok, upgraded_path, upgrade_tail = _upgrade_odb(odb_path, odb_id)
         if not ok:
             _update_status(odb_id, "error",
                            error_msg="ODB upgrade failed: " + upgrade_tail)
+            _log_job(odb_id, "error", "ODB 升级失败：" + upgrade_tail[-500:], stage="l1_dump")
             return False
         logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
                     odb_id, upgraded_path)
+        _log_job(odb_id, "step", "ODB 升级完成，重试 abaqus_dump.py", stage="l1_dump")
         retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
             retry_cmd += ["--invariants", "full"]
-        rc1, tail1 = _run_streaming(retry_cmd, odb_id, "abaqus_dump_retry")
+        rc1, tail1 = _run_streaming(retry_cmd, odb_id, "l1_dump")
         logger.info("[%s] abaqus_dump retry rc=%d", odb_id, rc1)
 
     if rc1 != 0:
         log_hint = "\n[Check {}/abaqus.log for full Abaqus output]".format(workspace)
-        _update_status(odb_id, "error", error_msg="abaqus_dump failed: " + tail1 + log_hint)
+        err = "abaqus_dump failed: " + tail1 + log_hint
+        _update_status(odb_id, "error", error_msg=err)
+        _log_job(odb_id, "error", f"L1 阶段 1 失败 (rc={rc1})：" + tail1[-500:], stage="l1_dump")
         logger.error("[%s] L1 phase 1 failed (rc=%d)", odb_id, rc1)
         return False
 
+    _log_job(odb_id, "step", "L1 阶段 1 完成，开始打包 HDF5（l1_pack.py）", stage="l1_pack")
     logger.info("[%s] L1 phase 2: l1_pack.py", odb_id)
     rc2, tail2 = _run_streaming(
         [sys.executable, str(PACK_SCRIPT), "--workspace", workspace],
@@ -372,6 +438,7 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     )
     if rc2 != 0:
         _update_status(odb_id, "error", error_msg="l1_pack failed: " + tail2)
+        _log_job(odb_id, "error", f"L1 阶段 2 失败 (rc={rc2})：" + tail2[-500:], stage="l1_pack")
         logger.error("[%s] L1 phase 2 failed (rc=%d)", odb_id, rc2)
         return False
 
@@ -384,6 +451,7 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
     No Abaqus license required.
     """
     logger.info("[%s] L1 (INP): parsing %s", odb_id, inp_path)
+    _log_job(odb_id, "step", f"L1（INP）：解析 {os.path.basename(inp_path)}", stage="l1_inp")
     try:
         from src.inp import parse_inp
         from src.inp.exporter import export_l1
@@ -391,8 +459,10 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
         export_l1(model, workspace)
     except Exception as exc:
         _update_status(odb_id, "error", error_msg=f"INP parse/export failed: {exc}")
+        _log_job(odb_id, "error", f"INP 解析失败：{exc}", stage="l1_inp")
         logger.exception("[%s] INP L1 failed", odb_id)
         return False
+    _log_job(odb_id, "step", "L1（INP）解析完成", stage="l1_inp")
     logger.info("[%s] L1 (INP) done", odb_id)
     return True
 
@@ -419,6 +489,9 @@ def _run_l1(odb_id: str, source_path: str, workspace: str) -> bool:
         node_count=node_count,
         instance_count=instance_count,
     )
+    _log_job(odb_id, "step",
+             f"L1 完成（节点数 {node_count:,}，实例数 {instance_count}），开始 L2 预处理",
+             stage="l1_done")
     logger.info("[%s] L1 done (nodes=%d, instances=%d)", odb_id, node_count, instance_count)
     return True
 
@@ -433,23 +506,26 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     """
     if not INGEST_SCRIPT.exists():
         logger.info("[%s] L2 script not found, skipping L2 — marking ready", odb_id)
+        _log_job(odb_id, "warn", "L2 脚本不存在，跳过 L2，直接标记就绪", stage="l2_ingest")
         _update_status(odb_id, "ready", l2_done_at=_now_iso())
         return True
 
     _update_status(odb_id, "l2_running", l2_started_at=_now_iso())
     logger.info("[%s] L2: ingest.py", odb_id)
+    _log_job(odb_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…", stage="l2_ingest")
 
-    ret = subprocess.run(
+    rc, tail = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        capture_output=True, text=True,
+        odb_id, "l2_ingest",
     )
-    if ret.returncode != 0:
-        _update_status(odb_id, "error",
-            error_msg="[L2] ingest failed: " + ret.stderr[-2000:])
-        logger.error("[%s] L2 failed (rc=%d)", odb_id, ret.returncode)
+    if rc != 0:
+        _update_status(odb_id, "error", error_msg="[L2] ingest failed: " + tail[-2000:])
+        _log_job(odb_id, "error", f"L2 预处理失败 (rc={rc})：" + tail[-500:], stage="l2_ingest")
+        logger.error("[%s] L2 failed (rc=%d)", odb_id, rc)
         return False
 
     _update_status(odb_id, "ready", l2_done_at=_now_iso())
+    _log_job(odb_id, "step", "解析全部完成，已就绪", stage="l2_done")
     logger.info("[%s] ready", odb_id)
     return True
 
@@ -511,6 +587,9 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
 
     # --- L1: parse INP once, export geometry HDF5 + run catalog import ---
     logger.info("[%s] Geom: parsing INP %s", project_id, inp_path)
+    _log_job(project_id, "step",
+             "几何解析开始：解析 INP 文件 {}".format(os.path.basename(inp_path)),
+             stage="l1_inp")
     try:
         import json as _json
         from src.inp import parse_inp
@@ -526,32 +605,44 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         msg = "INP parse/export failed: {}".format(exc)
         logger.exception("[%s] %s", project_id, msg)
         _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error", "INP 解析失败：{}".format(exc), stage="l1_inp")
         return False
+
+    _log_job(project_id, "step", "INP 解析完成，导出几何 HDF5", stage="l1_inp")
 
     # --- Catalog import (optional: only available in combined deployment) ---
     try:
         from services.model_update.analysis.inp_service import import_inp_catalog
         logger.info("[%s] Geom: importing INP catalog", project_id)
+        _log_job(project_id, "step", "导入 INP catalog（测点/参数信息）", stage="catalog")
         import_inp_catalog(inp_path, project_id, model=model)
         logger.info("[%s] Geom: catalog import done", project_id)
+        _log_job(project_id, "step", "INP catalog 导入完成", stage="catalog")
     except ImportError:
         logger.info("[%s] Geom: inp_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] Catalog import failed (non-fatal): %s", project_id, exc)
+        _log_job(project_id, "warn", "catalog 导入失败（非致命）：{}".format(exc), stage="catalog")
 
     # --- L2: ingest (subprocess, keeps numpy/HDF5 isolated) ---
     logger.info("[%s] Geom: ingest.py (L2)", project_id)
-    ret = subprocess.run(
+    _log_job(project_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest")
+    rc_l2, tail_l2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        capture_output=True, encoding="utf-8", errors="replace",
+        project_id, "l2_ingest",
     )
-    if ret.returncode != 0:
-        msg = "ingest failed: " + ret.stderr[-2000:]
+    if rc_l2 != 0:
+        msg = "ingest failed: " + tail_l2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
-        logger.error("[%s] L2 failed (rc=%d)", project_id, ret.returncode)
+        _log_job(project_id, "error",
+                 "L2 预处理失败 (rc={})：{}".format(rc_l2, tail_l2[-500:]),
+                 stage="l2_ingest")
+        logger.error("[%s] L2 failed (rc=%d)", project_id, rc_l2)
         return False
 
     _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", "几何解析完成，已就绪", stage="l2_done")
     logger.info("[%s] Geom ready", project_id)
     return True
 
@@ -569,69 +660,89 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         return False
 
     logger.info("[%s] Project ODB: abaqus_dump.py", project_id)
+    _log_job(project_id, "step", "L1 阶段 1：Abaqus 导出（abaqus_dump.py）启动", stage="l1_dump")
     dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
-    rc1, tail1 = _run_streaming(dump_cmd, project_id, "project_abaqus_dump")
+    rc1, tail1 = _run_streaming(dump_cmd, project_id, "l1_dump")
     logger.info("[%s] project_abaqus_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
+        _log_job(project_id, "warn", "ODB 版本不匹配，正在升级 ODB 文件…", stage="l1_dump")
         ok, upgraded_path, upgrade_tail = _upgrade_odb(odb_path, project_id)
         if not ok:
             msg = "ODB upgrade failed: " + upgrade_tail
             _update_project_geom_status(project_id, "error", msg)
+            _log_job(project_id, "error", "ODB 升级失败：" + upgrade_tail[-500:], stage="l1_dump")
             return False
         logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
                     project_id, upgraded_path)
+        _log_job(project_id, "step", "ODB 升级完成，重试 abaqus_dump.py", stage="l1_dump")
         retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
             retry_cmd += ["--invariants", "full"]
-        rc1, tail1 = _run_streaming(retry_cmd, project_id, "project_abaqus_dump_retry")
+        rc1, tail1 = _run_streaming(retry_cmd, project_id, "l1_dump")
         logger.info("[%s] project_abaqus_dump retry rc=%d", project_id, rc1)
 
     if rc1 != 0:
         msg = "abaqus_dump failed: " + tail1
         _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 "L1 阶段 1 失败 (rc={})：{}".format(rc1, tail1[-500:]), stage="l1_dump")
         logger.error("[%s] Project ODB phase 1 failed (rc=%d)", project_id, rc1)
         return False
 
+    _log_job(project_id, "step", "L1 阶段 1 完成，开始打包 HDF5（l1_pack.py）", stage="l1_pack")
     logger.info("[%s] Project ODB: l1_pack.py", project_id)
     rc2, tail2 = _run_streaming(
         [sys.executable, str(PACK_SCRIPT), "--workspace", workspace],
-        project_id, "project_l1_pack",
+        project_id, "l1_pack",
     )
     if rc2 != 0:
         msg = "l1_pack failed: " + tail2
         _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 "L1 阶段 2 失败 (rc={})：{}".format(rc2, tail2[-500:]), stage="l1_pack")
         logger.error("[%s] Project ODB phase 2 failed (rc=%d)", project_id, rc2)
         return False
+
+    _log_job(project_id, "step", "L1 完成，开始 L2 预处理", stage="l1_done")
 
     # --- Catalog import (optional: only available in combined deployment) ---
     try:
         from services.model_update.analysis.inp_service import import_inp_catalog
         from src.l1.odb_model import load_as_inp_model
         logger.info("[%s] Project ODB: importing catalog (via inp_service)", project_id)
+        _log_job(project_id, "step", "导入 ODB catalog（测点/参数信息）", stage="catalog")
         inp_model = load_as_inp_model(workspace)
         import_inp_catalog(odb_path, project_id, model=inp_model)
         logger.info("[%s] Project ODB: catalog import done", project_id)
+        _log_job(project_id, "step", "ODB catalog 导入完成", stage="catalog")
     except ImportError:
         logger.info("[%s] Project ODB: inp_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
+        _log_job(project_id, "warn", "catalog 导入失败（非致命）：{}".format(exc), stage="catalog")
 
     logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
-    ret = subprocess.run(
+    _log_job(project_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest")
+    rc_l2, tail_l2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        capture_output=True, encoding="utf-8", errors="replace",
+        project_id, "l2_ingest",
     )
-    if ret.returncode != 0:
-        msg = "ingest failed: " + ret.stderr[-2000:]
+    if rc_l2 != 0:
+        msg = "ingest failed: " + tail_l2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
-        logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, ret.returncode)
+        _log_job(project_id, "error",
+                 "L2 预处理失败 (rc={})：{}".format(rc_l2, tail_l2[-500:]),
+                 stage="l2_ingest")
+        logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, rc_l2)
         return False
 
     _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", "ODB 解析全部完成，已就绪", stage="l2_done")
     logger.info("[%s] Project ODB ready", project_id)
     _adopt_odb_result_group(project_id, odb_path, workspace)
     return True
@@ -767,6 +878,8 @@ def _run_result_group(project_id: str, result_group: str,
         msg = "ODB file not found: {}".format(source_path)
         logger.error("[%s] %s", label, msg)
         _update_result_group_status(project_id, result_group, "error", msg)
+        _log_job(project_id, "error", "[{}] ODB 文件不存在：{}".format(result_group, source_path),
+                 stage="rg_preflight")
         return False
 
     parse_opts = {}
@@ -780,39 +893,45 @@ def _run_result_group(project_id: str, result_group: str,
     display_name = parse_opts.get("display_name", result_group)
     source_file = os.path.basename(source_path)
 
-    # Step 1: consistency check
-    logger.info("[%s] preflight (%s)", label, check_mode)
-    rc, tail = _run_streaming(
-        [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
-         "--odb", source_path, "--out", workspace,
-         "--result-group", result_group,
-         "--mode", "consistency-check",
-         "--check-mode", check_mode],
-        label, "consistency_check",
-    )
-    if rc != 0:
-        msg = "consistency-check failed: " + tail
-        _update_result_group_status(project_id, result_group, "error", msg)
-        return False
-
-    # Step 2: extract results
-    logger.info("[%s] extract", label)
+    # Step 1: extract results (consistency check is now inline at start of extract)
+    logger.info("[%s] extract (check-mode=%s)", label, check_mode)
+    _log_job(project_id, "step",
+             "[{}] 结果组解析：一致性校验 + 提取（abaqus_dump extract）".format(result_group),
+             stage="rg_extract")
     inv_mode = parse_opts.get("invariants", INVARIANTS_MODE)
     extract_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
                    "--odb", source_path, "--out", workspace,
                    "--result-group", result_group,
-                   "--mode", "extract"]
+                   "--mode", "extract",
+                   "--check-mode", check_mode]
+    # INP-derived geometry may have count differences vs ODB (connector/special elements);
+    # downgrade consistency mismatch to warning instead of hard fail.
+    if _project_used_inp_geom(project_id):
+        extract_cmd += ["--geom-source", "inp"]
     if inv_mode == "full":
         extract_cmd += ["--invariants", "full"]
     _append_extract_filters(extract_cmd, parse_opts)
-    rc, tail = _run_streaming(extract_cmd, label, "extract")
+    rc, tail = _run_streaming(extract_cmd, project_id, "rg_extract")
+    if _is_consistency_fail(rc, tail):
+        msg = "consistency check failed: " + tail[-500:]
+        _update_result_group_status(project_id, result_group, "error", msg)
+        _log_job(project_id, "error",
+                 "[{}] 一致性校验失败（ODB 与几何不匹配）".format(result_group),
+                 stage="rg_extract")
+        return False
     if rc != 0:
         msg = "extract failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)
+        _log_job(project_id, "error",
+                 "[{}] 结果提取失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
+                 stage="rg_extract")
         return False
 
     # Step 3: pack into HDF5
     logger.info("[%s] l1_pack (result_group)", label)
+    _log_job(project_id, "step",
+             "[{}] 打包结果 HDF5（l1_pack）".format(result_group),
+             stage="rg_l1_pack")
     rc, tail = _run_streaming(
         [sys.executable, str(PACK_SCRIPT),
          "--workspace", workspace,
@@ -820,14 +939,57 @@ def _run_result_group(project_id: str, result_group: str,
          "--display-name", display_name,
          "--consistency-check", check_mode,
          "--source-file", source_file],
-        label, "l1_pack_rg",
+        project_id, "rg_l1_pack",
     )
     if rc != 0:
         msg = "l1_pack (result_group) failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)
+        _log_job(project_id, "error",
+                 "[{}] 打包 HDF5 失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
+                 stage="rg_l1_pack")
         return False
 
+    # If l1_pack patched sections into geometry H5 (INP+ODB mode), re-run L2
+    # so averaging domains are rebuilt with correct section boundaries.
+    marker = os.path.join(workspace, 'l1', 'geometry', '.sections_patched')
+    if os.path.exists(marker):
+        try:
+            os.remove(marker)
+        except Exception:
+            pass
+        _log_job(project_id, "step",
+                 "[{}] 截面数据已补入几何，重跑 L2 重建平均域…".format(result_group),
+                 stage="rg_rerun_l2")
+        logger.info("[%s] sections patched — re-running L2", label)
+        rc_l2r, tail_l2r = _run_streaming(
+            [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+            project_id, "rg_rerun_l2",
+        )
+        if rc_l2r != 0:
+            _log_job(project_id, "warn",
+                     "[{}] L2 重跑失败（非致命，平均域可能不完整）：{}".format(
+                         result_group, tail_l2r[-300:]),
+                     stage="rg_rerun_l2")
+            logger.warning("[%s] L2 re-run failed (rc=%d), averaging domains may be incomplete",
+                           label, rc_l2r)
+        else:
+            _log_job(project_id, "step",
+                     "[{}] L2 重跑完成，平均域已更新".format(result_group),
+                     stage="rg_rerun_l2")
+            logger.info("[%s] L2 re-run complete", label)
+            # Signal L3 registry to reload render data on next GET request.
+            # (render.h5 was updated; the in-memory averaging_data is now stale.)
+            try:
+                _reload_dir = os.path.join(workspace, 'l2', 'render')
+                if os.path.isdir(_reload_dir):
+                    open(os.path.join(_reload_dir, '.reload_needed'), 'w').close()
+            except Exception:
+                pass
+
     _update_result_group_status(project_id, result_group, "ready")
+    _log_job(project_id, "step",
+             "[{}] 结果组解析完成，已就绪".format(result_group),
+             stage="rg_done")
     logger.info("[%s] ready", label)
     return True
 
@@ -872,6 +1034,7 @@ def _recover_stuck_running_states() -> None:
 def main() -> None:
     logger.info("job_runner starting (registry=%s)", REGISTRY_DB)
 
+    _ensure_job_logs_schema()
     _recover_stuck_running_states()
 
     # Start heartbeat daemon

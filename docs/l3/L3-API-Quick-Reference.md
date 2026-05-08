@@ -1,0 +1,1696 @@
+# L3 API Quick Reference
+
+更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST；scheme 参数改为可选；region-mesh-edges / region-outline 接口）
+
+本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
+
+```text
+http://<host>:18765
+```
+
+## 1. 通用约定
+
+### 1.1 JSON 成功响应
+
+多数 JSON 接口使用统一包体：
+
+```json
+{
+  "code": 200,
+  "data": {},
+  "message": ""
+}
+```
+
+部分创建接口的 HTTP status 是 `201`，但包体里的 `code` 仍为 `200`。
+
+### 1.2 错误响应
+
+业务异常一般由 `AppError` 处理，常见结构：
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "ODB 'xxx' not found",
+    "details": {}
+  },
+  "meta": {
+    "request_id": "uuid"
+  }
+}
+```
+
+少数接口仍可能返回 FastAPI 默认错误格式：
+
+```json
+{
+  "detail": "..."
+}
+```
+
+### 1.3 L3BE 二进制响应
+
+以下接口返回 `application/octet-stream`，正文为 L3BE：
+
+- Geometry：`render-buffers`、`render-buffers-subset`、`element-mesh-edges`、`feature-edges`
+- Results：`frame-colors`、`frame-scalars`、`deformed-positions`、`raw-values?format=l3be`、`section-mesh`
+- Table：`results/node-table`
+- User field：`user-field-colors`
+- Color code：`color-code/{instance}`
+
+常见 L3BE dtype code：
+
+| code | dtype |
+|---|---|
+| `2` | `uint8` |
+| `5` | `int32` |
+| `9` | `float32` |
+| `10` | `float64` |
+
+### 1.4 Project 模式
+
+Project 模式下，前端当前数据上下文是：
+
+```text
+project_id + result_group
+```
+
+读取 ODB 数据时 URL path 使用 `project_id`：
+
+```text
+/api/odb/{project_id}/...
+```
+
+结果相关接口必须带 `result_group`，否则 `result_group=None` 表示 legacy/独立 ODB 的空结果组，不会自动选择一个结果组。
+
+当前明确使用 `result_group` 的接口：
+
+- `GET /api/odb/{odb_id}/meta/overview?result_group=...`
+- `GET /api/odb/{odb_id}/results/frame-colors?result_group=...`
+- `GET /api/odb/{odb_id}/results/frame-scalars?result_group=...`
+- `GET /api/odb/{odb_id}/results/deformed-positions?result_group=...`
+- `GET /api/odb/{odb_id}/results/raw-values?result_group=...`
+- `GET /api/odb/{odb_id}/fields?result_group=...`
+- `POST /api/odb/{odb_id}/results/node-table` body 中的 `result_group`
+- `GET /api/odb/{odb_id}/query/pick?result_group=...`
+- `POST /api/odb/{odb_id}/query/ray-pick` body 中的 `result_group`
+- `POST /api/odb/{odb_id}/results/external-field` body 中的 `result_group`
+
+几何、截面、颜色编码、bbox、render-faces、surface-patch、nearest-face 当前主要读几何或用户集合，不按 `result_group` 过滤。
+
+## 2. Endpoint 总览
+
+### 2.1 Health
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/health/live` | 进程存活 |
+| GET | `/api/health/ready` | 服务就绪 |
+
+### 2.2 Legacy ODB Jobs
+
+> **⚠️ 旧接口，仅保留兼容性。** 当前前端主流程走 [2.3 Projects](#23-projects)，新功能不在此分支迭代。
+
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/jobs` | 提交独立 ODB 作业 |
+| GET | `/api/jobs` | 列出作业 |
+| GET | `/api/jobs/{odb_id}` | 查询单个作业 |
+| GET | `/api/jobs/{odb_id}/logs` | 查询解析进度日志，支持增量轮询 |
+| DELETE | `/api/jobs/{odb_id}?hard=false` | 删除作业，可选删除 workspace |
+| POST | `/api/jobs/{odb_id}/retry` | 重试 error 状态作业 |
+
+### 2.3 Projects
+
+> **✅ 当前主要入口。** 前端通过 project 模式提交 ODB/INP，所有查询带 `project_id`。详见 [1.4 Project 模式](#14-project-模式)。
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/projects` | 列出 project 及 result groups |
+| POST | `/api/projects` | 创建 project，提交 `.inp` 几何解析或 `.odb` 全量解析 |
+| POST | `/api/projects/{source_project_id}/clone` | 克隆 project workspace 和 registry 记录 |
+| POST | `/api/projects/{project_id}/results` | 给 project 追加 ODB 结果组 |
+| GET | `/api/projects/{project_id}/logs` | 查询解析进度日志，支持增量轮询 |
+| GET | `/api/projects/{project_id}` | 查询 project 详情 |
+| GET | `/api/projects/{project_id}/summary` | 读取 `model_summary.json` |
+| PATCH | `/api/projects/{project_id}/results/{result_group}` | 修改结果组显示名 |
+| DELETE | `/api/projects/{project_id}` | 删除 project 和 workspace |
+
+### 2.4 ODB Data
+
+| 分组 | Method | Path |
+|---|---|---|
+| meta | GET | `/api/odb/{odb_id}/meta/overview` |
+| meta | GET | `/api/odb/{odb_id}/steps` |
+| meta | GET | `/api/odb/{odb_id}/steps/{step_name}/frames` |
+| meta | GET | `/api/odb/{odb_id}/steps/{step_name}/frames/{frame_idx}` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/render-buffers` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/element-mesh-edges` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/feature-edges` |
+| geometry | POST | `/api/odb/{odb_id}/geometry/{instance}/render-buffers-subset` |
+| results | GET | `/api/odb/{odb_id}/results/frame-colors` |
+| results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
+| results | GET | `/api/odb/{odb_id}/results/deformed-positions` |
+| results | GET | `/api/odb/{odb_id}/results/raw-values` |
+| results | GET | `/api/odb/{odb_id}/results/section-mesh` |
+| node table | GET | `/api/odb/{odb_id}/fields` |
+| node table | POST | `/api/odb/{odb_id}/results/node-table` |
+| user field | POST | `/api/odb/{odb_id}/results/user-field` |
+| user field | GET | `/api/odb/{odb_id}/results/user-fields` |
+| user field | GET | `/api/odb/{odb_id}/results/user-field-colors` |
+| user field | DELETE | `/api/odb/{odb_id}/results/user-field` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/schemes` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
+| color code | POST | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/region-mesh-edges` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/region-outline` |
+| query | GET | `/api/odb/{odb_id}/query/pick` |
+| query | POST | `/api/odb/{odb_id}/query/ray-pick` |
+| query | POST | `/api/odb/{odb_id}/query/bbox` |
+| query | POST | `/api/odb/{odb_id}/query/render-faces` |
+| query | POST | `/api/odb/{odb_id}/query/surface-patch` |
+| query | GET | `/api/odb/{odb_id}/query/nearest-face` |
+| external | POST | `/api/odb/{odb_id}/results/external-field` |
+
+## 3. Jobs
+
+### `POST /api/jobs`
+
+请求：
+
+```json
+{
+  "odb_path": "/data/raw/model.odb",
+  "display_name": "model-v1"
+}
+```
+
+`odb_path` 支持两种格式：
+- **本地路径**：`/data/raw/model.odb`（服务端文件系统路径，必须已存在）
+- **内网 HTTP URL**：`http://192.168.1.100:9000/files/model.odb`（job runner 在 L1 启动前自动下载到 workspace）
+
+兼容旧字段：`name` 可作为 `display_name` 别名。
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "id": "uuid",
+    "odb_id": "uuid",
+    "display_name": "model-v1",
+    "status": "submitted",
+    "runner_alive": true,
+    "warning": null
+  },
+  "message": ""
+}
+```
+
+### `GET /api/jobs`
+
+返回作业数组，每项包含：
+
+- `odb_id`
+- `display_name`
+- `odb_path`
+- `workspace`
+- `status`
+- `is_render_ready`
+- `error_msg`
+- `created_at`
+- `l1_started_at` / `l1_done_at`
+- `l2_started_at` / `l2_done_at`
+- `node_count`
+- `instance_count`
+
+### `DELETE /api/jobs/{odb_id}`
+
+查询参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `hard` | `false` | `true` 时同时删除 workspace |
+
+运行中作业不能删除。
+
+### `POST /api/jobs/{odb_id}/retry`
+
+仅允许 `status == "error"` 的作业重试。响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "id": "uuid",
+    "odb_id": "uuid",
+    "status": "submitted"
+  },
+  "message": ""
+}
+```
+
+### `GET /api/jobs/{odb_id}/logs`
+
+查询解析进度日志。支持增量轮询——每次只返回 `id > since_id` 的新行，前端轮询时将上次响应的 `next_since_id` 传回即可。
+
+查询参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `since_id` | `0` | 只返回 `id > since_id` 的行 |
+| `limit` | `200` | 最多返回行数，上限 1000 |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "logs": [
+      {
+        "id": 1,
+        "ts": "2026-05-07T10:00:01.123456+00:00",
+        "level": "step",
+        "stage": "l1_dump",
+        "message": "L1 阶段 1：Abaqus 导出（abaqus_dump.py）启动"
+      },
+      {
+        "id": 2,
+        "ts": "2026-05-07T10:00:01.456789+00:00",
+        "level": "info",
+        "stage": "l1_dump",
+        "message": "=== Layer 1 Phase 1: ODB → npy (full) ==="
+      },
+      {
+        "id": 3,
+        "ts": "2026-05-07T10:00:04.789012+00:00",
+        "level": "info",
+        "stage": "l1_dump",
+        "message": "  Geom: PART-1-1 ..."
+      }
+    ],
+    "next_since_id": 3
+  },
+  "message": ""
+}
+```
+
+`level` 取值说明：
+
+| level | 含义 |
+|---|---|
+| `step` | 流水线阶段切换，如"L1 完成，开始 L2" |
+| `info` | 子进程普通输出（Abaqus / l1_pack / ingest 的每一行） |
+| `warn` | 警告，如 ODB 版本不匹配触发自动升级 |
+| `error` | 失败行 |
+
+`stage` 取值说明：
+
+| stage | 对应阶段 |
+|---|---|
+| `l1_dump` | `abaqus_dump.py` —— Abaqus Python 2.7 导出 npy |
+| `l1_pack` | `l1_pack.py` —— 打包 npy → HDF5 + manifest.db |
+| `l1_inp` | INP 路径：解析 INP 文件并导出 L1 数据 |
+| `l1_done` | L1 完成的汇总事件（节点数、实例数） |
+| `l2_ingest` | `ingest.py` —— 三角面提取、特征边、Octree |
+| `l2_done` | L2 完成，作业状态置为 `ready` |
+
+**前端轮询示例：**
+
+```javascript
+let sinceId = 0;
+
+async function pollLogs(odbId) {
+  while (true) {
+    const res = await fetch(`/api/jobs/${odbId}/logs?since_id=${sinceId}&limit=200`);
+    const { data } = await res.json();
+    data.logs.forEach(row => appendToUI(row));
+    sinceId = data.next_since_id;
+
+    const job = await fetchJobStatus(odbId);
+    if (job.status === 'ready' || job.status === 'error') break;
+
+    await sleep(2000);
+  }
+}
+```
+
+注意事项：
+- `job_logs` 在删除作业时级联清除（`DELETE /api/jobs/{odb_id}`）。
+- 作业完成后日志永久保留，可随时查询历史。
+- 日志只属于 legacy ODB jobs（`/api/jobs`），project 流水线暂不支持。
+
+## 4. Projects
+
+### `GET /api/projects`
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "project_id": "proj-001",
+      "geom_status": "ready",
+      "result_groups": [
+        {
+          "result_group": "case1",
+          "display_name": "工况一",
+          "status": "ready",
+          "consistency_check": "count-only",
+          "error_message": null,
+          "steps": ["Step-1"]
+        }
+      ]
+    }
+  ],
+  "message": ""
+}
+```
+
+### `POST /api/projects`
+
+请求：
+
+```json
+{
+  "project_id": "proj-001",
+  "source_path": "/data/model.inp"
+}
+```
+
+`source_path` 支持本地路径或内网 HTTP URL（同 `POST /api/jobs`），并按扩展名识别 source type：
+
+- `.inp`：走 project 几何解析链路，保留原有 INP 解析行为。
+- `.odb`：走 `abaqus_dump -> l1_pack -> ingest` 的全量解析链路，仅保证模型与结果可查看，不触发 INP catalog / model-update 导入。
+
+返回：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "project_id": "proj-001",
+    "geom_status": "pending"
+  },
+  "message": ""
+}
+```
+
+### `POST /api/projects/{source_project_id}/clone`
+
+请求：
+
+```json
+{
+  "new_project_id": "proj-001-copy"
+}
+```
+
+说明：
+
+- 克隆源 project workspace 到新 project。
+- 克隆 registry 中的 project/result_groups 记录。
+- 如果源 project 有 pending/running 几何或结果任务，会返回冲突错误。
+- 源 workspace 中存在 symlink 时拒绝复制。
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "source_project_id": "proj-001",
+    "project_id": "proj-001-copy",
+    "geom_status": "ready",
+    "result_group_count": 2
+  },
+  "message": ""
+}
+```
+
+### `POST /api/projects/{project_id}/results`
+
+请求：
+
+```json
+{
+  "source_path": "/data/case1.odb",
+  "result_group": "case1",
+  "display_name": "工况一",
+  "parse_options": {
+    "consistency_check": "count-only"
+  }
+}
+```
+
+`source_path` 支持本地路径或内网 HTTP URL（同 `POST /api/jobs`）。
+
+用途说明：
+
+- 该接口用于给一个已存在的 `project` 追加新的 ODB 结果组。
+- 如果该 `project` 是先用 INP 创建的，则几何、节点/单元、L2 渲染数据都复用已有 project workspace，不会重新做几何解析或三角面片离散。
+- 默认行为仍是“全量结果解析”；只有显式传 `parse_options.steps`、`parse_options.frames`、`parse_options.field_prefix` 时，才会做按需结果提取。
+
+`parse_options` 字段说明：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `consistency_check` | string | `count-only` | INP 几何与 ODB 的一致性校验策略，可选 `count-only` / `label-only` |
+| `steps` | string[] | `null` | 只解析这些 step；`null` 表示全部 |
+| `frames` | string \| int[] | `all` | 帧过滤；支持 `all`、`first_last`、或 0-based 帧号数组如 `[5]`、`[0, 3, 8]` |
+| `field_prefix` | string | `null` | 只解析字段名前缀匹配的结果，例如 `d_U_` 会匹配 `d_U_T1`、`d_U_T2` |
+| `invariants` | string | `none` | 是否额外提取 invariant；可选 `none` / `full` |
+
+注意：
+
+- `frames` 过滤只作用于当前新增的 `result_group`。
+- 为兼容现有查询链，筛选后的帧会在该 `result_group` 内重新编号为连续 `frame_idx`。
+  例如传 `frames: [5]` 时，最终该结果组只有 1 帧，查询时应使用 `frame_idx=0`。
+
+灵敏度结果场景示例：
+
+```json
+{
+  "source_path": "/data/sensitivity/case_dU.odb",
+  "result_group": "sens-dU",
+  "display_name": "灵敏度 dU",
+  "parse_options": {
+    "consistency_check": "count-only",
+    "steps": ["Step-1"],
+    "frames": [5],
+    "field_prefix": "d_U_",
+    "invariants": "none"
+  }
+}
+```
+
+上例适用于：
+
+- project 已由原始 INP 创建完成
+- 新增 ODB 只需要提取灵敏度结果
+- 只解析指定 `step + frame`
+- 只解析 `field_prefix` 命中的字段
+- 不重新解析几何、不生成新的三角面片
+
+返回：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "project_id": "proj-001",
+    "result_group": "case1",
+    "status": "pending"
+  },
+  "message": ""
+}
+```
+
+#### 按需解析补充说明
+
+当 `project` 已由原始 INP 创建完成时，`POST /api/projects/{project_id}/results` 追加 ODB 结果组会复用已有 project workspace 中的几何、节点/单元和 L2 渲染数据，不会重新做几何解析或三角面片离散。
+
+默认行为仍是“全量结果解析”。如果只想提取部分结果，可在 `parse_options` 中额外传以下字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `steps` | string[] | `null` | 只解析这些 step；`null` 表示全部 |
+| `frames` | string \| int[] | `all` | 帧过滤；支持 `all`、`first_last`、或 0-based 帧号数组如 `[5]`、`[0, 3, 8]` |
+| `field_prefix` | string | `null` | 只解析字段名前缀匹配的结果，例如 `d_U_` 会匹配 `d_U_T1`、`d_U_T2` |
+| `invariants` | string | `none` | 是否额外提取 invariant；可选 `none` / `full` |
+
+注意：
+
+- `frames` 过滤只作用于当前新增的 `result_group`
+- 为兼容现有查询链，筛选后的帧会在该 `result_group` 内重新编号为连续 `frame_idx`
+- 例如传 `frames: [5]` 时，最终该结果组只有 1 帧，查询时应使用 `frame_idx=0`
+
+灵敏度结果场景示例：
+
+```json
+{
+  "source_path": "/data/sensitivity/case_dU.odb",
+  "result_group": "sens-dU",
+  "display_name": "灵敏度 dU",
+  "parse_options": {
+    "consistency_check": "count-only",
+    "steps": ["Step-1"],
+    "frames": [5],
+    "field_prefix": "d_U_",
+    "invariants": "none"
+  }
+}
+```
+
+上例适用于：
+
+- project 已由原始 INP 创建完成
+- 新增 ODB 只需要提取灵敏度结果
+- 只解析指定 `step + frame`
+- 只解析 `field_prefix` 命中的字段
+- 不重新解析几何、不生成新的三角面片
+
+### `GET /api/projects/{project_id}`
+
+返回结构同列表中的单个 project。
+
+### `GET /api/projects/{project_id}/summary`
+
+读取 project workspace 下的 `model_summary.json`。几何尚未解析完成或文件不存在时返回 404。
+
+### `PATCH /api/projects/{project_id}/results/{result_group}`
+
+请求：
+
+```json
+{
+  "display_name": "新显示名"
+}
+```
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "project_id": "proj-001",
+    "result_group": "case1",
+    "display_name": "新显示名"
+  },
+  "message": ""
+}
+```
+
+### `DELETE /api/projects/{project_id}`
+
+删除 project registry 记录、result group 记录和 project workspace。
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "project_id": "proj-001",
+    "deleted": true
+  },
+  "message": ""
+}
+```
+
+### `GET /api/projects/{project_id}/logs`
+
+查询 project 解析进度日志，支持增量轮询。与 `GET /api/jobs/{odb_id}/logs` 格式完全相同。
+
+**覆盖范围**：几何管道（INP 解析或 ODB L1+L2）+ 所有结果组（result_group）的解析日志，统一按 `project_id` 索引。
+
+查询参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `since_id` | `0` | 只返回 `id > since_id` 的行 |
+| `limit` | `200` | 最多返回行数，上限 1000 |
+
+响应格式同 `GET /api/jobs/{odb_id}/logs`：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "logs": [
+      {"id": 1,  "ts": "...", "level": "step", "stage": "l1_dump",    "message": "L1 阶段 1：Abaqus 导出启动"},
+      {"id": 2,  "ts": "...", "level": "info", "stage": "l1_dump",    "message": "  ODB opened. (0.3s)"},
+      {"id": 15, "ts": "...", "level": "step", "stage": "l2_done",    "message": "ODB 解析全部完成，已就绪"},
+      {"id": 16, "ts": "...", "level": "step", "stage": "rg_preflight", "message": "[case1] 结果组解析开始：一致性校验"},
+      {"id": 17, "ts": "...", "level": "info", "stage": "rg_extract",   "message": "  Step 'Step-1': 10 frames"},
+      {"id": 30, "ts": "...", "level": "step", "stage": "rg_done",      "message": "[case1] 结果组解析完成，已就绪"}
+    ],
+    "next_since_id": 30
+  },
+  "message": ""
+}
+```
+
+`stage` 取值说明（Project 模式）：
+
+| stage | 对应阶段 |
+|---|---|
+| `l1_inp` | INP 路径：解析 INP + 导出几何 HDF5 |
+| `l1_dump` | ODB 路径：`abaqus_dump.py` 导出 npy |
+| `l1_pack` | ODB 路径：`l1_pack.py` 打包 HDF5 |
+| `l1_done` | L1 完成汇总 |
+| `catalog` | INP/ODB catalog 导入（测点/参数，非致命） |
+| `l2_ingest` | `ingest.py`：三角面提取、特征边、Octree |
+| `l2_done` | 几何管道完成 |
+| `rg_preflight` | 结果组一致性校验 |
+| `rg_extract` | 结果组数据提取 |
+| `rg_l1_pack` | 结果组打包 HDF5 |
+| `rg_done` | 结果组解析完成 |
+
+注意事项：
+- 几何管道和所有结果组的日志都写入同一个 `project_id` 下，不需要分别查询。
+- result_group 相关行的 `message` 中包含结果组名称（如 `[case1] ...`），可按此过滤。
+- 删除 project 时日志随 `job_logs` 记录一并删除。
+
+## 5. Metadata
+
+### `GET /api/odb/{odb_id}/meta/overview`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `result_group` | 否 | Project 模式下指定结果组 |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "instances": [
+      {"instance_name": "PART-1-1"}
+    ],
+    "steps": [
+      {"step_name": "Step-1", "procedure": "STATIC", "num_frames": 3}
+    ],
+    "fields": [
+      {
+        "field_name": "U",
+        "components": "[\"U1\",\"U2\",\"U3\"]",
+        "positions": "[\"NODAL\"]",
+        "source": "odb"
+      }
+    ]
+  },
+  "message": ""
+}
+```
+
+说明：
+
+- `instances` 来自几何 manifest，不按 `result_group` 过滤。
+- `steps` / `fields` 会按 `result_group` 过滤。
+- `fields[*].source` 可能是 `odb` 或 `external`。
+- `components` / `positions` 当前通常是 JSON 字符串，前端需要解析。
+
+### `GET /api/odb/{odb_id}/steps`
+
+列出该 ODB 的所有分析步。
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "step_name": "sag",
+      "step_number": 1,
+      "procedure": "STATIC",
+      "num_frames": 20,
+      "description": "Static sag load"
+    },
+    {
+      "step_name": "eigenfrequency",
+      "step_number": 2,
+      "procedure": "FREQUENCY",
+      "num_frames": 5,
+      "description": null
+    }
+  ],
+  "message": ""
+}
+```
+
+说明：
+- 按 `step_number` 排序（即 ODB 中定义顺序）。
+- `description` 来自 ODB `step.description` 属性；旧版 manifest.db 中该列不存在时返回 `null`，不会报错。
+
+---
+
+### `GET /api/odb/{odb_id}/steps/{step_name}/frames`
+
+列出指定步骤的所有帧（轻量，供下拉列表使用）。
+
+路径参数：
+
+| 参数 | 说明 |
+|---|---|
+| `step_name` | 步骤名，如 `sag` |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {"frame_idx": 0, "frame_value": 0.05, "description": "Increment 1: Step Time = 0.05"},
+    {"frame_idx": 19, "frame_value": 1.0,  "description": "Increment 20: Step Time = 1.000"}
+  ],
+  "message": ""
+}
+```
+
+模态步示例：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {"frame_idx": 0, "frame_value": 1.0, "description": "Mode 1: Value = 12345.  Freq = 17.69  (cycles/time)"},
+    {"frame_idx": 4, "frame_value": 5.0, "description": "Mode 5: Value = 85255.  Freq = 46.47  (cycles/time)"}
+  ],
+  "message": ""
+}
+```
+
+---
+
+### `GET /api/odb/{odb_id}/steps/{step_name}/frames/{frame_idx}`
+
+获取单帧完整元数据。
+
+路径参数：
+
+| 参数 | 说明 |
+|---|---|
+| `step_name` | 步骤名 |
+| `frame_idx` | 帧索引（0-based，重索引后的序号） |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "frame_idx": 4,
+    "frame_value": 5.0,
+    "description": "Mode 5: Value = 85255.  Freq = 46.471  (cycles/time)",
+    "domain": "MODAL",
+    "frequency": 46.471,
+    "mode_number": 5,
+    "increment_number": 1,
+    "is_imaginary": 0,
+    "frame_id": 1,
+    "cyclic_mode_number": null,
+    "load_case": null
+  },
+  "message": ""
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|---|---|
+| `frame_idx` | 重索引后的 0-based 序号（与结果查询接口的 `frame` 参数对应） |
+| `frame_value` | 时间轴值（静力步为时间，模态步为模态阶次） |
+| `description` | ODB 帧描述文本 |
+| `domain` | `TIME` / `MODAL` / `FREQUENCY`；旧库返回 `null` |
+| `frequency` | 模态频率（Hz）；非模态步为 `null` |
+| `mode_number` | 模态阶次；非模态步为 `null` |
+| `increment_number` | 增量步号；旧库返回 `null` |
+| `is_imaginary` | 是否虚部帧（复数频响），`0` 或 `1`；旧库返回 `null` |
+| `frame_id` | ODB 原始帧 ID（可能与 `frame_idx` 不同）；旧库返回 `null` |
+| `cyclic_mode_number` | 循环对称模态号，通常为 `null` |
+| `load_case` | 载荷工况，通常为 `null` |
+
+步骤或帧不存在时返回 404。
+
+---
+
+## 6. Geometry
+
+### `GET /api/odb/{odb_id}/geometry/{instance}/render-buffers`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `set` | 否 | user set 名；找不到 user set 时 fallback 到 element set |
+
+响应头：
+
+```text
+X-Face-Count: <Nt>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 | 说明 |
+|---|---|---|---|
+| `positions` | `[Nv, 3]` | `float32` | indexed vertex positions |
+| `indices` | `[Nt, 3]` | `int32` | triangle index buffer，可能缺省 |
+
+说明：
+
+- 路由注释提到 normals 可选，但当前实现只返回 `positions` 和 `indices`。
+- 前端如需法线，应在本地 `computeVertexNormals()`。
+- `set` 过滤会压缩 vertex buffer，只保留被选三角面使用的顶点。
+
+### `GET /api/odb/{odb_id}/geometry/{instance}/element-mesh-edges`
+
+响应头：
+
+```text
+X-Edge-Count: <E>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `edge_positions` | `[E*2, 3]` | `float32` |
+
+### `GET /api/odb/{odb_id}/geometry/{instance}/feature-edges`
+
+返回格式与 `element-mesh-edges` 相同，但只包含边界和折痕等 feature edges。
+
+### `POST /api/odb/{odb_id}/geometry/{instance}/render-buffers-subset`
+
+请求：
+
+```json
+{
+  "elem_labels": [1001, 1002, 1003]
+}
+```
+
+响应同 `render-buffers`。无匹配时返回空几何，并带：
+
+```text
+X-Face-Count: 0
+```
+
+## 7. Results
+
+### `GET /api/odb/{odb_id}/results/frame-colors`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | step name |
+| `field` | 是 | field name |
+| `frame` | 否 | 默认 `0` |
+| `component` | 否 | `U1` / `U2` / `U3` / `USUM`，默认 `USUM` |
+| `mode` | 否 | `smooth` / `flat`，默认 `smooth` |
+| `result_group` | 否 | Project 模式结果组 |
+| `set` | 否 | user set / element set 过滤 |
+
+响应头：
+
+```text
+X-Payload-Type: frame_colors_v1
+X-Layout-Version: 1
+X-Val-Min: <float>
+X-Val-Max: <float>
+X-Component: <component>
+X-Frame: <frame>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `color_per_vertex` | `[Rf*3, 4]` | `uint8` |
+| `legend_range` | `[2]` | `float32` |
+
+### `GET /api/odb/{odb_id}/results/frame-scalars`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | step name |
+| `field` | 是 | field name |
+| `frame` | 否 | 默认 `0` |
+| `component_idx` | 否 | 0-based component index；省略时取 magnitude |
+| `mode` | 否 | `smooth` / `flat`，默认 `smooth` |
+| `result_group` | 否 | Project 模式结果组 |
+| `set` | 否 | user set / element set 过滤 |
+| `feature_angle` | 否 | shell/membrane 几何分域角度，默认 `20.0` |
+| `average_threshold` | 否 | 条件平均阈值，默认 `0.75` |
+| `use_geometry_split` | 否 | 是否使用几何分裂，默认 `true` |
+
+响应头：
+
+```text
+X-Payload-Type: frame_scalars_v1
+X-Result-Position: NODAL | ELEMENT_NODAL | ELEMENT_NODAL_FLAT | INTEGRATION_POINT_FLAT
+X-Normalization-Scope: instance
+X-Val-Min: <float>
+X-Val-Max: <float>
+X-Component-Idx: <idx>|mag
+X-Frame: <frame>
+X-Feature-Angle: <float>|none
+X-Average-Threshold: <float>
+X-Use-Geometry-Split: true|false
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `u_per_vertex` | `[Nv]` 或 `[Rf*3]` | `float32` |
+| `legend_range` | `[2]` | `float32` |
+
+说明：
+
+- indexed geometry 下通常返回 `[Nv]`。
+- Triangle Soup fallback 下可能返回 `[Rf*3]`。
+- 前端当前用这个接口拿标量，再自行应用 colormap。
+
+### `GET /api/odb/{odb_id}/results/deformed-positions`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | step name；读取该 step 下的 `U` NODAL 位移 |
+| `frame` | 否 | 默认 `0` |
+| `scale` | 否 | 变形放大系数，默认 `1.0` |
+| `result_group` | 否 | Project 模式结果组 |
+
+响应头：
+
+```text
+X-Vertex-Count: <Nv>
+X-Frame: <frame>
+X-Scale: <scale>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `positions` | `[Nv, 3]` | `float32` |
+| `normals` | `[Nv, 3]` | `float32` |
+
+说明：
+
+- `positions = original_positions + scale * U_per_vertex`
+- 需要 indexed geometry，即后端 `ModelIndex` 中存在 `vtx_node_row`。
+
+### `GET /api/odb/{odb_id}/results/raw-values`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | step name |
+| `field` | 是 | field name |
+| `frame` | 否 | 默认 `0` |
+| `position` | 是 | `NODAL` / `ELEMENT_NODAL` / `INTEGRATION_POINT` |
+| `format` | 否 | `json` / `l3be`，默认 `json` |
+| `result_group` | 否 | Project 模式结果组 |
+
+公共响应头：
+
+```text
+X-Position: <position>
+X-Frame: <frame>
+X-Components: ["S11","S22",...]
+X-Etype-Groups: ["C3D8R","C3D4",...]
+```
+
+`format=json` 时，`NODAL` 示例：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "odb_id": "xxx",
+    "instance": "PART-1-1",
+    "step": "Step-1",
+    "field": "U",
+    "frame": 0,
+    "position": "NODAL",
+    "components": ["U1", "U2", "U3"],
+    "node_labels": [1, 2, 3],
+    "values": [[0.0, 0.1, 0.2]]
+  },
+  "message": ""
+}
+```
+
+`format=l3be` sections：
+
+| position | section | 形状 | 类型 |
+|---|---|---|---|
+| `NODAL` | `node_labels` | `[N]` | `int32` |
+| `NODAL` | `values` | `[N, ncomp]` | `float32` |
+| element-like | `el_{etype}` | `[M]` | `int32` |
+| element-like | `v_{etype}` | `[M, ...]` | `float32` |
+
+### `GET /api/odb/{odb_id}/results/section-mesh`
+
+查询参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `instance` | 必填 | instance name |
+| `axis` | `Z` | `X` / `Y` / `Z` |
+| `position` | `0.0` | 截面位置 |
+
+响应头：
+
+```text
+X-Payload-Type: section_mesh_v1
+X-Layout-Version: 1
+X-Tri-Count: <T>
+X-Edge-Count: <E>
+X-Axis: X|Y|Z
+X-Position: <float>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `vertices` | `[T*3, 3]` | `float32` |
+| `edge_verts` | `[E*2, 3]` | `float32` |
+
+## 8. Node Table
+
+### `GET /api/odb/{odb_id}/fields`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | step name |
+| `result_group` | 否 | Project 模式结果组 |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "instance": "PART-1-1",
+    "step": "Step-1",
+    "fields": [
+      {
+        "name": "U",
+        "positions": ["NODAL"],
+        "components": ["U1", "U2", "U3"]
+      }
+    ]
+  },
+  "message": ""
+}
+```
+
+### `POST /api/odb/{odb_id}/results/node-table`
+
+请求：
+
+```json
+{
+  "instance": "PART-1-1",
+  "step": "Step-1",
+  "frame_idx": 0,
+  "node_labels": [1, 2, 3],
+  "items": [
+    {"field": "U", "component": "U1"},
+    {"field": "RF", "component": ""}
+  ],
+  "result_group": "case1"
+}
+```
+
+响应头：
+
+```text
+X-Payload-Type: node_table_v1
+X-Layout-Version: 1
+X-Node-Count: <N>
+X-Col-Count: <M>
+X-Columns: [...]
+X-Field-Coverage: step
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `node_labels` | `[N]` | `int32` |
+| `values` | `[N, M]` | `float32` |
+
+## 9. User Field
+
+### `POST /api/odb/{odb_id}/results/user-field`
+
+请求：
+
+```json
+{
+  "name": "fatigue_damage",
+  "instance": "PART-1-1",
+  "value": 0.85,
+  "element_labels": [1001, 1002, 1003]
+}
+```
+
+响应 `data`：
+
+```json
+{
+  "id": 1,
+  "name": "fatigue_damage",
+  "instance": "PART-1-1",
+  "value": 0.85,
+  "elem_count": 3
+}
+```
+
+### `GET /api/odb/{odb_id}/results/user-fields`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 否 | 仅查询某个 instance |
+
+### `GET /api/odb/{odb_id}/results/user-field-colors`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `name` | 是 | user field name |
+| `instance` | 是 | instance name |
+| `val_min` | 否 | 归一化最小值 |
+| `val_max` | 否 | 归一化最大值 |
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `color_per_vertex` | `[Rf*3, 4]` | `uint8` |
+| `legend_range` | `[2]` | `float32` |
+
+### `DELETE /api/odb/{odb_id}/results/user-field`
+
+查询参数：
+
+| 参数 | 必填 |
+|---|---|
+| `name` | 是 |
+| `instance` | 是 |
+
+成功响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "deleted": true,
+    "name": "fatigue_damage",
+    "instance": "PART-1-1"
+  },
+  "message": ""
+}
+```
+
+## 10. Color Code
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/schemes`
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "schemes": ["etype", "section", "material", "section_type", "elset"],
+    "elsets": ["SET_A", "SET_B"]
+  },
+  "message": ""
+}
+```
+
+`schemes` 可能值说明：
+
+| 值 | 说明 | 可用条件 |
+|---|---|---|
+| `etype` | 按单元类型上色 | 始终可用 |
+| `section` | 按平均域（Averaging Region）上色 | 模型有截面分区时可用（ODB 和 INP+ODB 均支持） |
+| `material` | 按材料名上色 | L1 包含材料信息时可用 |
+| `section_type` | 按截面类型（SOLID/SHELL/…）上色 | L1 包含截面类型信息时可用 |
+| `elset` | 高亮指定单元集 | L1 包含 element set 时可用，需同时传 `set_names` |
+
+### `GET /api/odb/{odb_id}/color-code/{instance}`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | `etype` / `section` / `material` / `section_type` / `elset` |
+| `set_names` | 否 | 逗号分隔，仅 `scheme=elset` 使用 |
+
+响应 body 为 L3BE 二进制，legend 嵌入 L3BE section 中（非响应头）：
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 | 说明 |
+|---|---|---|---|
+| `color_per_vertex` | `[Nv, 3]` 或 `[Rf*3, 3]` | `float32` | 逐顶点 RGB |
+| `legend` | `[N]` | `uint8` | JSON bytes，解析后为 `[{id, name, r, g, b}, ...]` |
+
+响应头：
+
+```text
+X-Face-Count: <Rf>
+```
+
+legend 中 `name` 字段若用户已通过 display-names 接口设置过自定义名称，则返回自定义名称。
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/display-names`
+
+查询用户自定义的 legend 显示名称。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 否 | `etype` / `section` / `material` / `section_type` / `elset`；省略时返回所有 scheme |
+
+**传 `scheme` 时**，返回该 scheme 的映射：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "Region 1": "顶板",
+    "Region 2": "腹板"
+  },
+  "message": ""
+}
+```
+
+**不传 `scheme` 时**，返回所有 scheme 的映射（按 scheme 分组）：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "section": {"Region 1": "顶板", "Region 2": "腹板"},
+    "elset": {"SET_A": "左翼缘"}
+  },
+  "message": ""
+}
+```
+
+未设置过时返回空对象 `{}`。
+
+### `POST /api/odb/{odb_id}/color-code/{instance}/display-names`
+
+保存 legend 显示名称。`legend_key` 为 legend 中原始 `name` 值（即 `GET color-code` 返回的 legend 里未替换前的内部名称）。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | 同上 |
+
+请求 body（`application/json`）：
+
+```json
+{
+  "Region 1": "顶板",
+  "Region 2": "腹板"
+}
+```
+
+- 只需传需要修改的条目，不会清除其他已有映射。
+- 重复 PUT 同一个 key 会覆盖旧值。
+- 存储在 workspace 的 `manifest.db` `display_names` 表，重启服务后保留。
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {},
+  "message": ""
+}
+```
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/region-mesh-edges`
+
+返回指定区域的**单元网格边**（每条有限元单元的真实边界，四边形仍显示为四边形，不是三角面片对角线）。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | `section` 或 `etype` |
+| `region` | 是 | 区域标签，与 legend 中的 `name` 一致，例如 `Region 1` |
+
+响应：L3BE 二进制，`Content-Type: application/octet-stream`
+
+| Section | dtype | shape | 说明 |
+|---|---|---|---|
+| `edge_positions` | float32 | `[E*2, 3]` | 每两行为一条边的起点/终点 XYZ |
+
+Header：`X-Edge-Count: E`（边的数量，即行数 / 2）
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/region-outline`
+
+返回指定区域的**外轮廓边**：只保留恰好属于一个区域三角面片的边（即区域边界）。
+
+实现说明：渲染顶点**不跨单元共享**（相邻单元在共享边处有不同 vertex index，但相同 vtx_node_row），因此用节点行号而非顶点 index 识别边：相邻两个单元的公共边对应相同节点行号对，出现 2 次被排除；区域边界边出现 1 次被保留。四边形三角化对角线也被正确排除（两个子三角形的对角线节点行号相同，出现 2 次）。
+
+查询参数同 `region-mesh-edges`。
+
+响应格式与 `region-mesh-edges` 完全相同（L3BE `edge_positions [E*2, 3] float32`，Header `X-Edge-Count`）。
+
+**两个接口对比：**
+
+| 接口 | 效果 | 类比 |
+|---|---|---|
+| `region-mesh-edges` | 区域内所有单元的边框，包括单元之间的内部分界线 | Abaqus 的"显示单元边"模式 |
+| `region-outline` | 仅区域外轮廓，内部单元边不显示 | Abaqus 的"显示外边界"模式 |
+
+## 11. Query / Pick
+
+### `GET /api/odb/{odb_id}/query/pick`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `render_face_idx` | 是 | render triangle index |
+| `pick_mode` | 否 | `element` / `node`，默认 `element` |
+| `step` | 否 | 查询结果值时使用 |
+| `field` | 否 | 查询结果值时使用 |
+| `frame_idx` | 否 | 查询结果值时使用 |
+| `component` | 否 | component name |
+| `component_idx` | 否 | 显式 component index，优先于 component name |
+| `node_idx` | 否 | node 模式下三角面候选点 0/1/2 |
+| `include_coords` | 否 | node 模式是否返回 `orig_coords` / `def_coords` |
+| `deform_scale` | 否 | 变形放大系数，默认 `1.0` |
+| `result_group` | 否 | Project 模式结果组 |
+
+响应核心字段：
+
+- `pick_mode`
+- `instance`
+- `render_face_idx`
+- `render_face_indices`
+- `odb.elem_label`
+- `odb.elem_type`
+- `odb.elem_node_labels`
+- `odb.node_label`
+- `odb.candidate_node_labels`
+- `odb.orig_coords`
+- `odb.def_coords`
+- `odb.attached_elem_labels`
+- `result.field`
+- `result.position`
+- `result.raw_value`
+- `result.raw_values`
+- `result.display_value`
+- `result.source_elem_label`
+- `mises`
+
+### `POST /api/odb/{odb_id}/query/ray-pick`
+
+请求：
+
+```json
+{
+  "instance": "PART-1-1",
+  "screen_x": 100,
+  "screen_y": 200,
+  "viewport_width": 1920,
+  "viewport_height": 1080,
+  "view_projection_matrix": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "pick_mode": "element",
+  "node_idx": null,
+  "step": "Step-1",
+  "field": "S",
+  "frame_idx": 0,
+  "component_idx": 0,
+  "include_coords": true,
+  "deform_scale": 1.0,
+  "result_group": "case1"
+}
+```
+
+说明：
+
+- 返回结构与 `GET /query/pick` 相同。
+- `result_group` 是 body 字段，Project 模式下应传。
+- node 模式下如果未传 `node_idx`，后端会根据屏幕点击位置从命中三角面的三个候选节点中选最近的节点。
+
+### `POST /api/odb/{odb_id}/query/bbox`
+
+请求：
+
+```json
+{
+  "instance": "PART-1-1",
+  "bbox_min": [0, 0, 0],
+  "bbox_max": [10, 10, 10],
+  "mode": "intersect",
+  "set_name": "MyRegion"
+}
+```
+
+响应字段：
+
+- `set_name`
+- `elem_count`
+- `render_face_count`
+- `elem_labels`，仅 `elem_count <= 2000` 时返回
+
+### `POST /api/odb/{odb_id}/query/render-faces`
+
+请求：
+
+```json
+{
+  "instance": "PART-1-1",
+  "render_face_indices": [1, 2, 3],
+  "mode": "element"
+}
+```
+
+element mode 响应字段：
+
+- `elem_count`
+- `elem_labels`
+- `elem_face_indices`
+- `elem_ids_per_face`
+
+node mode 响应字段：
+
+- `node_count`
+- `node_labels`
+- `node_positions`
+
+### `POST /api/odb/{odb_id}/query/surface-patch`
+
+请求：
+
+```json
+{
+  "instance": "PART-1-1",
+  "center": [0, 0, 0],
+  "normal": [0, 0, 1],
+  "width": 10.0,
+  "height": 5.0,
+  "up_hint": [0, 1, 0],
+  "depth": 2.0
+}
+```
+
+响应字段：
+
+- `face_count`
+- `elem_count`
+- `node_count`
+- `render_face_indices`
+- `elem_labels`
+- `node_labels`
+- `node_positions`
+
+### `GET /api/odb/{odb_id}/query/nearest-face`
+
+查询参数：
+
+| 参数 | 必填 |
+|---|---|
+| `instance` | 是 |
+| `x` | 是 |
+| `y` | 是 |
+| `z` | 是 |
+
+响应字段：
+
+- `instance`
+- `render_face_idx`
+- `elem_label`
+- `elem_type`
+- `normal`
+- `closest_point`
+- `distance`
+
+## 12. External Result Write
+
+### `POST /api/odb/{odb_id}/results/external-field`
+
+向已有 ODB/project workspace 写入外部结果字段。写入后会注册到 `manifest.db.result_files/result_blocks`，刷新 `meta/overview?result_group=...` 后可在 field 下拉中看到。
+
+请求：
+
+```json
+{
+  "step_name": "opt_step",
+  "field_name": "RHO",
+  "components": ["RHO"],
+  "result_group": "run1",
+  "type": "nodal",
+  "instances": [
+    {
+      "instance": "PART-1-1",
+      "frames": [
+        {
+          "frame_idx": 0,
+          "frame_value": 0.0,
+          "data": [
+            {"label": 1, "values": [0.8]}
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|---|---|
+| `result_group` | 必填，写入哪个结果组 |
+| `type` | `nodal` 或 `element` |
+| `instances[].frames[].data[].label` | node label 或 element label |
+| `values` | 与 `components` 对齐 |
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "field_name": "RHO",
+    "step_name": "opt_step",
+    "instances_written": 1,
+    "frames_written": 1,
+    "source": "external"
+  },
+  "message": ""
+}
+```
+
+## 13. Modal
+
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/modal/load` | 注册 modal JSON 文件 |
+| GET | `/api/modal/{model_id}/geometry` | 几何 |
+| GET | `/api/modal/{model_id}/modes` | 模态列表 |
+| GET | `/api/modal/{model_id}/components` | 分量列表 |
+| GET | `/api/modal/{model_id}/deformed` | 单阶变形 |
+| GET | `/api/modal/{model_id}/animation` | 实部/虚部动画数据 |
+| GET | `/api/modal/{model_id}/colormap` | 模态云图 |
+
+## 14. Simright Compatibility
+
+### `POST /applications/3dlite/api/v1/query`
+
+请求：
+
+```json
+{
+  "name": "loadcases",
+  "args": {
+    "filename": "xxx.odb"
+  }
+}
+```
+
+支持的 `name` 包括：
+
+- `loadcases`
+- `variables`
+- `assemble`
+- `extremeValue`
+- `nodeInfo`
+- `elementInfo`
+- `XYCurveData1`
+- `freqValue`
+- `hitEntities`
+- `measureValue`
+- `nodeId`
+- `probeGroupByPos`
+- `deleteModelFile`
+- `nearestFace`
+
+说明：
+
+- 这是兼容层，不走 `/api/odb/{odb_id}` 风格。
+- 目标模型通过 `args.filename` 解析。
+
+## 15. L3BE 解析示例
+
+```python
+import struct
+import numpy as np
+
+DTYPE_MAP = {
+    1: np.int8, 2: np.uint8, 3: np.int16, 4: np.uint16,
+    5: np.int32, 6: np.uint32, 7: np.int64, 8: np.uint64,
+    9: np.float32, 10: np.float64,
+}
+
+def decode_l3be(data: bytes) -> dict:
+    magic, version, flags, hdr_size, n_sections, tbl_off, pay_off = \
+        struct.unpack_from("<4sHHIIII", data, 0)
+    assert magic == b"L3BE"
+
+    result = {}
+    for i in range(n_sections):
+        entry_off = tbl_off + i * 80
+        name_b, dtype_code, ndim, s0, s1, s2, s3, offset, nbytes, _ = \
+            struct.unpack_from("<32sHH4IQQI", data, entry_off)
+        name = name_b.rstrip(b"\x00").decode("ascii")
+        shape = [s0, s1, s2, s3][:ndim]
+        dtype = DTYPE_MAP[dtype_code]
+        arr = np.frombuffer(
+            data,
+            dtype=dtype,
+            count=nbytes // np.dtype(dtype).itemsize,
+            offset=offset,
+        ).reshape(shape).copy()
+        result[name] = arr
+    return result
+```

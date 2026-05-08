@@ -25,6 +25,20 @@ class ManifestRepo:
             conn.commit()
         except Exception:
             pass
+        # Migration: create display_names table if absent
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS display_names (
+                    instance     TEXT NOT NULL,
+                    scheme       TEXT NOT NULL,
+                    legend_key   TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    PRIMARY KEY (instance, scheme, legend_key)
+                )
+            """)
+            conn.commit()
+        except Exception:
+            pass
         return conn
 
     def get_instance_info(self, instance_name: str):
@@ -685,17 +699,29 @@ class ManifestRepo:
     # ── Simright adapter helpers ───────────────────────────────────────────────
 
     def list_steps(self):
-        """Return all steps ordered by rowid, each as a dict."""
+        """Return all steps ordered by step_number, each as a dict."""
         try:
             with self._get_conn() as conn:
-                return [dict(r) for r in conn.execute(
-                    "SELECT rowid, step_name, procedure, num_frames FROM steps ORDER BY rowid"
-                ).fetchall()]
+                try:
+                    rows = conn.execute(
+                        "SELECT step_name, step_number, procedure, num_frames, description"
+                        " FROM steps ORDER BY step_number"
+                    ).fetchall()
+                except Exception:
+                    # Old manifest.db without description column
+                    rows = conn.execute(
+                        "SELECT step_name, step_number, procedure, num_frames"
+                        " FROM steps ORDER BY step_number"
+                    ).fetchall()
+                result = [dict(r) for r in rows]
+                for r in result:
+                    r.setdefault("description", None)
+                return result
         except Exception:
             return []
 
     def list_frames(self, step_name: str):
-        """Return frames for a step ordered by frame_idx."""
+        """Return lightweight frame list for a step (idx + description only)."""
         try:
             with self._get_conn() as conn:
                 return [dict(r) for r in conn.execute(
@@ -705,6 +731,18 @@ class ManifestRepo:
                 ).fetchall()]
         except Exception:
             return []
+
+    def get_frame(self, step_name: str, frame_idx: int):
+        """Return full metadata for a single frame, or None if not found."""
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM frames WHERE step_name=? AND frame_idx=?",
+                    (step_name, frame_idx),
+                ).fetchone()
+                return dict(row) if row else None
+        except Exception:
+            return None
 
     def list_result_files(self, step_name: str = None):
         """Return result_files rows, optionally filtered by step."""
@@ -820,3 +858,26 @@ class ManifestRepo:
                 ).fetchall()]
         except Exception:
             return []
+
+    def get_display_names(self, instance: str, scheme: str) -> dict:
+        """Return {legend_key: display_name} for the given instance + scheme."""
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT legend_key, display_name FROM display_names "
+                    "WHERE instance=? AND scheme=?",
+                    (instance, scheme),
+                ).fetchall()
+                return {r["legend_key"]: r["display_name"] for r in rows}
+        except Exception:
+            return {}
+
+    def set_display_names(self, instance: str, scheme: str, names: dict) -> None:
+        """Upsert {legend_key: display_name} entries for the given instance + scheme."""
+        with self._get_conn() as conn:
+            for key, val in names.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO display_names VALUES (?,?,?,?)",
+                    (instance, scheme, key, val),
+                )
+            conn.commit()

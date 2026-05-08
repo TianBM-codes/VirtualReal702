@@ -62,25 +62,36 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     from ..infra.manifest_repo import ManifestRepo
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+
+    # section scheme: solely from render.h5 averaging_data (works for both ODB and INP+ODB)
+    avd = idx.averaging_data.get(instance)
+    if avd is not None and len(avd.get("default_domain_id", [])) > 0:
+        schemes.append("section")
+
+    has_mat = False
+    has_sec = False
+
     if os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
-            has_section_id = any(
-                "section_id" in f[f"elements/{e}"]
-                for e in f.get("elements", {})
-            )
             for etype in f.get("elements", {}):
                 grp = f[f"elements/{etype}"]
                 has_mat = "material_name" in grp
                 has_sec = "section_type" in grp
                 break
-            else:
-                has_mat = has_sec = False
-        if has_section_id:
-            schemes.append("section")
-        if has_mat:
-            schemes.append("material")
-        if has_sec:
-            schemes.append("section_type")
+            if not has_mat or not has_sec:
+                for sec_name in f.get("sections", {}):
+                    sg = f[f"sections/{sec_name}"]
+                    if not has_mat and sg.attrs.get("material_name", ""):
+                        has_mat = True
+                    if not has_sec and sg.attrs.get("type", ""):
+                        has_sec = True
+                    if has_mat and has_sec:
+                        break
+
+    if has_mat:
+        schemes.append("material")
+    if has_sec:
+        schemes.append("section_type")
 
     elsets: List[str] = []
     sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
@@ -89,6 +100,12 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
             inst_grp = f.get(f"element_sets/{instance}")
             if inst_grp is not None:
                 elsets = sorted(inst_grp.keys())
+    # ODB-only fallback: instance sets live in geometry H5, not sets.h5
+    if not elsets and os.path.exists(geom_h5):
+        with h5py.File(geom_h5, "r") as f:
+            isets_grp = f.get("instance_sets/element_sets")
+            if isets_grp is not None:
+                elsets = sorted(isets_grp.keys())
     if elsets:
         schemes.append("elset")
 
@@ -171,6 +188,14 @@ def get_color_code(
     face_codes  = np.array([val_to_id[v] for v in labels], dtype=np.int32)
     face_colors = pal_arr[face_codes]   # [Rf, 3]
 
+    # Substitute user-defined display names (stored in manifest.db display_names table).
+    from ..infra.manifest_repo import ManifestRepo
+    display_names = ManifestRepo(idx.workspace).get_display_names(instance, scheme)
+    if display_names:
+        for item in legend:
+            if item["name"] in display_names:
+                item["name"] = display_names[item["name"]]
+
     vtx_ti = idx.vtx_tri_idx.get(instance)
     if vtx_ti is not None:
         colors = face_colors[vtx_ti]            # [Nv, 3] indexed geometry
@@ -182,6 +207,31 @@ def get_color_code(
 # ---------------------------------------------------------------------------
 # Label extraction helpers
 # ---------------------------------------------------------------------------
+
+def region_face_mask(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    region: str,
+) -> Optional[np.ndarray]:
+    """
+    Return a bool mask [Rf] where True = render face belongs to *region*.
+    Returns None if scheme is unsupported or data is missing.
+    """
+    etype_arr    = idx.source_elem_etype.get(instance)
+    elem_row_arr = idx.render_source_elem_row.get(instance)
+    if etype_arr is None or elem_row_arr is None:
+        return None
+
+    if scheme == "section":
+        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme == "etype":
+        labels = _labels_from_etype(etype_arr)
+    else:
+        return None
+
+    return np.array([l == region for l in labels], dtype=bool)
+
 
 def _labels_from_etype(etype_arr: np.ndarray) -> List[str]:
     """Decode the S8 bytes array into clean etype strings."""
@@ -197,44 +247,26 @@ def _labels_from_section_id(
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
 ) -> List[str]:
-    """
-    Color by averaging region (refined section domain).
+    """Color by averaging region — domain ID from render.h5 averaging_data (in memory)."""
+    Rf  = len(etype_arr)
+    avd = idx.averaging_data.get(instance)
+    if avd is None:
+        return ["(none)"] * Rf
 
-    After l1_pack's shell refinement pass, section_id values are reassigned
-    to new integer domain IDs that no longer correspond to section_names indices.
-    We just number unique domain IDs in sorted order: Region 1, Region 2, ...
-    """
-    from ..infra.manifest_repo import ManifestRepo
-    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
-              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
-    if not os.path.exists(geom_h5):
-        raise NotFoundError(f"Geometry H5 not found for '{instance}'", {})
+    lookup: Dict[Tuple[bytes, int], int] = {
+        (avd["elem_etype"][i].tobytes().rstrip(b"\x00"), int(avd["elem_row"][i])): int(avd["default_domain_id"][i])
+        for i in range(len(avd["elem_etype"]))
+    }
+    domain_per_face = np.array([
+        lookup.get((etype_arr[fi].tobytes().rstrip(b"\x00"), int(elem_row_arr[fi])), -1)
+        for fi in range(Rf)
+    ], dtype=np.int32)
 
-    Rf = len(etype_arr)
-    domain_per_face = np.full(Rf, -1, dtype=np.int32)
+    if not np.any(domain_per_face >= 0):
+        return ["(none)"] * Rf
 
-    etype_strs = np.array([
-        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
-        for b in etype_arr
-    ])
-
-    with h5py.File(geom_h5, "r") as f:
-        has_any = False
-        for etype_str in np.unique(etype_strs):
-            mask = (etype_strs == etype_str)
-            grp  = f.get(f"elements/{etype_str}")
-            if grp is None or "section_id" not in grp:
-                continue
-            has_any = True
-            sid_data              = grp["section_id"][:]
-            domain_per_face[mask] = sid_data[elem_row_arr[mask]]
-        if not has_any:
-            return ["(none)"] * Rf
-
-    # Map each unique domain ID → human-readable label "Region N" (sorted order).
     unique_ids = sorted(set(int(v) for v in domain_per_face if v >= 0))
     id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
-
     return [id_to_label.get(int(v), "(none)") for v in domain_per_face]
 
 
@@ -297,17 +329,29 @@ def _labels_from_elsets(
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
-    if not os.path.exists(sets_h5):
-        raise NotFoundError("No sets data found for this workspace", {})
-
-    # Load all requested sets' label arrays
-    set_label_arrays: List[Tuple[str, np.ndarray]] = []
-    with h5py.File(sets_h5, "r") as f:
-        for sn in set_names:
-            key = f"element_sets/{instance}/{sn}"
-            if key not in f:
-                raise ValidationError(f"Set '{sn}' not found", {"set_name": sn})
-            set_label_arrays.append((sn, f[key][:]))
+    # Load all requested sets' label arrays.
+    # Primary:  sets.h5 element_sets/{instance}/{sn}          (INP+ODB mode)
+    # Fallback: geometry H5 instance_sets/element_sets/{sn}   (ODB-only mode)
+    slabels_dict: Dict[str, np.ndarray] = {}
+    if os.path.exists(sets_h5):
+        with h5py.File(sets_h5, "r") as f:
+            for sn in set_names:
+                key = f"element_sets/{instance}/{sn}"
+                if key in f:
+                    slabels_dict[sn] = f[key][:]
+    missing = [sn for sn in set_names if sn not in slabels_dict]
+    if missing:
+        if not os.path.exists(geom_h5):
+            raise NotFoundError("No sets data found for this workspace", {})
+        with h5py.File(geom_h5, "r") as f:
+            for sn in missing:
+                geom_key = f"instance_sets/element_sets/{sn}"
+                if geom_key not in f:
+                    raise ValidationError(f"Set '{sn}' not found", {"set_name": sn})
+                slabels_dict[sn] = f[geom_key][:]
+    set_label_arrays: List[Tuple[str, np.ndarray]] = [
+        (sn, slabels_dict[sn]) for sn in set_names
+    ]
 
     Rf         = len(etype_arr)
     # face_set[i] = index into set_names + 1 (0 = "other")

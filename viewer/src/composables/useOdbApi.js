@@ -163,6 +163,25 @@ export function useOdbApi() {
     return { ab: res.data, headers: res.headers }
   }
 
+  // ── Region Highlight (region-mesh-edges / region-outline) ────────────────
+  async function fetchRegionMeshEdges(instance, scheme, region) {
+    const params = new URLSearchParams({ scheme, region })
+    const res = await http.get(
+      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/region-mesh-edges?${params}`),
+      { responseType: 'arraybuffer' }
+    )
+    return res.data
+  }
+
+  async function fetchRegionOutline(instance, scheme, region) {
+    const params = new URLSearchParams({ scheme, region })
+    const res = await http.get(
+      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/region-outline?${params}`),
+      { responseType: 'arraybuffer' }
+    )
+    return res.data
+  }
+
   // ── Project API ───────────────────────────────────────────────────────────
   function fetchProjects() {
     return http.get(`${store.baseUrl}/api/projects`)
@@ -209,6 +228,7 @@ export function useOdbApi() {
     fetchNearestFace, fetchSurfacePatch,
     fetchSectionMesh,
     fetchColorSchemes, fetchColorCode,
+    fetchRegionMeshEdges, fetchRegionOutline,
     fetchDeformedPositions, fetchDeformSuggestScale,
     fetchProjects, fetchProject, createProject,
     addResultGroup, renameResultGroup, deleteProject,
