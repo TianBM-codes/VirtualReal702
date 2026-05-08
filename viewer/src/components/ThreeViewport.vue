@@ -984,6 +984,18 @@ async function loadOrientations(bbox) {
       ? bbox.min.distanceTo(bbox.max) * 0.05
       : 1.0
 
+    // If origin is at/near (0,0,0) and outside the model bbox, relocate to bbox center.
+    // INP *ORIENTATION has no explicit position — global origin is a placeholder.
+    const bboxCenter = (bbox && !bbox.isEmpty()) ? bbox.getCenter(new THREE.Vector3()) : new THREE.Vector3()
+    const _resolveOrigin = (ori) => {
+      const [ox, oy, oz] = ori.origin
+      const atGlobalOrigin = Math.abs(ox) < 1e-6 && Math.abs(oy) < 1e-6 && Math.abs(oz) < 1e-6
+      if (atGlobalOrigin && bbox && !bbox.isEmpty() && !bbox.containsPoint(new THREE.Vector3(ox, oy, oz))) {
+        return [bboxCenter.x, bboxCenter.y, bboxCenter.z]
+      }
+      return [ox, oy, oz]
+    }
+
     // Build interleaved line segments: 3 axes × 2 endpoints per orientation
     // Colour palette: red=e1, green=e2, blue=e3
     const palette = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
@@ -991,7 +1003,7 @@ async function loadOrientations(bbox) {
     const colArr = new Float32Array(orientations.length * 3 * 2 * 3)
     let pi = 0, ci = 0
     for (const ori of orientations) {
-      const [ox, oy, oz] = ori.origin
+      const [ox, oy, oz] = _resolveOrigin(ori)
       for (let ax = 0; ax < 3; ax++) {
         const [ex, ey, ez] = ori.axes[ax]
         const [r, g, b]    = palette[ax]
