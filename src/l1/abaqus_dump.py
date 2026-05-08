@@ -124,7 +124,7 @@ MIDNODE_INDICES = {
 
 # Abaqus variant suffixes ordered longest-first so multi-char tokens (OS, RH,
 # MH, RT, R5) are stripped before their single-char components.
-_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'RT', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
 
 
 def _resolve_elem_code(etype_str):

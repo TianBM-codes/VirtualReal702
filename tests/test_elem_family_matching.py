@@ -40,7 +40,7 @@ class TestMapElementType:
 
     def test_strip_T_gives_hex8(self):
         assert map_element_type("C3D8T")  == "HEX8"   # C3D8T → C3D8
-        assert map_element_type("C3D8RT") == "HEX8"   # C3D8RT → C3D8R
+        assert map_element_type("C3D8RT") == "HEX8"   # C3D8RT → C3D8R → HEX8
 
     def test_strip_gives_quad8(self):
         assert map_element_type("S8RT")  == "QUAD8"   # S8RT → S8R

@@ -60,7 +60,7 @@ ELEM_TYPE_CODE = {
 }
 
 # Abaqus variant suffixes ordered longest-first (see also src/l1/abaqus_dump.py).
-_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'RT', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
 
 
 def _resolve_elem_code(etype_str):

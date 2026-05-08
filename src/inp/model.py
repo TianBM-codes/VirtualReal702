@@ -109,7 +109,7 @@ ABAQUS_TO_FACTORY: Dict[str, str] = {
 
 # Ordered longest-first so multi-char suffixes (OS, RH, MH, RT, R5) are
 # matched before their single-char components.
-_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'RT', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
 
 
 def map_element_type(abaqus_type: str) -> Optional[str]:
