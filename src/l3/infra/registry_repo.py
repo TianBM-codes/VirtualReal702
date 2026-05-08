@@ -355,6 +355,16 @@ class RegistryRepo:
                     (error_message, _now_iso(), project_id),
                 )
 
+    def claim_l2_rerun(self, project_id: str) -> bool:
+        """原子将 geom_status 从 ready/error 改为 l2_running。返回 True 表示认领成功。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE projects SET geom_status='l2_running', updated_at=?"
+                " WHERE project_id=? AND geom_status IN ('ready','error')",
+                (_now_iso(), project_id),
+            )
+            return cur.rowcount == 1
+
     def claim_pending_project(self) -> Optional[str]:
         """原子认领一个 geom_status='pending' 的 project → 'running'。返回 project_id 或 None。"""
         with self._connect() as conn:

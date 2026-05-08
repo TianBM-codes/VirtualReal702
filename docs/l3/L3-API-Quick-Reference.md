@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（新增 geometry lines 端点：GET /api/odb/{odb_id}/geometry/{instance}/lines，返回梁/桁架线单元线段数据）
+更新时间：2026-05-08（新增 geometry lines 端点；新增 POST /api/projects/{project_id}/rerun-l2 触发 L2 重跑）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -132,6 +132,7 @@ project_id + result_group
 | POST | `/api/projects` | 创建 project，提交 `.inp` 几何解析或 `.odb` 全量解析 |
 | POST | `/api/projects/{source_project_id}/clone` | 克隆 project workspace 和 registry 记录 |
 | POST | `/api/projects/{project_id}/results` | 给 project 追加 ODB 结果组 |
+| POST | `/api/projects/{project_id}/rerun-l2` | 重新运行 L2 预处理（刷新几何缓存） |
 | GET | `/api/projects/{project_id}/logs` | 查询解析进度日志，支持增量轮询 |
 | GET | `/api/projects/{project_id}` | 查询 project 详情 |
 | GET | `/api/projects/{project_id}/summary` | 读取 `model_summary.json` |
@@ -557,6 +558,29 @@ async function pollLogs(odbId) {
 - 只解析指定 `step + frame`
 - 只解析 `field_prefix` 命中的字段
 - 不重新解析几何、不生成新的三角面片
+
+### `POST /api/projects/{project_id}/rerun-l2`
+
+触发 L2 预处理（`ingest.py`）重新运行，用于后端 L2 逻辑升级后刷新几何缓存（例如新增了线单元渲染支持）。
+
+**前提条件**：`geom_status` 必须为 `ready` 或 `error`；其他状态返回 409。
+
+**运行期间**：`geom_status` 置为 `l2_running`，所有几何接口（`render-buffers`、`feature-edges`、`lines` 等）返回 503，避免读到写一半的 HDF5 文件。
+
+响应（HTTP 202）：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "project_id": "proj-001",
+    "geom_status": "l2_running"
+  },
+  "message": ""
+}
+```
+
+进度通过 `GET /api/projects/{project_id}/logs` 实时查询，`stage` 为 `l2_ingest` 或 `l2_done`。
 
 ### `GET /api/projects/{project_id}`
 

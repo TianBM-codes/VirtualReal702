@@ -11,6 +11,9 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -490,6 +493,73 @@ async def get_project_summary(project_id: str):
 
 
 # ── DELETE /api/projects/{project_id} ─────────────────────────────────────────
+
+def _run_l2_background(project_id: str, workspace: str) -> None:
+    """Daemon thread: run ingest.py and update project geom_status."""
+    repo = _repo()
+    ingest_py = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "../../../l2/ingest.py")
+    )
+    repo.append_job_log(project_id, "step",
+                        "L2 重新预处理（rerun-l2）启动：三角面提取、特征边、Octree…",
+                        stage="l2_ingest")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, ingest_py, "--workspace", workspace],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        for line in proc.stdout:
+            repo.append_job_log(project_id, "info", line.rstrip(), stage="l2_ingest")
+        proc.wait()
+        if proc.returncode == 0:
+            repo.update_project_geom_status(project_id, "ready")
+            repo.append_job_log(project_id, "step", "L2 重新预处理完成，已就绪",
+                                stage="l2_done")
+        else:
+            repo.update_project_geom_status(
+                project_id, "error",
+                f"ingest.py exited with code {proc.returncode}"
+            )
+            repo.append_job_log(project_id, "error",
+                                f"L2 重新预处理失败（返回码 {proc.returncode}）",
+                                stage="l2_ingest")
+    except Exception as exc:
+        repo.update_project_geom_status(project_id, "error", str(exc))
+        repo.append_job_log(project_id, "error", f"L2 重新预处理异常：{exc}",
+                            stage="l2_ingest")
+
+
+@router.post("/{project_id}/rerun-l2", status_code=202)
+async def rerun_l2(project_id: str):
+    """
+    重新运行 L2 预处理（ingest.py），用于 L2 逻辑更新后刷新几何缓存。
+
+    仅允许 geom_status 为 'ready' 或 'error' 时触发。
+    运行期间所有几何接口返回 503。
+    进度通过 GET /api/projects/{project_id}/logs 实时查询。
+    """
+    project_id = validate_workspace_id(project_id, "project_id")
+    repo = _repo()
+    proj = repo.get_project(project_id)
+    if proj is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+
+    claimed = repo.claim_l2_rerun(project_id)
+    if not claimed:
+        current = proj["geom_status"]
+        raise ConflictError(
+            f"Cannot start L2 rerun: project '{project_id}' is in status '{current}' "
+            "(only 'ready' or 'error' allowed)"
+        )
+
+    workspace = _resolve_workspace(proj["workspace"], project_id)
+    threading.Thread(
+        target=_run_l2_background, args=(project_id, workspace), daemon=True
+    ).start()
+
+    return ok({"project_id": project_id, "geom_status": "l2_running"})
+
 
 @router.delete("/{project_id}", status_code=200)
 async def delete_project(project_id: str):

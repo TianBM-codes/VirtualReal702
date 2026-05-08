@@ -16,17 +16,30 @@ from typing import List, Optional  # Optional kept for Query defaults
 
 import h5py
 import numpy as np
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from ...core.config import settings
 from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...infra.manifest_repo import ManifestRepo
+from ...infra.registry_repo import RegistryRepo
 from ...services.user_field_service import get_face_mask_for_elem_labels
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["geometry"])
+
+
+async def _l2_ready(odb_id: str) -> None:
+    """Raise 503 if this project's L2 preprocessing is currently running."""
+    repo = RegistryRepo(settings.registry_db_path)
+    proj = repo.get_project(odb_id)
+    if proj and proj["geom_status"] == "l2_running":
+        raise HTTPException(
+            status_code=503,
+            detail="L2 preprocessing in progress — geometry data is being rebuilt, try again shortly",
+        )
 
 
 class ElemSubsetRequest(BaseModel):
@@ -90,7 +103,7 @@ def _build_render_chunks(positions: np.ndarray, indices: np.ndarray):
     return chunks
 
 
-@router.get("/geometry/{instance}/render-buffers")
+@router.get("/geometry/{instance}/render-buffers", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers(
     odb_id: str,
     instance: str,
@@ -154,7 +167,7 @@ async def get_render_buffers(
     )
 
 
-@router.get("/geometry/{instance}/render-buffers-chunked")
+@router.get("/geometry/{instance}/render-buffers-chunked", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers_chunked(
     odb_id: str,
     instance: str,
@@ -233,7 +246,7 @@ async def get_render_buffers_chunked(
     )
 
 
-@router.get("/geometry/{instance}/element-mesh-edges")
+@router.get("/geometry/{instance}/element-mesh-edges", dependencies=[Depends(_l2_ready)])
 async def get_element_mesh_edges(odb_id: str, instance: str):
     """
     Return element mesh edges for one instance as L3BE binary.
@@ -296,7 +309,7 @@ async def get_element_mesh_edges(odb_id: str, instance: str):
     )
 
 
-@router.get("/geometry/{instance}/feature-edges")
+@router.get("/geometry/{instance}/feature-edges", dependencies=[Depends(_l2_ready)])
 async def get_feature_edges(odb_id: str, instance: str):
     """
     Return feature edges (boundary + fold) for one instance as L3BE binary.
@@ -353,7 +366,7 @@ async def get_feature_edges(odb_id: str, instance: str):
     )
 
 
-@router.get("/geometry/{instance}/lines")
+@router.get("/geometry/{instance}/lines", dependencies=[Depends(_l2_ready)])
 async def get_line_elements(odb_id: str, instance: str):
     """
     Return beam/truss line element segments for one instance as L3BE binary.
@@ -411,7 +424,7 @@ async def get_line_elements(odb_id: str, instance: str):
     )
 
 
-@router.post("/geometry/{instance}/render-buffers-subset")
+@router.post("/geometry/{instance}/render-buffers-subset", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers_subset(
     odb_id: str,
     instance: str,
@@ -515,7 +528,7 @@ def _build_chunked_payload(positions: np.ndarray, indices: np.ndarray):
     return sections, K, Nt
 
 
-@router.post("/geometry/{instance}/render-buffers-subset-chunked")
+@router.post("/geometry/{instance}/render-buffers-subset-chunked", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers_subset_chunked(
     odb_id: str,
     instance: str,
