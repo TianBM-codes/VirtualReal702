@@ -401,12 +401,10 @@ async def get_line_elements(odb_id: str, instance: str):
         if "lines/positions" not in f:
             empty_pos = np.zeros((0, 3), dtype=np.float32)
             empty_lbl = np.zeros(0, dtype=np.int32)
-            payload = l3be_build([("line_positions", empty_pos),
-                                   ("elem_labels", empty_lbl)])
             return Response(
-                content=payload,
+                content=l3be_build([("line_positions", empty_pos),
+                                    ("elem_labels", empty_lbl)]),
                 media_type="application/octet-stream",
-                headers={"X-Line-Count": "0"},
             )
 
         positions   = f["lines/positions"][:]    # [N, 2, 3] float32
@@ -415,12 +413,10 @@ async def get_line_elements(odb_id: str, instance: str):
     N = len(positions)
     line_positions = np.ascontiguousarray(positions.reshape(N * 2, 3))
 
-    payload = l3be_build([("line_positions", line_positions),
-                           ("elem_labels", elem_labels)])
     return Response(
-        content=payload,
+        content=l3be_build([("line_positions", line_positions),
+                             ("elem_labels", elem_labels)]),
         media_type="application/octet-stream",
-        headers={"X-Line-Count": str(N)},
     )
 
 
