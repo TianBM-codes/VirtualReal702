@@ -981,7 +981,7 @@ async function loadOrientations(bbox) {
 
     // Axis line length = 5% of bbox diagonal, fallback to 1.0
     const scale = (bbox && !bbox.isEmpty())
-      ? bbox.min.distanceTo(bbox.max) * 0.05
+      ? bbox.min.distanceTo(bbox.max) * 0.10
       : 1.0
 
     // If origin is at/near (0,0,0) and outside the model bbox, relocate to bbox center.
@@ -1017,9 +1017,10 @@ async function loadOrientations(bbox) {
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3))
     geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3))
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 })
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2, depthTest: false })
     if (clipPlane) mat.clippingPlanes = [clipPlane]
     orientationLines = new THREE.LineSegments(geo, mat)
+    orientationLines.renderOrder = 999
     modelGroup.add(orientationLines)
   } catch { /* no orientation data */ }
 }
