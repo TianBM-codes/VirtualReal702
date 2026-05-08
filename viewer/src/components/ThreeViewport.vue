@@ -898,9 +898,8 @@ async function loadLineElements(instances) {
         store.getApiUrl(`geometry/${encodeURIComponent(instName)}/lines`),
         { responseType: 'arraybuffer' }
       )
-      const lineCount = parseInt(res.headers['x-line-count'] ?? '0', 10)
-      if (lineCount === 0) return
       const sec = parseL3BE(res.data)
+      if (!sec.line_positions || sec.line_positions.data.length === 0) return
       const positions = new Float32Array(sec.line_positions.data)
       const geo = new THREE.BufferGeometry()
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))

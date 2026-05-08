@@ -907,12 +907,6 @@ L3BE sections：
 
 线单元没有面，不包含在 `render-buffers` 的三角面片中，需要单独获取并用 `THREE.LineSegments` 渲染。
 
-响应头：
-
-```text
-X-Line-Count: <N>
-```
-
 L3BE sections：
 
 | 名称 | 形状 | 类型 | 说明 |
@@ -921,7 +915,8 @@ L3BE sections：
 | `elem_labels` | `[N]` | `int32` | 每条线段对应的 Abaqus 单元 label（用于拾取） |
 
 说明：
-- 该实例无线单元时返回空 payload（`X-Line-Count: 0`），不报错。
+- 无独立响应头；线段数 N 可由 `line_positions.shape[0] / 2` 计算得到（前端直接读 payload shape）。
+- 该实例无线单元时返回空 payload（`line_positions` shape `[0, 3]`），不报错。
 - `line_positions` 格式与 `THREE.LineSegments` 的 `BufferGeometry` 直接兼容。
 
 ### `POST /api/odb/{odb_id}/geometry/{instance}/render-buffers-subset`

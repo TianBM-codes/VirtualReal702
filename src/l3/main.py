@@ -276,8 +276,6 @@ app.add_middleware(
         "X-Node-Count", "X-Col-Count", "X-Columns", "X-Field-Coverage",
         # user-field endpoints
         "X-Field-Name",
-        # line elements endpoint
-        "X-Line-Count",
     ],
 )
 
