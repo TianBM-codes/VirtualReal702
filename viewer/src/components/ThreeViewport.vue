@@ -52,6 +52,9 @@ const featureEdgeVtxIdxs = {}
 const regionMeshEdgesLines = {}   // instName → LineSegments
 const regionOutlineLines   = {}   // instName → LineSegments
 
+// ── Line elements (beam / truss) ──────────────────────────────────────────
+const lineMeshes = {}   // instName → LineSegments
+
 let _deformAnimActive = false  // animation loop guard
 
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
@@ -344,6 +347,7 @@ function _applyClipping(planes) {
   })
   Object.values(meshEdgesLines).forEach(l    => { if (l?.material) l.material.clippingPlanes = planes })
   Object.values(featureEdgesLines).forEach(l => { if (l?.material) l.material.clippingPlanes = planes })
+  Object.values(lineMeshes).forEach(l        => { if (l?.material) l.material.clippingPlanes = planes })
   requestRender()
 }
 
@@ -842,6 +846,7 @@ async function loadGeometry(instances) {
   for (const [k, l] of Object.entries(featureEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete featureEdgesLines[k]; delete featureEdgeVtxIdxs[k] }
   for (const [k, l] of Object.entries(regionMeshEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionMeshEdgesLines[k] }
   for (const [k, l] of Object.entries(regionOutlineLines))   { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionOutlineLines[k] }
+  for (const [k, l] of Object.entries(lineMeshes))           { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete lineMeshes[k] }
   Object.values(store.instanceMeshes).forEach(im => _disposeInstance(im))
   Object.keys(store.instanceMeshes).forEach(k => delete store.instanceMeshes[k])
   Object.keys(origPositions).forEach(k => delete origPositions[k])
@@ -881,7 +886,31 @@ async function loadGeometry(instances) {
     emit('model-loaded', { bbox: { min: combinedBox.min.toArray(), max: combinedBox.max.toArray(), axMin: combinedBox.min, axMax: combinedBox.max } })
   }
   store.setStatus(`Loaded ${instances.length} instance(s) — ${totalTris} triangles total`, 'ok')
+  await loadLineElements(instances)
   requestRender()
+}
+
+// ── Line Elements (beam / truss) ──────────────────────────────────────────
+async function loadLineElements(instances) {
+  await Promise.all(instances.map(async instName => {
+    try {
+      const res = await http.get(
+        store.getApiUrl(`geometry/${encodeURIComponent(instName)}/lines`),
+        { responseType: 'arraybuffer' }
+      )
+      const lineCount = parseInt(res.headers['x-line-count'] ?? '0', 10)
+      if (lineCount === 0) return
+      const sec = parseL3BE(res.data)
+      const positions = new Float32Array(sec.line_positions.data)
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      const mat = new THREE.LineBasicMaterial({ color: 0x4488ff, linewidth: 1 })
+      if (clipPlane) mat.clippingPlanes = [clipPlane]
+      const line = new THREE.LineSegments(geo, mat)
+      modelGroup.add(line)
+      lineMeshes[instName] = line
+    } catch { /* instance has no line element data */ }
+  }))
 }
 
 // ── Edge vertex index helpers ─────────────────────────────────────────────

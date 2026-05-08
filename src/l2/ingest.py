@@ -34,6 +34,8 @@ FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
 
+LINE_ELEM_CODES = frozenset({9, 10})
+
 # Keep in sync with src/l1/abaqus_dump.py ELEM_TYPE_CODE.
 ELEM_TYPE_CODE = {
     # shells / membranes
@@ -182,6 +184,42 @@ def collect_faces(geom_h5):
     is_surface = counts[inv] == 1
 
     return fnc, er, fs, ec, es, is_surface
+
+
+# ─── Line element collection ──────────────────────────────────────────────────
+
+def collect_lines(geom_h5, coords_global):
+    """
+    Collect beam/truss line elements and return endpoint positions.
+
+    Returns:
+        positions   [N, 2, 3] float32  — N segments, 2 endpoints, xyz
+        elem_labels [N]       int32    — Abaqus element label per segment
+    """
+    pos_list   = []
+    label_list = []
+
+    for etype_str in geom_h5.get("elements", {}):
+        etype_code = _resolve_elem_code(etype_str)
+        if etype_code not in LINE_ELEM_CODES:
+            continue
+        grp = geom_h5["elements/{}".format(etype_str)]
+        if "conn" not in grp or "labels" not in grp:
+            continue
+
+        conn   = grp["conn"][:]    # [N, n_nodes] int32 — node rows
+        labels = grp["labels"][:]  # [N] int32
+
+        # Only the 2 corner endpoint nodes regardless of element order
+        pts = coords_global[conn[:, :2]]   # [N, 2, 3]
+        pos_list.append(pts)
+        label_list.append(labels)
+
+    if not pos_list:
+        return np.zeros((0, 2, 3), dtype=np.float32), np.zeros(0, dtype=np.int32)
+
+    return (np.vstack(pos_list).astype(np.float32),
+            np.concatenate(label_list).astype(np.int32))
 
 
 # ─── Triangulation (vectorized for tri + quad, loop for higher) ───────────────
@@ -879,6 +917,9 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         fnc, elem_rows, face_seqs, etype_codes, etype_strs, is_surface = \
             collect_faces(f_in)
 
+        # 2b. Line element collection (beam / truss)
+        line_positions, line_elem_labels = collect_lines(f_in, coords_global)
+
         # Load conn arrays for source_local_node_idx computation (task #6)
         conn_by_etype = {}
         for et in f_in.get("elements", {}):
@@ -996,6 +1037,9 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     octree = build_octree(tri_positions)
     logger.info("  Octree: {} nodes".format(len(octree["node_bbox"])))
 
+    N_lines = len(line_positions)
+    logger.info("  {} line elements (beam/truss)".format(N_lines))
+
     # ── Write l2/geometry/<inst>_surface.h5 ──
     with h5py.File(surface_h5_path, "w") as f:
         ng = f.create_group("nodes")
@@ -1010,6 +1054,12 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         meg = f.create_group("element_mesh_edges")
         if len(mesh_edge_nodes) > 0:
             meg.create_dataset("edge_nodes", data=mesh_edge_nodes)
+
+        lg = f.create_group("lines")
+        if N_lines > 0:
+            lg.create_dataset("positions",   data=line_positions,
+                              chunks=(min(N_lines, 4096), 2, 3), compression="lzf")
+            lg.create_dataset("elem_labels", data=line_elem_labels)
 
     # ── Write l2/render/<inst>_render.h5 ──
     with h5py.File(render_h5_path, "w") as f:
@@ -1061,18 +1111,20 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             surface_face_count  INTEGER,
             render_face_count   INTEGER,
             edge_count          INTEGER,
-            partition_count     INTEGER
+            partition_count     INTEGER,
+            line_count          INTEGER
         )
     """)
     db_conn.execute("""
         INSERT OR REPLACE INTO l2_instances
         (instance_name, surface_path, render_path,
-         surface_face_count, render_face_count, edge_count, partition_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+         surface_face_count, render_face_count, edge_count, partition_count,
+         line_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (inst_name,
           "l2/geometry/{}_surface.h5".format(inst_name),
           "l2/render/{}_render.h5".format(inst_name),
-          Sf_faces, Nt, len(edge_nodes), 1))
+          Sf_faces, Nt, len(edge_nodes), 1, N_lines))
     db_conn.commit()
 
     logger.info("  Done in {:.2f}s".format(time.time() - t0))

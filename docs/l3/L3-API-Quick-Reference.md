@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST；scheme 参数改为可选；region-mesh-edges / region-outline 接口）
+更新时间：2026-05-08（新增 geometry lines 端点：GET /api/odb/{odb_id}/geometry/{instance}/lines，返回梁/桁架线单元线段数据）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -149,6 +149,7 @@ project_id + result_group
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/render-buffers` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/element-mesh-edges` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/feature-edges` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/lines` |
 | geometry | POST | `/api/odb/{odb_id}/geometry/{instance}/render-buffers-subset` |
 | results | GET | `/api/odb/{odb_id}/results/frame-colors` |
 | results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
@@ -874,6 +875,29 @@ L3BE sections：
 ### `GET /api/odb/{odb_id}/geometry/{instance}/feature-edges`
 
 返回格式与 `element-mesh-edges` 相同，但只包含边界和折痕等 feature edges。
+
+### `GET /api/odb/{odb_id}/geometry/{instance}/lines`
+
+返回梁/桁架等**线单元**的端点线段数据（B31、B32、T3D2、T3D3、PIPE31、PIPE32 等）。
+
+线单元没有面，不包含在 `render-buffers` 的三角面片中，需要单独获取并用 `THREE.LineSegments` 渲染。
+
+响应头：
+
+```text
+X-Line-Count: <N>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 | 说明 |
+|---|---|---|---|
+| `line_positions` | `[N*2, 3]` | `float32` | 交错端点对：第 2i 行和第 2i+1 行是第 i 条线段的两个端点 |
+| `elem_labels` | `[N]` | `int32` | 每条线段对应的 Abaqus 单元 label（用于拾取） |
+
+说明：
+- 该实例无线单元时返回空 payload（`X-Line-Count: 0`），不报错。
+- `line_positions` 格式与 `THREE.LineSegments` 的 `BufferGeometry` 直接兼容。
 
 ### `POST /api/odb/{odb_id}/geometry/{instance}/render-buffers-subset`
 
