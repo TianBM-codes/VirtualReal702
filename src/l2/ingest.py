@@ -1115,6 +1115,11 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             line_count          INTEGER
         )
     """)
+    # Migration: add line_count to tables created before this column existed.
+    try:
+        db_conn.execute("ALTER TABLE l2_instances ADD COLUMN line_count INTEGER")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     db_conn.execute("""
         INSERT OR REPLACE INTO l2_instances
         (instance_name, surface_path, render_path,
