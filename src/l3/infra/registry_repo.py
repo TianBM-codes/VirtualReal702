@@ -356,14 +356,34 @@ class RegistryRepo:
                 )
 
     def claim_l2_rerun(self, project_id: str) -> bool:
-        """原子将 geom_status 从 ready/error 改为 l2_running。返回 True 表示认领成功。"""
+        """原子将 geom_status 从 ready/error 改为 l2_pending，交由 job_runner 执行。"""
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE projects SET geom_status='l2_running', updated_at=?"
+                "UPDATE projects SET geom_status='l2_pending', updated_at=?"
                 " WHERE project_id=? AND geom_status IN ('ready','error')",
                 (_now_iso(), project_id),
             )
             return cur.rowcount == 1
+
+    def claim_l2_pending(self) -> Optional[tuple]:
+        """job_runner 调用：原子认领一个 geom_status='l2_pending' 的 project → 'l2_running'。
+        返回 (project_id, workspace) 或 None。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE projects SET geom_status='l2_running', updated_at=?"
+                " WHERE project_id=("
+                "  SELECT project_id FROM projects WHERE geom_status='l2_pending'"
+                "  ORDER BY updated_at LIMIT 1"
+                ")",
+                (_now_iso(),),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT project_id, workspace FROM projects"
+                " WHERE geom_status='l2_running' ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            return (row["project_id"], row["workspace"]) if row else None
 
     def claim_pending_project(self) -> Optional[str]:
         """原子认领一个 geom_status='pending' 的 project → 'running'。返回 project_id 或 None。"""

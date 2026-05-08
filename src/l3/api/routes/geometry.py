@@ -32,10 +32,10 @@ router = APIRouter(prefix="/api/odb/{odb_id}", tags=["geometry"])
 
 
 async def _l2_ready(odb_id: str) -> None:
-    """Raise 503 if this project's L2 preprocessing is currently running."""
+    """Raise 503 if this project's L2 preprocessing is pending or running."""
     repo = RegistryRepo(settings.registry_db_path)
     proj = repo.get_project(odb_id)
-    if proj and proj["geom_status"] == "l2_running":
+    if proj and proj["geom_status"] in ("l2_pending", "l2_running"):
         raise HTTPException(
             status_code=503,
             detail="L2 preprocessing in progress — geometry data is being rebuilt, try again shortly",
