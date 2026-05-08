@@ -208,6 +208,31 @@ def get_color_code(
 # Label extraction helpers
 # ---------------------------------------------------------------------------
 
+def region_face_mask(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    region: str,
+) -> Optional[np.ndarray]:
+    """
+    Return a bool mask [Rf] where True = render face belongs to *region*.
+    Returns None if scheme is unsupported or data is missing.
+    """
+    etype_arr    = idx.source_elem_etype.get(instance)
+    elem_row_arr = idx.render_source_elem_row.get(instance)
+    if etype_arr is None or elem_row_arr is None:
+        return None
+
+    if scheme == "section":
+        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme == "etype":
+        labels = _labels_from_etype(etype_arr)
+    else:
+        return None
+
+    return np.array([l == region for l in labels], dtype=bool)
+
+
 def _labels_from_etype(etype_arr: np.ndarray) -> List[str]:
     """Decode the S8 bytes array into clean etype strings."""
     return [

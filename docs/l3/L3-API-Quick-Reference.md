@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST；scheme 参数改为可选）
+更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST；scheme 参数改为可选；region-mesh-edges / region-outline 接口）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -165,6 +165,8 @@ project_id + result_group
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
 | color code | POST | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/region-mesh-edges` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/region-outline` |
 | query | GET | `/api/odb/{odb_id}/query/pick` |
 | query | POST | `/api/odb/{odb_id}/query/ray-pick` |
 | query | POST | `/api/odb/{odb_id}/query/bbox` |
@@ -1349,6 +1351,40 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
   "message": ""
 }
 ```
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/region-mesh-edges`
+
+返回指定区域的**单元网格边**（每条有限元单元的真实边界，四边形仍显示为四边形，不是三角面片对角线）。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | `section` 或 `etype` |
+| `region` | 是 | 区域标签，与 legend 中的 `name` 一致，例如 `Region 1` |
+
+响应：L3BE 二进制，`Content-Type: application/octet-stream`
+
+| Section | dtype | shape | 说明 |
+|---|---|---|---|
+| `edge_positions` | float32 | `[E*2, 3]` | 每两行为一条边的起点/终点 XYZ |
+
+Header：`X-Edge-Count: E`（边的数量，即行数 / 2）
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/region-outline`
+
+返回指定区域的**外轮廓边**：只保留恰好属于一个区域三角面片的边（即区域边界）。四边形的三角化对角线会出现两次，自动被排除。
+
+查询参数同 `region-mesh-edges`。
+
+响应格式与 `region-mesh-edges` 完全相同（L3BE `edge_positions [E*2, 3] float32`，Header `X-Edge-Count`）。
+
+**两个接口对比：**
+
+| 接口 | 效果 | 类比 |
+|---|---|---|
+| `region-mesh-edges` | 区域内所有单元的边框，包括单元之间的内部分界线 | Abaqus 的"显示单元边"模式 |
+| `region-outline` | 仅区域外轮廓，内部单元边不显示 | Abaqus 的"显示外边界"模式 |
 
 ## 11. Query / Pick
 
