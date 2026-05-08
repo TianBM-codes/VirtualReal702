@@ -69,6 +69,9 @@ _ELEM_TYPE_CODE: Dict[str, int] = {
     "CPE3": 0,  "CPE4": 1,  "CPE4R": 1,
     "CAX3": 0,  "CAX4": 1,  "CAX4R": 1,
     "M3D3": 0,  "M3D4": 1,  "M3D4R": 1,
+    # line elements — truss / beam / pipe (no faces, rendered as LineSegments)
+    "T3D2": 9,  "B31": 9,  "B31OS": 9,  "PIPE31": 9,
+    "T3D3": 10, "B32": 10, "B32OS": 10, "PIPE32": 10,
 }
 
 # Number of *corner* nodes per type code (used to slice connectivity)
@@ -81,6 +84,8 @@ _CORNER_COUNTS: Dict[int, int] = {
     5: 4,   # C3D10 → 4 corner nodes
     6: 6,   # C3D15 → 6 corner nodes
     7: 8,   # C3D20 → 8 corner nodes
+    9: 2,   # T3D2/B31: 2 endpoints
+    10: 2,  # T3D3/B32: 2 endpoints (mid-node ignored)
 }
 
 # Face connectivity (0-based local corner-node index lists, 1-based face_seq)
@@ -290,9 +295,24 @@ def _write_geometry_h5(
             etype_code = _ELEM_TYPE_CODE.get(etype_str, -1)
             if etype_code < 0:
                 continue
-            face_defs  = _FACE_DEFS.get(etype_code, [])
-            corner_cnt = _CORNER_COUNTS.get(etype_code, len(face_defs[0]) if face_defs else 0)
+            corner_cnt = _CORNER_COUNTS.get(etype_code)
+            if corner_cnt is None:
+                continue
+            face_defs = _FACE_DEFS.get(etype_code, [])
+
             if not face_defs:
+                # Line elements (beam / truss): write labels + conn only, no face arrays.
+                # L2 collect_lines() reads these; L2 collect_faces() ignores them.
+                M = len(elems)
+                elem_labels_arr = np.empty(M, dtype=np.int32)
+                conn_arr        = np.full((M, corner_cnt), -1, dtype=np.int32)
+                for i, (lbl, node_labels) in enumerate(elems):
+                    elem_labels_arr[i] = lbl
+                    for col, nl in enumerate(node_labels[:corner_cnt]):
+                        conn_arr[i, col] = label_to_row.get(nl, -1)
+                grp = f.require_group("elements/{}".format(etype_str))
+                grp.create_dataset("labels", data=elem_labels_arr)
+                grp.create_dataset("conn",   data=conn_arr)
                 continue
 
             elem_labels_arr, conn_arr, fni_rows, fei_rows, fsq_rows = _compute_elem_and_faces(
