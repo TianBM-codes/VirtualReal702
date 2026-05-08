@@ -9,20 +9,49 @@ GET /api/odb/{odb_id}/color-code/{instance}?scheme=etype|material|section_type|e
   → X-Face-Count: Rf
 """
 import json
-from typing import List
+from typing import Dict, List
 
 import numpy as np
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, Query
 from fastapi.responses import Response
 
 from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
+from ...infra.manifest_repo import ManifestRepo
 from ...services import color_service
 from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["color_code"])
+
+
+@router.get("/color-code/{instance}/display-names")
+async def get_display_names(
+    odb_id: str,
+    instance: str,
+    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+):
+    """Return user-defined display names: {legend_key: display_name}."""
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    return ok(ManifestRepo(idx.workspace).get_display_names(instance, scheme))
+
+
+@router.put("/color-code/{instance}/display-names")
+async def put_display_names(
+    odb_id: str,
+    instance: str,
+    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    body: Dict[str, str] = Body(..., description="{legend_key: display_name, ...}"),
+):
+    """Upsert user-defined display names for legend items."""
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    ManifestRepo(idx.workspace).set_display_names(instance, scheme, body)
+    return ok({})
 
 
 @router.get("/color-code/{instance}/schemes")

@@ -199,6 +199,14 @@ def get_color_code(
     face_codes  = np.array([val_to_id[v] for v in labels], dtype=np.int32)
     face_colors = pal_arr[face_codes]   # [Rf, 3]
 
+    # Substitute user-defined display names (stored in manifest.db display_names table).
+    from ..infra.manifest_repo import ManifestRepo
+    display_names = ManifestRepo(idx.workspace).get_display_names(instance, scheme)
+    if display_names:
+        for item in legend:
+            if item["name"] in display_names:
+                item["name"] = display_names[item["name"]]
+
     vtx_ti = idx.vtx_tri_idx.get(instance)
     if vtx_ti is not None:
         colors = face_colors[vtx_ti]            # [Nv, 3] indexed geometry

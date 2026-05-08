@@ -25,6 +25,20 @@ class ManifestRepo:
             conn.commit()
         except Exception:
             pass
+        # Migration: create display_names table if absent
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS display_names (
+                    instance     TEXT NOT NULL,
+                    scheme       TEXT NOT NULL,
+                    legend_key   TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    PRIMARY KEY (instance, scheme, legend_key)
+                )
+            """)
+            conn.commit()
+        except Exception:
+            pass
         return conn
 
     def get_instance_info(self, instance_name: str):
@@ -844,3 +858,26 @@ class ManifestRepo:
                 ).fetchall()]
         except Exception:
             return []
+
+    def get_display_names(self, instance: str, scheme: str) -> dict:
+        """Return {legend_key: display_name} for the given instance + scheme."""
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT legend_key, display_name FROM display_names "
+                    "WHERE instance=? AND scheme=?",
+                    (instance, scheme),
+                ).fetchall()
+                return {r["legend_key"]: r["display_name"] for r in rows}
+        except Exception:
+            return {}
+
+    def set_display_names(self, instance: str, scheme: str, names: dict) -> None:
+        """Upsert {legend_key: display_name} entries for the given instance + scheme."""
+        with self._get_conn() as conn:
+            for key, val in names.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO display_names VALUES (?,?,?,?)",
+                    (instance, scheme, key, val),
+                )
+            conn.commit()

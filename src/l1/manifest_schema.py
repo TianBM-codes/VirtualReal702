@@ -100,6 +100,13 @@ CREATE TABLE IF NOT EXISTS result_group_meta (
     consistency_check  TEXT NOT NULL DEFAULT 'count-only',
     created_at         TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS display_names (
+    instance     TEXT NOT NULL,
+    scheme       TEXT NOT NULL,
+    legend_key   TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    PRIMARY KEY (instance, scheme, legend_key)
+);
 """
 # user_sets / user_set_instances tables are NOT created here.
 # They are created on-demand by ManifestRepo._ensure_user_tables() when the

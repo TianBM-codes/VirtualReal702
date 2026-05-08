@@ -37,6 +37,11 @@ import numpy as np
 from .model import InpModel, Instance, Part
 from src.l1.manifest_schema import MANIFEST_SCHEMA
 
+
+def _safe(name: str) -> str:
+    """Sanitize a name for use as an HDF5 key (mirrors l1_pack.safe())."""
+    return name.replace("/", "__").replace("\\", "__").replace(" ", "_")
+
 # ---------------------------------------------------------------------------
 # Face definitions  (mirrors FACE_DEFS in abaqus_dump.py exactly)
 #
@@ -389,7 +394,8 @@ def _write_sets(
         for set_name, elset in part.elsets.items():
             if not elset.elem_labels:
                 continue
-            key = "element_sets/{}/{}".format(inst_name, set_name)
+            safe_name = _safe(set_name)
+            key = "element_sets/{}/{}".format(inst_name, safe_name)
             if key in f:
                 del f[key]
             arr = np.array(sorted(elset.elem_labels), dtype=np.int32)
@@ -397,7 +403,7 @@ def _write_sets(
 
             db_conn.execute(
                 "INSERT OR REPLACE INTO element_sets VALUES (?,?,?,?,?)",
-                (set_name, "PART", inst_name, sets_rel, len(elset.elem_labels)),
+                (safe_name, "PART", inst_name, sets_rel, len(elset.elem_labels)),
             )
 
 
