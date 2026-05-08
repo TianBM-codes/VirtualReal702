@@ -34,7 +34,8 @@ FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
 
-LINE_ELEM_CODES = frozenset({9, 10})
+LINE_ELEM_CODES  = frozenset({9, 10})
+POINT_ELEM_CODES = frozenset({11})
 
 # Keep in sync with src/l1/abaqus_dump.py ELEM_TYPE_CODE.
 ELEM_TYPE_CODE = {
@@ -220,6 +221,49 @@ def collect_lines(geom_h5, coords_global):
 
     return (np.vstack(pos_list).astype(np.float32),
             np.concatenate(label_list).astype(np.int32))
+
+
+def collect_points(geom_h5, coords_global):
+    """
+    Collect MASS/ROTARYI point elements.
+
+    Returns:
+        positions   [N, 3] float32  — node position per point element
+        elem_labels [N]    int32    — Abaqus element label
+    """
+    pos_list   = []
+    label_list = []
+
+    for etype_str in geom_h5.get("elements", {}):
+        etype_code = _resolve_elem_code(etype_str)
+        if etype_code not in POINT_ELEM_CODES:
+            continue
+        grp = geom_h5["elements/{}".format(etype_str)]
+        if "conn" not in grp or "labels" not in grp:
+            continue
+        conn   = grp["conn"][:]    # [N, 1] int32 — node row
+        labels = grp["labels"][:]  # [N] int32
+        pts = coords_global[conn[:, 0]]  # [N, 3]
+        pos_list.append(pts)
+        label_list.append(labels)
+
+    if not pos_list:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int32)
+
+    return (np.vstack(pos_list).astype(np.float32),
+            np.concatenate(label_list).astype(np.int32))
+
+
+def collect_couplings(geom_h5):
+    """
+    Pass through coupling (RBE2/KINEMATIC) line segments written by the INP exporter.
+
+    Returns:
+        positions [N*2, 3] float32 — interleaved (ref, slave) pairs
+    """
+    if "couplings/positions" not in geom_h5:
+        return np.zeros((0, 3), dtype=np.float32)
+    return geom_h5["couplings/positions"][:]  # already [N*2, 3] float32
 
 
 # ─── Triangulation (vectorized for tri + quad, loop for higher) ───────────────
@@ -920,6 +964,12 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         # 2b. Line element collection (beam / truss)
         line_positions, line_elem_labels = collect_lines(f_in, coords_global)
 
+        # 2c. Point element collection (MASS / ROTARYI)
+        point_positions, point_elem_labels = collect_points(f_in, coords_global)
+
+        # 2d. Coupling lines (RBE2 / KINEMATIC) — written by INP exporter
+        coupling_positions = collect_couplings(f_in)
+
         # Load conn arrays for source_local_node_idx computation (task #6)
         conn_by_etype = {}
         for et in f_in.get("elements", {}):
@@ -1037,8 +1087,12 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     octree = build_octree(tri_positions)
     logger.info("  Octree: {} nodes".format(len(octree["node_bbox"])))
 
-    N_lines = len(line_positions)
+    N_lines     = len(line_positions)
+    N_points    = len(point_positions)
+    N_couplings = len(coupling_positions) // 2  # pairs
     logger.info("  {} line elements (beam/truss)".format(N_lines))
+    logger.info("  {} point elements (MASS/ROTARYI)".format(N_points))
+    logger.info("  {} coupling segments (RBE2)".format(N_couplings))
 
     # ── Write l2/geometry/<inst>_surface.h5 ──
     with h5py.File(surface_h5_path, "w") as f:
@@ -1060,6 +1114,17 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             lg.create_dataset("positions",   data=line_positions,
                               chunks=(min(N_lines, 4096), 2, 3), compression="lzf")
             lg.create_dataset("elem_labels", data=line_elem_labels)
+
+        pg = f.create_group("points")
+        if N_points > 0:
+            pg.create_dataset("positions",   data=point_positions)
+            pg.create_dataset("elem_labels", data=point_elem_labels)
+
+        cg = f.create_group("couplings")
+        if N_couplings > 0:
+            cg.create_dataset("positions", data=np.ascontiguousarray(coupling_positions),
+                              chunks=(min(len(coupling_positions), 4096), 3),
+                              compression="lzf")
 
     # ── Write l2/render/<inst>_render.h5 ──
     with h5py.File(render_h5_path, "w") as f:

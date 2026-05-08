@@ -420,6 +420,81 @@ async def get_line_elements(odb_id: str, instance: str):
     )
 
 
+@router.get("/geometry/{instance}/points", dependencies=[Depends(_l2_ready)])
+async def get_point_elements(odb_id: str, instance: str):
+    """
+    Return MASS/ROTARYI point element positions for one instance as L3BE binary.
+
+    L3BE sections:
+      - "point_positions": [N, 3] float32
+      - "elem_labels":     [N]    int32
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        raise NotFoundError(
+            f"Surface geometry not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(surface_h5, "r") as f:
+        if "points/positions" not in f:
+            empty_pos = np.zeros((0, 3), dtype=np.float32)
+            empty_lbl = np.zeros(0, dtype=np.int32)
+            return Response(
+                content=l3be_build([("point_positions", empty_pos),
+                                    ("elem_labels", empty_lbl)]),
+                media_type="application/octet-stream",
+            )
+        positions   = f["points/positions"][:]
+        elem_labels = f["points/elem_labels"][:]
+
+    return Response(
+        content=l3be_build([("point_positions", np.ascontiguousarray(positions)),
+                             ("elem_labels", elem_labels)]),
+        media_type="application/octet-stream",
+    )
+
+
+@router.get("/geometry/{instance}/couplings", dependencies=[Depends(_l2_ready)])
+async def get_coupling_lines(odb_id: str, instance: str):
+    """
+    Return RBE2/KINEMATIC coupling spider lines for one instance as L3BE binary.
+
+    Each coupling is pre-expanded to (ref_node, slave_node) pairs.
+
+    L3BE sections:
+      - "coupling_positions": [N*2, 3] float32 — interleaved endpoint pairs
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        raise NotFoundError(
+            f"Surface geometry not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(surface_h5, "r") as f:
+        if "couplings/positions" not in f:
+            empty = np.zeros((0, 3), dtype=np.float32)
+            return Response(
+                content=l3be_build([("coupling_positions", empty)]),
+                media_type="application/octet-stream",
+            )
+        positions = f["couplings/positions"][:]
+
+    return Response(
+        content=l3be_build([("coupling_positions", np.ascontiguousarray(positions))]),
+        media_type="application/octet-stream",
+    )
+
+
 @router.post("/geometry/{instance}/render-buffers-subset", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers_subset(
     odb_id: str,

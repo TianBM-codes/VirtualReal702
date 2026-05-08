@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（新增 geometry lines 端点；新增 POST /api/projects/{project_id}/rerun-l2 触发 L2 重跑）
+更新时间：2026-05-08（新增 geometry lines/points/couplings 端点；新增 POST /api/projects/{project_id}/rerun-l2）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -152,6 +152,8 @@ project_id + result_group
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/element-mesh-edges` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/feature-edges` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/lines` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/points` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/couplings` |
 | geometry | POST | `/api/odb/{odb_id}/geometry/{instance}/render-buffers-subset` |
 | results | GET | `/api/odb/{odb_id}/results/frame-colors` |
 | results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
