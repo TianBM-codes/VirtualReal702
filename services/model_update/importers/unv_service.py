@@ -6,6 +6,7 @@ import numpy as np
 from db import get_connection, ensure_tables_exist, clear_unv_tables
 from FemToolsUNVParser import parse_unv
 from src.l3.core.errors import NotFoundError, ValidationError
+from services.model_update.analysis.project_config_service import save_test_model_dimensions
 
 
 def _to_builtin(value):
@@ -474,6 +475,19 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
         else:
             _insert_dynamic_modal_data(cursor, project_id, file_id, test_modes, message)
 
+        project_config = save_test_model_dimensions(
+            project_id=project_id,
+            points=[
+                (
+                    _safe_float(node["x"]) or 0.0,
+                    _safe_float(node["y"]) or 0.0,
+                    _safe_float(node["z"]) or 0.0,
+                )
+                for node in test_nodes
+            ],
+            cursor=cursor,
+        )
+
         conn.commit()
 
         return {
@@ -485,6 +499,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
             "test_element_count": len(test_elements),
             "test_mode_count": len(test_modes),
             "test_static_result_count": static_result_count,
+            "project_config": project_config,
         }
 
     except Exception:

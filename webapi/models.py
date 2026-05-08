@@ -206,6 +206,24 @@ class TransformAutoInfoRequest(BaseModel):
     type: Optional[str] = None
 
 
+class ProjectConfigDimsRequest(BaseModel):
+    x: Optional[float] = None
+    y: Optional[float] = None
+    z: Optional[float] = None
+
+
+class ProjectConfigRequest(BaseModel):
+    project_id: int
+
+
+class ProjectConfigUpsertRequest(BaseModel):
+    project_id: int
+    test_model_dims: Optional[ProjectConfigDimsRequest] = None
+    fem_model_dims: Optional[ProjectConfigDimsRequest] = None
+    coefficients: Dict[str, float] = Field(default_factory=dict)
+    extra_json: Dict[str, Any] = Field(default_factory=dict)
+
+
 class SensitivityBuildWorkspaceRequest(BaseModel):
     project_id: Optional[int] = None
     odb_path: str

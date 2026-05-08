@@ -233,6 +233,27 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='空间匹配变换记录表';
     """,
     """
+    -- project configuration table
+    -- test_model_x/y/z: test model size
+    -- fem_model_x/y/z: fem model size
+    -- coefficients_json: coefficient map
+    -- extra_json: extra config payload
+    CREATE TABLE IF NOT EXISTS t_mt_py_project_config (
+        pid BIGINT NOT NULL COMMENT 'project id',
+        test_model_x DOUBLE NULL COMMENT '试验模型x方向尺寸',
+        test_model_y DOUBLE NULL COMMENT '试验模型y方向尺寸',
+        test_model_z DOUBLE NULL COMMENT '试验模型z方向尺寸',
+        fem_model_x DOUBLE NULL COMMENT '有限元模型x方向尺寸',
+        fem_model_y DOUBLE NULL COMMENT '有限元模型y方向尺寸',
+        fem_model_z DOUBLE NULL COMMENT '有限元模型z方向尺寸',
+        coefficients_json JSON NULL COMMENT '系数对应表',
+        extra_json JSON NULL COMMENT '额外系数对应表',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+        PRIMARY KEY (pid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='project configuration';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_dof_pairs (
         pid INT NOT NULL COMMENT '工程ID',
         node INT NOT NULL COMMENT '节点编号',
@@ -828,9 +849,10 @@ CREATE_TABLE_SQL_LIST = [
     CREATE TABLE IF NOT EXISTS t_mt_channel_info (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         channel_name VARCHAR(64) NOT NULL COMMENT '通道名称',
+        measure_point_id BIGINT NOT NULL COMMENT '测点ID',
         project_id BIGINT NOT NULL COMMENT '项目ID',
         direction INT NOT NULL COMMENT '方向:1-x, 2-y, 3-z',
-        data_operate CHAR(1) NOT NULL COMMENT '+ -',
+        data_operate CHAR(1) NOT NULL COMMENT '+ - 操作类型',
         PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通道信息表';
     """

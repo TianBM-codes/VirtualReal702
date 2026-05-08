@@ -18,6 +18,7 @@ from src.l3.infra.registry_repo import RegistryRepo
 
 from . import sensitivity_service as _sens
 from .console_log_service import safe_write_console_event
+from .project_config_service import save_fem_model_dimensions
 from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
 
@@ -1370,6 +1371,13 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 _json_dumps(node_data["bbox_max"].tolist()),
             ))
 
+        project_config = save_fem_model_dimensions(
+            project_id=project_id,
+            bbox_min=node_data["bbox_min"],
+            bbox_max=node_data["bbox_max"],
+            cursor=cursor,
+        )
+
         conn.commit()
         result = {
             "file_path": os.path.abspath(file_path),
@@ -1388,6 +1396,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "instance_count": len(node_data["entries"]),
             "node_count": int(len(node_data["point_labels"])),
             "octree_cache_path": os.path.abspath(cache_path) if cache_path else None,
+            "project_config": project_config,
             "diagnostics": len(getattr(model, "diagnostics", []) or []),
             "parameter_definitions_preview": parameter_definitions[:10],
             "parameter_targets_preview": parameter_targets[:10],

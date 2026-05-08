@@ -1,0 +1,232 @@
+import json
+from typing import Any, Dict, Iterable, Optional, Sequence
+
+import numpy as np
+
+from db import ensure_tables_exist, get_connection
+
+
+def _normalize_dims(dims: Optional[dict]) -> Optional[Dict[str, Optional[float]]]:
+    if dims is None:
+        return None
+    normalized: Dict[str, Optional[float]] = {}
+    for axis in ("x", "y", "z"):
+        if axis not in dims:
+            continue
+        value = dims.get(axis)
+        normalized[axis] = None if value is None else float(value)
+    return normalized
+
+
+def _normalize_mapping(payload: Optional[dict]) -> Dict[str, float]:
+    normalized: Dict[str, float] = {}
+    for key, value in dict(payload or {}).items():
+        normalized[str(key)] = float(value)
+    return normalized
+
+
+def _normalize_extra(payload: Optional[dict]) -> Dict[str, Any]:
+    return dict(payload or {})
+
+
+def _empty_payload(project_id: int) -> dict:
+    return {
+        "project_id": int(project_id),
+        "test_model_dims": {"x": None, "y": None, "z": None},
+        "fem_model_dims": {"x": None, "y": None, "z": None},
+        "coefficients": {},
+        "extra_json": {},
+    }
+
+
+def _build_payload(row: Optional[dict], project_id: int) -> dict:
+    if not row:
+        return _empty_payload(project_id)
+    return {
+        "project_id": int(project_id),
+        "test_model_dims": {
+            "x": row.get("test_model_x"),
+            "y": row.get("test_model_y"),
+            "z": row.get("test_model_z"),
+        },
+        "fem_model_dims": {
+            "x": row.get("fem_model_x"),
+            "y": row.get("fem_model_y"),
+            "z": row.get("fem_model_z"),
+        },
+        "coefficients": json.loads(row["coefficients_json"]) if row.get("coefficients_json") else {},
+        "extra_json": json.loads(row["extra_json"]) if row.get("extra_json") else {},
+    }
+
+
+def _fetch_project_config(cursor, project_id: int) -> dict:
+    cursor.execute(
+        """
+        SELECT pid, test_model_x, test_model_y, test_model_z,
+               fem_model_x, fem_model_y, fem_model_z,
+               coefficients_json, extra_json
+        FROM t_mt_py_project_config
+        WHERE pid = %s
+        """,
+        (int(project_id),),
+    )
+    return _build_payload(cursor.fetchone(), int(project_id))
+
+
+def _upsert_project_config_with_cursor(
+    cursor,
+    project_id: int,
+    *,
+    test_model_dims: Optional[dict] = None,
+    fem_model_dims: Optional[dict] = None,
+    coefficients: Optional[dict] = None,
+    extra_json: Optional[dict] = None,
+) -> dict:
+    existing = _fetch_project_config(cursor, int(project_id))
+
+    resolved_test_dims = dict(existing["test_model_dims"])
+    incoming_test_dims = _normalize_dims(test_model_dims)
+    if incoming_test_dims is not None:
+        resolved_test_dims.update(incoming_test_dims)
+
+    resolved_fem_dims = dict(existing["fem_model_dims"])
+    incoming_fem_dims = _normalize_dims(fem_model_dims)
+    if incoming_fem_dims is not None:
+        resolved_fem_dims.update(incoming_fem_dims)
+
+    resolved_coefficients = dict(existing["coefficients"])
+    resolved_coefficients.update(_normalize_mapping(coefficients))
+
+    resolved_extra_json = dict(existing["extra_json"])
+    resolved_extra_json.update(_normalize_extra(extra_json))
+
+    cursor.execute(
+        """
+        INSERT INTO t_mt_py_project_config
+        (pid, test_model_x, test_model_y, test_model_z,
+         fem_model_x, fem_model_y, fem_model_z,
+         coefficients_json, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            test_model_x = VALUES(test_model_x),
+            test_model_y = VALUES(test_model_y),
+            test_model_z = VALUES(test_model_z),
+            fem_model_x = VALUES(fem_model_x),
+            fem_model_y = VALUES(fem_model_y),
+            fem_model_z = VALUES(fem_model_z),
+            coefficients_json = VALUES(coefficients_json),
+            extra_json = VALUES(extra_json),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            int(project_id),
+            resolved_test_dims["x"],
+            resolved_test_dims["y"],
+            resolved_test_dims["z"],
+            resolved_fem_dims["x"],
+            resolved_fem_dims["y"],
+            resolved_fem_dims["z"],
+            json.dumps(resolved_coefficients, ensure_ascii=False),
+            json.dumps(resolved_extra_json, ensure_ascii=False),
+        ),
+    )
+
+    return {
+        "project_id": int(project_id),
+        "test_model_dims": resolved_test_dims,
+        "fem_model_dims": resolved_fem_dims,
+        "coefficients": resolved_coefficients,
+        "extra_json": resolved_extra_json,
+    }
+
+
+def get_project_config(project_id: int) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        return _fetch_project_config(cursor, int(project_id))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def upsert_project_config(
+    project_id: int,
+    *,
+    test_model_dims: Optional[dict] = None,
+    fem_model_dims: Optional[dict] = None,
+    coefficients: Optional[dict] = None,
+    extra_json: Optional[dict] = None,
+    cursor=None,
+) -> dict:
+    own_conn = None
+    own_cursor = cursor
+    if own_cursor is None:
+        ensure_tables_exist()
+        own_conn = get_connection()
+        own_cursor = own_conn.cursor(dictionary=True)
+    try:
+        payload = _upsert_project_config_with_cursor(
+            own_cursor,
+            int(project_id),
+            test_model_dims=test_model_dims,
+            fem_model_dims=fem_model_dims,
+            coefficients=coefficients,
+            extra_json=extra_json,
+        )
+        if own_conn is not None:
+            own_conn.commit()
+        return payload
+    except Exception:
+        if own_conn is not None:
+            own_conn.rollback()
+        raise
+    finally:
+        if own_conn is not None:
+            own_cursor.close()
+            own_conn.close()
+
+
+def _dims_from_bounds(bbox_min: Sequence[float], bbox_max: Sequence[float]) -> dict:
+    lo = np.asarray(list(bbox_min), dtype=np.float64).reshape(3)
+    hi = np.asarray(list(bbox_max), dtype=np.float64).reshape(3)
+    span = hi - lo
+    return {
+        "x": float(span[0]),
+        "y": float(span[1]),
+        "z": float(span[2]),
+    }
+
+
+def save_fem_model_dimensions(
+    project_id: int,
+    *,
+    bbox_min: Sequence[float],
+    bbox_max: Sequence[float],
+    cursor=None,
+) -> dict:
+    dims = _dims_from_bounds(bbox_min, bbox_max)
+    return upsert_project_config(
+        int(project_id),
+        fem_model_dims=dims,
+        cursor=cursor,
+    )
+
+
+def save_test_model_dimensions(
+    project_id: int,
+    *,
+    points: Iterable[Sequence[float]],
+    cursor=None,
+) -> dict:
+    coords = np.asarray(list(points), dtype=np.float64)
+    if coords.size == 0:
+        return get_project_config(int(project_id)) if cursor is None else _empty_payload(int(project_id))
+    coords = coords.reshape((-1, 3))
+    dims = _dims_from_bounds(coords.min(axis=0), coords.max(axis=0))
+    return upsert_project_config(
+        int(project_id),
+        test_model_dims=dims,
+        cursor=cursor,
+    )
