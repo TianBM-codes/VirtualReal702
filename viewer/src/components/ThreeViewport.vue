@@ -977,7 +977,7 @@ async function loadOrientations(bbox) {
   console.log('[csys] loadOrientations called, bbox empty:', bbox?.isEmpty())
   try {
     const res = await http.get(store.getApiUrl('geometry/orientations'))
-    const { orientations } = res.data
+    const { orientations } = res
     console.log('[csys] orientations count:', orientations?.length, orientations)
     if (!orientations || orientations.length === 0) return
 
