@@ -12,6 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 实现完成后说明整个流程是什么，前后端各做什么
 - 遇到技术取舍时说清楚利弊，而不是只给结论
 - 科普性内容写进 `FEM-Viewer-Primer.md`，流程/设计写进对应 `docs/` 文档
+- **每次修改 `src/l3/api/routes/` 下的接口（新增、删除、改参数/响应）后，必须同步更新 `docs/l3/L3-API-Quick-Reference.md`**，包括更新文件顶部的"更新时间"行
 
 ## Project Overview
 
