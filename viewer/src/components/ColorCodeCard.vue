@@ -50,10 +50,19 @@
           <option value="">— 选择区域 —</option>
           <option v-for="item in highlightableRegions" :key="item.name" :value="item.name">{{ item.name }}</option>
         </select>
+        <div style="display:flex;gap:10px;margin-top:5px;font-size:11px">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" v-model="showMeshEdges" />
+            <span style="color:#00ccff">Mesh Edges</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" v-model="showOutline" />
+            <span style="color:#ff8800">Outline</span>
+          </label>
+        </div>
         <div class="row" style="margin-top:4px">
-          <button @click="applyRegionHighlight('mesh')" title="单元网格边（含内部边）">Mesh Edges</button>
-          <button @click="applyRegionHighlight('outline')" title="仅外轮廓边">Outline</button>
-          <button @click="emit('clear-region-highlight')">Clear</button>
+          <button class="primary" @click="applyRegionHighlight">Apply</button>
+          <button @click="clearHighlight">Clear</button>
         </div>
       </div>
     </template>
@@ -78,7 +87,9 @@ const selectedElsets = ref([])
 const legend         = ref([])
 
 // Region highlight state
-const highlightRegion     = ref('')
+const highlightRegion      = ref('')
+const showMeshEdges        = ref(false)
+const showOutline          = ref(true)
 const highlightableRegions = computed(() =>
   legend.value.filter(item => item.name !== '(none)' && item.name !== 'other')
 )
@@ -109,9 +120,17 @@ function apply() {
 // Receive legend back from parent (after applyColorCode returns)
 function setLegend(items) { legend.value = items; highlightRegion.value = '' }
 
-function applyRegionHighlight(type) {
+function applyRegionHighlight() {
   if (!highlightRegion.value) { store.setStatus('请先选择一个区域', 'err'); return }
-  emit('region-highlight', { scheme: scheme.value, region: highlightRegion.value, type })
+  if (!showMeshEdges.value && !showOutline.value) { store.setStatus('请至少勾选一种高亮类型', 'err'); return }
+  const types = []
+  if (showMeshEdges.value) types.push('mesh')
+  if (showOutline.value)   types.push('outline')
+  emit('region-highlight', { scheme: scheme.value, region: highlightRegion.value, types })
+}
+
+function clearHighlight() {
+  emit('clear-region-highlight')
 }
 
 defineExpose({ setLegend })

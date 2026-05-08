@@ -235,14 +235,22 @@ async def get_region_outline(
     region_tris = render_indices[face_mask]          # [Rf_reg, 3] vertex indices
     v0, v1, v2 = region_tris[:, 0], region_tris[:, 1], region_tris[:, 2]
 
-    edges = np.concatenate([
-        np.stack([np.minimum(v0, v1), np.maximum(v0, v1)], axis=1),
-        np.stack([np.minimum(v1, v2), np.maximum(v1, v2)], axis=1),
-        np.stack([np.minimum(v0, v2), np.maximum(v0, v2)], axis=1),
-    ])   # [3*Rf_reg, 2]
+    # Convert to node rows: vertices are NOT shared across element boundaries,
+    # but same-position vertices of adjacent elements have the same vtx_node_row.
+    # Deduplicating edges by node-row pairs correctly collapses interior edges
+    # (which appear in two adjacent triangles) and retains only boundary edges.
+    n0 = vtx_node_row[v0]
+    n1 = vtx_node_row[v1]
+    n2 = vtx_node_row[v2]
 
-    N_verts = len(vtx_node_row)
-    packed = edges[:, 0].astype(np.int64) * N_verts + edges[:, 1].astype(np.int64)
+    edges = np.concatenate([
+        np.stack([np.minimum(n0, n1), np.maximum(n0, n1)], axis=1),
+        np.stack([np.minimum(n1, n2), np.maximum(n1, n2)], axis=1),
+        np.stack([np.minimum(n0, n2), np.maximum(n0, n2)], axis=1),
+    ])   # [3*Rf_reg, 2]  — node row pairs
+
+    N_nodes = len(coords_global)
+    packed = edges[:, 0].astype(np.int64) * N_nodes + edges[:, 1].astype(np.int64)
     unique_packed, counts = np.unique(packed, return_counts=True)
     boundary_packed = unique_packed[counts == 1]
 
@@ -250,14 +258,13 @@ async def get_region_outline(
         return _empty()
 
     boundary_edges = np.stack([
-        (boundary_packed // N_verts).astype(np.int32),
-        (boundary_packed %  N_verts).astype(np.int32),
-    ], axis=1)   # [E_boundary, 2]
+        (boundary_packed // N_nodes).astype(np.int32),
+        (boundary_packed %  N_nodes).astype(np.int32),
+    ], axis=1)   # [E_boundary, 2]  — node row pairs
 
-    vtx_coords = coords_global[vtx_node_row]         # [Nv, 3]
     E = len(boundary_edges)
     edge_positions = np.ascontiguousarray(
-        vtx_coords[boundary_edges.ravel()].reshape(E * 2, 3).astype(np.float32)
+        coords_global[boundary_edges.ravel()].reshape(E * 2, 3).astype(np.float32)
     )
     return Response(
         content=l3be_build([("edge_positions", edge_positions)]),
