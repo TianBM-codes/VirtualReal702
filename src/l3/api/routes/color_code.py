@@ -30,13 +30,32 @@ router = APIRouter(prefix="/api/odb/{odb_id}", tags=["color_code"])
 async def get_display_names(
     odb_id: str,
     instance: str,
-    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    scheme: str = Query(None, description="etype | material | section_type | section | elset; 省略时返回所有 scheme"),
 ):
-    """Return user-defined display names: {legend_key: display_name}."""
+    """Return user-defined display names.
+
+    With scheme: {legend_key: display_name}
+    Without scheme: {scheme: {legend_key: display_name}, ...}
+    """
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    return ok(ManifestRepo(idx.workspace).get_display_names(instance, scheme))
+    repo = ManifestRepo(idx.workspace)
+    if scheme:
+        return ok(repo.get_display_names(instance, scheme))
+    # Return all schemes
+    try:
+        with repo._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT scheme, legend_key, display_name FROM display_names WHERE instance=?",
+                (instance,),
+            ).fetchall()
+        result: Dict[str, Dict[str, str]] = {}
+        for r in rows:
+            result.setdefault(r["scheme"], {})[r["legend_key"]] = r["display_name"]
+        return ok(result)
+    except Exception:
+        return ok({})
 
 
 @router.post("/color-code/{instance}/display-names")

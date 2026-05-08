@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST）
+更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST；scheme 参数改为可选）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1281,15 +1281,15 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
 
 ### `GET /api/odb/{odb_id}/color-code/{instance}/display-names`
 
-查询当前 scheme 下用户自定义的 legend 显示名称。
+查询用户自定义的 legend 显示名称。
 
 查询参数：
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `scheme` | 是 | `etype` / `section` / `material` / `section_type` / `elset` |
+| `scheme` | 否 | `etype` / `section` / `material` / `section_type` / `elset`；省略时返回所有 scheme |
 
-响应：
+**传 `scheme` 时**，返回该 scheme 的映射：
 
 ```json
 {
@@ -1297,6 +1297,19 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
   "data": {
     "Region 1": "顶板",
     "Region 2": "腹板"
+  },
+  "message": ""
+}
+```
+
+**不传 `scheme` 时**，返回所有 scheme 的映射（按 scheme 分组）：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "section": {"Region 1": "顶板", "Region 2": "腹板"},
+    "elset": {"SET_A": "左翼缘"}
   },
   "message": ""
 }
