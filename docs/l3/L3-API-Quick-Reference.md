@@ -574,7 +574,7 @@ async function pollLogs(odbId) {
   "code": 200,
   "data": {
     "project_id": "proj-001",
-    "geom_status": "l2_running"
+    "geom_status": "l2_pending"
   },
   "message": ""
 }

@@ -530,6 +530,60 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     return True
 
 
+# ── L2 rerun helpers ─────────────────────────────────────────────────────────
+
+def _claim_l2_pending_project() -> tuple:
+    """原子认领 geom_status='l2_pending' project → 'l2_running'。返回 (project_id, workspace) 或 (None, None)。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE projects SET geom_status='l2_running', updated_at=?"
+            " WHERE project_id=("
+            "  SELECT project_id FROM projects WHERE geom_status='l2_pending'"
+            "  ORDER BY updated_at LIMIT 1"
+            ")",
+            (_now_iso(),),
+        )
+        if cur.rowcount == 0:
+            return None, None
+        row = conn.execute(
+            "SELECT project_id, workspace FROM projects"
+            " WHERE geom_status='l2_running' ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None, None
+        ws = row["workspace"]
+        if not (os.path.isabs(ws) or re.match(r'^[A-Za-z]:[/\\]', ws)):
+            ws = os.path.join(DATA_ROOT, row["project_id"])
+        return row["project_id"], ws
+
+
+def _run_l2_rerun(project_id: str, workspace: str) -> None:
+    """Run ingest.py for an L2 rerun request. Updates project geom_status when done."""
+    logger.info("[%s] L2 rerun: ingest.py", project_id)
+    _log_job(project_id, "step",
+             "L2 重新预处理（rerun-l2）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest")
+
+    rc, tail = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        project_id, "l2_ingest",
+    )
+    if rc != 0:
+        _update_project_geom_status(
+            project_id, "error",
+            "[L2 rerun] ingest failed: " + tail[-2000:],
+        )
+        _log_job(project_id, "error",
+                 "L2 重新预处理失败 (rc={})：".format(rc) + tail[-500:],
+                 stage="l2_ingest")
+        logger.error("[%s] L2 rerun failed (rc=%d)", project_id, rc)
+        return
+
+    _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", "L2 重新预处理完成，已就绪", stage="l2_done")
+    logger.info("[%s] L2 rerun done → ready", project_id)
+
+
 # ── Project / result_group helpers ───────────────────────────────────────────
 
 def _claim_pending_project() -> tuple:
@@ -1098,6 +1152,22 @@ def main() -> None:
                     try:
                         _update_status(odb_id, "error",
                                        error_msg="Unhandled runner exception — check server logs")
+                    except Exception:
+                        pass
+
+            # 4. L2 rerun requests (triggered by POST /api/projects/{id}/rerun-l2)
+            project_id, ws = _claim_l2_pending_project()
+            if project_id is not None:
+                did_work = True
+                logger.info("Claimed L2 rerun %s", project_id)
+                try:
+                    _run_l2_rerun(project_id, ws)
+                except Exception:
+                    logger.exception("Error in L2 rerun %s", project_id)
+                    try:
+                        _update_project_geom_status(
+                            project_id, "error",
+                            "Unhandled runner exception — check server logs")
                     except Exception:
                         pass
 
