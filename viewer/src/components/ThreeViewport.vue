@@ -974,16 +974,14 @@ async function loadCouplingLines(instances) {
 
 // ── Orientation Triads (model-level named CSYS) ───────────────────────────
 async function loadOrientations(bbox) {
-  console.log('[csys] loadOrientations called, bbox empty:', bbox?.isEmpty())
   try {
     const res = await http.get(store.getApiUrl('geometry/orientations'))
     const { orientations } = res
-    console.log('[csys] orientations count:', orientations?.length, orientations)
     if (!orientations || orientations.length === 0) return
 
     // Axis line length = 5% of bbox diagonal, fallback to 1.0
     const scale = (bbox && !bbox.isEmpty())
-      ? bbox.min.distanceTo(bbox.max) * 0.35
+      ? bbox.min.distanceTo(bbox.max) * 0.12
       : 1.0
 
     // If origin is at/near (0,0,0) and outside the model bbox, relocate to bbox center.
@@ -1024,7 +1022,7 @@ async function loadOrientations(bbox) {
     orientationLines = new THREE.LineSegments(geo, mat)
     orientationLines.renderOrder = 999
     modelGroup.add(orientationLines)
-  } catch (e) { console.error('[csys] loadOrientations error:', e) }
+  } catch { /* no orientation data */ }
 }
 
 // ── Edge vertex index helpers ─────────────────────────────────────────────
