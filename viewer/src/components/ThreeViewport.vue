@@ -53,7 +53,9 @@ const regionMeshEdgesLines = {}   // instName → LineSegments
 const regionOutlineLines   = {}   // instName → LineSegments
 
 // ── Line elements (beam / truss) ──────────────────────────────────────────
-const lineMeshes = {}   // instName → LineSegments
+const lineMeshes     = {}   // instName → LineSegments (beam/truss)
+const pointMeshes    = {}   // instName → Points (MASS)
+const couplingMeshes = {}   // instName → LineSegments (RBE2 spiders)
 
 let _deformAnimActive = false  // animation loop guard
 
@@ -348,6 +350,8 @@ function _applyClipping(planes) {
   Object.values(meshEdgesLines).forEach(l    => { if (l?.material) l.material.clippingPlanes = planes })
   Object.values(featureEdgesLines).forEach(l => { if (l?.material) l.material.clippingPlanes = planes })
   Object.values(lineMeshes).forEach(l        => { if (l?.material) l.material.clippingPlanes = planes })
+  Object.values(pointMeshes).forEach(p       => { if (p?.material) p.material.clippingPlanes = planes })
+  Object.values(couplingMeshes).forEach(l    => { if (l?.material) l.material.clippingPlanes = planes })
   requestRender()
 }
 
@@ -847,6 +851,8 @@ async function loadGeometry(instances) {
   for (const [k, l] of Object.entries(regionMeshEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionMeshEdgesLines[k] }
   for (const [k, l] of Object.entries(regionOutlineLines))   { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionOutlineLines[k] }
   for (const [k, l] of Object.entries(lineMeshes))           { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete lineMeshes[k] }
+  for (const [k, p] of Object.entries(pointMeshes))          { modelGroup.remove(p); p.geometry.dispose(); p.material.dispose(); delete pointMeshes[k] }
+  for (const [k, l] of Object.entries(couplingMeshes))       { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete couplingMeshes[k] }
   Object.values(store.instanceMeshes).forEach(im => _disposeInstance(im))
   Object.keys(store.instanceMeshes).forEach(k => delete store.instanceMeshes[k])
   Object.keys(origPositions).forEach(k => delete origPositions[k])
@@ -886,7 +892,11 @@ async function loadGeometry(instances) {
     emit('model-loaded', { bbox: { min: combinedBox.min.toArray(), max: combinedBox.max.toArray(), axMin: combinedBox.min, axMax: combinedBox.max } })
   }
   store.setStatus(`Loaded ${instances.length} instance(s) — ${totalTris} triangles total`, 'ok')
-  await loadLineElements(instances)
+  await Promise.all([
+    loadLineElements(instances),
+    loadPointElements(instances),
+    loadCouplingLines(instances),
+  ])
   requestRender()
 }
 
@@ -909,6 +919,50 @@ async function loadLineElements(instances) {
       modelGroup.add(line)
       lineMeshes[instName] = line
     } catch { /* instance has no line element data */ }
+  }))
+}
+
+// ── Point Elements (MASS / ROTARYI) ──────────────────────────────────────
+async function loadPointElements(instances) {
+  await Promise.all(instances.map(async instName => {
+    try {
+      const res = await http.get(
+        store.getApiUrl(`geometry/${encodeURIComponent(instName)}/points`),
+        { responseType: 'arraybuffer' }
+      )
+      const sec = parseL3BE(res.data)
+      if (!sec.point_positions || sec.point_positions.data.length === 0) return
+      const positions = new Float32Array(sec.point_positions.data)
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      const mat = new THREE.PointsMaterial({ color: 0xff8800, size: 6, sizeAttenuation: false })
+      if (clipPlane) mat.clippingPlanes = [clipPlane]
+      const pts = new THREE.Points(geo, mat)
+      modelGroup.add(pts)
+      pointMeshes[instName] = pts
+    } catch { /* instance has no point element data */ }
+  }))
+}
+
+// ── Coupling Lines (RBE2 / KINEMATIC) ────────────────────────────────────
+async function loadCouplingLines(instances) {
+  await Promise.all(instances.map(async instName => {
+    try {
+      const res = await http.get(
+        store.getApiUrl(`geometry/${encodeURIComponent(instName)}/couplings`),
+        { responseType: 'arraybuffer' }
+      )
+      const sec = parseL3BE(res.data)
+      if (!sec.coupling_positions || sec.coupling_positions.data.length === 0) return
+      const positions = new Float32Array(sec.coupling_positions.data)
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      const mat = new THREE.LineBasicMaterial({ color: 0xff6600, linewidth: 1 })
+      if (clipPlane) mat.clippingPlanes = [clipPlane]
+      const line = new THREE.LineSegments(geo, mat)
+      modelGroup.add(line)
+      couplingMeshes[instName] = line
+    } catch { /* instance has no coupling data */ }
   }))
 }
 

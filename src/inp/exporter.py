@@ -72,6 +72,8 @@ _ELEM_TYPE_CODE: Dict[str, int] = {
     # line elements — truss / beam / pipe (no faces, rendered as LineSegments)
     "T3D2": 9,  "B31": 9,  "B31OS": 9,  "PIPE31": 9,
     "T3D3": 10, "B32": 10, "B32OS": 10, "PIPE32": 10,
+    # point elements — concentrated mass / rotary inertia (rendered as Points)
+    "MASS": 11, "ROTARYI": 11,
 }
 
 # Number of *corner* nodes per type code (used to slice connectivity)
@@ -86,6 +88,7 @@ _CORNER_COUNTS: Dict[int, int] = {
     7: 8,   # C3D20 → 8 corner nodes
     9: 2,   # T3D2/B31: 2 endpoints
     10: 2,  # T3D3/B32: 2 endpoints (mid-node ignored)
+    11: 1,  # MASS/ROTARYI: 1 node
 }
 
 # Face connectivity (0-based local corner-node index lists, 1-based face_seq)
@@ -138,6 +141,7 @@ def export_l1(model: InpModel, workspace: str) -> None:
         else:
             inst_iter = []
 
+        geom_paths = []  # collect (geom_abs, part) for coupling post-pass
         for inst_name, inst in inst_iter:
             part = model.parts.get(inst.part_name)
             if part is None:
@@ -149,7 +153,16 @@ def export_l1(model: InpModel, workspace: str) -> None:
             _insert_instance(db_conn, inst_name, inst.part_name,
                              geom_rel, part, bbox_min, bbox_max)
             _write_sets(part, inst_name, workspace, db_conn)
+            geom_paths.append((geom_abs, part))
         db_conn.commit()
+
+        # Append KINEMATIC coupling (RBE2) lines to each instance's geometry h5.
+        # For single-instance flat INPs all coupling nodes are in the one part;
+        # for multi-instance models we write to all h5s and each picks up the
+        # nodes it owns (unknown nodes are silently skipped).
+        if model.assembly is not None and model.assembly.couplings:
+            for geom_abs, part in geom_paths:
+                _append_coupling_lines(geom_abs, model, part)
     finally:
         db_conn.close()
 
@@ -465,6 +478,91 @@ def _insert_instance(
             _json.dumps(bbox_max),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Coupling lines (RBE2 / KINEMATIC)
+# ---------------------------------------------------------------------------
+
+def _resolve_nset_labels(nset_name: str, part, assembly) -> List[int]:
+    """Flatten an NSET by following set_refs.  Looks in part first, then assembly."""
+    visited: set = set()
+
+    def _expand(name: str) -> List[int]:
+        if name in visited:
+            return []
+        visited.add(name)
+        nset = (part.nsets.get(name) if part else None) or \
+               (assembly.nsets.get(name) if assembly else None)
+        if nset is None:
+            return []
+        labels: List[int] = list(nset.node_labels)
+        for ref in getattr(nset, "set_refs", []):
+            labels.extend(_expand(ref))
+        return labels
+
+    return _expand(nset_name)
+
+
+def _append_coupling_lines(h5_path: str, model, part) -> None:
+    """
+    Resolve KINEMATIC couplings and append coupling/positions [N*2, 3] float32
+    to the geometry h5.  Nodes not found in this part's node table are skipped
+    (safe for multi-instance models where some couplings span instances).
+    """
+    asm = model.assembly
+    if asm is None:
+        return
+
+    # Read node table from already-written h5 to build label→row + coords
+    with h5py.File(h5_path, "r") as f:
+        if "nodes/labels" not in f:
+            return
+        node_labels = f["nodes/labels"][:]   # [N] int32
+        node_coords = f["nodes/coords"][:]   # [N, 3] float64
+
+    label_to_row = {int(lbl): i for i, lbl in enumerate(node_labels)}
+
+    seg_list: List[np.ndarray] = []
+
+    for coup in asm.couplings:
+        if coup.coupling_type != "KINEMATIC":
+            continue
+
+        # Resolve reference node
+        try:
+            ref_label = int(coup.ref_node)
+        except (ValueError, TypeError):
+            continue
+        ref_row = label_to_row.get(ref_label)
+        if ref_row is None:
+            continue
+        ref_pos = node_coords[ref_row]  # [3] float64
+
+        # Resolve surface → nset name
+        surf = (part.surfaces.get(coup.surface) if part else None) or \
+               (asm.surfaces.get(coup.surface) if asm else None)
+        if surf is None or surf.surface_type != "NODE" or not surf.entries:
+            continue
+        nset_name = surf.entries[0].ref_name
+
+        # Resolve nset → slave node labels
+        slave_labels = _resolve_nset_labels(nset_name, part, asm)
+        for sl in slave_labels:
+            slave_row = label_to_row.get(sl)
+            if slave_row is None:
+                continue
+            seg = np.array([ref_pos, node_coords[slave_row]], dtype=np.float32)
+            seg_list.append(seg)
+
+    if not seg_list:
+        return
+
+    # Stack into [N*2, 3] — interleaved (ref, slave) pairs ready for LineSegments
+    positions = np.concatenate(seg_list, axis=0)  # [N*2, 3] float32
+
+    with h5py.File(h5_path, "a") as f:
+        f.create_dataset("couplings/positions", data=positions)
 
 
 # ---------------------------------------------------------------------------

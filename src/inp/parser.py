@@ -493,6 +493,11 @@ class InpParser:
             self._current_assembly.surfaces[name] = surface
         elif self._current_part is not None:
             self._current_part.surfaces[name] = surface
+        else:
+            # Flat-format INP: surface defined outside any block → store in PART-1-1
+            if "PART-1-1" not in self._model.parts:
+                self._model.parts["PART-1-1"] = Part(name="PART-1-1")
+            self._model.parts["PART-1-1"].surfaces[name] = surface
 
     # ------------------------------------------------------------------
     # Sections
@@ -961,10 +966,15 @@ class InpParser:
 
         target_asm = self._current_assembly or self._model.assembly
         if target_asm is None:
-            self._diag.warning(UNSUPPORTED_PARAM,
-                               f"*Coupling '{name}' defined outside Assembly — skipped",
-                               file=block.source_file, line=block.source_line)
-            return
+            # Flat-format INP: synthesize a minimal assembly to hold couplings
+            if self._model.parts:
+                self._model.assembly = Assembly(name="synthesized-flat")
+                target_asm = self._model.assembly
+            else:
+                self._diag.warning(UNSUPPORTED_PARAM,
+                                   f"*Coupling '{name}' defined outside Assembly — skipped",
+                                   file=block.source_file, line=block.source_line)
+                return
 
         coupling = CouplingConstraint(name=name, ref_node=ref_node, surface=surface)
         target_asm.couplings.append(coupling)
