@@ -111,6 +111,12 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
             inst_grp = f.get(f"element_sets/{instance}")
             if inst_grp is not None:
                 elsets = sorted(inst_grp.keys())
+    # ODB-only fallback: instance sets live in geometry H5, not sets.h5
+    if not elsets and os.path.exists(geom_h5):
+        with h5py.File(geom_h5, "r") as f:
+            isets_grp = f.get("instance_sets/element_sets")
+            if isets_grp is not None:
+                elsets = sorted(isets_grp.keys())
     if elsets:
         schemes.append("elset")
 
@@ -336,17 +342,29 @@ def _labels_from_elsets(
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
-    if not os.path.exists(sets_h5):
-        raise NotFoundError("No sets data found for this workspace", {})
-
-    # Load all requested sets' label arrays
-    set_label_arrays: List[Tuple[str, np.ndarray]] = []
-    with h5py.File(sets_h5, "r") as f:
-        for sn in set_names:
-            key = f"element_sets/{instance}/{sn}"
-            if key not in f:
-                raise ValidationError(f"Set '{sn}' not found", {"set_name": sn})
-            set_label_arrays.append((sn, f[key][:]))
+    # Load all requested sets' label arrays.
+    # Primary:  sets.h5 element_sets/{instance}/{sn}          (INP+ODB mode)
+    # Fallback: geometry H5 instance_sets/element_sets/{sn}   (ODB-only mode)
+    slabels_dict: Dict[str, np.ndarray] = {}
+    if os.path.exists(sets_h5):
+        with h5py.File(sets_h5, "r") as f:
+            for sn in set_names:
+                key = f"element_sets/{instance}/{sn}"
+                if key in f:
+                    slabels_dict[sn] = f[key][:]
+    missing = [sn for sn in set_names if sn not in slabels_dict]
+    if missing:
+        if not os.path.exists(geom_h5):
+            raise NotFoundError("No sets data found for this workspace", {})
+        with h5py.File(geom_h5, "r") as f:
+            for sn in missing:
+                geom_key = f"instance_sets/element_sets/{sn}"
+                if geom_key not in f:
+                    raise ValidationError(f"Set '{sn}' not found", {"set_name": sn})
+                slabels_dict[sn] = f[geom_key][:]
+    set_label_arrays: List[Tuple[str, np.ndarray]] = [
+        (sn, slabels_dict[sn]) for sn in set_names
+    ]
 
     Rf         = len(etype_arr)
     # face_set[i] = index into set_names + 1 (0 = "other")
