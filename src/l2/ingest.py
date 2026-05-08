@@ -34,7 +34,7 @@ FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
 
-# Keep in sync with src/inp/exporter.py _ELEM_TYPE_CODE.
+# Keep in sync with src/l1/abaqus_dump.py ELEM_TYPE_CODE.
 ELEM_TYPE_CODE = {
     # shells / membranes
     'S3': 0,  'S3R': 0,  'S6': 0,   'STRI3': 0,
@@ -46,6 +46,11 @@ ELEM_TYPE_CODE = {
     'C3D10': 5, 'C3D10M': 5, 'C3D10H': 5, 'C3D10MH': 5,
     'C3D15': 6, 'C3D15H': 6,
     'C3D20': 7, 'C3D20R': 7, 'C3D20H': 7, 'C3D20RH': 7,
+    # high-order curved triangle shell
+    'STRI65': 8,
+    # line elements (truss / beam) — no face data, silently ignored in collect_faces
+    'T3D2':  9,  'B31':  9,  'B31OS': 9,  'PIPE31': 9,
+    'T3D3': 10,  'B32': 10,  'B32OS':10,  'PIPE32':10,
     # plane / axisymmetric (treated as shell faces)
     'CPS3': 0, 'CPS4': 1, 'CPS4R': 1,
     'CPE3': 0, 'CPE4': 1, 'CPE4R': 1,
@@ -53,6 +58,24 @@ ELEM_TYPE_CODE = {
     # membrane 3D (M3D* handled separately via startswith check below)
     'M3D3': 0, 'M3D4': 1, 'M3D4R': 1,
 }
+
+# Abaqus variant suffixes ordered longest-first (see also src/l1/abaqus_dump.py).
+_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'RT', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+
+
+def _resolve_elem_code(etype_str):
+    """Return ELEM_TYPE_CODE for etype_str, stripping variant suffixes if needed."""
+    s = etype_str.upper()
+    while True:
+        code = ELEM_TYPE_CODE.get(s)
+        if code is not None:
+            return code
+        for suf in _ABAQUS_VARIANT_SUFFIXES:
+            if s.endswith(suf) and len(s) > len(suf):
+                s = s[:-len(suf)]
+                break
+        else:
+            return -1
 
 
 def parse_args():
@@ -105,7 +128,7 @@ def collect_faces(geom_h5):
         grp = geom_h5["elements/{}".format(etype_str)]
         if "face_node_conn" not in grp:
             continue
-        etype_code = ELEM_TYPE_CODE.get(etype_str, -1)
+        etype_code = _resolve_elem_code(etype_str)
         if etype_code < 0:
             logger.warning("collect_faces: unrecognized element type '%s' — skipped", etype_str)
             continue

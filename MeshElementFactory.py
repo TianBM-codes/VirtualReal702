@@ -133,12 +133,28 @@ class MeshElementFactory:
                     return MeshTetra(e_id), True, 4
                 else:
                     return MeshC3D10(e_id), True, 10
+            elif "C3D15" in e_type:
+                if use_low_order:
+                    return MeshC3D6(e_id), True, 6
+                else:
+                    return MeshC3D15(e_id), True, 15
+            elif "C3D20" in e_type:
+                if use_low_order:
+                    return MeshC3D8(e_id), True, 8
+                else:
+                    return MeshC3D20(e_id), True, 20
             elif "S8" in e_type:
                 return MeshS8(e_id), True, 8
+            elif "S6" in e_type:
+                return MeshTRIA3(e_id), True, 3
             elif "STRI" in e_type:
                 return MeshTRIA3(e_id), True, 3
             elif "3D8" in e_type:
                 return MeshC3D8(e_id), True, 8
+            elif "T3D2" in e_type:
+                return MeshTruss(e_id), True, 2
+            elif "T3D3" in e_type:
+                return MeshTruss(e_id), True, 3
             elif "B21" in e_type or "B31" in e_type or "B22" in e_type or "B32" in e_type:
                 return None, True, 2
             elif "MASS" in e_type:
