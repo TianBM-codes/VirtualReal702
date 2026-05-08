@@ -103,6 +103,51 @@ def _build_render_chunks(positions: np.ndarray, indices: np.ndarray):
     return chunks
 
 
+@router.get("/geometry/orientations", dependencies=[Depends(_l2_ready)])
+async def get_orientations(odb_id: str):
+    """
+    Return model-level named coordinate systems (from *ORIENTATION / datumCsyses).
+
+    Response JSON:
+      {
+        "orientations": [
+          { "name": str, "system": str, "origin": [x,y,z], "axes": [[e1x,e1y,e1z],[e2x,e2y,e2z],[e3x,e3y,e3z]] },
+          ...
+        ]
+      }
+
+    axes[0] = local 1-axis (X, red in viewer)
+    axes[1] = local 2-axis (Y, green in viewer)
+    axes[2] = local 3-axis (Z, blue in viewer)
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    ori_h5 = os.path.join(idx.workspace, "l2", "geometry", "orientations.h5")
+    if not os.path.exists(ori_h5):
+        return {"orientations": []}
+
+    with h5py.File(ori_h5, "r") as f:
+        N       = f["origins"].shape[0]
+        origins = f["origins"][:]          # [N, 3] float32
+        axes    = f["axes"][:]             # [N, 3, 3] float32
+        names   = [f["names"][i].decode("utf-8",   errors="replace") for i in range(N)]
+        systems = [f["systems"][i].decode("utf-8", errors="replace") for i in range(N)]
+
+    return {
+        "orientations": [
+            {
+                "name":   names[i],
+                "system": systems[i],
+                "origin": origins[i].tolist(),
+                "axes":   axes[i].tolist(),
+            }
+            for i in range(N)
+        ]
+    }
+
+
 @router.get("/geometry/{instance}/render-buffers", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers(
     odb_id: str,

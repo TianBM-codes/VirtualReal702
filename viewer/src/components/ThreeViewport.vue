@@ -57,6 +57,9 @@ const lineMeshes     = {}   // instName → LineSegments (beam/truss)
 const pointMeshes    = {}   // instName → Points (MASS)
 const couplingMeshes = {}   // instName → LineSegments (RBE2 spiders)
 
+// ── Orientation triads (model-level named CSYS) ───────────────────────────
+let orientationLines = null   // single merged LineSegments for all triads
+
 let _deformAnimActive = false  // animation loop guard
 
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
@@ -352,6 +355,7 @@ function _applyClipping(planes) {
   Object.values(lineMeshes).forEach(l        => { if (l?.material) l.material.clippingPlanes = planes })
   Object.values(pointMeshes).forEach(p       => { if (p?.material) p.material.clippingPlanes = planes })
   Object.values(couplingMeshes).forEach(l    => { if (l?.material) l.material.clippingPlanes = planes })
+  if (orientationLines?.material) orientationLines.material.clippingPlanes = planes
   requestRender()
 }
 
@@ -853,6 +857,7 @@ async function loadGeometry(instances) {
   for (const [k, l] of Object.entries(lineMeshes))           { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete lineMeshes[k] }
   for (const [k, p] of Object.entries(pointMeshes))          { modelGroup.remove(p); p.geometry.dispose(); p.material.dispose(); delete pointMeshes[k] }
   for (const [k, l] of Object.entries(couplingMeshes))       { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete couplingMeshes[k] }
+  if (orientationLines) { modelGroup.remove(orientationLines); orientationLines.geometry.dispose(); orientationLines.material.dispose(); orientationLines = null }
   Object.values(store.instanceMeshes).forEach(im => _disposeInstance(im))
   Object.keys(store.instanceMeshes).forEach(k => delete store.instanceMeshes[k])
   Object.keys(origPositions).forEach(k => delete origPositions[k])
@@ -896,6 +901,7 @@ async function loadGeometry(instances) {
     loadLineElements(instances),
     loadPointElements(instances),
     loadCouplingLines(instances),
+    loadOrientations(combinedBox),
   ])
   requestRender()
 }
@@ -964,6 +970,46 @@ async function loadCouplingLines(instances) {
       couplingMeshes[instName] = line
     } catch { /* instance has no coupling data */ }
   }))
+}
+
+// ── Orientation Triads (model-level named CSYS) ───────────────────────────
+async function loadOrientations(bbox) {
+  try {
+    const res = await http.get(store.getApiUrl('geometry/orientations'))
+    const { orientations } = res.data
+    if (!orientations || orientations.length === 0) return
+
+    // Axis line length = 5% of bbox diagonal, fallback to 1.0
+    const scale = (bbox && !bbox.isEmpty())
+      ? bbox.min.distanceTo(bbox.max) * 0.05
+      : 1.0
+
+    // Build interleaved line segments: 3 axes × 2 endpoints per orientation
+    // Colour palette: red=e1, green=e2, blue=e3
+    const palette = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    const posArr = new Float32Array(orientations.length * 3 * 2 * 3)
+    const colArr = new Float32Array(orientations.length * 3 * 2 * 3)
+    let pi = 0, ci = 0
+    for (const ori of orientations) {
+      const [ox, oy, oz] = ori.origin
+      for (let ax = 0; ax < 3; ax++) {
+        const [ex, ey, ez] = ori.axes[ax]
+        const [r, g, b]    = palette[ax]
+        posArr[pi++] = ox;              posArr[pi++] = oy;              posArr[pi++] = oz
+        posArr[pi++] = ox + ex * scale; posArr[pi++] = oy + ey * scale; posArr[pi++] = oz + ez * scale
+        colArr[ci++] = r; colArr[ci++] = g; colArr[ci++] = b
+        colArr[ci++] = r; colArr[ci++] = g; colArr[ci++] = b
+      }
+    }
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3))
+    geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3))
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 })
+    if (clipPlane) mat.clippingPlanes = [clipPlane]
+    orientationLines = new THREE.LineSegments(geo, mat)
+    modelGroup.add(orientationLines)
+  } catch { /* no orientation data */ }
 }
 
 // ── Edge vertex index helpers ─────────────────────────────────────────────

@@ -118,6 +118,20 @@ def pack_assembly(raw_dir, workspace, meta):
             with open(os.path.join(d, 'part_name.txt')) as fp:
                 grp.create_dataset('part_name', data=fp.read().encode('utf-8'))
 
+        # Datum coordinate systems (from ODB datumCsyses)
+        datum_csys_path = os.path.join(asm_raw, 'datum_csyses.json')
+        if os.path.exists(datum_csys_path):
+            with open(datum_csys_path) as fp:
+                import json as _json
+                datum_csyses = _json.load(fp)
+            for name, dc in datum_csyses.items():
+                grp = f.require_group('orientations/{}'.format(safe(name)))
+                grp.create_dataset('origin',  data=np.array(dc['origin'],  dtype=np.float64))
+                grp.create_dataset('point_a', data=np.array(dc['point_a'], dtype=np.float64))
+                grp.create_dataset('point_b', data=np.array(dc['point_b'], dtype=np.float64))
+                grp.attrs['system']        = dc.get('system', 'RECTANGULAR')
+                grp.attrs['original_name'] = name
+
         # Assembly sets
         asmsets_raw = os.path.join(asm_raw, 'asmsets')
         if os.path.exists(asmsets_raw):

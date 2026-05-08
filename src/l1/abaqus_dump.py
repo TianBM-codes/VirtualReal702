@@ -547,6 +547,35 @@ def dump_assembly(odb, raw_dir, meta):
             if not os.path.exists(path):
                 npsave(path, np.array(sorted(labels), dtype=np.int32))
 
+    # Datum coordinate systems — written to datum_csyses.json for l1_pack.py
+    datum_csyses = {}
+    if hasattr(assembly, 'datumCsyses'):
+        for dc_name, csys in assembly.datumCsyses.items():
+            try:
+                origin = [float(x) for x in csys.origin]
+                e1 = e2 = None
+                for attr1, attr2 in [('xAxis', 'yAxis'), ('axis1', 'axis2')]:
+                    if hasattr(csys, attr1) and hasattr(csys, attr2):
+                        e1 = [float(x) for x in getattr(csys, attr1)]
+                        e2 = [float(x) for x in getattr(csys, attr2)]
+                        break
+                if e1 is None:
+                    print("WARNING: datumCsys '{}' — unknown axis attributes, skipping".format(dc_name))
+                    continue
+                datum_csyses[dc_name] = {
+                    'system':  'RECTANGULAR',
+                    'origin':  origin,
+                    'point_a': [origin[i] + e1[i] for i in range(3)],
+                    'point_b': [origin[i] + e2[i] for i in range(3)],
+                }
+            except Exception as ex:
+                print("WARNING: datumCsys '{}' read failed: {}".format(dc_name, ex))
+    if datum_csyses:
+        import json as _json
+        with open(os.path.join(asm_dir, 'datum_csyses.json'), 'w') as fp:
+            _json.dump(datum_csyses, fp)
+        print("  {} datum CSYS written".format(len(datum_csyses)))
+
     print("    done. ({})".format(_fmt_t(time.time() - t0)))
 
 

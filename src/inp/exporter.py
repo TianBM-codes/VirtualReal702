@@ -186,6 +186,20 @@ def _write_assembly_h5(model: InpModel, workspace: str) -> None:
             grp = f.require_group("instances/PART-1-1")
             grp.create_dataset("transform", data=np.eye(4, dtype=np.float64))
 
+        # Orientations (raw — axis orthonormalization deferred to L2)
+        # RECTANGULAR: origin=(0,0,0), point_a on local 1-axis, point_b in local 1-2 plane
+        for ori_name, ori in model.orientations.items():
+            data = ori.data
+            origin  = np.zeros(3, dtype=np.float64)
+            point_a = np.array(data[:3]  if len(data) >= 3 else [1.0, 0.0, 0.0], dtype=np.float64)
+            point_b = np.array(data[3:6] if len(data) >= 6 else [0.0, 1.0, 0.0], dtype=np.float64)
+            grp = f.require_group("orientations/{}".format(_safe(ori_name)))
+            grp.create_dataset("origin",  data=origin)
+            grp.create_dataset("point_a", data=point_a)
+            grp.create_dataset("point_b", data=point_b)
+            grp.attrs["system"]        = ori.system
+            grp.attrs["original_name"] = ori_name
+
 
 def _build_transform_matrix(inst) -> np.ndarray:
     """
