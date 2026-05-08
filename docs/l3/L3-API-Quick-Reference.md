@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全）
+更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -164,7 +164,7 @@ project_id + result_group
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/schemes` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
-| color code | PUT | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
+| color code | POST | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
 | query | GET | `/api/odb/{odb_id}/query/pick` |
 | query | POST | `/api/odb/{odb_id}/query/ray-pick` |
 | query | POST | `/api/odb/{odb_id}/query/bbox` |
@@ -1304,7 +1304,7 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
 
 未设置过时返回空对象 `{}`。
 
-### `PUT /api/odb/{odb_id}/color-code/{instance}/display-names`
+### `POST /api/odb/{odb_id}/color-code/{instance}/display-names`
 
 保存 legend 显示名称。`legend_key` 为 legend 中原始 `name` 值（即 `GET color-code` 返回的 legend 里未替换前的内部名称）。
 

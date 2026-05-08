@@ -39,8 +39,8 @@ async def get_display_names(
     return ok(ManifestRepo(idx.workspace).get_display_names(instance, scheme))
 
 
-@router.put("/color-code/{instance}/display-names")
-async def put_display_names(
+@router.post("/color-code/{instance}/display-names")
+async def post_display_names(
     odb_id: str,
     instance: str,
     scheme: str = Query(..., description="etype | material | section_type | section | elset"),
