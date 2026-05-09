@@ -1,8 +1,8 @@
 # Nastran 格式扩展技术路线
 
-> 版本：v2  
+> 版本：v3  
 > 创建时间：2026-05-09  
-> 更新时间：2026-05-09（代码审阅后追加第 11 节实现规范）  
+> 更新时间：2026-05-09（v3：根据 Codex 审阅意见修正 §1/§5/§7/§8/§9/§11，新增 §12）  
 > 作者：技术对话整理
 
 ---
@@ -33,11 +33,16 @@
 ODB 文件 → L1（abaqus_dump.py）→ L2（ingest.py）→ L3（FastAPI）→ Three.js 前端
 ```
 
-目标是在**不改动 L2/L3 和前端**的前提下，将链路扩展到 Nastran 格式：
+目标是在 **L2 渲染核心（ingest.py）和 L3 查询/渲染接口不改动**的前提下，将链路扩展到 Nastran 格式：
 
 ```
 BDF + OP2 → L1（bdf_pack.py + op2_pack.py）→ L2（无改动）→ L3（无改动）→ Three.js 前端
 ```
+
+> **注意**：L2/L3 渲染核心不改，但以下部分需要扩展：  
+> - `src/l3/api/routes/projects.py`：新增 `source_type="bdf"` 识别  
+> - `src/job_runner.py`：新增 BDF 项目流程分支、OP2 结果组分支  
+> 详见 §12 和 §11.9–11.10。
 
 扩展范围：
 - **BDF**（模型输入文件）：节点、单元、材料、截面、集合 → 几何可视化
@@ -178,8 +183,8 @@ python src/l1/bdf_pack.py --bdf /path/to/model.bdf --workspace /data/<job_id>/
 7. 写 manifest.db
    → instances 表（instance_name, part_name, geom_path, ...）
    → element_type_dist 表
-   → result_group_meta（source='nastran', source_file=bdf路径）
-   → 状态更新：l1_done（几何完成）
+   → meta 表（node_count, instance_count 汇总）
+   注：result_group_meta 不在此步写入，由 op2_pack.py 在写结果后写入
 ```
 
 **输出文件**：
@@ -332,13 +337,17 @@ manifest.db           ← steps + frames + result_files + result_blocks
 | 表 | 字段 | ODB 值 | Nastran 值 |
 |---|------|--------|-----------|
 | `result_files` | `source` | `'odb'` | `'nastran'` |
-| `result_group_meta` | `source_file` | ODB 文件路径 | BDF 文件路径 |
+| `result_group_meta` | `source_file` | ODB 文件路径 | OP2 文件路径（几何 BDF 不写此表） |
 | `steps` | `step_name` | ODB Step 名 | `'SUBCASE_<id>'` |
 | `steps` | `procedure` | STATIC/FREQUENCY/... | 同，通过 SOL 号推断 |
 
+> **重要**：`result_group_meta` 表无 `source` 字段（见 `src/l1/manifest_schema.py`）。  
+> 来源区分仅靠 `result_files.source`（值为 `'odb'` 或 `'nastran'`）。  
+> `result_group_meta` 只记录 `result_group / display_name / source_file / consistency_check / created_at`。
+
 ### 无需新增字段
 
-现有 schema 通过 `source` 字段已能区分来源，无需加新列。
+现有 schema 已能区分来源（`result_files.source`），无需加新列。
 
 ---
 
@@ -351,9 +360,9 @@ manifest.db           ← steps + frames + result_files + result_blocks
 | `src/l1/bdf_pack.py` | **新增** | 大 | BDF → geometry HDF5 + manifest.db |
 | `src/l1/op2_pack.py` | **新增** | 大 | OP2 → results HDF5 + manifest.db |
 | `src/l1/f06_pack.py` | **新增** | 小 | F06 → manifest 补充元数据（可延后）|
-| `MeshElementFactory.py` | **修改** | 小 | 补充 Nastran 单元类型名称映射（CQUAD4→S4R 等） |
-| `src/job_runner.py` | **修改** | 中 | 新增 Nastran 作业类型分支，按文件后缀路由到 bdf_pack/op2_pack |
-| `src/l3/api/routes/` (jobs/projects) | **修改** | 小 | 接受 `.bdf`/`.op2` 后缀，识别 Nastran 作业类型 |
+| `MeshElementFactory.py` | **无需修改**（一期） | — | NASTRAN 低阶分支已覆盖 CQUAD4/CTRIA3/CHEXA/CPENTA/CTETRA；高阶单元留二期 |
+| `src/job_runner.py` | **修改** | 大 | 新增 `_run_l1_bdf()`、`_run_bdf_project()`、`_run_op2_result_group()` 三条分支 |
+| `src/l3/api/routes/projects.py` | **修改** | 小 | `_detect_source_type()` 加 `bdf` 识别；`jobs.py` 无需改动 |
 | `docs/l3/L3-API-Quick-Reference.md` | **修改** | 极小 | 更新接口说明，注明支持 Nastran 格式 |
 
 ### 完全不需要改动的文件
@@ -376,9 +385,9 @@ manifest.db           ← steps + frames + result_files + result_blocks
 目标：提交 BDF 文件 → 看到 3D 网格，支持按集合高亮，不含结果云图。
 
 步骤：
-1. 在 `MeshElementFactory.py` 补充 Nastran → Abaqus 单元类型名称映射表
-2. 实现 `bdf_pack.py`（节点、单元、截面、材料、集合）
-3. 修改 `job_runner.py`，识别 `.bdf` 后缀，触发 `bdf_pack.py`
+1. 实现 `bdf_pack.py`（节点、单元、截面、材料、集合，仅低阶单元）
+2. 修改 `projects.py`：`_detect_source_type()` 加 `bdf` 识别
+3. 修改 `job_runner.py`：加 `_run_l1_bdf()` + `_run_bdf_project()` 分支
 4. 手动测试：提交一个简单 BDF，验证 L2 → L3 → 前端链路
 
 验收标准：
@@ -388,16 +397,17 @@ manifest.db           ← steps + frames + result_files + result_blocks
 
 ### 第二阶段：OP2 结果云图（约 2–3 周）
 
-目标：提交 BDF + OP2 → 支持位移云图、应力云图、模态动画。
+目标：提交 OP2 作为结果组 → 支持位移云图、应力云图、模态动画。
 
 步骤：
 1. 实现 `op2_pack.py`（位移 DISPLACEMENT + 应力 OES）
-2. 修改 `job_runner.py`，识别 `.op2` 后缀，触发 `op2_pack.py`（需在 bdf_pack 之后运行）
+2. 修改 `job_runner.py`：`_run_result_group()` 加 `.op2` 分支，新增 `_run_op2_result_group()`
 3. 验证 manifest.db steps/frames/result_blocks 正确填写
 4. 手动测试：静力分析位移云图、模态动画
 
 验收标准：
-- L3 `/result/scalar` 端点返回正确的位移/应力数据
+- L3 `GET /api/odb/{project_id}/results/frame-scalars` 返回正确的位移/应力数据
+- L3 `GET /api/odb/{project_id}/results/frame-colors` 返回正确的颜色映射数据
 - Three.js 前端云图颜色映射正常
 - SOL 103 模态动画可正常播放
 
@@ -434,11 +444,15 @@ manifest.db           ← steps + frames + result_files + result_blocks
 
 ---
 
-### 11.1 MeshElementFactory.py — 无需修改
+### 11.1 MeshElementFactory.py — 一期无需修改
 
-`MeshElementFactory.py` 已有完整的 `fem_software="NASTRAN"` 分支，覆盖  
-`CQUAD4 / CTRIA3 / CHEXA / CPENTA / CTETRA / CBAR / CBEAM / CELAS`，均已映射到对应的 `MeshElement` 子类。  
-该文件**无需修改**。
+`MeshElementFactory.py` 已有 `fem_software="NASTRAN"` 分支，覆盖以下**低阶**类型：  
+`CQUAD4 / CTRIA3 / CHEXA / CPENTA / CTETRA / CBAR / CBEAM / CELAS`  
+均已映射到对应的 `MeshElement` 子类，无需修改。
+
+**高阶单元（CQUAD8 / CTRIA6 / CHEXA-20 / CPENTA-15 / CTETRA-10）**：  
+当前 NASTRAN 分支**未覆盖**这些类型。一期 `bdf_pack.py` 只处理低阶单元，遇到高阶卡型记录警告后跳过。  
+二期若需支持高阶单元，需同时扩展 `MeshElementFactory.py` 的 NASTRAN 分支。
 
 ---
 
@@ -448,36 +462,29 @@ L2 `ingest.py` 读取 `elements/{etype}/conn` 时内部调用
 `MeshElementFactory.CreateElement(etype, fem_software="ABAQUS")`，  
 因此 `bdf_pack.py` 写入 HDF5 的 group 名必须使用 Abaqus 等价名，**不能保留 Nastran 原始名**。
 
-映射表（`bdf_pack.py` 内部常量）：
+映射表（`bdf_pack.py` 内部常量，**一期只处理低阶单元**）：
 
 ```python
 # Nastran 卡名 → (Abaqus 等价 etype, 角节点数, n_faces)
+# 一期支持范围：低阶单元。CQUAD8/CTRIA6 等高阶壳遇到时跳过并打印警告。
 NASTRAN_TO_ABAQUS = {
-    'CQUAD4':  ('S4R',   4,  1),   # 壳：1 面（元素本身即面）
-    'CTRIA3':  ('S3',    3,  1),   # 壳：1 面
-    'CQUAD8':  ('S8R',   8,  1),   # 高阶壳（仅角节点写 conn）
-    'CTRIA6':  ('S6',    6,  1),   # 高阶壳
-    'CHEXA':   None,               # 按节点数分派（见下）
-    'CPENTA':  None,               # 按节点数分派
-    'CTETRA':  None,               # 按节点数分派
-    'CBAR':    ('B31',   2,  0),   # 梁/杆，无面，L2 会跳过
-    'CBEAM':   ('B31',   2,  0),
+    'CQUAD4':  ('S4R',  4, 1),   # 壳：1 面（元素本身即面）
+    'CTRIA3':  ('S3',   3, 1),   # 壳：1 面
+    'CHEXA':   None,             # 按节点数分派（见下）
+    'CPENTA':  None,             # 按节点数分派
+    'CTETRA':  None,             # 按节点数分派
+    'CBAR':    ('B31',  2, 0),   # 梁/杆，无面，L2 会跳过
+    'CBEAM':   ('B31',  2, 0),
 }
 
 # CHEXA / CPENTA / CTETRA 按节点数再分派
+# 一期只支持低阶（8/6/4 节点）；20/15/10 节点版本遇到跳过
 SOLID_BY_NNODE = {
-    ('CHEXA',  8):  ('C3D8R',  8,  6),
-    ('CHEXA', 20):  ('C3D20R', 8,  6),   # 高阶，conn 只存 8 角节点
-    ('CPENTA', 6):  ('C3D6',   6,  5),
-    ('CPENTA',15):  ('C3D15',  6,  5),   # 高阶，conn 只存 6 角节点
-    ('CTETRA', 4):  ('C3D4',   4,  4),
-    ('CTETRA',10):  ('C3D10',  4,  4),   # 高阶，conn 只存 4 角节点
+    ('CHEXA',  8): ('C3D8R', 8, 6),
+    ('CPENTA', 6): ('C3D6',  6, 5),
+    ('CTETRA', 4): ('C3D4',  4, 4),
 }
 ```
-
-高阶单元（CHEXA-20、CPENTA-15、CTETRA-10）的处理：  
-- `conn` 只存角节点行号（同 ODB 路径的 L1 处理方式）  
-- 可选：将完整连接写入 `_highorder.h5`（一期可不做，L2 不依赖它）
 
 ---
 
@@ -848,3 +855,70 @@ src/l1/op2_pack.py
   manifest.db                    — steps + frames + result_files + result_blocks
                                    + result_group_meta
 ```
+
+---
+
+## 12. Nastran 在 project/result_group 模式下的接法
+
+> 本节回答三个关键问题，防止实现时在"复用 ODB 机制 vs 新开 Nastran 分支"之间摇摆。
+
+### 12.1 BDF 作为几何 project：source_type 用 `"bdf"`
+
+**决策**：新增 `source_type="bdf"`，不复用 `"inp"` 或 `"odb"`，也不抽象为 `"geom"`。
+
+**理由**：
+- `"inp"` 走 `src/inp/` 解析器（INP 专用），BDF 不适用
+- `"odb"` 走 `abaqus_dump.py`（需要 Abaqus license），BDF 不需要
+- 独立 `"bdf"` 类型，runner 端按类型走 `_run_bdf_project()`，逻辑清晰无耦合
+
+**调用方式**（不变）：
+```http
+POST /api/projects
+{
+  "project_id": "<uuid>",
+  "source_path": "/path/to/model.bdf",
+  "source_type": "bdf"           ← 显式传，或由后缀自动推断
+}
+```
+
+**改动范围**：
+- `projects.py`：`_detect_source_type()` 加 `"bdf"` 到 `allowed` 集合 + `.bdf` 后缀推断
+- `job_runner.py`：`_run_project()` 加 `source_type == "bdf"` 分支
+
+### 12.2 OP2 作为结果组：复用 `POST /api/projects/{id}/results`，runner 端按后缀路由
+
+**决策**：API 层不新增端点，沿用现有 `AddResultGroupRequest`；runner 端按 `.op2` 后缀路由到 `_run_op2_result_group()`。
+
+**理由**：
+- `result_group` 机制与文件格式无关，核心语义（"给已有几何追加一批结果"）完全适用于 OP2
+- API 层只负责"接收 source_path + result_group 名"，格式解析是 runner 的责任
+- 避免引入 Nastran 专用端点，保持接口数量稳定
+
+**调用方式**（不变）：
+```http
+POST /api/projects/{project_id}/results
+{
+  "source_path": "/path/to/result.op2",
+  "result_group": "load_case_1",
+  "display_name": "静力工况 1"
+}
+```
+
+**一致性校验策略**：  
+ODB result_group 流程中有"几何节点数一致性校验"（`abaqus_dump --check-mode`）。  
+OP2 分支**暂不做自动一致性校验**，原因：
+- OP2 的节点集合可以是 BDF 全集的子集（只输出部分节点的结果）
+- 校验时只需确认 OP2 节点 ID 都在 BDF `node_labels` 里即可（用 `np.isin`）
+- `op2_pack.py` 做软性校验：节点 ID 不在 BDF 中的按 NaN 填入，打印警告，不中断流程
+
+### 12.3 BDF 几何与 OP2 结果的绑定校验
+
+**无强制绑定，仅 workspace 级别隐式关联**：
+
+| 问题 | 处理方式 |
+|------|---------|
+| OP2 提交时 BDF 已改变 | 不检测；OP2 按当前 `manifest.db` 里的 node_labels 对齐，无法对齐的节点跳过 |
+| 多个 OP2 结果绑到同一 BDF | 完全允许，每个 OP2 对应一个 result_group |
+| BDF 未解析就提交 OP2 | `op2_pack.py` 启动时检查 `manifest.db` 里 instances 表是否有记录，没有则报错退出 |
+| OP2 节点数多于 BDF | 打印警告，多余节点忽略；不中断 |
+| OP2 节点数少于 BDF | 正常，对应节点的 data 填 NaN |
