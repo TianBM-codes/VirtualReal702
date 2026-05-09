@@ -100,6 +100,28 @@ async def post_legend_entries(
     return ok({})
 
 
+@router.get("/color-code/{instance}/legend")
+async def get_legend(
+    odb_id: str,
+    instance: str,
+    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
+):
+    """Return only the color legend without building vertex colors.
+
+    Cheaper than GET /color-code/{instance} when you only need the color mapping
+    (e.g. populating a legend panel or color picker).
+
+    Response: {legend: [{id, legend_key, name, r, g, b}, ...]}
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    parsed_sets = [s.strip() for s in set_names.split(",") if s.strip()]
+    legend = color_service.get_legend(idx, instance, scheme, parsed_sets or None)
+    return ok({"legend": legend})
+
+
 @router.post("/color-code/{instance}/display-names")
 async def post_display_names(
     odb_id: str,

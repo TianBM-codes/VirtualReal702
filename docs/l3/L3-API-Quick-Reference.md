@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-09（新增 legend-entries 端点，支持颜色+名称覆盖；legend 响应增加 legend_key 字段）
+更新时间：2026-05-09（新增 legend-entries、legend 端点，支持颜色+名称覆盖；legend 响应增加 legend_key 字段）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -169,6 +169,7 @@ project_id + result_group
 | user field | DELETE | `/api/odb/{odb_id}/results/user-field` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/schemes` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/legend` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
 | color code | POST | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
@@ -1424,6 +1425,32 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
   "data": {},
   "message": ""
 }
+```
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/legend`
+
+轻量接口：只返回颜色映射表，不构建顶点色数组。适合仅需要图例信息的场景（面板展示、颜色选择器）。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `set_names` | elset 时必填 | 逗号分隔的集合名称 |
+
+响应 `data.legend` 数组，每项：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | int | 调色板索引（0-based） |
+| `legend_key` | string | 原始内部 key（用于 region-outline / region-mesh-edges API 调用） |
+| `name` | string | 显示名称（已合并用户自定义名称覆盖） |
+| `r / g / b` | float | 0–1 范围颜色（已合并用户自定义颜色覆盖） |
+
+前端调用示例（`useOdbApi.js`）：
+```js
+const res = await api.fetchLegend(instance, scheme)
+const legend = res.data?.legend ?? []
 ```
 
 ### `GET /api/odb/{odb_id}/color-code/{instance}/legend-entries`
