@@ -1,8 +1,8 @@
 # Nastran 格式扩展技术路线
 
-> 版本：v3  
+> 版本：v4  
 > 创建时间：2026-05-09  
-> 更新时间：2026-05-09（v3：根据 Codex 审阅意见修正 §1/§5/§7/§8/§9/§11，新增 §12）  
+> 更新时间：2026-05-09（v4：修正 legacy jobs 混入主链路、节点对齐策略、§5.1 输出清单）  
 > 作者：技术对话整理
 
 ---
@@ -194,7 +194,7 @@ l1/
   geometry/
     <MODEL_NAME>.h5       ← 节点 + 单元 + 截面 + 材料 + 集合
   sets/sets.h5            ← SET1/SET3 → node_sets/element_sets
-manifest.db               ← instances + element_type_dist + result_group_meta
+manifest.db               ← instances + element_type_dist + meta（不含 result_group_meta，由 op2_pack.py 写）
 ```
 
 ---
@@ -702,6 +702,10 @@ SUBCASE_1__U.h5
 
 ### 11.9 job_runner.py 需要修改的位置
 
+> **约定**：`POST /api/jobs`（legacy odb_jobs 流程）是旧接口，新功能不在此分支迭代（见 CLAUDE.md）。  
+> 下面的修改只涉及 **project / result_group 主链路**。  
+> `_run_l1()` 及相关 odb_jobs 函数不需要为 BDF 扩展。
+
 **（A）新增脚本路径常量**（第 40–43 行附近）：
 
 ```python
@@ -709,38 +713,7 @@ BDF_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "bdf_pack.py"
 OP2_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "op2_pack.py"
 ```
 
-**（B）新增 `_run_l1_bdf()` 函数**（放在 `_run_l1_inp()` 之后）：
-
-```python
-def _run_l1_bdf(odb_id: str, bdf_path: str, workspace: str) -> bool:
-    logger.info("[%s] L1 (BDF): %s", odb_id, bdf_path)
-    _log_job(odb_id, "step", f"L1（BDF）：解析 {os.path.basename(bdf_path)}", stage="l1_bdf")
-    rc, tail = _run_streaming(
-        [sys.executable, str(BDF_PACK_SCRIPT), "--bdf", bdf_path, "--workspace", workspace],
-        odb_id, "l1_bdf",
-    )
-    if rc != 0:
-        _update_status(odb_id, "error", error_msg=f"bdf_pack failed: {tail}")
-        _log_job(odb_id, "error", f"BDF 解析失败（rc={rc}）：{tail[-500:]}", stage="l1_bdf")
-        return False
-    _log_job(odb_id, "step", "L1（BDF）解析完成", stage="l1_bdf")
-    return True
-```
-
-**（C）修改 `_run_l1()` dispatch**（第 470–480 行附近）：
-
-```python
-def _run_l1(odb_id, source_path, workspace):
-    if source_path.lower().endswith(".inp"):
-        ok = _run_l1_inp(odb_id, source_path, workspace)
-    elif source_path.lower().endswith(".bdf"):          # ← 新增
-        ok = _run_l1_bdf(odb_id, source_path, workspace)
-    else:
-        ok = _run_l1_odb(odb_id, source_path, workspace)
-    ...
-```
-
-**（D）新增 `_run_bdf_project()` 函数**（参照 `_run_geom_project()` 结构）：
+**（B）新增 `_run_bdf_project()` 函数**（参照 `_run_geom_project()` 结构）：
 
 ```python
 def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
@@ -750,7 +723,7 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
     # 4. 更新 geom_status → ready
 ```
 
-**（E）修改 `_run_project()` dispatch**：
+**（C）修改 `_run_project()` dispatch**：
 
 ```python
 def _run_project(project_id, source_path, source_type, workspace):
@@ -761,7 +734,7 @@ def _run_project(project_id, source_path, source_type, workspace):
     return _run_geom_project(...)   # INP
 ```
 
-**（F）修改 `_run_result_group()` 支持 OP2**（第 930 行附近）：
+**（D）修改 `_run_result_group()` 支持 OP2**（第 930 行附近）：
 
 ```python
 def _run_result_group(project_id, result_group, source_path, parse_options_json, workspace):
@@ -905,11 +878,33 @@ POST /api/projects/{project_id}/results
 ```
 
 **一致性校验策略**：  
-ODB result_group 流程中有"几何节点数一致性校验"（`abaqus_dump --check-mode`）。  
-OP2 分支**暂不做自动一致性校验**，原因：
-- OP2 的节点集合可以是 BDF 全集的子集（只输出部分节点的结果）
-- 校验时只需确认 OP2 节点 ID 都在 BDF `node_labels` 里即可（用 `np.isin`）
-- `op2_pack.py` 做软性校验：节点 ID 不在 BDF 中的按 NaN 填入，打印警告，不中断流程
+ODB result_group 流程有"几何节点数一致性校验"（`abaqus_dump --check-mode`）。  
+OP2 分支**暂不做硬性校验**（OP2 的节点集合本就可以是 BDF 的子集），但 `op2_pack.py` 做软性对齐：
+
+节点对齐逻辑（以 BDF 的 `node_labels` 为基准）：
+
+| 情况 | 处理方式 |
+|------|---------|
+| **BDF 有、OP2 无**（OP2 只输出部分节点） | `data[该行, :, :] = NaN`，正常情况，不告警 |
+| **OP2 有、BDF 无**（OP2 节点 ID 不在 BDF 中） | 该节点在 HDF5 里没有目标行，**忽略并打印警告**，不能填 NaN |
+
+```python
+bdf_labels = node_labels          # 从 manifest.db 读取，已升序排列
+op2_labels = op2.displacements[sc].node_gridtype[:, 0]
+
+# 找 op2 节点在 bdf 中的行号（-1 表示不存在）
+rows = np.searchsorted(bdf_labels, op2_labels)
+valid_mask = (rows < len(bdf_labels)) & (bdf_labels[rows] == op2_labels)
+
+if not valid_mask.all():
+    logger.warning("OP2 has %d node(s) not in BDF, ignored",
+                   (~valid_mask).sum())
+
+# 初始化为 NaN（BDF 有、OP2 无的节点保持 NaN）
+data = np.full((n_frames, len(bdf_labels), 3), np.nan, dtype=np.float32)
+# 只写 OP2 里有对应 BDF 节点的行
+data[:, rows[valid_mask], :] = raw_data[:, valid_mask, :3]
+```
 
 ### 12.3 BDF 几何与 OP2 结果的绑定校验
 
@@ -917,8 +912,6 @@ OP2 分支**暂不做自动一致性校验**，原因：
 
 | 问题 | 处理方式 |
 |------|---------|
-| OP2 提交时 BDF 已改变 | 不检测；OP2 按当前 `manifest.db` 里的 node_labels 对齐，无法对齐的节点跳过 |
+| OP2 提交时 BDF 已改变 | 不检测；OP2 按当前 `manifest.db` 里的 node_labels 对齐 |
 | 多个 OP2 结果绑到同一 BDF | 完全允许，每个 OP2 对应一个 result_group |
 | BDF 未解析就提交 OP2 | `op2_pack.py` 启动时检查 `manifest.db` 里 instances 表是否有记录，没有则报错退出 |
-| OP2 节点数多于 BDF | 打印警告，多余节点忽略；不中断 |
-| OP2 节点数少于 BDF | 正常，对应节点的 data 填 NaN |
