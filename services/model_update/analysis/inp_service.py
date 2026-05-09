@@ -18,7 +18,10 @@ from src.l3.infra.registry_repo import RegistryRepo
 
 from . import sensitivity_service as _sens
 from .console_log_service import safe_write_console_event
-from .project_config_service import save_fem_model_dimensions
+from .project_config_service import (
+    get_node_match_parameter_context,
+    save_fem_model_dimensions,
+)
 from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
 
@@ -1933,6 +1936,10 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             [[float(row["x_position"]), float(row["y_position"]), float(row["z_position"])] for row in test_nodes],
             dtype=np.float64,
         )
+        match_context = get_node_match_parameter_context(int(project_id), cursor=cursor)
+        tolerance = float(match_context["tolerance"])
+        recommended_max_distance = float(match_context["maximum_node_point_distance"])
+        resolved_max_distance = recommended_max_distance if max_distance is None else float(max_distance)
 
         manual_transform = translation is not None or rotation is not None
         transform_mode = "none"
@@ -1996,7 +2003,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
                 "y_offset": float(delta[1]),
                 "z_offset": float(delta[2]),
             }
-            if max_distance is None or float(distance) <= float(max_distance):
+            if float(distance) <= resolved_max_distance:
                 matches.append(match)
 
         if overwrite:
@@ -2066,8 +2073,10 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             "project_id": project_id,
             "tested_points": len(test_nodes),
             "matched_points": len(matches),
+            "tolerance": tolerance,
+            "maximum_node_point_distance": recommended_max_distance,
             "transform": transform_payload,
-            "max_distance": max_distance,
+            "max_distance": resolved_max_distance,
             "matches_preview": matches[:20],
             "octree_cache_path": cache_path,
         }
@@ -2225,25 +2234,56 @@ def get_transform_auto_info(project_id: int, transform_type: str = None):
         conn.close()
 
 
-def _get_test_modal_point_ids(cursor, project_id: int) -> set:
-    point_ids = set()
-    cursor.execute("""
-        SELECT DISTINCT point
-        FROM t_mt_py_test_modal_shape_real
-        WHERE pid = %s
-    """, (project_id,))
-    point_ids.update(str(row["point"]) for row in cursor.fetchall())
-    cursor.execute("""
-        SELECT DISTINCT point
-        FROM t_mt_py_test_modal_shape_imag
-        WHERE pid = %s
-    """, (project_id,))
-    point_ids.update(str(row["point"]) for row in cursor.fetchall())
-    return point_ids
+_CHANNEL_DIRECTION_TO_DOF = {
+    1: ("UX", "U1", np.array([1.0, 0.0, 0.0], dtype=np.float64)),
+    2: ("UY", "U2", np.array([0.0, 1.0, 0.0], dtype=np.float64)),
+    3: ("UZ", "U3", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
+}
+
+
+def _resolve_channel_direction_vector(direction_value, data_operate_value, *, measuring_point_name: str, channel_id=None):
+    try:
+        direction = int(direction_value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            "通道方向无效，必须为 1/2/3",
+            {
+                "measuring_point_name": measuring_point_name,
+                "channel_id": channel_id,
+                "direction": direction_value,
+            },
+        ) from exc
+
+    direction_spec = _CHANNEL_DIRECTION_TO_DOF.get(direction)
+    if direction_spec is None:
+        raise ValidationError(
+            "通道方向无效，必须为 1/2/3",
+            {
+                "measuring_point_name": measuring_point_name,
+                "channel_id": channel_id,
+                "direction": direction,
+            },
+        )
+
+    sign_text = str(data_operate_value or "").strip()
+    if sign_text not in {"+", "-"}:
+        raise ValidationError(
+            "通道 data_operate 无效，必须为 '+' 或 '-'",
+            {
+                "measuring_point_name": measuring_point_name,
+                "channel_id": channel_id,
+                "data_operate": data_operate_value,
+            },
+        )
+
+    sign = -1.0 if sign_text == "-" else 1.0
+    test_dof, fem_dof, base_direction = direction_spec
+    return test_dof, fem_dof, (base_direction * sign).astype(np.float64, copy=False)
 
 
 def match_test_dofs(project_id, overwrite=True):
     ensure_tables_exist()
+    auto_created_node_match = _ensure_node_matches(int(project_id))
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -2264,15 +2304,56 @@ def match_test_dofs(project_id, overwrite=True):
         octree_meta = _get_latest_octree_meta(cursor, project_id)
         cache = _load_octree_cache(octree_meta["cache_file_path"])
         part_lookup = _cache_part_lookup(cache)
-        test_modal_points = _get_test_modal_point_ids(cursor, project_id)
-        filtered_matches = [row for row in node_matches if not test_modal_points or str(row["test_node_id"]) in test_modal_points]
-        if not filtered_matches:
+        node_match_lookup = {str(row["test_node_id"]): row for row in node_matches}
+
+        cursor.execute("""
+            SELECT id, measuring_point_name, sensor_type_id
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id, measuring_point_name
+        """, (project_id,))
+        measuring_rows = cursor.fetchall() or []
+        displacement_sensors = [
+            row for row in measuring_rows
+            if _is_displacement_static_test_sensor_type(row.get("sensor_type_id"))
+        ]
+        if not displacement_sensors:
+            raise ValueError("未找到位移传感器测点")
+
+        missing_node_matches = [
+            str(row["measuring_point_name"])
+            for row in displacement_sensors
+            if str(row.get("measuring_point_name") or "") not in node_match_lookup
+        ]
+        if missing_node_matches:
             raise ValidationError(
-                "已匹配的试验节点中没有可用于自由度匹配的模态振型数据",
+                "存在位移传感器尚未完成节点匹配，无法进行自由度匹配",
                 {
-                    "required_operation": "先导入试验模态振型数据，并确认已匹配测点包含对应振型结果",
+                    "missing_measuring_points": missing_node_matches[:20],
+                    "missing_count": len(missing_node_matches),
                 },
             )
+
+        displacement_sensor_by_id = {
+            int(row["id"]): row
+            for row in displacement_sensors
+            if row.get("id") is not None
+        }
+
+        cursor.execute("""
+            SELECT id, measure_point_id, direction, data_operate
+            FROM t_mt_channel_info
+            WHERE project_id = %s
+            ORDER BY measure_point_id, id
+        """, (project_id,))
+        channel_rows = cursor.fetchall() or []
+        displacement_channels = [
+            row for row in channel_rows
+            if row.get("measure_point_id") is not None
+            and int(row["measure_point_id"]) in displacement_sensor_by_id
+        ]
+        if not displacement_channels:
+            raise ValueError("未找到位移传感器对应的通道方向配置")
 
         if overwrite:
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
@@ -2282,8 +2363,8 @@ def match_test_dofs(project_id, overwrite=True):
         insert_sql = """
         INSERT INTO t_mt_py_fem_dof_match
         (pid, test_node_id, test_dof, instance_name, part_name, fem_node_label, fem_dof,
-         direction_x, direction_y, direction_z, match_score, transform_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         direction_x, direction_y, direction_z, transform_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             instance_name = VALUES(instance_name),
             part_name = VALUES(part_name),
@@ -2292,63 +2373,63 @@ def match_test_dofs(project_id, overwrite=True):
             direction_x = VALUES(direction_x),
             direction_y = VALUES(direction_y),
             direction_z = VALUES(direction_z),
-            match_score = VALUES(match_score),
             transform_json = VALUES(transform_json),
             created_at = CURRENT_TIMESTAMP
         """
 
-        dof_matches = []
-        for row in filtered_matches:
-            transform_payload = _json_loads(row["transform_json"]) or {}
-            rot_m = _rotation_to_matrix(transform_payload.get("rotation"))
-            inst_name = str(row["instance_name"])
-            fem_node_label = int(row["fem_node_label"])
+        dof_matches_by_key = {}
+        for channel_row in displacement_channels:
+            measure_point_id = int(channel_row["measure_point_id"])
+            measuring_row = displacement_sensor_by_id[measure_point_id]
+            test_node_id = str(measuring_row["measuring_point_name"])
+            node_match = node_match_lookup[test_node_id]
+            inst_name = str(node_match["instance_name"])
+            fem_node_label = int(node_match["fem_node_label"])
             part_name = part_lookup.get((inst_name, fem_node_label))
+            transform_payload = _json_loads(node_match["transform_json"]) or {}
+            test_dof, fem_dof, direction = _resolve_channel_direction_vector(
+                channel_row.get("direction"),
+                channel_row.get("data_operate"),
+                measuring_point_name=test_node_id,
+                channel_id=channel_row.get("id"),
+            )
 
-            for axis_idx, test_dof in enumerate(TEST_DOF_SEQUENCE):
-                basis = np.zeros(3, dtype=np.float64)
-                basis[axis_idx] = 1.0
-                direction = rot_m @ basis
-                direction_norm = float(np.linalg.norm(direction))
-                if direction_norm <= 1e-12:
-                    direction = basis
-                    direction_norm = 1.0
-                direction = direction / direction_norm
-                best_idx = int(np.argmax(np.abs(direction)))
-                fem_dof = FE_DOF_SEQUENCE[best_idx]
-                match_score = float(abs(direction[best_idx]))
-
-                dof_row = {
-                    "test_node_id": str(row["test_node_id"]),
-                    "test_dof": test_dof,
-                    "instance_name": inst_name,
-                    "part_name": part_name,
-                    "fem_node_label": fem_node_label,
-                    "fem_dof": fem_dof,
-                    "direction": direction.tolist(),
-                    "match_score": match_score,
-                    "transform": transform_payload,
-                }
-                dof_matches.append(dof_row)
-                cursor.execute(insert_sql, (
-                    project_id,
-                    dof_row["test_node_id"],
-                    dof_row["test_dof"],
-                    dof_row["instance_name"],
-                    dof_row["part_name"],
-                    dof_row["fem_node_label"],
-                    dof_row["fem_dof"],
-                    float(direction[0]),
-                    float(direction[1]),
-                    float(direction[2]),
-                    match_score,
-                    _json_dumps(transform_payload),
-                ))
+            dof_row = {
+                "measure_point_id": measure_point_id,
+                "channel_id": channel_row.get("id"),
+                "test_node_id": test_node_id,
+                "test_dof": test_dof,
+                "instance_name": inst_name,
+                "part_name": part_name,
+                "fem_node_label": fem_node_label,
+                "fem_dof": fem_dof,
+                "direction": direction.tolist(),
+                "match_score": None,
+                "transform": transform_payload,
+            }
+            dof_matches_by_key[(test_node_id, test_dof)] = dof_row
+            cursor.execute(insert_sql, (
+                project_id,
+                test_node_id,
+                test_dof,
+                inst_name,
+                part_name,
+                fem_node_label,
+                fem_dof,
+                float(direction[0]),
+                float(direction[1]),
+                float(direction[2]),
+                _json_dumps(transform_payload),
+            ))
 
         conn.commit()
+        dof_matches = list(dof_matches_by_key.values())
         return {
             "project_id": project_id,
-            "node_match_count": len(filtered_matches),
+            "node_match_auto_created": auto_created_node_match,
+            "node_match_count": len(node_matches),
+            "displacement_sensor_count": len(displacement_sensors),
+            "channel_count": len(displacement_channels),
             "dof_match_count": len(dof_matches),
             "dof_matches_preview": dof_matches[:20],
         }
@@ -3950,7 +4031,7 @@ def compute_static_correlation(
         conn.close()
 
 
-def _ensure_static_node_matches(project_id: int) -> bool:
+def _ensure_node_matches(project_id: int) -> bool:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -3970,6 +4051,10 @@ def _ensure_static_node_matches(project_id: int) -> bool:
 
     match_test_nodes(int(project_id), overwrite=False)
     return True
+
+
+def _ensure_static_node_matches(project_id: int) -> bool:
+    return _ensure_node_matches(project_id)
 
 
 def evaluate_static_correlation(

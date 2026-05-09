@@ -1,8 +1,8 @@
 import json
 from MeshElementFactory import MeshElementFactory
 from collections import OrderedDict
-from MeshCleaner import MarkSurface, CalculateUniqueEdge
-from VTUWriter import WriteFaceAndEdgeToVTU
+# from MeshCleaner import MarkSurface, CalculateUniqueEdge
+# from VTUWriter import WriteFaceAndEdgeToVTU
 import meshio
 from FemNode import FemNode
 from pyNastran.bdf.bdf import BDF
@@ -129,7 +129,7 @@ class BDFParser(object):
         if self.solid_eles:
             # 建议：只在需要 only_surface=True 时再 MarkSurface，避免不必要开销
             # 但如果 ele.getAllTriangles / getEdges 依赖 MarkSurface 标记，那就保留
-            MarkSurface(self.solid_eles)
+            # MarkSurface(self.solid_eles)
 
             for ele in self.solid_eles:
                 tris = ele.getAllTriangles(only_surface=only_surface)
@@ -162,7 +162,7 @@ class BDFParser(object):
                     n1 = edges_nid[k + 1]
                     self.all_edges.extend([self.global_node_hash[n0], self.global_node_hash[n1]])
 
-        self.unique_edges = CalculateUniqueEdge(self.all_edges)
+        # self.unique_edges = CalculateUniqueEdge(self.all_edges)
 
     def WriteToVTU(self, output_path):
         """
@@ -173,12 +173,12 @@ class BDFParser(object):
         """
 
         # 2) 调用已有的 VTU写函数
-        WriteFaceAndEdgeToVTU(
-            self.node_xyz,
-            self.unique_edges,
-            self.triangles,
-            output_path
-        )
+        # WriteFaceAndEdgeToVTU(
+        #     self.node_xyz,
+        #     self.unique_edges,
+        #     self.triangles,
+        #     output_path
+        # )
 
     def WriteToJson(self, output_path):
         """

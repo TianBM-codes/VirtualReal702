@@ -76,6 +76,8 @@ _EXACT_ERROR_TRANSLATIONS = {
     "input_inp is required when parameter_values is not provided": "未提供 parameter_values 时必须提供 input_inp",
     "target response vector length does not match model response length": "目标响应向量长度与模型响应长度不一致",
     "cloud export via external-field api requires odb_id or a workspace already loaded in the L3 registry": "通过 external-field 接口导出云图时，必须提供 odb_id 或已加载到 L3 注册表中的 workspace",
+    "test model dimensions are not available": "试验模型尺寸不可用",
+    "fem model dimensions are not available": "计算模型尺寸不可用",
 }
 
 _REGEX_ERROR_TRANSLATIONS = [

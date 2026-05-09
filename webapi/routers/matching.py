@@ -7,12 +7,14 @@ from services.model_update.analysis.inp_service import (
     match_test_nodes,
     save_transform_operation,
 )
+from services.model_update.analysis.project_config_service import get_node_match_parameter_context
 
 from src.l3.core.errors import AppError
 
 from ..common import error_response, server_error, success_response
 from ..models import (
     CorrelationEvaluateRequest,
+    MatchNodeParametersRequest,
     MatchNodesRequest,
     PairNodePointResultRequest,
     TransformAutoInfoRequest,
@@ -53,6 +55,19 @@ async def get_pair_node_point_result_api(request: Request, body: PairNodePointRe
     try:
         result = get_pair_node_point_result(body.project_id)
         return success_response(result, "节点匹配结果获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/match/nodes/params")
+async def get_match_node_parameters_api(request: Request, body: MatchNodeParametersRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_node_match_parameter_context(body.project_id)
+        return success_response(result, "节点匹配参数获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

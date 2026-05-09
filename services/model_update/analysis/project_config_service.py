@@ -199,6 +199,59 @@ def _dims_from_bounds(bbox_min: Sequence[float], bbox_max: Sequence[float]) -> d
     }
 
 
+def _model_size_from_dims(dims: Optional[dict]) -> Optional[float]:
+    resolved = _normalize_dims(dims) or {}
+    values = [float(v) for v in resolved.values() if v is not None]
+    if not values:
+        return None
+    return float(max(values))
+
+
+def _build_node_match_parameter_payload(cursor, project_id: int) -> dict:
+    config = _fetch_project_config(cursor, int(project_id))
+    test_dims = dict(config["test_model_dims"])
+    fem_dims = dict(config["fem_model_dims"])
+    test_model = {
+        "dims": test_dims,
+        "model_size": _model_size_from_dims(test_dims),
+    }
+    fem_model = {
+        "dims": fem_dims,
+        "model_size": _model_size_from_dims(fem_dims),
+    }
+
+    test_model_size = test_model["model_size"]
+    fem_model_size = fem_model["model_size"]
+    if test_model_size is None:
+        raise ValueError("test model dimensions are not available")
+    if fem_model_size is None:
+        raise ValueError("fem model dimensions are not available")
+
+    return {
+        "project_id": int(project_id),
+        "outer_contour_type": "axis_aligned_bbox",
+        "test_model": test_model,
+        "fem_model": fem_model,
+        "tolerance": float(min(test_model_size, fem_model_size) * 1e-6),
+        "maximum_node_point_distance": float(max(test_model_size, fem_model_size) * 0.05),
+    }
+
+
+def get_node_match_parameter_context(project_id: int, *, cursor=None) -> dict:
+    own_conn = None
+    own_cursor = cursor
+    if own_cursor is None:
+        ensure_tables_exist()
+        own_conn = get_connection()
+        own_cursor = own_conn.cursor(dictionary=True)
+    try:
+        return _build_node_match_parameter_payload(own_cursor, int(project_id))
+    finally:
+        if own_conn is not None:
+            own_cursor.close()
+            own_conn.close()
+
+
 def save_fem_model_dimensions(
     project_id: int,
     *,
