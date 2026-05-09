@@ -207,8 +207,47 @@ def _model_size_from_dims(dims: Optional[dict]) -> Optional[float]:
     return float(max(values))
 
 
-def _build_node_match_parameter_payload(cursor, project_id: int) -> dict:
+def _load_test_model_dims_from_measuring_points(cursor, project_id: int) -> Optional[dict]:
+    cursor.execute(
+        """
+        SELECT x_position, y_position, z_position
+        FROM t_mt_measuring_point_info
+        WHERE project_id = %s
+        ORDER BY id, measuring_point_name
+        """,
+        (int(project_id),),
+    )
+    rows = cursor.fetchall() or []
+    if not rows:
+        return None
+    coords = np.array(
+        [[float(row["x_position"]), float(row["y_position"]), float(row["z_position"])] for row in rows],
+        dtype=np.float64,
+    )
+    coords = coords.reshape((-1, 3))
+    return _dims_from_bounds(coords.min(axis=0), coords.max(axis=0))
+
+
+def _resolve_project_config_for_node_match(cursor, project_id: int) -> tuple[dict, bool]:
     config = _fetch_project_config(cursor, int(project_id))
+    test_dims = dict(config["test_model_dims"])
+    if all(test_dims.get(axis) is not None for axis in ("x", "y", "z")):
+        return config, False
+
+    measured_dims = _load_test_model_dims_from_measuring_points(cursor, int(project_id))
+    if measured_dims is None:
+        return config, False
+
+    updated = _upsert_project_config_with_cursor(
+        cursor,
+        int(project_id),
+        test_model_dims=measured_dims,
+    )
+    return updated, True
+
+
+def _build_node_match_parameter_payload(cursor, project_id: int) -> tuple[dict, bool]:
+    config, backfilled = _resolve_project_config_for_node_match(cursor, int(project_id))
     test_dims = dict(config["test_model_dims"])
     fem_dims = dict(config["fem_model_dims"])
     test_model = {
@@ -227,14 +266,17 @@ def _build_node_match_parameter_payload(cursor, project_id: int) -> dict:
     if fem_model_size is None:
         raise ValueError("fem model dimensions are not available")
 
-    return {
-        "project_id": int(project_id),
-        "outer_contour_type": "axis_aligned_bbox",
-        "test_model": test_model,
-        "fem_model": fem_model,
-        "tolerance": float(min(test_model_size, fem_model_size) * 1e-6),
-        "maximum_node_point_distance": float(max(test_model_size, fem_model_size) * 0.05),
-    }
+    return (
+        {
+            "project_id": int(project_id),
+            "outer_contour_type": "axis_aligned_bbox",
+            "test_model": test_model,
+            "fem_model": fem_model,
+            "tolerance": float(min(test_model_size, fem_model_size) * 1e-6),
+            "maximum_node_point_distance": float(max(test_model_size, fem_model_size) * 0.05),
+        },
+        backfilled,
+    )
 
 
 def get_node_match_parameter_context(project_id: int, *, cursor=None) -> dict:
@@ -245,7 +287,14 @@ def get_node_match_parameter_context(project_id: int, *, cursor=None) -> dict:
         own_conn = get_connection()
         own_cursor = own_conn.cursor(dictionary=True)
     try:
-        return _build_node_match_parameter_payload(own_cursor, int(project_id))
+        payload, backfilled = _build_node_match_parameter_payload(own_cursor, int(project_id))
+        if own_conn is not None and backfilled:
+            own_conn.commit()
+        return payload
+    except Exception:
+        if own_conn is not None:
+            own_conn.rollback()
+        raise
     finally:
         if own_conn is not None:
             own_cursor.close()

@@ -34,16 +34,16 @@ def import_bdf_data(file_path, project_id, file_id, clear_before_insert=True):
     """
     ensure_tables_exist()
 
+    bdf_parser = BDFParser(file_path)
+    bdf_parser.parse()
+    bdf_info = bdf_parser.GetDatabaseData()
+
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
         if clear_before_insert:
             clear_fem_tables(cursor, project_id)
-
-        bdf_parser = BDFParser(file_path)
-        bdf_parser.parse()
-        bdf_info = bdf_parser.GetDatabaseData()
 
         # =========================================================
         # 1. 坐标系表

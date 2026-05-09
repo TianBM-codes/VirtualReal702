@@ -125,12 +125,19 @@ def test_save_dimension_helpers_convert_bounds_and_points(monkeypatch):
 
 
 class _NodeMatchParamCursor(_ProjectConfigCursor):
-    pass
+    def __init__(self, row=None, measuring_rows=None):
+        super().__init__(row=row)
+        self.measuring_rows = list(measuring_rows or [])
+
+    def fetchall(self):
+        if "FROM t_mt_measuring_point_info" in self.last_sql:
+            return self.measuring_rows
+        return []
 
 
 class _NodeMatchParamConnection(_ProjectConfigConnection):
-    def __init__(self, config_row=None):
-        self.cursor_obj = _NodeMatchParamCursor(row=config_row)
+    def __init__(self, config_row=None, measuring_rows=None):
+        self.cursor_obj = _NodeMatchParamCursor(row=config_row, measuring_rows=measuring_rows)
         self.committed = False
         self.rolled_back = False
 
@@ -174,28 +181,37 @@ def test_get_node_match_parameter_context_reads_project_config_dims(monkeypatch)
     }
 
 
-def test_get_node_match_parameter_context_falls_back_to_project_dims(monkeypatch):
+def test_get_node_match_parameter_context_backfills_test_dims_from_measuring_points(monkeypatch):
     fake_conn = _NodeMatchParamConnection(
         config_row={
             "pid": 101,
-            "test_model_x": 10.0,
-            "test_model_y": 20.0,
-            "test_model_z": 30.0,
+            "test_model_x": None,
+            "test_model_y": None,
+            "test_model_z": None,
             "fem_model_x": 11.0,
             "fem_model_y": 21.0,
             "fem_model_z": 31.0,
             "coefficients_json": None,
             "extra_json": None,
         },
+        measuring_rows=[
+            {"x_position": 1.0, "y_position": 2.0, "z_position": 3.0},
+            {"x_position": 11.0, "y_position": 17.0, "z_position": 26.0},
+        ],
     )
     monkeypatch.setattr(project_config_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(project_config_service, "get_connection", lambda: fake_conn)
 
     result = project_config_service.get_node_match_parameter_context(101)
 
-    assert result["test_model"]["bbox_min"] is None
-    assert result["fem_model"]["bbox_min"] is None
-    assert result["test_model"]["dims"] == {"x": 10.0, "y": 20.0, "z": 30.0}
+    assert fake_conn.committed is True
+    assert result["test_model"]["dims"] == {"x": 10.0, "y": 15.0, "z": 23.0}
     assert result["fem_model"]["dims"] == {"x": 11.0, "y": 21.0, "z": 31.0}
-    assert result["tolerance"] == 3e-05
+    assert result["tolerance"] == 2.3e-05
     assert result["maximum_node_point_distance"] == 1.55
+    insert_rows = [
+        item for item in fake_conn.cursor_obj.executed
+        if item[0].startswith("INSERT INTO t_mt_py_project_config")
+    ]
+    assert len(insert_rows) == 1
+    assert insert_rows[0][1][1:4] == (10.0, 15.0, 23.0)

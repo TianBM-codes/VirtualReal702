@@ -1,6 +1,7 @@
 import threading
 
 import mysql.connector
+import mysql.connector.pooling
 
 try:
     from VirtualReal702.config import DB_CONFIG
@@ -860,17 +861,46 @@ CREATE_TABLE_SQL_LIST = [
 
 _tables_ensured = False
 _tables_ensure_lock = threading.Lock()
+_connection_pool = None
+_connection_pool_lock = threading.Lock()
+
+
+def _connection_kwargs():
+    return {
+        "host": DB_CONFIG["host"],
+        "port": DB_CONFIG["port"],
+        "user": DB_CONFIG["user"],
+        "password": DB_CONFIG["password"],
+        "database": DB_CONFIG["database"],
+        "charset": DB_CONFIG["charset"],
+        "use_pure": True,
+    }
+
+
+def _get_connection_pool():
+    global _connection_pool
+    if _connection_pool is not None:
+        return _connection_pool
+
+    _connection_pool_lock.acquire()
+    try:
+        if _connection_pool is None:
+            pool_name = str(DB_CONFIG.get("pool_name", "virtualreal702_pool"))
+            pool_size = max(1, int(DB_CONFIG.get("pool_size", 10)))
+            pool_reset_session = bool(DB_CONFIG.get("pool_reset_session", True))
+            _connection_pool = mysql.connector.pooling.MySQLConnectionPool(
+                pool_name=pool_name,
+                pool_size=pool_size,
+                pool_reset_session=pool_reset_session,
+                **_connection_kwargs(),
+            )
+        return _connection_pool
+    finally:
+        if _connection_pool_lock.locked():
+            _connection_pool_lock.release()
 
 def get_connection():
-    return mysql.connector.connect(
-        host=DB_CONFIG["host"],
-        port=DB_CONFIG["port"],
-        user=DB_CONFIG["user"],
-        password=DB_CONFIG["password"],
-        database=DB_CONFIG["database"],
-        charset=DB_CONFIG["charset"],
-        use_pure=True
-    )
+    return _get_connection_pool().get_connection()
 
 
 def ensure_tables_exist():
