@@ -798,7 +798,7 @@ def compute_feature_edges(surf_tri_nodes, coords_global,
 
 # ─── Element mesh edges (vectorized) ─────────────────────────────────────────
 
-def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
+def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs, surf_tri_ec):
     """
     Compute element_mesh_edges: every real surface unit boundary edge.
 
@@ -806,9 +806,12 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
     different element faces are retained, including co-planar ones.
 
     A shared edge (count == 2) is a triangulation diagonal if both its triangles
-    belong to the SAME original element face: same (tri_er, tri_fs) pair.
+    belong to the SAME original element face: same (etype_code, elem_row, face_seq).
     Quads are split into 2 triangles sharing one diagonal — that diagonal must be
     excluded, or the wireframe would show phantom lines cutting through quad faces.
+
+    elem_row is 0-based per element type, so etype_code must be included in the
+    diagonal key to avoid false matches between different element types.
 
     Returns:
         edge_nodes [E, 2] int32   sorted node row pairs
@@ -839,7 +842,9 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
     keep = counts == 1
 
     # Shared edges: keep unless they are a triangulation diagonal.
-    # Diagonal = shared by 2 triangles from the same (elem_row, face_seq).
+    # Diagonal = shared by 2 triangles from the same (etype_code, elem_row, face_seq).
+    # Must include etype_code because elem_row is 0-based per element type —
+    # elem_row=5 of S4R and elem_row=5 of C3D8R are different elements.
     is_shared = counts == 2
     if is_shared.any():
         sorted_faces = face_of_edge[order]
@@ -848,6 +853,7 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
         face_b = sorted_faces[starts[shared_idx] + 1]
 
         is_diagonal = (
+            (surf_tri_ec[face_a] == surf_tri_ec[face_b]) &
             (surf_tri_er[face_a] == surf_tri_er[face_b]) &
             (surf_tri_fs[face_a] == surf_tri_fs[face_b])
         )
@@ -1156,7 +1162,7 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     logger.info("  {} feature edges".format(len(edge_nodes)))
 
     # 5b. Element mesh edges
-    mesh_edge_nodes = compute_all_surface_edges(surf_tri_nodes, tri_elem_row, tri_face_seq)
+    mesh_edge_nodes = compute_all_surface_edges(surf_tri_nodes, tri_elem_row, tri_face_seq, tri_etype_code)
     logger.info("  {} element mesh edges".format(len(mesh_edge_nodes)))
 
     render_face_idx = np.arange(Nt, dtype=np.int32)
