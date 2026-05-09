@@ -34,7 +34,6 @@ FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
 
-SHELL_ELEM_CODES = frozenset({0, 1, 8})   # S3/S4R/S4/STRI65 — always surface
 LINE_ELEM_CODES  = frozenset({9, 10})
 POINT_ELEM_CODES = frozenset({11})
 
@@ -185,11 +184,7 @@ def collect_faces(geom_h5):
         np.dtype((np.void, keys.dtype.itemsize * max_fn))
     ).ravel()
     _, inv, counts = np.unique(keys_bytes, return_inverse=True, return_counts=True)
-    # Shell faces are always surface regardless of face-sharing with solids:
-    # in shell+solid bonded models the shell and coincident solid face share the
-    # same node key (count=2), but the shell IS the surface and must be shown.
-    is_shell_face = np.isin(ec, list(SHELL_ELEM_CODES))
-    is_surface = (counts[inv] == 1) | is_shell_face
+    is_surface = counts[inv] == 1
 
     return fnc, er, fs, ec, es, is_surface
 
