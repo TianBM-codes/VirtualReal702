@@ -40,6 +40,8 @@ from src.utils.file_fetch import download_if_url, is_http_url
 DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
 PACK_SCRIPT     = REPO_ROOT / "src" / "l1" / "l1_pack.py"
 INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
+BDF_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "bdf_pack.py"
+OP2_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "op2_pack.py"
 INGEST_SCRIPT   = REPO_ROOT / "src" / "l2" / "ingest.py"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -854,9 +856,62 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
         logger.warning("[%s] _adopt_odb_result_group: registry update failed: %s", project_id, exc)
 
 
+def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
+    if not bdf_path:
+        msg = "No BDF path stored for project {}".format(project_id)
+        logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    if not os.path.exists(bdf_path):
+        msg = "BDF file not found: {}".format(bdf_path)
+        logger.error("[%s] %s", project_id, msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    logger.info("[%s] BDF project: bdf_pack.py", project_id)
+    _log_job(project_id, "step",
+             "L1 解析：BDF 几何提取（bdf_pack.py）启动", stage="l1_bdf")
+    rc1, tail1 = _run_streaming(
+        [sys.executable, str(BDF_PACK_SCRIPT), "--bdf", bdf_path, "--workspace", workspace],
+        project_id, "l1_bdf",
+    )
+    if rc1 != 0:
+        msg = "bdf_pack failed: " + tail1
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 "BDF 解析失败 (rc={})：{}".format(rc1, tail1[-500:]), stage="l1_bdf")
+        logger.error("[%s] BDF project phase 1 failed (rc=%d)", project_id, rc1)
+        return False
+
+    _log_job(project_id, "step", "BDF 解析完成，开始 L2 预处理", stage="l1_done")
+
+    logger.info("[%s] BDF project: ingest.py (L2)", project_id)
+    _log_job(project_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest")
+    rc2, tail2 = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        project_id, "l2_ingest",
+    )
+    if rc2 != 0:
+        msg = "ingest failed: " + tail2[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 "L2 预处理失败 (rc={})：{}".format(rc2, tail2[-500:]),
+                 stage="l2_ingest")
+        logger.error("[%s] BDF project L2 failed (rc=%d)", project_id, rc2)
+        return False
+
+    _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", "BDF 几何解析完成，已就绪", stage="l2_done")
+    logger.info("[%s] BDF project ready", project_id)
+    return True
+
+
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
     if source_type == "odb":
         return _run_odb_project(project_id, source_path, workspace)
+    if source_type == "bdf":
+        return _run_bdf_project(project_id, source_path, workspace)
     return _run_geom_project(project_id, source_path, workspace)
 
 
@@ -924,17 +979,47 @@ def _cleanup_result_group(workspace: str, result_group: str) -> None:
                 )
 
 
+def _run_op2_result_group(project_id: str, result_group: str,
+                          op2_path: str, workspace: str) -> bool:
+    label = "{}/{}".format(project_id, result_group)
+    _log_job(project_id, "step",
+             "[{}] OP2 结果打包启动".format(result_group), stage="rg_op2")
+    rc, tail = _run_streaming(
+        [sys.executable, str(OP2_PACK_SCRIPT),
+         "--op2", op2_path,
+         "--workspace", workspace,
+         "--result-group", result_group],
+        project_id, "rg_op2",
+    )
+    if rc != 0:
+        msg = "op2_pack failed: " + tail
+        _update_result_group_status(project_id, result_group, "error", msg)
+        _log_job(project_id, "error",
+                 "[{}] OP2 打包失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
+                 stage="rg_op2")
+        logger.error("[%s] OP2 result_group '%s' failed (rc=%d)", project_id, result_group, rc)
+        return False
+    _update_result_group_status(project_id, result_group, "ready")
+    _log_job(project_id, "step",
+             "[{}] OP2 结果打包完成".format(result_group), stage="rg_op2")
+    logger.info("[%s] OP2 result_group '%s' ready", project_id, result_group)
+    return True
+
+
 def _run_result_group(project_id: str, result_group: str,
                       source_path: str, parse_options_json: str,
                       workspace: str) -> bool:
     label = "{}/{}".format(project_id, result_group)
     if not source_path or not os.path.exists(source_path):
-        msg = "ODB file not found: {}".format(source_path)
+        msg = "source file not found: {}".format(source_path)
         logger.error("[%s] %s", label, msg)
         _update_result_group_status(project_id, result_group, "error", msg)
-        _log_job(project_id, "error", "[{}] ODB 文件不存在：{}".format(result_group, source_path),
+        _log_job(project_id, "error", "[{}] 源文件不存在：{}".format(result_group, source_path),
                  stage="rg_preflight")
         return False
+
+    if source_path.lower().endswith(".op2"):
+        return _run_op2_result_group(project_id, result_group, source_path, workspace)
 
     parse_opts = {}
     if parse_options_json:
