@@ -163,6 +163,30 @@ export function useOdbApi() {
     return { ab: res.data, headers: res.headers }
   }
 
+  // ── Legend Entries ────────────────────────────────────────────────────────
+  function fetchLegendEntries(instance, scheme, setNames) {
+    const params = new URLSearchParams({ scheme })
+    if (setNames && setNames.length) params.set('set_names', setNames.join(','))
+    return http.get(
+      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?${params}`)
+    )
+  }
+
+  function saveLegendEntries(instance, scheme, entries) {
+    return http.post(
+      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?scheme=${scheme}`),
+      entries
+    )
+  }
+
+  function fetchLegend(instance, scheme, setNames) {
+    const params = new URLSearchParams({ scheme })
+    if (setNames && setNames.length) params.set('set_names', setNames.join(','))
+    return http.get(
+      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend?${params}`)
+    )
+  }
+
   // ── Region Highlight (region-mesh-edges / region-outline) ────────────────
   async function fetchRegionMeshEdges(instance, scheme, region) {
     const params = new URLSearchParams({ scheme, region })
@@ -228,6 +252,7 @@ export function useOdbApi() {
     fetchNearestFace, fetchSurfacePatch,
     fetchSectionMesh,
     fetchColorSchemes, fetchColorCode,
+    fetchLegendEntries, saveLegendEntries, fetchLegend,
     fetchRegionMeshEdges, fetchRegionOutline,
     fetchDeformedPositions, fetchDeformSuggestScale,
     fetchProjects, fetchProject, createProject,

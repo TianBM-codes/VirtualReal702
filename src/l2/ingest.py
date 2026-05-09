@@ -34,7 +34,10 @@ FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
 
-# Keep in sync with src/inp/exporter.py _ELEM_TYPE_CODE.
+LINE_ELEM_CODES  = frozenset({9, 10})
+POINT_ELEM_CODES = frozenset({11})
+
+# Keep in sync with src/l1/abaqus_dump.py ELEM_TYPE_CODE.
 ELEM_TYPE_CODE = {
     # shells / membranes
     'S3': 0,  'S3R': 0,  'S6': 0,   'STRI3': 0,
@@ -46,6 +49,13 @@ ELEM_TYPE_CODE = {
     'C3D10': 5, 'C3D10M': 5, 'C3D10H': 5, 'C3D10MH': 5,
     'C3D15': 6, 'C3D15H': 6,
     'C3D20': 7, 'C3D20R': 7, 'C3D20H': 7, 'C3D20RH': 7,
+    # high-order curved triangle shell
+    'STRI65': 8,
+    # line elements (truss / beam) — no face data, silently ignored in collect_faces
+    'T3D2':  9,  'B31':  9,  'B31OS': 9,  'PIPE31': 9,
+    'T3D3': 10,  'B32': 10,  'B32OS':10,  'PIPE32':10,
+    # point elements — concentrated mass / rotary inertia
+    'MASS': 11,  'ROTARYI': 11,
     # plane / axisymmetric (treated as shell faces)
     'CPS3': 0, 'CPS4': 1, 'CPS4R': 1,
     'CPE3': 0, 'CPE4': 1, 'CPE4R': 1,
@@ -53,6 +63,24 @@ ELEM_TYPE_CODE = {
     # membrane 3D (M3D* handled separately via startswith check below)
     'M3D3': 0, 'M3D4': 1, 'M3D4R': 1,
 }
+
+# Abaqus variant suffixes ordered longest-first (see also src/l1/abaqus_dump.py).
+_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+
+
+def _resolve_elem_code(etype_str):
+    """Return ELEM_TYPE_CODE for etype_str, stripping variant suffixes if needed."""
+    s = etype_str.upper()
+    while True:
+        code = ELEM_TYPE_CODE.get(s)
+        if code is not None:
+            return code
+        for suf in _ABAQUS_VARIANT_SUFFIXES:
+            if s.endswith(suf) and len(s) > len(suf):
+                s = s[:-len(suf)]
+                break
+        else:
+            return -1
 
 
 def parse_args():
@@ -105,7 +133,7 @@ def collect_faces(geom_h5):
         grp = geom_h5["elements/{}".format(etype_str)]
         if "face_node_conn" not in grp:
             continue
-        etype_code = ELEM_TYPE_CODE.get(etype_str, -1)
+        etype_code = _resolve_elem_code(etype_str)
         if etype_code < 0:
             logger.warning("collect_faces: unrecognized element type '%s' — skipped", etype_str)
             continue
@@ -159,6 +187,85 @@ def collect_faces(geom_h5):
     is_surface = counts[inv] == 1
 
     return fnc, er, fs, ec, es, is_surface
+
+
+# ─── Line element collection ──────────────────────────────────────────────────
+
+def collect_lines(geom_h5, coords_global):
+    """
+    Collect beam/truss line elements and return endpoint positions.
+
+    Returns:
+        positions   [N, 2, 3] float32  — N segments, 2 endpoints, xyz
+        elem_labels [N]       int32    — Abaqus element label per segment
+    """
+    pos_list   = []
+    label_list = []
+
+    for etype_str in geom_h5.get("elements", {}):
+        etype_code = _resolve_elem_code(etype_str)
+        if etype_code not in LINE_ELEM_CODES:
+            continue
+        grp = geom_h5["elements/{}".format(etype_str)]
+        if "conn" not in grp or "labels" not in grp:
+            continue
+
+        conn   = grp["conn"][:]    # [N, n_nodes] int32 — node rows
+        labels = grp["labels"][:]  # [N] int32
+
+        # Only the 2 corner endpoint nodes regardless of element order
+        pts = coords_global[conn[:, :2]]   # [N, 2, 3]
+        pos_list.append(pts)
+        label_list.append(labels)
+
+    if not pos_list:
+        return np.zeros((0, 2, 3), dtype=np.float32), np.zeros(0, dtype=np.int32)
+
+    return (np.vstack(pos_list).astype(np.float32),
+            np.concatenate(label_list).astype(np.int32))
+
+
+def collect_points(geom_h5, coords_global):
+    """
+    Collect MASS/ROTARYI point elements.
+
+    Returns:
+        positions   [N, 3] float32  — node position per point element
+        elem_labels [N]    int32    — Abaqus element label
+    """
+    pos_list   = []
+    label_list = []
+
+    for etype_str in geom_h5.get("elements", {}):
+        etype_code = _resolve_elem_code(etype_str)
+        if etype_code not in POINT_ELEM_CODES:
+            continue
+        grp = geom_h5["elements/{}".format(etype_str)]
+        if "conn" not in grp or "labels" not in grp:
+            continue
+        conn   = grp["conn"][:]    # [N, 1] int32 — node row
+        labels = grp["labels"][:]  # [N] int32
+        pts = coords_global[conn[:, 0]]  # [N, 3]
+        pos_list.append(pts)
+        label_list.append(labels)
+
+    if not pos_list:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int32)
+
+    return (np.vstack(pos_list).astype(np.float32),
+            np.concatenate(label_list).astype(np.int32))
+
+
+def collect_couplings(geom_h5):
+    """
+    Pass through coupling (RBE2/KINEMATIC) line segments written by the INP exporter.
+
+    Returns:
+        positions [N*2, 3] float32 — interleaved (ref, slave) pairs
+    """
+    if "couplings/positions" not in geom_h5:
+        return np.zeros((0, 3), dtype=np.float32)
+    return geom_h5["couplings/positions"][:]  # already [N*2, 3] float32
 
 
 # ─── Triangulation (vectorized for tri + quad, loop for higher) ───────────────
@@ -820,6 +927,77 @@ def build_octree(tri_positions, max_depth=OCTREE_MAX_DEPTH,
     }
 
 
+# ─── Model-level orientation processing ──────────────────────────────────────
+
+def _compute_orientation_axes(origin, point_a, point_b):
+    """
+    Compute orthonormal 3×3 axes from origin + two reference points.
+
+    Convention (matches Abaqus *ORIENTATION RECTANGULAR):
+      e1 = normalize(point_a - origin)          — local 1-axis
+      e3 = normalize(cross(e1, point_b - origin)) — normal to the 1-2 plane
+      e2 = cross(e3, e1)                         — local 2-axis
+    """
+    e1 = point_a - origin
+    n1 = np.linalg.norm(e1)
+    if n1 < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    e1 = e1 / n1
+
+    v = point_b - origin
+    n = np.cross(e1, v)
+    nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        perp = np.array([1., 0., 0.]) if abs(e1[0]) < 0.9 else np.array([0., 1., 0.])
+        n = np.cross(e1, perp)
+        nn = np.linalg.norm(n)
+    e3 = n / nn
+    e2 = np.cross(e3, e1)
+    return np.stack([e1, e2, e3])   # [3, 3] float64
+
+
+def process_orientations(workspace, asm_h5):
+    """Read raw orientations from assembly.h5, compute orthonormal axes, write l2/geometry/orientations.h5."""
+    if "orientations" not in asm_h5:
+        return
+
+    names_out, systems_out, origins_out, axes_out = [], [], [], []
+    for key in asm_h5["orientations"]:
+        grp    = asm_h5["orientations/{}".format(key)]
+        origin  = grp["origin"][:]
+        point_a = grp["point_a"][:]
+        point_b = grp["point_b"][:]
+        system  = grp.attrs.get("system", "RECTANGULAR")
+        name    = grp.attrs.get("original_name", key)
+        axes    = _compute_orientation_axes(origin, point_a, point_b)
+        names_out.append(name)
+        systems_out.append(system)
+        origins_out.append(origin.astype(np.float32))
+        axes_out.append(axes.astype(np.float32))
+
+    if not names_out:
+        return
+
+    l2_geom_dir = os.path.join(workspace, "l2", "geometry")
+    mkdirs(l2_geom_dir)
+    out_path = os.path.join(l2_geom_dir, "orientations.h5")
+
+    N = len(names_out)
+    origins_arr = np.stack(origins_out)   # [N, 3]
+    axes_arr    = np.stack(axes_out)      # [N, 3, 3]
+
+    with h5py.File(out_path, "w") as f:
+        # Fixed-length byte strings — avoids h5py vlen_str version differences
+        names_arr   = np.array([n.encode("utf-8")[:127] for n in names_out],   dtype="S128")
+        systems_arr = np.array([s.encode("utf-8")[:31]  for s in systems_out], dtype="S32")
+        f.create_dataset("names",   data=names_arr)
+        f.create_dataset("systems", data=systems_arr)
+        f.create_dataset("origins", data=origins_arr)
+        f.create_dataset("axes",    data=axes_arr)
+
+    logger.info("Orientations: {} written to {}".format(N, out_path))
+
+
 # ─── Per-instance processing ──────────────────────────────────────────────────
 
 def process_instance(workspace, db_conn, asm_h5, inst_name):
@@ -855,6 +1033,15 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         # 2. Face collection + surface detection (vectorized)
         fnc, elem_rows, face_seqs, etype_codes, etype_strs, is_surface = \
             collect_faces(f_in)
+
+        # 2b. Line element collection (beam / truss)
+        line_positions, line_elem_labels = collect_lines(f_in, coords_global)
+
+        # 2c. Point element collection (MASS / ROTARYI)
+        point_positions, point_elem_labels = collect_points(f_in, coords_global)
+
+        # 2d. Coupling lines (RBE2 / KINEMATIC) — written by INP exporter
+        coupling_positions = collect_couplings(f_in)
 
         # Load conn arrays for source_local_node_idx computation (task #6)
         conn_by_etype = {}
@@ -973,6 +1160,13 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     octree = build_octree(tri_positions)
     logger.info("  Octree: {} nodes".format(len(octree["node_bbox"])))
 
+    N_lines     = len(line_positions)
+    N_points    = len(point_positions)
+    N_couplings = len(coupling_positions) // 2  # pairs
+    logger.info("  {} line elements (beam/truss)".format(N_lines))
+    logger.info("  {} point elements (MASS/ROTARYI)".format(N_points))
+    logger.info("  {} coupling segments (RBE2)".format(N_couplings))
+
     # ── Write l2/geometry/<inst>_surface.h5 ──
     with h5py.File(surface_h5_path, "w") as f:
         ng = f.create_group("nodes")
@@ -987,6 +1181,23 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         meg = f.create_group("element_mesh_edges")
         if len(mesh_edge_nodes) > 0:
             meg.create_dataset("edge_nodes", data=mesh_edge_nodes)
+
+        lg = f.create_group("lines")
+        if N_lines > 0:
+            lg.create_dataset("positions",   data=line_positions,
+                              chunks=(min(N_lines, 4096), 2, 3), compression="lzf")
+            lg.create_dataset("elem_labels", data=line_elem_labels)
+
+        pg = f.create_group("points")
+        if N_points > 0:
+            pg.create_dataset("positions",   data=point_positions)
+            pg.create_dataset("elem_labels", data=point_elem_labels)
+
+        cg = f.create_group("couplings")
+        if N_couplings > 0:
+            cg.create_dataset("positions", data=np.ascontiguousarray(coupling_positions),
+                              chunks=(min(len(coupling_positions), 4096), 3),
+                              compression="lzf")
 
     # ── Write l2/render/<inst>_render.h5 ──
     with h5py.File(render_h5_path, "w") as f:
@@ -1038,18 +1249,25 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             surface_face_count  INTEGER,
             render_face_count   INTEGER,
             edge_count          INTEGER,
-            partition_count     INTEGER
+            partition_count     INTEGER,
+            line_count          INTEGER
         )
     """)
+    # Migration: add line_count to tables created before this column existed.
+    try:
+        db_conn.execute("ALTER TABLE l2_instances ADD COLUMN line_count INTEGER")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     db_conn.execute("""
         INSERT OR REPLACE INTO l2_instances
         (instance_name, surface_path, render_path,
-         surface_face_count, render_face_count, edge_count, partition_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+         surface_face_count, render_face_count, edge_count, partition_count,
+         line_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (inst_name,
           "l2/geometry/{}_surface.h5".format(inst_name),
           "l2/render/{}_render.h5".format(inst_name),
-          Sf_faces, Nt, len(edge_nodes), 1))
+          Sf_faces, Nt, len(edge_nodes), 1, N_lines))
     db_conn.commit()
 
     logger.info("  Done in {:.2f}s".format(time.time() - t0))
@@ -1084,6 +1302,7 @@ def main():
         with h5py.File(asm_path, "r") as asm_h5:
             for (inst_name,) in instances:
                 process_instance(workspace, conn, asm_h5, inst_name)
+            process_orientations(workspace, asm_h5)
     except Exception as e:
         logger.error("Layer 2 failed: {}".format(e), exc_info=True)
     finally:

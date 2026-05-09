@@ -1,5 +1,6 @@
 from typing import List, Literal, Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, Query
+from pydantic import BaseModel
 from ...core.state import registry
 from ...schemas.query import BBoxRequest, PickResponse, BBoxResponse, RenderFacesRequest, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse, RayPickRequest
 from ...services import query_service
@@ -175,3 +176,34 @@ async def nearest_face_query(
         point=[x, y, z],
     )
     return ok(result.model_dump())
+
+
+class NodeDisplacementsRequest(BaseModel):
+    nodes: List[str]
+    step: Optional[str] = None
+    frame: Optional[int] = None
+    result_group: Optional[str] = None
+
+
+@router.post("/query/node-displacements")
+async def node_displacements(odb_id: str, body: NodeDisplacementsRequest):
+    """
+    Return U displacement (U1, U2, U3, USUM) for a list of nodes.
+
+    Node identifiers: "INSTANCE_NAME::NODE_LABEL", e.g. "PART-1-1::5".
+    step and frame are optional — default to the last step / last frame.
+
+    Response data:
+      step, frame, frame_value,
+      results: [{node_id, instance, label, U1, U2, U3, USUM}, ...]
+    Nodes whose label is not found will have null U values and an "error" field.
+    """
+    result = query_service.node_displacements(
+        registry=registry,
+        odb_id=odb_id,
+        nodes=body.nodes,
+        step=body.step,
+        frame=body.frame,
+        result_group=body.result_group,
+    )
+    return ok(result)

@@ -16,17 +16,30 @@ from typing import List, Optional  # Optional kept for Query defaults
 
 import h5py
 import numpy as np
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from ...core.config import settings
 from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...infra.manifest_repo import ManifestRepo
+from ...infra.registry_repo import RegistryRepo
 from ...services.user_field_service import get_face_mask_for_elem_labels
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["geometry"])
+
+
+async def _l2_ready(odb_id: str) -> None:
+    """Raise 503 if this project's L2 preprocessing is pending or running."""
+    repo = RegistryRepo(settings.registry_db_path)
+    proj = repo.get_project(odb_id)
+    if proj and proj["geom_status"] in ("l2_pending", "l2_running"):
+        raise HTTPException(
+            status_code=503,
+            detail="L2 preprocessing in progress — geometry data is being rebuilt, try again shortly",
+        )
 
 
 class ElemSubsetRequest(BaseModel):
@@ -90,7 +103,52 @@ def _build_render_chunks(positions: np.ndarray, indices: np.ndarray):
     return chunks
 
 
-@router.get("/geometry/{instance}/render-buffers")
+@router.get("/geometry/orientations", dependencies=[Depends(_l2_ready)])
+async def get_orientations(odb_id: str):
+    """
+    Return model-level named coordinate systems (from *ORIENTATION / datumCsyses).
+
+    Response JSON:
+      {
+        "orientations": [
+          { "name": str, "system": str, "origin": [x,y,z], "axes": [[e1x,e1y,e1z],[e2x,e2y,e2z],[e3x,e3y,e3z]] },
+          ...
+        ]
+      }
+
+    axes[0] = local 1-axis (X, red in viewer)
+    axes[1] = local 2-axis (Y, green in viewer)
+    axes[2] = local 3-axis (Z, blue in viewer)
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    ori_h5 = os.path.join(idx.workspace, "l2", "geometry", "orientations.h5")
+    if not os.path.exists(ori_h5):
+        return {"orientations": []}
+
+    with h5py.File(ori_h5, "r") as f:
+        N       = f["origins"].shape[0]
+        origins = f["origins"][:]          # [N, 3] float32
+        axes    = f["axes"][:]             # [N, 3, 3] float32
+        names   = [f["names"][i].decode("utf-8",   errors="replace") for i in range(N)]
+        systems = [f["systems"][i].decode("utf-8", errors="replace") for i in range(N)]
+
+    return {
+        "orientations": [
+            {
+                "name":   names[i],
+                "system": systems[i],
+                "origin": origins[i].tolist(),
+                "axes":   axes[i].tolist(),
+            }
+            for i in range(N)
+        ]
+    }
+
+
+@router.get("/geometry/{instance}/render-buffers", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers(
     odb_id: str,
     instance: str,
@@ -154,7 +212,7 @@ async def get_render_buffers(
     )
 
 
-@router.get("/geometry/{instance}/render-buffers-chunked")
+@router.get("/geometry/{instance}/render-buffers-chunked", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers_chunked(
     odb_id: str,
     instance: str,
@@ -233,7 +291,7 @@ async def get_render_buffers_chunked(
     )
 
 
-@router.get("/geometry/{instance}/element-mesh-edges")
+@router.get("/geometry/{instance}/element-mesh-edges", dependencies=[Depends(_l2_ready)])
 async def get_element_mesh_edges(odb_id: str, instance: str):
     """
     Return element mesh edges for one instance as L3BE binary.
@@ -296,7 +354,7 @@ async def get_element_mesh_edges(odb_id: str, instance: str):
     )
 
 
-@router.get("/geometry/{instance}/feature-edges")
+@router.get("/geometry/{instance}/feature-edges", dependencies=[Depends(_l2_ready)])
 async def get_feature_edges(odb_id: str, instance: str):
     """
     Return feature edges (boundary + fold) for one instance as L3BE binary.
@@ -353,7 +411,136 @@ async def get_feature_edges(odb_id: str, instance: str):
     )
 
 
-@router.post("/geometry/{instance}/render-buffers-subset")
+@router.get("/geometry/{instance}/lines", dependencies=[Depends(_l2_ready)])
+async def get_line_elements(odb_id: str, instance: str):
+    """
+    Return beam/truss line element segments for one instance as L3BE binary.
+
+    Line elements (B31, B32, T3D2, T3D3, PIPE31, PIPE32, …) have no surface
+    faces and are not included in the triangle render buffers.  This endpoint
+    returns their endpoint positions so the frontend can render them as
+    THREE.LineSegments overlaid on the surface mesh.
+
+    Section layout:
+      - "line_positions": [N*2, 3] float32
+            Interleaved endpoint pairs — row 2i and 2i+1 are the two endpoints
+            of segment i.  Ready to feed into a Three.js LineSegments geometry.
+      - "elem_labels":    [N]   int32
+            Abaqus element label for each segment (for picking).
+
+    Header:
+      X-Line-Count: number of line segments N (not rows)
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        raise NotFoundError(
+            f"Surface geometry not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(surface_h5, "r") as f:
+        if "lines/positions" not in f:
+            empty_pos = np.zeros((0, 3), dtype=np.float32)
+            empty_lbl = np.zeros(0, dtype=np.int32)
+            return Response(
+                content=l3be_build([("line_positions", empty_pos),
+                                    ("elem_labels", empty_lbl)]),
+                media_type="application/octet-stream",
+            )
+
+        positions   = f["lines/positions"][:]    # [N, 2, 3] float32
+        elem_labels = f["lines/elem_labels"][:]  # [N] int32
+
+    N = len(positions)
+    line_positions = np.ascontiguousarray(positions.reshape(N * 2, 3))
+
+    return Response(
+        content=l3be_build([("line_positions", line_positions),
+                             ("elem_labels", elem_labels)]),
+        media_type="application/octet-stream",
+    )
+
+
+@router.get("/geometry/{instance}/points", dependencies=[Depends(_l2_ready)])
+async def get_point_elements(odb_id: str, instance: str):
+    """
+    Return MASS/ROTARYI point element positions for one instance as L3BE binary.
+
+    L3BE sections:
+      - "point_positions": [N, 3] float32
+      - "elem_labels":     [N]    int32
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        raise NotFoundError(
+            f"Surface geometry not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(surface_h5, "r") as f:
+        if "points/positions" not in f:
+            empty_pos = np.zeros((0, 3), dtype=np.float32)
+            empty_lbl = np.zeros(0, dtype=np.int32)
+            return Response(
+                content=l3be_build([("point_positions", empty_pos),
+                                    ("elem_labels", empty_lbl)]),
+                media_type="application/octet-stream",
+            )
+        positions   = f["points/positions"][:]
+        elem_labels = f["points/elem_labels"][:]
+
+    return Response(
+        content=l3be_build([("point_positions", np.ascontiguousarray(positions)),
+                             ("elem_labels", elem_labels)]),
+        media_type="application/octet-stream",
+    )
+
+
+@router.get("/geometry/{instance}/couplings", dependencies=[Depends(_l2_ready)])
+async def get_coupling_lines(odb_id: str, instance: str):
+    """
+    Return RBE2/KINEMATIC coupling spider lines for one instance as L3BE binary.
+
+    Each coupling is pre-expanded to (ref_node, slave_node) pairs.
+
+    L3BE sections:
+      - "coupling_positions": [N*2, 3] float32 — interleaved endpoint pairs
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        raise NotFoundError(
+            f"Surface geometry not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(surface_h5, "r") as f:
+        if "couplings/positions" not in f:
+            empty = np.zeros((0, 3), dtype=np.float32)
+            return Response(
+                content=l3be_build([("coupling_positions", empty)]),
+                media_type="application/octet-stream",
+            )
+        positions = f["couplings/positions"][:]
+
+    return Response(
+        content=l3be_build([("coupling_positions", np.ascontiguousarray(positions))]),
+        media_type="application/octet-stream",
+    )
+
+
+@router.post("/geometry/{instance}/render-buffers-subset", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers_subset(
     odb_id: str,
     instance: str,
@@ -457,7 +644,7 @@ def _build_chunked_payload(positions: np.ndarray, indices: np.ndarray):
     return sections, K, Nt
 
 
-@router.post("/geometry/{instance}/render-buffers-subset-chunked")
+@router.post("/geometry/{instance}/render-buffers-subset-chunked", dependencies=[Depends(_l2_ready)])
 async def get_render_buffers_subset_chunked(
     odb_id: str,
     instance: str,

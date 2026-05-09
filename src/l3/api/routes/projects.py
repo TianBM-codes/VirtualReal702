@@ -398,6 +398,16 @@ async def get_project_logs(
     return ok({"logs": items, "next_since_id": next_since})
 
 
+@router.post("/{project_id}/logs/clear")
+async def clear_project_logs(project_id: str):
+    """清空该 project 的全部解析日志（job_logs）。"""
+    repo = _repo()
+    if repo.get_project(project_id) is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+    deleted = repo.clear_job_logs(project_id)
+    return ok({"project_id": project_id, "deleted_count": deleted})
+
+
 @router.get("/{project_id}")
 async def get_project(project_id: str):
     """查询 project 状态及所有 result_groups 的详情。"""
@@ -490,6 +500,33 @@ async def get_project_summary(project_id: str):
 
 
 # ── DELETE /api/projects/{project_id} ─────────────────────────────────────────
+
+@router.post("/{project_id}/rerun-l2", status_code=202)
+async def rerun_l2(project_id: str):
+    """
+    重新运行 L2 预处理（ingest.py），用于 L2 逻辑更新后刷新几何缓存。
+
+    仅允许 geom_status 为 'ready' 或 'error' 时触发；job_runner 轮询到
+    geom_status='l2_pending' 后自动认领并执行。
+    运行期间所有几何接口返回 503。
+    进度通过 GET /api/projects/{project_id}/logs 实时查询。
+    """
+    project_id = validate_workspace_id(project_id, "project_id")
+    repo = _repo()
+    proj = repo.get_project(project_id)
+    if proj is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+
+    claimed = repo.claim_l2_rerun(project_id)
+    if not claimed:
+        current = proj["geom_status"]
+        raise ConflictError(
+            f"Cannot start L2 rerun: project '{project_id}' is in status '{current}' "
+            "(only 'ready' or 'error' allowed)"
+        )
+
+    return ok({"project_id": project_id, "geom_status": "l2_pending"})
+
 
 @router.delete("/{project_id}", status_code=200)
 async def delete_project(project_id: str):

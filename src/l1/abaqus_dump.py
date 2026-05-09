@@ -59,21 +59,33 @@ except Exception:
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 ELEM_TYPE_CODE = {
-    'S3': 0,   'S3R': 0,   'S6': 0,
-    'S4': 1,   'S4R': 1,   'S4R5': 1,  'S8R': 1,  'S8R5': 1,
+    # shells (triangle: code 0, quad: code 1)
+    'S3': 0,   'S3R': 0,   'S6': 0,   'STRI3': 0,
+    'S4': 1,   'S4R': 1,   'S4R5': 1, 'S8R': 1,  'S8R5': 1,
+    # solid tet (code 2), wedge (3), hex (4)
     'C3D4': 2,  'C3D4H': 2,
     'C3D6': 3,  'C3D6H': 3,
-    'C3D8': 4,  'C3D8R': 4,  'C3D8H': 4,  'C3D8RH': 4,
-    'C3D10': 5, 'C3D10M': 5, 'C3D10H': 5,
-    'C3D15': 6, 'C3D15H': 6,
-    'C3D20': 7, 'C3D20R': 7, 'C3D20H': 7, 'C3D20RH': 7,
+    'C3D8': 4,  'C3D8R': 4,  'C3D8H': 4,  'C3D8I': 4,  'C3D8RH': 4,
+    # high-order solids
+    'C3D10': 5,  'C3D10M': 5,  'C3D10H': 5,  'C3D10MH': 5,
+    'C3D15': 6,  'C3D15H': 6,
+    'C3D20': 7,  'C3D20R': 7,  'C3D20H': 7,  'C3D20RH': 7,
+    # high-order curved triangle shell (code 8)
+    'STRI65': 8,
+    # line elements: truss / beam (codes 9, 10 — no surface faces)
+    'T3D2':   9, 'B31':   9, 'B31OS': 9, 'PIPE31': 9,
+    'T3D3':  10, 'B32':  10, 'B32OS':10, 'PIPE32':10,
 }
 
-ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8}
+ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8,
+                 8: 3,   # STRI65 corner count
+                 9: 2,   # LINE2
+                 10: 2}  # LINE3 (2 corners + 1 mid-node)
 
-HIGH_ORDER_CODES = {5, 6, 7}
+HIGH_ORDER_CODES = {5, 6, 7, 8, 10}  # 8=STRI65, 10=LINE3 have mid-nodes
 
 # Face definitions: code → list of face corner-node-index lists (0-based, corner only)
+# Codes 9, 10 (line elements) have no faces and are omitted intentionally.
 FACE_DEFS = {
     0: [[0, 1, 2]],
     1: [[0, 1, 2, 3]],
@@ -85,23 +97,64 @@ FACE_DEFS = {
     6: [[0, 1, 2], [3, 5, 4], [0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5]],
     7: [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
         [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]],
+    8: [[0, 1, 2]],  # STRI65: single triangle face (corner nodes 0-2)
 }
 
 # Mid-node column indices in full connectivity (0-based)
 MIDNODE_INDICES = {
-    'S6':    [3, 4, 5],
-    'S8R':   [4, 5, 6, 7],
-    'S8R5':  [4, 5, 6, 7],
-    'C3D10': [4, 5, 6, 7, 8, 9],
-    'C3D10M':[4, 5, 6, 7, 8, 9],
-    'C3D10H':[4, 5, 6, 7, 8, 9],
-    'C3D15': [6, 7, 8, 9, 10, 11, 12, 13, 14],
-    'C3D15H':[6, 7, 8, 9, 10, 11, 12, 13, 14],
-    'C3D20': [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-    'C3D20R':[8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-    'C3D20H':[8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-    'C3D20RH':[8,9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    'S6':      [3, 4, 5],
+    'S8R':     [4, 5, 6, 7],
+    'S8R5':    [4, 5, 6, 7],
+    'STRI65':  [3, 4, 5],
+    'C3D10':   [4, 5, 6, 7, 8, 9],
+    'C3D10M':  [4, 5, 6, 7, 8, 9],
+    'C3D10H':  [4, 5, 6, 7, 8, 9],
+    'C3D10MH': [4, 5, 6, 7, 8, 9],
+    'C3D15':   [6, 7, 8, 9, 10, 11, 12, 13, 14],
+    'C3D15H':  [6, 7, 8, 9, 10, 11, 12, 13, 14],
+    'C3D20':   [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    'C3D20R':  [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    'C3D20H':  [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    'C3D20RH': [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    'T3D3':    [2],
+    'B32':     [2],
+    'B32OS':   [2],
+    'PIPE32':  [2],
 }
+
+# Abaqus variant suffixes ordered longest-first so multi-char tokens (OS, RH,
+# MH, RT, R5) are stripped before their single-char components.
+_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+
+
+def _resolve_elem_code(etype_str):
+    """Return ELEM_TYPE_CODE for etype_str, stripping variant suffixes if needed."""
+    s = etype_str.upper()
+    while True:
+        code = ELEM_TYPE_CODE.get(s)
+        if code is not None:
+            return code
+        for suf in _ABAQUS_VARIANT_SUFFIXES:
+            if s.endswith(suf) and len(s) > len(suf):
+                s = s[:-len(suf)]
+                break
+        else:
+            return None
+
+
+def _resolve_midnode_indices(etype_str):
+    """Return MIDNODE_INDICES for etype_str, with suffix-strip fallback."""
+    s = etype_str.upper()
+    while True:
+        result = MIDNODE_INDICES.get(s)
+        if result is not None:
+            return result
+        for suf in _ABAQUS_VARIANT_SUFFIXES:
+            if s.endswith(suf) and len(s) > len(suf):
+                s = s[:-len(suf)]
+                break
+        else:
+            return []
 
 PROCEDURE_MAP = {
     'STATIC_GENERAL':           'STATIC',
@@ -494,6 +547,49 @@ def dump_assembly(odb, raw_dir, meta):
             if not os.path.exists(path):
                 npsave(path, np.array(sorted(labels), dtype=np.int32))
 
+    # Datum coordinate systems — written to datum_csyses.json for l1_pack.py
+    datum_csyses = {}
+    if hasattr(assembly, 'datumCsyses'):
+        for dc_name, csys in assembly.datumCsyses.items():
+            try:
+                origin = [float(x) for x in csys.origin]
+                # coordSysType: CARTESIAN / CYLINDRICAL / SPHERICAL (Abaqus version dependent)
+                sys_type = 'RECTANGULAR'
+                if hasattr(csys, 'coordSysType'):
+                    t = str(csys.coordSysType).upper()
+                    if 'CYL' in t:
+                        sys_type = 'CYLINDRICAL'
+                    elif 'SPH' in t:
+                        sys_type = 'SPHERICAL'
+
+                e1 = e2 = None
+                # Try known attribute name variants across Abaqus versions
+                for attr1, attr2 in [('xAxis', 'yAxis'), ('axis1', 'axis2'),
+                                      ('axis_1', 'axis_2'), ('X', 'Y')]:
+                    if hasattr(csys, attr1) and hasattr(csys, attr2):
+                        e1 = [float(x) for x in getattr(csys, attr1)]
+                        e2 = [float(x) for x in getattr(csys, attr2)]
+                        break
+
+                if e1 is None:
+                    print("WARNING: datumCsys '{}' — could not read axes. "
+                          "Available attrs: {}".format(dc_name,
+                          [a for a in dir(csys) if not a.startswith('_')]))
+                    continue
+                datum_csyses[dc_name] = {
+                    'system':  sys_type,
+                    'origin':  origin,
+                    'point_a': [origin[i] + e1[i] for i in range(3)],
+                    'point_b': [origin[i] + e2[i] for i in range(3)],
+                }
+            except Exception as ex:
+                print("WARNING: datumCsys '{}' read failed: {}".format(dc_name, ex))
+    if datum_csyses:
+        import json as _json
+        with open(os.path.join(asm_dir, 'datum_csyses.json'), 'w') as fp:
+            _json.dump(datum_csyses, fp)
+        print("  {} datum CSYS written".format(len(datum_csyses)))
+
     print("    done. ({})".format(_fmt_t(time.time() - t0)))
 
 
@@ -552,7 +648,7 @@ def dump_geometry(odb, raw_dir, meta):
         has_highorder = False
 
         for etype, edata in elem_by_type.items():
-            etype_code = ELEM_TYPE_CODE.get(etype)
+            etype_code = _resolve_elem_code(etype)
             if etype_code is None:
                 print("    WARNING: unknown type {}, skipped".format(etype))
                 continue
@@ -585,7 +681,7 @@ def dump_geometry(odb, raw_dir, meta):
                 hod = os.path.join(d, 'highorder', safe(etype))
                 mkdirs(hod)
                 npsave(os.path.join(hod, 'conn_full.npy'), conn_full.astype(np.int32))
-                mid_idx = MIDNODE_INDICES.get(etype, [])
+                mid_idx = _resolve_midnode_indices(etype)
                 npsave(os.path.join(hod, 'midnode_indices.npy'),
                        np.array(mid_idx, dtype=np.uint8))
 
@@ -651,7 +747,7 @@ def dump_geometry(odb, raw_dir, meta):
             _sc_sids = np.array([], dtype=np.int32)
 
         for etype, edata in elem_by_type.items():
-            if ELEM_TYPE_CODE.get(etype) is None:
+            if _resolve_elem_code(etype) is None:
                 continue
             _elblsrt = np.array(edata['labels'], dtype=np.int32)
             _elblsrt = _elblsrt[np.argsort(_elblsrt)]

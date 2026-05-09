@@ -60,6 +60,68 @@ async def get_display_names(
         return ok({})
 
 
+@router.get("/color-code/{instance}/legend-entries")
+async def get_legend_entries(
+    odb_id: str,
+    instance: str,
+    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
+):
+    """Return legend entries for the given scheme with face counts and user overrides.
+
+    Each entry: {legend_key, default_title, display_name, color_r/g/b,
+                 user_color, user_name, face_count}
+    Used by the LegendEditor floating panel.
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    parsed_sets = [s.strip() for s in set_names.split(",") if s.strip()]
+    entries = color_service.get_legend_entries(idx, instance, scheme, parsed_sets or None)
+    return ok({"entries": entries})
+
+
+@router.post("/color-code/{instance}/legend-entries")
+async def post_legend_entries(
+    odb_id: str,
+    instance: str,
+    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    body: List[dict] = Body(..., description="[{legend_key, display_name?, color_r/g/b?}, ...]"),
+):
+    """Upsert display name and color overrides for legend entries.
+
+    Each item: {legend_key (required), display_name (str|null), color_r/g/b (float|null)}.
+    Pass null to clear an override.
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    ManifestRepo(idx.workspace).set_legend_overrides(instance, scheme, body)
+    return ok({})
+
+
+@router.get("/color-code/{instance}/legend")
+async def get_legend(
+    odb_id: str,
+    instance: str,
+    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
+):
+    """Return only the color legend without building vertex colors.
+
+    Cheaper than GET /color-code/{instance} when you only need the color mapping
+    (e.g. populating a legend panel or color picker).
+
+    Response: {legend: [{id, legend_key, name, r, g, b}, ...]}
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    parsed_sets = [s.strip() for s in set_names.split(",") if s.strip()]
+    legend = color_service.get_legend(idx, instance, scheme, parsed_sets or None)
+    return ok({"legend": legend})
+
+
 @router.post("/color-code/{instance}/display-names")
 async def post_display_names(
     odb_id: str,

@@ -52,6 +52,14 @@ const featureEdgeVtxIdxs = {}
 const regionMeshEdgesLines = {}   // instName → LineSegments
 const regionOutlineLines   = {}   // instName → LineSegments
 
+// ── Line elements (beam / truss) ──────────────────────────────────────────
+const lineMeshes     = {}   // instName → LineSegments (beam/truss)
+const pointMeshes    = {}   // instName → Points (MASS)
+const couplingMeshes = {}   // instName → LineSegments (RBE2 spiders)
+
+// ── Orientation triads (model-level named CSYS) ───────────────────────────
+let orientationLines = null   // single merged LineSegments for all triads
+
 let _deformAnimActive = false  // animation loop guard
 
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
@@ -344,6 +352,10 @@ function _applyClipping(planes) {
   })
   Object.values(meshEdgesLines).forEach(l    => { if (l?.material) l.material.clippingPlanes = planes })
   Object.values(featureEdgesLines).forEach(l => { if (l?.material) l.material.clippingPlanes = planes })
+  Object.values(lineMeshes).forEach(l        => { if (l?.material) l.material.clippingPlanes = planes })
+  Object.values(pointMeshes).forEach(p       => { if (p?.material) p.material.clippingPlanes = planes })
+  Object.values(couplingMeshes).forEach(l    => { if (l?.material) l.material.clippingPlanes = planes })
+  if (orientationLines?.material) orientationLines.material.clippingPlanes = planes
   requestRender()
 }
 
@@ -842,6 +854,10 @@ async function loadGeometry(instances) {
   for (const [k, l] of Object.entries(featureEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete featureEdgesLines[k]; delete featureEdgeVtxIdxs[k] }
   for (const [k, l] of Object.entries(regionMeshEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionMeshEdgesLines[k] }
   for (const [k, l] of Object.entries(regionOutlineLines))   { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionOutlineLines[k] }
+  for (const [k, l] of Object.entries(lineMeshes))           { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete lineMeshes[k] }
+  for (const [k, p] of Object.entries(pointMeshes))          { modelGroup.remove(p); p.geometry.dispose(); p.material.dispose(); delete pointMeshes[k] }
+  for (const [k, l] of Object.entries(couplingMeshes))       { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete couplingMeshes[k] }
+  if (orientationLines) { modelGroup.remove(orientationLines); orientationLines.geometry.dispose(); orientationLines.material.dispose(); orientationLines = null }
   Object.values(store.instanceMeshes).forEach(im => _disposeInstance(im))
   Object.keys(store.instanceMeshes).forEach(k => delete store.instanceMeshes[k])
   Object.keys(origPositions).forEach(k => delete origPositions[k])
@@ -881,7 +897,132 @@ async function loadGeometry(instances) {
     emit('model-loaded', { bbox: { min: combinedBox.min.toArray(), max: combinedBox.max.toArray(), axMin: combinedBox.min, axMax: combinedBox.max } })
   }
   store.setStatus(`Loaded ${instances.length} instance(s) — ${totalTris} triangles total`, 'ok')
+  await Promise.all([
+    loadLineElements(instances),
+    loadPointElements(instances),
+    loadCouplingLines(instances),
+    loadOrientations(combinedBox),
+  ])
   requestRender()
+}
+
+// ── Line Elements (beam / truss) ──────────────────────────────────────────
+async function loadLineElements(instances) {
+  await Promise.all(instances.map(async instName => {
+    try {
+      const res = await http.get(
+        store.getApiUrl(`geometry/${encodeURIComponent(instName)}/lines`),
+        { responseType: 'arraybuffer' }
+      )
+      const sec = parseL3BE(res.data)
+      if (!sec.line_positions || sec.line_positions.data.length === 0) return
+      const positions = new Float32Array(sec.line_positions.data)
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      const mat = new THREE.LineBasicMaterial({ color: 0x4488ff, linewidth: 1 })
+      if (clipPlane) mat.clippingPlanes = [clipPlane]
+      const line = new THREE.LineSegments(geo, mat)
+      modelGroup.add(line)
+      lineMeshes[instName] = line
+    } catch { /* instance has no line element data */ }
+  }))
+}
+
+// ── Point Elements (MASS / ROTARYI) ──────────────────────────────────────
+async function loadPointElements(instances) {
+  await Promise.all(instances.map(async instName => {
+    try {
+      const res = await http.get(
+        store.getApiUrl(`geometry/${encodeURIComponent(instName)}/points`),
+        { responseType: 'arraybuffer' }
+      )
+      const sec = parseL3BE(res.data)
+      if (!sec.point_positions || sec.point_positions.data.length === 0) return
+      const positions = new Float32Array(sec.point_positions.data)
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      const mat = new THREE.PointsMaterial({ color: 0xff8800, size: 6, sizeAttenuation: false })
+      if (clipPlane) mat.clippingPlanes = [clipPlane]
+      const pts = new THREE.Points(geo, mat)
+      modelGroup.add(pts)
+      pointMeshes[instName] = pts
+    } catch { /* instance has no point element data */ }
+  }))
+}
+
+// ── Coupling Lines (RBE2 / KINEMATIC) ────────────────────────────────────
+async function loadCouplingLines(instances) {
+  await Promise.all(instances.map(async instName => {
+    try {
+      const res = await http.get(
+        store.getApiUrl(`geometry/${encodeURIComponent(instName)}/couplings`),
+        { responseType: 'arraybuffer' }
+      )
+      const sec = parseL3BE(res.data)
+      if (!sec.coupling_positions || sec.coupling_positions.data.length === 0) return
+      const positions = new Float32Array(sec.coupling_positions.data)
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      const mat = new THREE.LineBasicMaterial({ color: 0xff6600, linewidth: 1 })
+      if (clipPlane) mat.clippingPlanes = [clipPlane]
+      const line = new THREE.LineSegments(geo, mat)
+      modelGroup.add(line)
+      couplingMeshes[instName] = line
+    } catch { /* instance has no coupling data */ }
+  }))
+}
+
+// ── Orientation Triads (model-level named CSYS) ───────────────────────────
+async function loadOrientations(bbox) {
+  try {
+    const res = await http.get(store.getApiUrl('geometry/orientations'))
+    const { orientations } = res
+    if (!orientations || orientations.length === 0) return
+
+    // Axis line length = 5% of bbox diagonal, fallback to 1.0
+    const scale = (bbox && !bbox.isEmpty())
+      ? bbox.min.distanceTo(bbox.max) * 0.12
+      : 1.0
+
+    // If origin is at/near (0,0,0) and outside the model bbox, relocate to bbox center.
+    // INP *ORIENTATION has no explicit position — global origin is a placeholder.
+    const bboxCenter = (bbox && !bbox.isEmpty()) ? bbox.getCenter(new THREE.Vector3()) : new THREE.Vector3()
+    const _resolveOrigin = (ori) => {
+      const [ox, oy, oz] = ori.origin
+      const atGlobalOrigin = Math.abs(ox) < 1e-6 && Math.abs(oy) < 1e-6 && Math.abs(oz) < 1e-6
+      if (atGlobalOrigin && bbox && !bbox.isEmpty() && !bbox.containsPoint(new THREE.Vector3(ox, oy, oz))) {
+        return [bboxCenter.x, bboxCenter.y, bboxCenter.z]
+      }
+      return [ox, oy, oz]
+    }
+
+    // Build interleaved line segments: 3 axes × 2 endpoints per orientation
+    // Colour palette: red=e1, green=e2, blue=e3
+    const palette = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    const posArr = new Float32Array(orientations.length * 3 * 2 * 3)
+    const colArr = new Float32Array(orientations.length * 3 * 2 * 3)
+    let pi = 0, ci = 0
+    for (const ori of orientations) {
+      const [ox, oy, oz] = _resolveOrigin(ori)
+      for (let ax = 0; ax < 3; ax++) {
+        const [ex, ey, ez] = ori.axes[ax]
+        const [r, g, b]    = palette[ax]
+        posArr[pi++] = ox;              posArr[pi++] = oy;              posArr[pi++] = oz
+        posArr[pi++] = ox + ex * scale; posArr[pi++] = oy + ey * scale; posArr[pi++] = oz + ez * scale
+        colArr[ci++] = r; colArr[ci++] = g; colArr[ci++] = b
+        colArr[ci++] = r; colArr[ci++] = g; colArr[ci++] = b
+      }
+    }
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3))
+    geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3))
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2, depthTest: false })
+    if (clipPlane) mat.clippingPlanes = [clipPlane]
+    orientationLines = new THREE.LineSegments(geo, mat)
+    orientationLines.renderOrder = 999
+    modelGroup.add(orientationLines)
+  } catch { /* no orientation data */ }
 }
 
 // ── Edge vertex index helpers ─────────────────────────────────────────────
@@ -1145,7 +1286,9 @@ async function loadRegionHighlight(scheme, regions, types) {
   store.setStatus(`Loading region highlight for ${regionList.length} region(s)…`)
 
   for (const regionInfo of regionList) {
-    const { name: region, r, g, b } = regionInfo
+    // legend_key is the raw label used for the API call; name is the display name
+    const region = regionInfo.legend_key ?? regionInfo.name
+    const { r, g, b } = regionInfo
     const threeColor = new THREE.Color(r, g, b)
 
     for (const type of typeList) {

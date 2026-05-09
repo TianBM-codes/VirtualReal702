@@ -67,7 +67,9 @@ ABAQUS_TO_FACTORY: Dict[str, str] = {
     # ---- shell ----
     "S3":      "TRI3",
     "S3R":     "TRI3",
+    "S6":      "TRI6",
     "STRI3":   "TRI3",
+    "STRI65":  "TRI6",
     "S4":      "QUAD4",
     "S4R":     "QUAD4",
     "S4R5":    "QUAD4",
@@ -105,10 +107,28 @@ ABAQUS_TO_FACTORY: Dict[str, str] = {
     "CONN3D2":  "LINE2",
 }
 
+# Ordered longest-first so multi-char suffixes (OS, RH, MH, RT, R5) are
+# matched before their single-char components.
+_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+
 
 def map_element_type(abaqus_type: str) -> Optional[str]:
-    """Return canonical geometry name, or None if unknown."""
-    return ABAQUS_TO_FACTORY.get(abaqus_type.upper())
+    """Return canonical geometry name, or None if unknown.
+
+    Strips Abaqus variant suffixes (R, H, I, T, M, OS, RH, …) one at a time
+    until a known base type is found, so e.g. S8RT → S8R → QUAD8.
+    """
+    s = abaqus_type.upper()
+    while True:
+        result = ABAQUS_TO_FACTORY.get(s)
+        if result is not None:
+            return result
+        for suf in _ABAQUS_VARIANT_SUFFIXES:
+            if s.endswith(suf) and len(s) > len(suf):
+                s = s[:-len(suf)]
+                break
+        else:
+            return None
 
 
 # ---------------------------------------------------------------------------

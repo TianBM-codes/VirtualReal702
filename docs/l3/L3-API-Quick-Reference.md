@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（Color Code display-names 接口；elset/section scheme 补全；PUT→POST；scheme 参数改为可选；region-mesh-edges / region-outline 接口）
+更新时间：2026-05-09（新增 legend-entries、legend 端点；新增 node-displacements 批量节点位移查询接口）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -132,7 +132,9 @@ project_id + result_group
 | POST | `/api/projects` | 创建 project，提交 `.inp` 几何解析或 `.odb` 全量解析 |
 | POST | `/api/projects/{source_project_id}/clone` | 克隆 project workspace 和 registry 记录 |
 | POST | `/api/projects/{project_id}/results` | 给 project 追加 ODB 结果组 |
+| POST | `/api/projects/{project_id}/rerun-l2` | 重新运行 L2 预处理（刷新几何缓存） |
 | GET | `/api/projects/{project_id}/logs` | 查询解析进度日志，支持增量轮询 |
+| POST | `/api/projects/{project_id}/logs/clear` | 清空该 project 的全部日志 |
 | GET | `/api/projects/{project_id}` | 查询 project 详情 |
 | GET | `/api/projects/{project_id}/summary` | 读取 `model_summary.json` |
 | PATCH | `/api/projects/{project_id}/results/{result_group}` | 修改结果组显示名 |
@@ -149,6 +151,10 @@ project_id + result_group
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/render-buffers` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/element-mesh-edges` |
 | geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/feature-edges` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/lines` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/points` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/{instance}/couplings` |
+| geometry | GET | `/api/odb/{odb_id}/geometry/orientations` |
 | geometry | POST | `/api/odb/{odb_id}/geometry/{instance}/render-buffers-subset` |
 | results | GET | `/api/odb/{odb_id}/results/frame-colors` |
 | results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
@@ -163,6 +169,9 @@ project_id + result_group
 | user field | DELETE | `/api/odb/{odb_id}/results/user-field` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/schemes` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/legend` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
+| color code | POST | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
 | color code | POST | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/region-mesh-edges` |
@@ -173,6 +182,7 @@ project_id + result_group
 | query | POST | `/api/odb/{odb_id}/query/render-faces` |
 | query | POST | `/api/odb/{odb_id}/query/surface-patch` |
 | query | GET | `/api/odb/{odb_id}/query/nearest-face` |
+| query | POST | `/api/odb/{odb_id}/query/node-displacements` |
 | external | POST | `/api/odb/{odb_id}/results/external-field` |
 
 ## 3. Jobs
@@ -557,6 +567,29 @@ async function pollLogs(odbId) {
 - 只解析 `field_prefix` 命中的字段
 - 不重新解析几何、不生成新的三角面片
 
+### `POST /api/projects/{project_id}/rerun-l2`
+
+触发 L2 预处理（`ingest.py`）重新运行，用于后端 L2 逻辑升级后刷新几何缓存（例如新增了线单元渲染支持）。
+
+**前提条件**：`geom_status` 必须为 `ready` 或 `error`；其他状态返回 409。
+
+**运行期间**：`geom_status` 置为 `l2_running`，所有几何接口（`render-buffers`、`feature-edges`、`lines` 等）返回 503，避免读到写一半的 HDF5 文件。
+
+响应（HTTP 202）：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "project_id": "proj-001",
+    "geom_status": "l2_pending"
+  },
+  "message": ""
+}
+```
+
+进度通过 `GET /api/projects/{project_id}/logs` 实时查询，`stage` 为 `l2_ingest` 或 `l2_done`。重跑前可先调 `POST .../logs/clear` 清空旧日志。
+
 ### `GET /api/projects/{project_id}`
 
 返回结构同列表中的单个 project。
@@ -874,6 +907,49 @@ L3BE sections：
 ### `GET /api/odb/{odb_id}/geometry/{instance}/feature-edges`
 
 返回格式与 `element-mesh-edges` 相同，但只包含边界和折痕等 feature edges。
+
+### `GET /api/odb/{odb_id}/geometry/orientations`
+
+返回模型级别的命名坐标系（来自 INP 的 `*ORIENTATION` 或 ODB 的 `datumCsyses`）。
+
+响应 JSON：
+
+```json
+{
+  "orientations": [
+    {
+      "name":   "ORI-1",
+      "system": "RECTANGULAR",
+      "origin": [0.0, 0.0, 0.0],
+      "axes":   [[1,0,0], [0,1,0], [0,0,1]]
+    }
+  ]
+}
+```
+
+- `axes[0]` = 局部 1 轴（X，前端显示为红色）
+- `axes[1]` = 局部 2 轴（Y，前端显示为绿色）
+- `axes[2]` = 局部 3 轴（Z，前端显示为蓝色）
+- 无命名坐标系时返回 `{"orientations": []}`，不报错。
+- 前端渲染：每个坐标系在 origin 处画三条 RGB 彩线，线长 = bbox 对角线的 5%。
+
+### `GET /api/odb/{odb_id}/geometry/{instance}/lines`
+
+返回梁/桁架等**线单元**的端点线段数据（B31、B32、T3D2、T3D3、PIPE31、PIPE32 等）。
+
+线单元没有面，不包含在 `render-buffers` 的三角面片中，需要单独获取并用 `THREE.LineSegments` 渲染。
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 | 说明 |
+|---|---|---|---|
+| `line_positions` | `[N*2, 3]` | `float32` | 交错端点对：第 2i 行和第 2i+1 行是第 i 条线段的两个端点 |
+| `elem_labels` | `[N]` | `int32` | 每条线段对应的 Abaqus 单元 label（用于拾取） |
+
+说明：
+- 无独立响应头；线段数 N 可由 `line_positions.shape[0] / 2` 计算得到（前端直接读 payload shape）。
+- 该实例无线单元时返回空 payload（`line_positions` shape `[0, 3]`），不报错。
+- `line_positions` 格式与 `THREE.LineSegments` 的 `BufferGeometry` 直接兼容。
 
 ### `POST /api/odb/{odb_id}/geometry/{instance}/render-buffers-subset`
 
@@ -1352,6 +1428,72 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
 }
 ```
 
+### `GET /api/odb/{odb_id}/color-code/{instance}/legend`
+
+轻量接口：只返回颜色映射表，不构建顶点色数组。适合仅需要图例信息的场景（面板展示、颜色选择器）。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `set_names` | elset 时必填 | 逗号分隔的集合名称 |
+
+响应 `data.legend` 数组，每项：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | int | 调色板索引（0-based） |
+| `legend_key` | string | 原始内部 key（用于 region-outline / region-mesh-edges API 调用） |
+| `name` | string | 显示名称（已合并用户自定义名称覆盖） |
+| `r / g / b` | float | 0–1 范围颜色（已合并用户自定义颜色覆盖） |
+
+前端调用示例（`useOdbApi.js`）：
+```js
+const res = await api.fetchLegend(instance, scheme)
+const legend = res.data?.legend ?? []
+```
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/legend-entries`
+
+返回当前 scheme 所有 legend 条目，供 LegendEditor 浮窗使用。包含面数统计、默认 title（section scheme 自动推断材料名）、用户自定义名称和颜色覆盖。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `set_names` | elset 时必填 | 逗号分隔的集合名称 |
+
+响应 `data.entries` 数组，每项：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `legend_key` | string | 原始内部 key（用于 API 调用） |
+| `default_title` | string | 自动推断的默认标题（section 方案为材料名） |
+| `display_name` | string \| null | 用户自定义名称，null 表示未设置 |
+| `color_r/g/b` | float | 当前实际颜色（已合并用户覆盖或调色板自动分配） |
+| `user_color` | bool | true = 颜色来自用户覆盖 |
+| `user_name` | bool | true = 名称来自用户覆盖 |
+| `face_count` | int | 该条目对应的渲染面数 |
+
+### `POST /api/odb/{odb_id}/color-code/{instance}/legend-entries`
+
+批量保存 legend 条目的名称和颜色覆盖。传 null 表示清除该覆盖（恢复自动分配）。
+
+查询参数：`scheme`（必填）
+
+请求 body（`application/json`，数组）：
+
+```json
+[
+  {"legend_key": "Region 1", "display_name": "顶板", "color_r": 0.27, "color_g": 0.52, "color_b": 0.95},
+  {"legend_key": "Region 2", "display_name": null, "color_r": null, "color_g": null, "color_b": null}
+]
+```
+
+存储在 `manifest.db` `display_names` 表（新增 `color_r/g/b` 列），重启保留。
+
 ### `GET /api/odb/{odb_id}/color-code/{instance}/region-mesh-edges`
 
 返回指定区域的**单元网格边**（每条有限元单元的真实边界，四边形仍显示为四边形，不是三角面片对角线）。
@@ -1553,6 +1695,49 @@ node mode 响应字段：
 - `normal`
 - `closest_point`
 - `distance`
+
+### `POST /api/odb/{odb_id}/query/node-displacements`
+
+按节点编号批量查询位移结果（U1、U2、U3、USUM）。step 和 frame 可选，默认最后一个 step 的最后一帧。
+
+请求 body（`application/json`）：
+
+```json
+{
+  "nodes": ["PART-1-1::5", "PART-1-1::8", "PART-2-1::12"],
+  "step": "Step-1",
+  "frame": 5,
+  "result_group": null
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `nodes` | 是 | 节点标识符列表，格式 `INSTANCE_NAME::NODE_LABEL` |
+| `step` | 否 | Step 名称；省略时取最后一个 step |
+| `frame` | 否 | 帧索引（0-based）；省略时取该 step 最后一帧 |
+| `result_group` | 否 | project 模式下的 result_group |
+
+响应 `data`：
+
+```json
+{
+  "step": "Step-1",
+  "frame": 5,
+  "frame_value": 1.0,
+  "results": [
+    {"node_id": "PART-1-1::5", "instance": "PART-1-1", "label": 5,
+     "U1": 0.0012, "U2": -0.0003, "U3": 0.0045, "USUM": 0.00472},
+    {"node_id": "PART-1-1::8", "instance": "PART-1-1", "label": 8,
+     "U1": null, "U2": null, "U3": null, "USUM": null,
+     "error": "node label 8 not found"}
+  ]
+}
+```
+
+- 结果顺序与输入 `nodes` 顺序一致
+- 找不到的节点返回 null 值并附 `error` 字段
+- 同一 instance 的节点在一次 H5 IO 内批量读取，性能好
 
 ## 12. External Result Write
 

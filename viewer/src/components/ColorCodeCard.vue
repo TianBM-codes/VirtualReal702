@@ -1,12 +1,29 @@
 <template>
   <div class="card" v-if="store.meta && schemes.length > 0">
-    <h2>Color Code</h2>
+    <div style="display:flex;align-items:center;margin-bottom:6px">
+      <h2 style="margin:0;flex:1">Color Code</h2>
+      <button v-if="scheme && scheme !== 'instance'"
+              @click="showEditor = !showEditor"
+              style="font-size:10px;padding:2px 7px;background:#21262d;border:1px solid #30363d;border-radius:3px;color:#58a6ff;cursor:pointer">
+        {{ showEditor ? '关闭编辑' : '编辑 Sets' }}
+      </button>
+    </div>
 
     <label>Scheme</label>
     <select v-model="scheme">
       <option value="">— None —</option>
       <option v-for="s in schemes" :key="s" :value="s">{{ SCHEME_LABELS[s] || s }}</option>
     </select>
+
+    <LegendEditor
+      :visible="showEditor && !!scheme && scheme !== 'instance'"
+      :scheme="scheme"
+      :set-names="scheme === 'elset' ? selectedElsets : []"
+      @close="showEditor = false"
+      @region-highlight="opts => emit('region-highlight', opts)"
+      @clear-region-highlight="emit('clear-region-highlight')"
+      @saved="apply"
+    />
 
     <!-- Elset 多选框（只在 elset 方案时显示） -->
     <template v-if="scheme === 'elset'">
@@ -81,6 +98,7 @@
 import { ref, computed, watch } from 'vue'
 import { useViewerStore } from '../store/viewer'
 import { useOdbApi }      from '../composables/useOdbApi'
+import LegendEditor       from './LegendEditor.vue'
 
 const store = useViewerStore()
 const api   = useOdbApi()
@@ -93,6 +111,7 @@ const schemes        = ref([])
 const elsets         = ref([])
 const selectedElsets = ref([])
 const legend         = ref([])
+const showEditor     = ref(false)
 
 // Region highlight state
 const selectedRegions      = ref([])
@@ -103,6 +122,9 @@ const highlightableRegions = computed(() =>
 )
 
 const r = (v) => Math.round(v * 255)
+
+// Close editor when scheme changes
+watch(scheme, () => { showEditor.value = false; legend.value = []; selectedRegions.value = [] })
 
 // Load schemes when currentInstance changes
 watch(() => store.currentInstance, async inst => {

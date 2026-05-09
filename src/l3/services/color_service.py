@@ -140,61 +140,13 @@ def get_color_code(
             {"instance": instance},
         )
 
-    if scheme == "etype":
-        labels = _labels_from_etype(etype_arr)
-    elif scheme == "section":
-        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
-    elif scheme in ("material", "section_type"):
-        attr_name = "material_name" if scheme == "material" else "section_type"
-        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
-    elif scheme == "elset":
-        if not set_names:
-            raise ValidationError("set_names required for elset scheme", {})
-        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
-    else:
-        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
-
-    # Build legend
-    # For elset: named sets get palette colors (in selection order), "other" gets grey
-    # For other schemes: first-occurrence order
-    if scheme == "elset" and set_names:
-        # Fixed order: selected sets first (palette colors), then "other" (grey)
-        ordered = list(set_names) + ["other"]
-        present = set(labels)
-        ordered = [v for v in ordered if v in present]
-        unique_vals = ordered
-    else:
-        unique_vals = list(dict.fromkeys(labels))
-
-    val_to_id = {v: i for i, v in enumerate(unique_vals)}
-
-    legend = []
-    palette_idx = 0   # counts only "real" categories to keep palette consistent
-    for i, val in enumerate(unique_vals):
-        if scheme == "elset":
-            rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
-        elif not val or val in ("(none)", "(unknown)"):
-            rgb = _GREY   # unassigned elements always grey
-        else:
-            rgb = _PALETTE[palette_idx % len(_PALETTE)]
-        if rgb != _GREY:
-            palette_idx += 1
-        legend.append({
-            "id": i, "name": val or "(none)",
-            "r": rgb[0], "g": rgb[1], "b": rgb[2],
-        })
+    labels, legend, val_to_id = _compute_labels_and_legend(
+        idx, instance, scheme, set_names, etype_arr, elem_row_arr
+    )
 
     pal_arr     = np.array([(e["r"], e["g"], e["b"]) for e in legend], dtype=np.float32)
     face_codes  = np.array([val_to_id[v] for v in labels], dtype=np.int32)
     face_colors = pal_arr[face_codes]   # [Rf, 3]
-
-    # Substitute user-defined display names (stored in manifest.db display_names table).
-    from ..infra.manifest_repo import ManifestRepo
-    display_names = ManifestRepo(idx.workspace).get_display_names(instance, scheme)
-    if display_names:
-        for item in legend:
-            if item["name"] in display_names:
-                item["name"] = display_names[item["name"]]
 
     vtx_ti = idx.vtx_tri_idx.get(instance)
     if vtx_ti is not None:
@@ -202,6 +154,37 @@ def get_color_code(
     else:
         colors = np.repeat(face_colors, 3, axis=0)  # [Rf*3, 3] Triangle Soup
     return colors, legend
+
+
+def get_legend(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]] = None,
+) -> List[dict]:
+    """Return only the legend list without building vertex colors.
+
+    Cheap alternative to get_color_code() when only the color mapping is needed
+    (e.g. populating a legend panel without loading geometry).
+
+    Returns list[{id, legend_key, name, r, g, b}] — same format as the legend
+    embedded in the GET /color-code/{instance} L3BE response.
+    """
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
+
+    etype_arr    = idx.source_elem_etype.get(instance)
+    elem_row_arr = idx.render_source_elem_row.get(instance)
+    if etype_arr is None or elem_row_arr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' not found in ODB '{idx.odb_id}'",
+            {"instance": instance},
+        )
+
+    _, legend, _ = _compute_labels_and_legend(
+        idx, instance, scheme, set_names, etype_arr, elem_row_arr
+    )
+    return legend
 
 
 # ---------------------------------------------------------------------------
@@ -385,3 +368,225 @@ def _labels_from_elsets(
         code_to_name[si + 1] = sn
 
     return [code_to_name[c] for c in face_set]
+
+
+# ---------------------------------------------------------------------------
+# Shared labels + legend computation (used by get_color_code and get_legend)
+# ---------------------------------------------------------------------------
+
+def _compute_labels_and_legend(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]],
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+) -> Tuple[List[str], List[dict], Dict[str, int]]:
+    """Compute per-face labels and build the legend list.
+
+    Returns (labels, legend, val_to_id) where:
+      labels    — per-face string label, length Rf
+      legend    — [{id, legend_key, name, r, g, b}, ...]
+      val_to_id — {label_value: palette_index} for building color arrays
+    """
+    if scheme == "etype":
+        labels = _labels_from_etype(etype_arr)
+    elif scheme == "section":
+        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme in ("material", "section_type"):
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
+    elif scheme == "elset":
+        if not set_names:
+            raise ValidationError("set_names required for elset scheme", {})
+        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
+    else:
+        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
+
+    if scheme == "elset" and set_names:
+        ordered     = list(set_names) + ["other"]
+        present     = set(labels)
+        unique_vals = [v for v in ordered if v in present]
+    else:
+        unique_vals = list(dict.fromkeys(labels))
+    val_to_id = {v: i for i, v in enumerate(unique_vals)}
+
+    from ..infra.manifest_repo import ManifestRepo
+    overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
+
+    legend: List[dict] = []
+    palette_idx = 0
+    for i, val in enumerate(unique_vals):
+        if scheme == "elset":
+            auto_rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+        elif not val or val in ("(none)", "(unknown)"):
+            auto_rgb = _GREY
+        else:
+            auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
+        if auto_rgb != _GREY:
+            palette_idx += 1
+        ov  = overrides.get(val, {})
+        rgb = (ov["color_r"], ov["color_g"], ov["color_b"]) if ov.get("color_r") is not None else auto_rgb
+        legend.append({
+            "id":         i,
+            "legend_key": val or "(none)",
+            "name":       ov.get("display_name") or val or "(none)",
+            "r":          rgb[0],
+            "g":          rgb[1],
+            "b":          rgb[2],
+        })
+
+    return labels, legend, val_to_id
+
+
+# ---------------------------------------------------------------------------
+# Legend entries (for LegendEditor floating panel)
+# ---------------------------------------------------------------------------
+
+def get_legend_entries(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]] = None,
+) -> List[dict]:
+    """
+    Return legend entries for the given scheme enriched with:
+      legend_key, default_title, display_name, effective color,
+      user_color/user_name flags, face_count.
+    Used by GET /color-code/{instance}/legend-entries.
+    """
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
+
+    etype_arr    = idx.source_elem_etype.get(instance)
+    elem_row_arr = idx.render_source_elem_row.get(instance)
+    if etype_arr is None or elem_row_arr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' not found in ODB '{idx.odb_id}'",
+            {"instance": instance},
+        )
+
+    if scheme == "etype":
+        labels = _labels_from_etype(etype_arr)
+    elif scheme == "section":
+        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme in ("material", "section_type"):
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
+    elif scheme == "elset":
+        if not set_names:
+            raise ValidationError("set_names required for elset scheme", {})
+        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
+    else:
+        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
+
+    from collections import Counter
+    face_counts = Counter(labels)
+
+    if scheme == "elset" and set_names:
+        ordered   = list(set_names) + ["other"]
+        present   = set(labels)
+        unique_vals = [v for v in ordered if v in present]
+    else:
+        unique_vals = list(dict.fromkeys(labels))
+
+    # Palette assignment (identical logic to get_color_code)
+    palette_colors: Dict[str, Tuple[float, float, float]] = {}
+    palette_idx = 0
+    for val in unique_vals:
+        if scheme == "elset":
+            rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+        elif not val or val in ("(none)", "(unknown)"):
+            rgb = _GREY
+        else:
+            rgb = _PALETTE[palette_idx % len(_PALETTE)]
+        if rgb != _GREY:
+            palette_idx += 1
+        palette_colors[val] = rgb
+
+    from ..infra.manifest_repo import ManifestRepo
+    overrides     = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
+    default_titles = _default_titles_section(idx, instance, etype_arr, elem_row_arr, unique_vals) \
+        if scheme == "section" else {}
+
+    entries = []
+    for val in unique_vals:
+        ov         = overrides.get(val, {})
+        user_name  = "display_name" in ov
+        user_color = "color_r" in ov
+        if user_color:
+            r, g, b = ov["color_r"], ov["color_g"], ov["color_b"]
+        else:
+            r, g, b = palette_colors[val]
+        entries.append({
+            "legend_key":    val,
+            "default_title": default_titles.get(val, val),
+            "display_name":  ov.get("display_name"),   # None if not set
+            "color_r":       r,
+            "color_g":       g,
+            "color_b":       b,
+            "user_color":    user_color,
+            "user_name":     user_name,
+            "face_count":    face_counts.get(val, 0),
+        })
+    return entries
+
+
+def _default_titles_section(
+    idx: ModelIndex,
+    instance: str,
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+    unique_vals: List[str],
+) -> Dict[str, str]:
+    """For section scheme: map each 'Region N' label → material_name as default title."""
+    avd = idx.averaging_data.get(instance)
+    if avd is None:
+        return {}
+
+    # Build lookup: (etype_bytes, elem_row) → domain_id
+    # Also collect one representative element per domain for material lookup
+    lookup:     Dict[Tuple[bytes, int], int] = {}
+    domain_rep: Dict[int, Tuple[str, int]]   = {}
+    for i in range(len(avd["elem_etype"])):
+        etype_b = avd["elem_etype"][i].tobytes().rstrip(b"\x00")
+        row     = int(avd["elem_row"][i])
+        did     = int(avd["default_domain_id"][i])
+        lookup[(etype_b, row)] = did
+        if did not in domain_rep:
+            domain_rep[did] = (etype_b.decode("ascii", errors="replace"), row)
+
+    # Rebuild domain_id → "Region N" (same ordering as _labels_from_section_id)
+    Rf = len(etype_arr)
+    domain_per_face = np.array([
+        lookup.get((etype_arr[fi].tobytes().rstrip(b"\x00"), int(elem_row_arr[fi])), -1)
+        for fi in range(Rf)
+    ], dtype=np.int32)
+    unique_ids  = sorted(set(int(v) for v in domain_per_face if v >= 0))
+    id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
+    label_to_id = {v: k for k, v in id_to_label.items()}
+
+    # Look up material_name for each domain's representative element from geometry H5
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = (ManifestRepo(idx.workspace).get_geom_path(instance)
+               or os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5"))
+    domain_mat: Dict[int, str] = {}
+    if os.path.exists(geom_h5):
+        with h5py.File(geom_h5, "r") as f:
+            for did, (etype, row) in domain_rep.items():
+                grp = f.get(f"elements/{etype}")
+                mat = ""
+                if grp is not None and "material_name" in grp:
+                    raw = grp["material_name"][row]
+                    mat = raw.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+                domain_mat[did] = mat
+
+    result: Dict[str, str] = {}
+    for val in unique_vals:
+        if val in ("(none)", "(unknown)"):
+            result[val] = val
+            continue
+        did = label_to_id.get(val)
+        mat = domain_mat.get(did, "") if did is not None else ""
+        result[val] = mat if mat else val
+    return result
