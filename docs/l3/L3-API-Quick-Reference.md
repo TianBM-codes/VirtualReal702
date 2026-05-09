@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-08（新增 geometry orientations 端点）
+更新时间：2026-05-09（新增 legend-entries 端点，支持颜色+名称覆盖；legend 响应增加 legend_key 字段）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -169,6 +169,8 @@ project_id + result_group
 | user field | DELETE | `/api/odb/{odb_id}/results/user-field` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/schemes` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}` |
+| color code | GET | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
+| color code | POST | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
 | color code | POST | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/region-mesh-edges` |
@@ -1423,6 +1425,46 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
   "message": ""
 }
 ```
+
+### `GET /api/odb/{odb_id}/color-code/{instance}/legend-entries`
+
+返回当前 scheme 所有 legend 条目，供 LegendEditor 浮窗使用。包含面数统计、默认 title（section scheme 自动推断材料名）、用户自定义名称和颜色覆盖。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `set_names` | elset 时必填 | 逗号分隔的集合名称 |
+
+响应 `data.entries` 数组，每项：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `legend_key` | string | 原始内部 key（用于 API 调用） |
+| `default_title` | string | 自动推断的默认标题（section 方案为材料名） |
+| `display_name` | string \| null | 用户自定义名称，null 表示未设置 |
+| `color_r/g/b` | float | 当前实际颜色（已合并用户覆盖或调色板自动分配） |
+| `user_color` | bool | true = 颜色来自用户覆盖 |
+| `user_name` | bool | true = 名称来自用户覆盖 |
+| `face_count` | int | 该条目对应的渲染面数 |
+
+### `POST /api/odb/{odb_id}/color-code/{instance}/legend-entries`
+
+批量保存 legend 条目的名称和颜色覆盖。传 null 表示清除该覆盖（恢复自动分配）。
+
+查询参数：`scheme`（必填）
+
+请求 body（`application/json`，数组）：
+
+```json
+[
+  {"legend_key": "Region 1", "display_name": "顶板", "color_r": 0.27, "color_g": 0.52, "color_b": 0.95},
+  {"legend_key": "Region 2", "display_name": null, "color_r": null, "color_g": null, "color_b": null}
+]
+```
+
+存储在 `manifest.db` `display_names` 表（新增 `color_r/g/b` 列），重启保留。
 
 ### `GET /api/odb/{odb_id}/color-code/{instance}/region-mesh-edges`
 
