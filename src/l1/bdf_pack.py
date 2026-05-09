@@ -261,41 +261,28 @@ def _first_val(v, default=0.0):
 
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
-def pack(bdf_path, workspace):
-    from pyNastran.bdf.bdf import BDF
-
-    t_total = time.time()
-    bdf_basename = os.path.basename(bdf_path)
-    inst_name = os.path.splitext(bdf_basename)[0].upper()
+def _pack_model(model, inst_name, workspace):
+    """Write L1 HDF5 + manifest.db for a pre-loaded pyNastran model (BDF or OP2Geom)."""
     part_name = inst_name
     inst_safe = safe(inst_name)
 
-    print('BDF pack: {} → instance \'{}\''.format(bdf_basename, inst_name))
-
-    # ── 1. Read BDF ───────────────────────────────────────────────────────────
-    print('  Reading BDF ...')
-    t0 = time.time()
-    bdf = BDF(debug=False)
-    bdf.read_bdf(bdf_path, xref=True)
-    print('  Read done. ({})'.format(_fmt_t(time.time() - t0)))
-
-    # ── 2. Nodes — global coordinates via pyNastran coordinate transformer ────
+    # ── Nodes ─────────────────────────────────────────────────────────────────
     print('  Extracting nodes ...')
     t0 = time.time()
     # pyNastran ≥1.3: get_xyz_in_coord returns ndarray ordered by sorted nids
-    node_labels = np.array(sorted(bdf.nodes.keys()), dtype=np.int32)
-    node_coords = bdf.get_xyz_in_coord(cid=0).astype(np.float64)
+    node_labels = np.array(sorted(model.nodes.keys()), dtype=np.int32)
+    node_coords = model.get_xyz_in_coord(cid=0).astype(np.float64)
     N_nodes = len(node_labels)
     print('    {} nodes ({})'.format(N_nodes, _fmt_t(time.time() - t0)))
 
-    # ── 3. Pass 1: classify and group elements ────────────────────────────────
+    # ── Classify and group elements ───────────────────────────────────────────
     print('  Classifying elements ...')
     t0 = time.time()
     # abaqus_etype → {labels, conn_gids, pids, n_faces}
     etype_groups = {}
     skipped_counts = {}
 
-    for eid, elem in bdf.elements.items():
+    for eid, elem in model.elements.items():
         card = elem.type
 
         if card in HIGH_ORDER_SKIP:
@@ -347,7 +334,7 @@ def pack(bdf_path, workspace):
     sid_to_sty = {}
     for pid in all_pids:
         sid  = pid_to_sid[pid]
-        prop = bdf.properties.get(pid)
+        prop = model.properties.get(pid)
         if prop is None:
             continue
         ptype = prop.type
@@ -466,7 +453,7 @@ def pack(bdf_path, workspace):
 
         # Sections
         for pid in all_pids:
-            prop = bdf.properties.get(pid)
+            prop = model.properties.get(pid)
             if prop is None:
                 continue
             ptype = prop.type
@@ -511,7 +498,7 @@ def pack(bdf_path, workspace):
                 sg.attrs['material_name'] = ''
 
         # Materials
-        for mid, mat in bdf.materials.items():
+        for mid, mat in model.materials.items():
             mg = f.require_group('materials/{}'.format(mid))
             if mat.type == 'MAT1':
                 mg.attrs['type'] = 'ISOTROPIC'
@@ -535,7 +522,7 @@ def pack(bdf_path, workspace):
 
         # Instance sets — SET1 (node sets)
         isets_node_counts = {}
-        for sid, s in bdf.sets.items():
+        for sid, s in model.sets.items():
             if getattr(s, 'type', '') == 'SET1' or not hasattr(s, 'type'):
                 set_safe = safe('SET1_{}'.format(sid))
                 ids_arr = np.array(sorted(s.ids), dtype=np.int32)
@@ -544,7 +531,7 @@ def pack(bdf_path, workspace):
 
         # Instance sets — SET3 (element sets, stored in bdf.set3s in some pyNastran versions)
         isets_elem_counts = {}
-        for sid, s in getattr(bdf, 'set3s', {}).items():
+        for sid, s in getattr(model, 'set3s', {}).items():
             set_safe = safe('SET3_{}'.format(sid))
             ids_arr = np.array(sorted(s.ids), dtype=np.int32)
             f.create_dataset('instance_sets/element_sets/{}'.format(set_safe), data=ids_arr)
@@ -620,6 +607,20 @@ def pack(bdf_path, workspace):
     db_conn.commit()
     db_conn.close()
 
+
+
+def pack(bdf_path, workspace):
+    from pyNastran.bdf.bdf import BDF
+    t_total = time.time()
+    bdf_basename = os.path.basename(bdf_path)
+    inst_name = os.path.splitext(bdf_basename)[0].upper()
+    print('BDF pack: {} → instance \'{}\''.format(bdf_basename, inst_name))
+    print('  Reading BDF ...')
+    t0 = time.time()
+    model = BDF(debug=False)
+    model.read_bdf(bdf_path, xref=True)
+    print('  Read done. ({})'.format(_fmt_t(time.time() - t0)))
+    _pack_model(model, inst_name, workspace)
     print('BDF pack complete. ({} total)'.format(_fmt_t(time.time() - t_total)))
 
 
