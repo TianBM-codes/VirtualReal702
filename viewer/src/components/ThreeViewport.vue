@@ -532,6 +532,21 @@ function setFaceColor(cf, fi, geo, r, g, b) {
 // Color mode is per-instance (all chunks share the same render mode), but
 // material is per-chunk so mode switches must propagate to every chunk.
 
+function toggleFaceOpacity() {
+  const ims = Object.values(store.instanceMeshes)
+  if (ims.length === 0) return
+  const isOpaque = ims[0].chunks[0]?.mesh.material.opacity === 1.0
+  const newOpacity = isOpaque ? 0.15 : 1.0
+  for (const im of ims) {
+    for (const c of im.chunks) {
+      c.mesh.material.transparent = newOpacity < 1
+      c.mesh.material.opacity = newOpacity
+      c.mesh.material.needsUpdate = true
+    }
+  }
+  requestRender()
+}
+
 function setColorMode(im, mode) {
   if (im.colorMode === mode) return
   im.colorMode = mode
@@ -1886,5 +1901,5 @@ function resetModelTransform() {
   requestRender()
 }
 
-defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform, loadRegionHighlight, clearRegionHighlight })
+defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform, loadRegionHighlight, clearRegionHighlight, toggleFaceOpacity })
 </script>
