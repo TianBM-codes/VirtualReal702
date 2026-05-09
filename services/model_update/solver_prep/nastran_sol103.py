@@ -88,13 +88,33 @@ def format_float_like_bas(value):
         return text
 
 
+def resolve_dynamic_norm(value):
+    raw = value if value is not None else 2
+    if isinstance(raw, str):
+        token = raw.strip().upper()
+        if not token:
+            return "MASS"
+        if token in {"1", "MAX"}:
+            return "MAX"
+        if token in {"2", "MASS"}:
+            return "MASS"
+        raise ValueError("dynamic.norm must be one of: 1, 2, MAX, MASS")
+
+    norm = int(raw)
+    if norm == 1:
+        return "MAX"
+    if norm == 2:
+        return "MASS"
+    raise ValueError("dynamic.norm must be 1 or 2")
+
+
 def build_eigrl_fields(settings):
     sid = 1
 
     fmin = float(settings.get("dynamic.fmin", 0.0))
     fmax = float(settings.get("dynamic.fmax", 1.0e9))
     vectors = int(settings.get("dynamic.vectors", 10))
-    norm = int(settings.get("dynamic.norm", 2))
+    normalization = resolve_dynamic_norm(settings.get("dynamic.norm", 2))
     size = int(settings.get("dynamic.size", 0))
 
     v1 = format_float_like_bas(fmin)
@@ -110,11 +130,6 @@ def build_eigrl_fields(settings):
         maxset = str(size)
     else:
         maxset = ""
-
-    if norm == 1:
-        normalization = "MAX"
-    else:
-        normalization = "MASS"
 
     return {
         "sid": str(sid),
