@@ -1085,6 +1085,7 @@ async function loadEdges(type) {
       )
       const sec        = parseL3BE(res.data)
       const edgePosArr = new Float32Array(sec.edge_positions.data)
+      console.log(`[loadEdges] ${instName}: ${edgePosArr.length / 6} edges received`)
 
       // Build vertex index map so edges can follow deformation
       idxsMap[instName] = _buildEdgeVtxIndex(edgePosArr, im.globalPositions)
@@ -1097,7 +1098,7 @@ async function loadEdges(type) {
       modelGroup.add(line)
       linesMap[instName] = line
       totalEdges += edgePosArr.length / 6
-    } catch { /* instance has no edge data */ }
+    } catch (e) { console.warn(`[loadEdges] ${instName} failed:`, e) }
   }))
 
   const label = type === 'mesh' ? 'Mesh grid' : 'Feature edges'
