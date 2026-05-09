@@ -1063,7 +1063,7 @@ async function loadEdges(type) {
   const instNames = Object.keys(store.instanceMeshes)
   if (instNames.length === 0) return
   const endpoint  = type === 'mesh' ? 'element-mesh-edges' : 'feature-edges'
-  const color     = type === 'mesh' ? 0x111111 : 0xffff00
+  const color     = type === 'mesh' ? 0xff0000 : 0xffff00
   const linesMap  = type === 'mesh' ? meshEdgesLines  : featureEdgesLines
   const idxsMap   = type === 'mesh' ? meshEdgeVtxIdxs : featureEdgeVtxIdxs
 
