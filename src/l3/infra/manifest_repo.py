@@ -32,13 +32,23 @@ class ManifestRepo:
                     instance     TEXT NOT NULL,
                     scheme       TEXT NOT NULL,
                     legend_key   TEXT NOT NULL,
-                    display_name TEXT NOT NULL,
+                    display_name TEXT,
+                    color_r      REAL,
+                    color_g      REAL,
+                    color_b      REAL,
                     PRIMARY KEY (instance, scheme, legend_key)
                 )
             """)
             conn.commit()
         except Exception:
             pass
+        # Migration: add color columns to existing display_names table
+        for col in ("color_r REAL", "color_g REAL", "color_b REAL"):
+            try:
+                conn.execute(f"ALTER TABLE display_names ADD COLUMN {col}")
+                conn.commit()
+            except Exception:
+                pass
         return conn
 
     def get_instance_info(self, instance_name: str):
@@ -877,7 +887,61 @@ class ManifestRepo:
         with self._get_conn() as conn:
             for key, val in names.items():
                 conn.execute(
-                    "INSERT OR REPLACE INTO display_names VALUES (?,?,?,?)",
+                    """INSERT INTO display_names (instance, scheme, legend_key, display_name)
+                       VALUES (?,?,?,?)
+                       ON CONFLICT(instance, scheme, legend_key)
+                       DO UPDATE SET display_name=excluded.display_name""",
                     (instance, scheme, key, val),
+                )
+            conn.commit()
+
+    def get_legend_overrides(self, instance: str, scheme: str) -> dict:
+        """Return {legend_key: {display_name?, color_r?, color_g?, color_b?}} for the given instance + scheme."""
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT legend_key, display_name, color_r, color_g, color_b"
+                    " FROM display_names WHERE instance=? AND scheme=?",
+                    (instance, scheme),
+                ).fetchall()
+            result = {}
+            for r in rows:
+                entry = {}
+                if r["display_name"] is not None:
+                    entry["display_name"] = r["display_name"]
+                if r["color_r"] is not None:
+                    entry["color_r"] = r["color_r"]
+                    entry["color_g"] = r["color_g"]
+                    entry["color_b"] = r["color_b"]
+                if entry:
+                    result[r["legend_key"]] = entry
+            return result
+        except Exception:
+            return {}
+
+    def set_legend_overrides(self, instance: str, scheme: str, entries: list) -> None:
+        """
+        Upsert legend overrides. entries: list of dicts with keys:
+          legend_key (required), display_name (str | None), color_r/g/b (float | None).
+        Pass None for display_name / color to clear that override.
+        """
+        with self._get_conn() as conn:
+            for e in entries:
+                key = e["legend_key"]
+                dn  = e.get("display_name")
+                cr  = e.get("color_r")
+                cg  = e.get("color_g")
+                cb  = e.get("color_b")
+                conn.execute(
+                    """INSERT INTO display_names
+                           (instance, scheme, legend_key, display_name, color_r, color_g, color_b)
+                       VALUES (?,?,?,?,?,?,?)
+                       ON CONFLICT(instance, scheme, legend_key)
+                       DO UPDATE SET
+                           display_name = excluded.display_name,
+                           color_r      = excluded.color_r,
+                           color_g      = excluded.color_g,
+                           color_b      = excluded.color_b""",
+                    (instance, scheme, key, dn, cr, cg, cb),
                 )
             conn.commit()

@@ -104,7 +104,10 @@ CREATE TABLE IF NOT EXISTS display_names (
     instance     TEXT NOT NULL,
     scheme       TEXT NOT NULL,
     legend_key   TEXT NOT NULL,
-    display_name TEXT NOT NULL,
+    display_name TEXT,
+    color_r      REAL,
+    color_g      REAL,
+    color_b      REAL,
     PRIMARY KEY (instance, scheme, legend_key)
 );
 """

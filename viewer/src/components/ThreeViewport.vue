@@ -1286,7 +1286,9 @@ async function loadRegionHighlight(scheme, regions, types) {
   store.setStatus(`Loading region highlight for ${regionList.length} region(s)…`)
 
   for (const regionInfo of regionList) {
-    const { name: region, r, g, b } = regionInfo
+    // legend_key is the raw label used for the API call; name is the display name
+    const region = regionInfo.legend_key ?? regionInfo.name
+    const { r, g, b } = regionInfo
     const threeColor = new THREE.Color(r, g, b)
 
     for (const type of typeList) {
