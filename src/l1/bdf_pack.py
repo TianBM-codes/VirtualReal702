@@ -282,9 +282,9 @@ def pack(bdf_path, workspace):
     # ── 2. Nodes — global coordinates via pyNastran coordinate transformer ────
     print('  Extracting nodes ...')
     t0 = time.time()
-    xyz_dict = bdf.get_xyz_in_coord(cid=0)
-    node_labels = np.array(sorted(xyz_dict.keys()), dtype=np.int32)
-    node_coords = np.array([xyz_dict[n] for n in node_labels], dtype=np.float64)
+    # pyNastran ≥1.3: get_xyz_in_coord returns ndarray ordered by sorted nids
+    node_labels = np.array(sorted(bdf.nodes.keys()), dtype=np.int32)
+    node_coords = bdf.get_xyz_in_coord(cid=0).astype(np.float64)
     N_nodes = len(node_labels)
     print('    {} nodes ({})'.format(N_nodes, _fmt_t(time.time() - t0)))
 
@@ -429,12 +429,16 @@ def pack(bdf_path, workspace):
             grp.create_dataset('section_id', data=sec_ids)
 
             if fei_list:
+                # Pad to uniform width (some element types e.g. C3D6 mix tri/quad faces)
+                max_fn = max(len(r) for r in fnc_list)
+                fnc_padded = np.full((len(fnc_list), max_fn), -1, dtype=np.int32)
+                for _i, _r in enumerate(fnc_list):
+                    fnc_padded[_i, :len(_r)] = _r
                 grp.create_dataset('face_elem_idx',
                                    data=np.array(fei_list, dtype=np.int32))
                 grp.create_dataset('face_seq',
                                    data=np.array(fseq_list, dtype=np.int32))
-                grp.create_dataset('face_node_conn',
-                                   data=np.array(fnc_list, dtype=np.int32))
+                grp.create_dataset('face_node_conn', data=fnc_padded)
             else:
                 grp.create_dataset('face_elem_idx',  data=np.array([], dtype=np.int32))
                 grp.create_dataset('face_seq',       data=np.array([], dtype=np.int32))

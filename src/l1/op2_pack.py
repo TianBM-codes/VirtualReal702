@@ -259,6 +259,9 @@ def pack(op2_path, workspace, result_group):
     print('  Reading OP2 ...')
     t0 = time.time()
     op2 = OP2(debug=False)
+    # post=-2 OP2 files hit a benign EOF condition that pyNastran 1.4 treats as
+    # FatalError; disabling stop_on_unclosed_file lets reading complete normally.
+    op2.stop_on_unclosed_file = False
     op2.read_op2(op2_path)
     print('  Read done. ({})'.format(_fmt_t(time.time() - t0)))
 
