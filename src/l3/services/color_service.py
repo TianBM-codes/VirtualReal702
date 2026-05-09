@@ -140,66 +140,9 @@ def get_color_code(
             {"instance": instance},
         )
 
-    if scheme == "etype":
-        labels = _labels_from_etype(etype_arr)
-    elif scheme == "section":
-        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
-    elif scheme in ("material", "section_type"):
-        attr_name = "material_name" if scheme == "material" else "section_type"
-        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
-    elif scheme == "elset":
-        if not set_names:
-            raise ValidationError("set_names required for elset scheme", {})
-        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
-    else:
-        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
-
-    # Build legend
-    # For elset: named sets get palette colors (in selection order), "other" gets grey
-    # For other schemes: first-occurrence order
-    if scheme == "elset" and set_names:
-        # Fixed order: selected sets first (palette colors), then "other" (grey)
-        ordered = list(set_names) + ["other"]
-        present = set(labels)
-        ordered = [v for v in ordered if v in present]
-        unique_vals = ordered
-    else:
-        unique_vals = list(dict.fromkeys(labels))
-
-    val_to_id = {v: i for i, v in enumerate(unique_vals)}
-
-    # Load user overrides (display name + color) from manifest.db
-    from ..infra.manifest_repo import ManifestRepo
-    overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
-
-    legend = []
-    palette_idx = 0   # counts only "real" categories to keep palette consistent
-    for i, val in enumerate(unique_vals):
-        if scheme == "elset":
-            auto_rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
-        elif not val or val in ("(none)", "(unknown)"):
-            auto_rgb = _GREY   # unassigned elements always grey
-        else:
-            auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
-        if auto_rgb != _GREY:
-            palette_idx += 1
-
-        # Apply user color override if present (palette idx still advances normally)
-        ov = overrides.get(val, {})
-        if ov.get("color_r") is not None:
-            rgb = (ov["color_r"], ov["color_g"], ov["color_b"])
-        else:
-            rgb = auto_rgb
-
-        # Apply user display name override if present
-        display_name = ov.get("display_name") or val or "(none)"
-
-        legend.append({
-            "id":         i,
-            "legend_key": val or "(none)",   # raw key for API calls
-            "name":       display_name,      # display name (may be user-overridden)
-            "r": rgb[0], "g": rgb[1], "b": rgb[2],
-        })
+    labels, legend, val_to_id = _compute_labels_and_legend(
+        idx, instance, scheme, set_names, etype_arr, elem_row_arr
+    )
 
     pal_arr     = np.array([(e["r"], e["g"], e["b"]) for e in legend], dtype=np.float32)
     face_codes  = np.array([val_to_id[v] for v in labels], dtype=np.int32)
@@ -211,6 +154,37 @@ def get_color_code(
     else:
         colors = np.repeat(face_colors, 3, axis=0)  # [Rf*3, 3] Triangle Soup
     return colors, legend
+
+
+def get_legend(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]] = None,
+) -> List[dict]:
+    """Return only the legend list without building vertex colors.
+
+    Cheap alternative to get_color_code() when only the color mapping is needed
+    (e.g. populating a legend panel without loading geometry).
+
+    Returns list[{id, legend_key, name, r, g, b}] — same format as the legend
+    embedded in the GET /color-code/{instance} L3BE response.
+    """
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
+
+    etype_arr    = idx.source_elem_etype.get(instance)
+    elem_row_arr = idx.render_source_elem_row.get(instance)
+    if etype_arr is None or elem_row_arr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' not found in ODB '{idx.odb_id}'",
+            {"instance": instance},
+        )
+
+    _, legend, _ = _compute_labels_and_legend(
+        idx, instance, scheme, set_names, etype_arr, elem_row_arr
+    )
+    return legend
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +368,75 @@ def _labels_from_elsets(
         code_to_name[si + 1] = sn
 
     return [code_to_name[c] for c in face_set]
+
+
+# ---------------------------------------------------------------------------
+# Shared labels + legend computation (used by get_color_code and get_legend)
+# ---------------------------------------------------------------------------
+
+def _compute_labels_and_legend(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]],
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+) -> Tuple[List[str], List[dict], Dict[str, int]]:
+    """Compute per-face labels and build the legend list.
+
+    Returns (labels, legend, val_to_id) where:
+      labels    — per-face string label, length Rf
+      legend    — [{id, legend_key, name, r, g, b}, ...]
+      val_to_id — {label_value: palette_index} for building color arrays
+    """
+    if scheme == "etype":
+        labels = _labels_from_etype(etype_arr)
+    elif scheme == "section":
+        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme in ("material", "section_type"):
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
+    elif scheme == "elset":
+        if not set_names:
+            raise ValidationError("set_names required for elset scheme", {})
+        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
+    else:
+        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
+
+    if scheme == "elset" and set_names:
+        ordered     = list(set_names) + ["other"]
+        present     = set(labels)
+        unique_vals = [v for v in ordered if v in present]
+    else:
+        unique_vals = list(dict.fromkeys(labels))
+    val_to_id = {v: i for i, v in enumerate(unique_vals)}
+
+    from ..infra.manifest_repo import ManifestRepo
+    overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
+
+    legend: List[dict] = []
+    palette_idx = 0
+    for i, val in enumerate(unique_vals):
+        if scheme == "elset":
+            auto_rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+        elif not val or val in ("(none)", "(unknown)"):
+            auto_rgb = _GREY
+        else:
+            auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
+        if auto_rgb != _GREY:
+            palette_idx += 1
+        ov  = overrides.get(val, {})
+        rgb = (ov["color_r"], ov["color_g"], ov["color_b"]) if ov.get("color_r") is not None else auto_rgb
+        legend.append({
+            "id":         i,
+            "legend_key": val or "(none)",
+            "name":       ov.get("display_name") or val or "(none)",
+            "r":          rgb[0],
+            "g":          rgb[1],
+            "b":          rgb[2],
+        })
+
+    return labels, legend, val_to_id
 
 
 # ---------------------------------------------------------------------------
