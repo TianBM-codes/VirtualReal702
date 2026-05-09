@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from src.l3.core.errors import NotFoundError, ValidationError
 
-from .model_update_meta_service import resolve_abaqus_command
+from .model_update_meta_service import resolve_abaqus_command, resolve_nastran_command
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import (
     build_sol103_controls,
@@ -212,11 +212,11 @@ def _build_abaqus_command(
 
 
 def _build_nastran_command(
-    nastran: str,
+    nastran: Optional[str],
     bdf_path: Path,
     extra_args: Optional[List[str]] = None,
 ) -> List[str]:
-    command = [str(nastran), bdf_path.name]
+    command = [resolve_nastran_command(nastran), bdf_path.name]
     command.extend(_normalize_extra_args(extra_args))
     return command
 
@@ -352,7 +352,7 @@ def run_nastran_sol200_job(
     parameters: Optional[List[Dict[str, Any]]] = None,
     responses: Optional[List[Dict[str, Any]]] = None,
     settings: Optional[Dict[str, Any]] = None,
-    nastran: str = "nastran",
+    nastran: Optional[str] = None,
     run_solver: bool = True,
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
@@ -577,7 +577,7 @@ def run_nastran_sol103_job(
     input_bdf: str,
     output_bdf: Optional[str] = None,
     settings: Optional[Dict[str, Any]] = None,
-    nastran: str = "nastran",
+    nastran: Optional[str] = None,
     run_solver: bool = True,
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,

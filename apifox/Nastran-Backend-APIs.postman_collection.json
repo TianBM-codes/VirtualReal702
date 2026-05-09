@@ -27,7 +27,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": \"MASS\",\n    \"dynamic.size\": 0,\n    \"compute.lumped\": true,\n    \"fem.k6rot\": -1.0\n  }\n}"
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": 2,\n    \"dynamic.size\": 0,\n    \"compute.lumped\": true,\n    \"fem.k6rot\": -1.0\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/solver/nastran/sol103/preview",
@@ -55,7 +55,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol103.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": \"MASS\"\n  }\n}"
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol103.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": 2\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/solver/nastran/sol103/generate",
@@ -83,7 +83,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol103.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": \"MASS\"\n  },\n  \"nastran\": \"nastran\",\n  \"run_solver\": true,\n  \"timeout_sec\": 600,\n  \"extra_args\": [],\n  \"async_submit\": false\n}"
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol103.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": 2\n  },\n  \"run_solver\": true,\n  \"timeout_sec\": 600,\n  \"extra_args\": [],\n  \"async_submit\": false\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/solver/nastran/sol103/run",
@@ -116,7 +116,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    },\n    {\n      \"name\": \"E1\",\n      \"type\": \"E\",\n      \"material_id\": 201,\n      \"initial\": 210000.0,\n      \"lower\": 180000.0,\n      \"upper\": 230000.0\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": \"MASS\"\n  }\n}"
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    },\n    {\n      \"name\": \"E1\",\n      \"type\": \"E\",\n      \"material_id\": 201,\n      \"initial\": 210000.0,\n      \"lower\": 180000.0,\n      \"upper\": 230000.0\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": 2\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/solver/nastran/sol200/preview",
@@ -144,7 +144,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol200.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": \"MASS\"\n  }\n}"
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol200.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": 2\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/solver/nastran/sol200/generate",
@@ -172,7 +172,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol200.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": \"MASS\"\n  },\n  \"nastran\": \"nastran\",\n  \"run_solver\": true,\n  \"timeout_sec\": 1200,\n  \"extra_args\": [],\n  \"async_submit\": false\n}"
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol200.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": 2\n  },\n  \"run_solver\": true,\n  \"timeout_sec\": 1200,\n  \"extra_args\": [],\n  \"async_submit\": false\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/solver/nastran/sol200/run",

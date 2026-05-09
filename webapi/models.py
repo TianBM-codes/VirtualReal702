@@ -458,7 +458,7 @@ class NastranSol103RunRequest(BaseModel):
     input_bdf: str
     output_bdf: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
-    nastran: str = "nastran"
+    nastran: Optional[str] = None
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
@@ -513,7 +513,7 @@ class NastranSol200RunRequest(BaseModel):
     parameters: List[NastranParameterRequest]
     responses: List[NastranResponseRequest]
     settings: Dict[str, Any] = Field(default_factory=dict)
-    nastran: str = "nastran"
+    nastran: Optional[str] = None
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
