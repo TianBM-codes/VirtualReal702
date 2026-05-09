@@ -841,18 +841,26 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs, surf_tri
     # Boundary edges are always real
     keep = counts == 1
 
-    # Shared edges: keep unless they are a triangulation diagonal.
-    # Diagonal = shared by 2 triangles from the same (etype_code, elem_row, face_seq).
-    # Must include etype_code because elem_row is 0-based per element type —
-    # elem_row=5 of S4R and elem_row=5 of C3D8R are different elements.
-    is_shared = counts == 2
+    # Shared edges (count >= 2): keep unless it is a triangulation diagonal.
+    # A diagonal comes from splitting a quad face into 2 triangles: both triangles
+    # belong to the SAME face → same (etype_code, elem_row, face_seq).
+    # This can only produce count==2 from that face (one tri on each side of diagonal).
+    # If count > 2, at least one extra triangle comes from a DIFFERENT face → real edge.
+    #
+    # Example where count==3 occurs: two bonded shell elements (Shell_A, Shell_B)
+    # sharing an edge that is also shared by an adjacent solid side face.
+    # The edge appears once per shell element face + once from the solid side face = 3.
+    # Old code (counts==2 only) would silently drop these → interior shell grid lines missing.
+    is_shared = counts >= 2
     if is_shared.any():
         sorted_faces = face_of_edge[order]
         shared_idx   = np.where(is_shared)[0]
         face_a = sorted_faces[starts[shared_idx]]
         face_b = sorted_faces[starts[shared_idx] + 1]
 
-        is_diagonal = (
+        # Diagonal check only applies when count==2; count>2 can never be pure diagonal.
+        is_count2    = counts[shared_idx] == 2
+        is_diagonal  = is_count2 & (
             (surf_tri_ec[face_a] == surf_tri_ec[face_b]) &
             (surf_tri_er[face_a] == surf_tri_er[face_b]) &
             (surf_tri_fs[face_a] == surf_tri_fs[face_b])
