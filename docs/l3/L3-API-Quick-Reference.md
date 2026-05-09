@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-09（新增 legend-entries、legend 端点，支持颜色+名称覆盖；legend 响应增加 legend_key 字段）
+更新时间：2026-05-09（新增 legend-entries、legend 端点；新增 node-displacements 批量节点位移查询接口）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -182,6 +182,7 @@ project_id + result_group
 | query | POST | `/api/odb/{odb_id}/query/render-faces` |
 | query | POST | `/api/odb/{odb_id}/query/surface-patch` |
 | query | GET | `/api/odb/{odb_id}/query/nearest-face` |
+| query | POST | `/api/odb/{odb_id}/query/node-displacements` |
 | external | POST | `/api/odb/{odb_id}/results/external-field` |
 
 ## 3. Jobs
@@ -1694,6 +1695,49 @@ node mode 响应字段：
 - `normal`
 - `closest_point`
 - `distance`
+
+### `POST /api/odb/{odb_id}/query/node-displacements`
+
+按节点编号批量查询位移结果（U1、U2、U3、USUM）。step 和 frame 可选，默认最后一个 step 的最后一帧。
+
+请求 body（`application/json`）：
+
+```json
+{
+  "nodes": ["PART-1-1::5", "PART-1-1::8", "PART-2-1::12"],
+  "step": "Step-1",
+  "frame": 5,
+  "result_group": null
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `nodes` | 是 | 节点标识符列表，格式 `INSTANCE_NAME::NODE_LABEL` |
+| `step` | 否 | Step 名称；省略时取最后一个 step |
+| `frame` | 否 | 帧索引（0-based）；省略时取该 step 最后一帧 |
+| `result_group` | 否 | project 模式下的 result_group |
+
+响应 `data`：
+
+```json
+{
+  "step": "Step-1",
+  "frame": 5,
+  "frame_value": 1.0,
+  "results": [
+    {"node_id": "PART-1-1::5", "instance": "PART-1-1", "label": 5,
+     "U1": 0.0012, "U2": -0.0003, "U3": 0.0045, "USUM": 0.00472},
+    {"node_id": "PART-1-1::8", "instance": "PART-1-1", "label": 8,
+     "U1": null, "U2": null, "U3": null, "USUM": null,
+     "error": "node label 8 not found"}
+  ]
+}
+```
+
+- 结果顺序与输入 `nodes` 顺序一致
+- 找不到的节点返回 null 值并附 `error` 字段
+- 同一 instance 的节点在一次 H5 IO 内批量读取，性能好
 
 ## 12. External Result Write
 

@@ -1478,3 +1478,158 @@ def surface_patch(
         node_labels=node_labels_out,
         node_positions=node_positions_out,
     )
+
+
+def node_displacements(
+    registry: OdbRegistry,
+    odb_id: str,
+    nodes: List[str],
+    step: Optional[str] = None,
+    frame: Optional[int] = None,
+    result_group: Optional[str] = None,
+) -> dict:
+    """
+    Return U displacement (U1, U2, U3, USUM) for a list of nodes.
+
+    Node identifiers use the format "INSTANCE_NAME::NODE_LABEL", e.g. "PART-1-1::5".
+    step and frame default to the last step / last frame in that step.
+
+    Reads each instance's entire frame slice in one H5 IO, then indexes by node row
+    — efficient even for large meshes.
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    repo = ManifestRepo(idx.workspace)
+
+    # ── Resolve default step / frame ─────────────────────────────────────────
+    if step is None or frame is None:
+        steps = repo.list_steps()
+        if not steps:
+            raise NotFoundError("No steps found in this ODB", {})
+        if step is None:
+            step = steps[-1]["step_name"]
+        frames = repo.list_frames(step)
+        if not frames:
+            raise NotFoundError(f"No frames in step '{step}'", {})
+        if frame is None:
+            frame = int(frames[-1]["frame_idx"])
+
+    # Resolve frame_value for context info
+    frame_value = None
+    for fr in repo.list_frames(step):
+        if int(fr["frame_idx"]) == frame:
+            frame_value = fr.get("frame_value")
+            break
+
+    # ── Parse node identifiers and group by instance ──────────────────────────
+    from collections import defaultdict
+    instance_requests: dict = defaultdict(list)  # inst → [(label, original_nid), ...]
+    for nid in nodes:
+        if "::" not in nid:
+            raise ValidationError(
+                f"Invalid node identifier '{nid}', expected 'INSTANCE::LABEL'",
+                {"node": nid},
+            )
+        inst, label_str = nid.rsplit("::", 1)
+        try:
+            label = int(label_str)
+        except ValueError:
+            raise ValidationError(
+                f"Invalid label '{label_str}' in node identifier '{nid}'",
+                {"node": nid},
+            )
+        instance_requests[inst].append((label, nid))
+
+    u_h5_path = _result_h5_path(idx.workspace, step, "U", result_group)
+
+    # ── Process each instance ─────────────────────────────────────────────────
+    result_map: dict = {}   # nid → result entry
+
+    for inst, label_nid_list in instance_requests.items():
+        labels_req = np.array([lbl for lbl, _ in label_nid_list], dtype=np.int64)
+        nids_req   = [nid for _, nid in label_nid_list]
+
+        # Stub entries (all nulls) — will be filled if data is available
+        for nid, lbl in zip(nids_req, labels_req):
+            result_map[nid] = {
+                "node_id": nid,
+                "instance": inst,
+                "label": int(lbl),
+                "U1": None, "U2": None, "U3": None, "USUM": None,
+            }
+
+        # Load geometry H5 to resolve label → row
+        geom_h5 = ManifestRepo(idx.workspace).get_geom_path(inst) or \
+                  os.path.join(idx.workspace, "l1", "geometry", f"{inst}.h5")
+        if not os.path.exists(geom_h5):
+            for nid in nids_req:
+                result_map[nid]["error"] = "geometry file not found"
+            continue
+
+        try:
+            with h5py.File(geom_h5, "r") as f:
+                if "nodes/labels" not in f:
+                    for nid in nids_req:
+                        result_map[nid]["error"] = "nodes/labels not in geometry"
+                    continue
+                stored_labels = f["nodes/labels"][:]   # sorted ascending [N_nodes]
+        except Exception as exc:
+            for nid in nids_req:
+                result_map[nid]["error"] = f"geometry read error: {exc}"
+            continue
+
+        # Binary search: label → row (searchsorted on sorted array)
+        rows = np.searchsorted(stored_labels, labels_req)
+        valid = (rows < len(stored_labels)) & (stored_labels[rows] == labels_req)
+
+        for i, nid in enumerate(nids_req):
+            if not valid[i]:
+                result_map[nid]["error"] = f"node label {int(labels_req[i])} not found"
+
+        valid_rows   = rows[valid]
+        valid_nids   = [nids_req[i] for i in range(len(nids_req)) if valid[i]]
+        if len(valid_nids) == 0:
+            continue
+
+        # Read U field — one H5 open, read entire frame slice, then index
+        if not os.path.exists(u_h5_path):
+            continue
+        try:
+            with h5py.File(u_h5_path, "r") as f:
+                ds_path = f"/NODAL/{inst}/data"
+                if ds_path not in f:
+                    continue
+                ds = f[ds_path]                     # [num_frames, N_nodes, n_comp]
+                if frame >= ds.shape[0]:
+                    continue
+                # Read only the requested node rows from this frame
+                # h5py supports advanced indexing but fancy indexing on dim 0
+                # is fastest; dim 1 slice-then-index is OK for arbitrary rows
+                frame_data = ds[frame]              # [N_nodes, n_comp]
+                max_row = int(valid_rows.max())
+                if max_row >= frame_data.shape[0]:
+                    continue
+                u_block = frame_data[valid_rows]    # [K, n_comp]
+        except Exception as exc:
+            logger.warning("Could not read U field for node-displacements: %s", exc)
+            continue
+
+        for i, nid in enumerate(valid_nids):
+            row_data = u_block[i]
+            nc = len(row_data)
+            u1 = float(row_data[0]) if nc > 0 else None
+            u2 = float(row_data[1]) if nc > 1 else None
+            u3 = float(row_data[2]) if nc > 2 else None
+            usum = float(np.sqrt(u1**2 + u2**2 + u3**2)) if (u1 is not None and u2 is not None and u3 is not None) else None
+            result_map[nid].update({"U1": u1, "U2": u2, "U3": u3, "USUM": usum})
+            result_map[nid].pop("error", None)
+
+    # Return results in original input order
+    return {
+        "step":        step,
+        "frame":       frame,
+        "frame_value": frame_value,
+        "results":     [result_map[nid] for nid in nodes],
+    }
