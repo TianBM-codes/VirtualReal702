@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="le-panel" :style="panelStyle" @click="closePalette">
+    <div v-if="visible" class="le-panel" :style="panelStyle">
 
       <!-- Header (drag handle) -->
       <div class="le-header" @mousedown="startDrag">
@@ -45,8 +45,11 @@
               <td @click.stop style="text-align:center">
                 <div class="le-swatch"
                      :style="{ background: effectiveCss(e) }"
-                     :title="e.user_color || e._color ? '自定义颜色（点击更改）' : '自动颜色（点击更改）'"
-                     @click.stop="togglePalette($event, e)">
+                     :title="e._color ? '自定义颜色（点击更改）' : '自动颜色（点击更改）'">
+                  <input type="color"
+                         class="le-color-input"
+                         :value="toHex(e)"
+                         @change="onColorChange($event, e)" />
                   <span v-if="e._color" class="le-swatch-dot" />
                 </div>
               </td>
@@ -67,23 +70,12 @@
         <button class="le-btn" @click.stop="clearSelection">清除选择</button>
       </div>
 
-      <!-- Palette popup -->
-      <Teleport to="body">
-        <div v-if="palette.visible" class="le-palette" :style="palette.style"
-             @click.stop @mousedown.stop>
-          <div v-for="(c, i) in PALETTE" :key="i"
-               class="le-pal-swatch"
-               :style="{ background: `rgb(${c[0]},${c[1]},${c[2]})` }"
-               @click="pickColor(c)" />
-          <div class="le-pal-swatch le-pal-reset" title="恢复自动颜色" @click="resetEntryColor">↺</div>
-        </div>
-      </Teleport>
     </div>
   </Teleport>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useViewerStore } from '../store/viewer'
 import { useOdbApi } from '../composables/useOdbApi'
 
@@ -96,15 +88,6 @@ const emit = defineEmits(['close', 'region-highlight', 'clear-region-highlight',
 
 const store = useViewerStore()
 const api   = useOdbApi()
-
-// ── Palette definition (mirrors color_service._PALETTE, 0-255) ────────────
-const PALETTE = [
-  [69, 133, 242], [242,  99,  69], [ 69, 199, 112], [242, 199,  46],
-  [161,  69, 242], [ 46, 209, 230], [242, 140,  46], [242,  69, 158],
-  [120, 199,  46], [ 46, 120, 199], [199,  69,  69], [ 46, 161, 161],
-  [199, 161,  46], [140,  46, 120], [ 99, 161,  46], [ 46,  69, 161],
-]
-const GREY_CSS = 'rgb(89,89,89)'
 
 const SCHEME_NAMES = {
   section:      'Averaging Regions',
@@ -121,6 +104,24 @@ const loading  = ref(false)
 const saving   = ref(false)
 
 const schemeName = computed(() => SCHEME_NAMES[props.scheme] || props.scheme || '—')
+
+// ── Color helpers ─────────────────────────────────────────────────────────
+function toHex(e) {
+  const [r, g, b] = e._color
+    ?? [Math.round(e.color_r * 255), Math.round(e.color_g * 255), Math.round(e.color_b * 255)]
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+}
+function effectiveCss(e) {
+  if (e._color) return `rgb(${e._color[0]},${e._color[1]},${e._color[2]})`
+  return `rgb(${Math.round(e.color_r*255)},${Math.round(e.color_g*255)},${Math.round(e.color_b*255)})`
+}
+function onColorChange(evt, e) {
+  const hex = evt.target.value  // '#rrggbb'
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  e._color = [r, g, b]
+}
 
 // ── Panel position (draggable) ────────────────────────────────────────────
 const panelPos = ref({ x: Math.max(0, window.innerWidth - 360), y: 80 })
@@ -149,53 +150,6 @@ function stopDrag() {
   document.removeEventListener('mouseup',  stopDrag)
 }
 
-// ── Palette popup ─────────────────────────────────────────────────────────
-const palette = ref({ visible: false, entry: null, style: {} })
-
-function togglePalette(evt, e) {
-  if (palette.value.visible && palette.value.entry === e) {
-    palette.value.visible = false
-    return
-  }
-  const rect = evt.currentTarget.getBoundingClientRect()
-  palette.value = {
-    visible: true,
-    entry:   e,
-    style: {
-      position: 'fixed',
-      left: Math.min(rect.left, window.innerWidth - 200) + 'px',
-      top:  (rect.bottom + 4) + 'px',
-      zIndex: 10002,
-    },
-  }
-}
-function closePalette() { palette.value.visible = false }
-function pickColor(c) {
-  if (!palette.value.entry) return
-  palette.value.entry._color = c   // [r, g, b] 0-255
-  palette.value.visible = false
-}
-function resetEntryColor() {
-  if (!palette.value.entry) return
-  palette.value.entry._color = null
-  palette.value.visible = false
-}
-
-function onDocClick(e) {
-  if (!palette.value.visible) return
-  if (!e.target.closest('.le-palette') && !e.target.closest('.le-swatch')) {
-    palette.value.visible = false
-  }
-}
-
-// ── Color helpers ─────────────────────────────────────────────────────────
-function toRgbCss(r, g, b) {
-  return `rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`
-}
-function effectiveCss(e) {
-  if (e._color) return `rgb(${e._color[0]},${e._color[1]},${e._color[2]})`
-  return toRgbCss(e.color_r, e.color_g, e.color_b)
-}
 
 // ── Load entries ─────────────────────────────────────────────────────────
 watch([() => props.visible, () => props.scheme, () => store.currentInstance], async ([vis]) => {
@@ -282,9 +236,7 @@ function resetColors() {
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
-onMounted(() => document.addEventListener('click', onDocClick))
 onBeforeUnmount(() => {
-  document.removeEventListener('click', onDocClick)
   document.removeEventListener('mousemove', onDrag)
   document.removeEventListener('mouseup',  stopDrag)
 })
@@ -400,12 +352,23 @@ onBeforeUnmount(() => {
   width: 18px;
   height: 18px;
   border-radius: 3px;
-  cursor: pointer;
   border: 1px solid #30363d;
   margin: 0 auto;
   position: relative;
+  overflow: hidden;
+  cursor: pointer;
 }
 .le-swatch:hover { border-color: #58a6ff; }
+.le-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0;
+  border: none;
+}
 .le-swatch-dot {
   position: absolute;
   bottom: 1px;
@@ -415,6 +378,7 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   background: #fff;
   opacity: 0.7;
+  pointer-events: none;
 }
 
 .le-loading {
@@ -454,31 +418,4 @@ onBeforeUnmount(() => {
 }
 .le-btn:hover { background: #30363d; }
 
-/* Palette popup (teleported to body, no scoped needed — but scoped is ok here) */
-.le-palette {
-  display: grid;
-  grid-template-columns: repeat(8, 20px);
-  gap: 3px;
-  padding: 6px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 5px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-}
-.le-pal-swatch {
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  cursor: pointer;
-  border: 1px solid transparent;
-}
-.le-pal-swatch:hover { border-color: #fff; }
-.le-pal-reset {
-  background: #30363d;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #c9d1d9;
-  font-size: 13px;
-}
 </style>
