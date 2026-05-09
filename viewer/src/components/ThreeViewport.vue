@@ -1078,7 +1078,7 @@ async function loadEdges(type) {
   const instNames = Object.keys(store.instanceMeshes)
   if (instNames.length === 0) return
   const endpoint  = type === 'mesh' ? 'element-mesh-edges' : 'feature-edges'
-  const color     = type === 'mesh' ? 0xff0000 : 0xffff00
+  const color     = type === 'mesh' ? 0x111111 : 0xffff00
   const linesMap  = type === 'mesh' ? meshEdgesLines  : featureEdgesLines
   const idxsMap   = type === 'mesh' ? meshEdgeVtxIdxs : featureEdgeVtxIdxs
 
@@ -1100,7 +1100,6 @@ async function loadEdges(type) {
       )
       const sec        = parseL3BE(res.data)
       const edgePosArr = new Float32Array(sec.edge_positions.data)
-      console.log(`[loadEdges] ${instName}: ${edgePosArr.length / 6} edges received`)
 
       // Build vertex index map so edges can follow deformation
       idxsMap[instName] = _buildEdgeVtxIndex(edgePosArr, im.globalPositions)
@@ -1113,7 +1112,7 @@ async function loadEdges(type) {
       modelGroup.add(line)
       linesMap[instName] = line
       totalEdges += edgePosArr.length / 6
-    } catch (e) { console.warn(`[loadEdges] ${instName} failed:`, e) }
+    } catch { /* instance has no edge data */ }
   }))
 
   const label = type === 'mesh' ? 'Mesh grid' : 'Feature edges'
