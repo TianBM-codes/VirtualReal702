@@ -1,12 +1,26 @@
+from typing import Optional
+
 from fastapi import APIRouter, Request
 
 from services.model_update.analysis.solver_service import (
+    generate_nastran_sol200_job,
     generate_nastran_sol103_job,
+    preview_nastran_sol200_job,
     preview_nastran_sol103_job,
     run_abaqus_adjoint_job,
     run_abaqus_sensitivity_job,
+    run_nastran_sol200_job,
     run_nastran_sol103_job,
 )
+from services.model_update.importers.op2_service import (
+    build_modal_import_payload,
+    export_modal_to_vtu,
+    export_sensitivity_to_vtu,
+    preview_op2_modal,
+    preview_op2_sensitivity,
+    store_op2_sensitivity,
+)
+from services.model_update.analysis.inp_service import import_fe_modal_results
 from src.l3.core.errors import AppError
 
 from ..background_jobs import get_background_task, submit_background_task
@@ -14,9 +28,19 @@ from ..common import error_response, server_error, success_response
 from ..models import (
     AbaqusAdjointRunRequest,
     AbaqusSensitivityRunRequest,
+    NastranResponseRequest,
+    NastranSol200GenerateRequest,
+    NastranSol200PreviewRequest,
+    NastranSol200RunRequest,
     NastranSol103GenerateRequest,
     NastranSol103PreviewRequest,
     NastranSol103RunRequest,
+    Op2ModalPreviewRequest,
+    Op2ModalStoreRequest,
+    Op2ModalVtuExportRequest,
+    Op2SensitivityPreviewRequest,
+    Op2SensitivityStoreRequest,
+    Op2SensitivityVtuExportRequest,
 )
 from ..utils import log_request, model_to_dict
 
@@ -27,6 +51,20 @@ def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
     return {
         "input_bdf": body.input_bdf,
         "output_bdf": body.output_bdf,
+        "settings": body.settings,
+        "nastran": body.nastran,
+        "run_solver": body.run_solver,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
+    }
+
+
+def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
+    return {
+        "input_bdf": body.input_bdf,
+        "output_bdf": body.output_bdf,
+        "parameters": [model_to_dict(item) for item in body.parameters],
+        "responses": [model_to_dict(item) for item in body.responses],
         "settings": body.settings,
         "nastran": body.nastran,
         "run_solver": body.run_solver,
@@ -182,6 +220,233 @@ async def nastran_task_status(task_id: str):
                 details={"task_id": str(task_id)},
             )
         return success_response(data, "Nastran 任务状态获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/nastran/sol200/preview")
+async def preview_nastran_sol200_api(request: Request, body: NastranSol200PreviewRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = preview_nastran_sol200_job(
+            input_bdf=body.input_bdf,
+            parameters=[model_to_dict(item) for item in body.parameters],
+            responses=[model_to_dict(item) for item in body.responses],
+            settings=body.settings,
+        )
+        return success_response(data, "Nastran SOL200 预览成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/nastran/sol200/generate")
+async def generate_nastran_sol200_api(request: Request, body: NastranSol200GenerateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = generate_nastran_sol200_job(
+            input_bdf=body.input_bdf,
+            output_bdf=body.output_bdf,
+            parameters=[model_to_dict(item) for item in body.parameters],
+            responses=[model_to_dict(item) for item in body.responses],
+            settings=body.settings,
+        )
+        return success_response(data, "Nastran SOL200 生成成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/nastran/sol200/run")
+async def run_nastran_sol200_api(request: Request, body: NastranSol200RunRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _sol200_run_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="solver.nastran.sol200.run",
+                fn=run_nastran_sol200_job,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "Nastran SOL200 求解任务已提交")
+        data = run_nastran_sol200_job(**kwargs)
+        return success_response(data, "Nastran SOL200 求解成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/import/op2/modal/preview")
+async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = preview_op2_modal(
+            op2_path=body.op2_path,
+            bdf_path=body.bdf_path,
+            subcase_id=body.subcase_id,
+            mode_numbers=body.mode_numbers,
+            preview_node_limit=body.preview_node_limit,
+        )
+        return success_response(data, "OP2 模态预览成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+def _store_op2_modal_job(
+    *,
+    project_id: int,
+    op2_path: str,
+    bdf_path: Optional[str],
+    subcase_id: Optional[int],
+    mode_numbers: Optional[list],
+    overwrite: bool,
+    instance_name: Optional[str],
+    part_name: Optional[str],
+):
+    payload = build_modal_import_payload(
+        op2_path=op2_path,
+        bdf_path=bdf_path,
+        subcase_id=subcase_id,
+        mode_numbers=mode_numbers,
+        instance_name=instance_name,
+        part_name=part_name,
+    )
+    stored = import_fe_modal_results(
+        project_id=project_id,
+        overwrite=overwrite,
+        modes=payload["modes"],
+    )
+    stored["warnings"] = payload.get("warnings") or []
+    return stored
+
+
+@router.post("/import/op2/modal/store")
+async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = {
+            "project_id": body.project_id,
+            "op2_path": body.op2_path,
+            "bdf_path": body.bdf_path,
+            "subcase_id": body.subcase_id,
+            "mode_numbers": body.mode_numbers,
+            "overwrite": body.overwrite,
+            "instance_name": body.instance_name,
+            "part_name": body.part_name,
+        }
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="import.op2.modal.store",
+                fn=_store_op2_modal_job,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "OP2 模态导入任务已提交")
+        data = _store_op2_modal_job(**kwargs)
+        return success_response(data, "OP2 模态导入成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/export/op2/modal/vtu")
+async def export_op2_modal_vtu_api(request: Request, body: Op2ModalVtuExportRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = export_modal_to_vtu(
+            op2_path=body.op2_path,
+            bdf_path=body.bdf_path,
+            output_vtu=body.output_vtu,
+            mode_number=body.mode_number,
+            subcase_id=body.subcase_id,
+            displacement_scale=body.displacement_scale,
+        )
+        return success_response(data, "OP2 模态 VTU 导出成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/import/op2/sensitivity/preview")
+async def preview_op2_sensitivity_api(request: Request, body: Op2SensitivityPreviewRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = preview_op2_sensitivity(
+            op2_path=body.op2_path,
+            bdf_path=body.bdf_path,
+            metadata_json=body.metadata_json,
+            parameter_names=body.parameter_names,
+            response_names=body.response_names,
+        )
+        return success_response(data, "OP2 灵敏度预览成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/import/op2/sensitivity/store")
+async def store_op2_sensitivity_api(request: Request, body: Op2SensitivityStoreRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = {
+            "project_id": body.project_id,
+            "batch_no": body.batch_no,
+            "case_name": body.case_name,
+            "op2_path": body.op2_path,
+            "bdf_path": body.bdf_path,
+            "metadata_json": body.metadata_json,
+            "parameter_names": body.parameter_names,
+            "response_names": body.response_names,
+        }
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="import.op2.sensitivity.store",
+                fn=store_op2_sensitivity,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "OP2 灵敏度导入任务已提交")
+        data = store_op2_sensitivity(**kwargs)
+        return success_response(data, "OP2 灵敏度导入成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/export/op2/sensitivity/vtu")
+async def export_op2_sensitivity_vtu_api(request: Request, body: Op2SensitivityVtuExportRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = export_sensitivity_to_vtu(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+            input_bdf=body.input_bdf,
+            output_vtu=body.output_vtu,
+            response_name=body.response_name,
+            metadata_json=body.metadata_json,
+        )
+        return success_response(data, "OP2 灵敏度 VTU 导出成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

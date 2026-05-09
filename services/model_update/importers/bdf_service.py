@@ -22,7 +22,7 @@ def _safe_int(value):
     return int(value)
 
 
-def import_bdf_data(file_path, project_id, file_id, clear_before_insert=True):
+def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=True):
     """
     将 BDF 解析结果写入数据库
 

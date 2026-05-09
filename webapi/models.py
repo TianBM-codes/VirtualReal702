@@ -474,3 +474,105 @@ class NastranSol103GenerateRequest(BaseModel):
     input_bdf: str
     output_bdf: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NastranParameterRequest(BaseModel):
+    name: str
+    type: str
+    property_id: Optional[int] = None
+    material_id: Optional[int] = None
+    initial: float
+    lower: Optional[float] = None
+    upper: Optional[float] = None
+
+
+class NastranResponseRequest(BaseModel):
+    name: str
+    type: str
+    mode_number: Optional[int] = None
+
+
+class NastranSol200PreviewRequest(BaseModel):
+    input_bdf: str
+    parameters: List[NastranParameterRequest]
+    responses: List[NastranResponseRequest]
+    settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NastranSol200GenerateRequest(BaseModel):
+    input_bdf: str
+    output_bdf: Optional[str] = None
+    parameters: List[NastranParameterRequest]
+    responses: List[NastranResponseRequest]
+    settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NastranSol200RunRequest(BaseModel):
+    input_bdf: str
+    output_bdf: Optional[str] = None
+    parameters: List[NastranParameterRequest]
+    responses: List[NastranResponseRequest]
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    nastran: str = "nastran"
+    run_solver: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    async_submit: bool = False
+
+
+class Op2ModalPreviewRequest(BaseModel):
+    op2_path: str
+    bdf_path: Optional[str] = None
+    subcase_id: Optional[int] = None
+    mode_numbers: Optional[List[int]] = None
+    preview_node_limit: int = 5
+
+
+class Op2ModalStoreRequest(BaseModel):
+    project_id: int
+    op2_path: str
+    bdf_path: Optional[str] = None
+    subcase_id: Optional[int] = None
+    mode_numbers: Optional[List[int]] = None
+    overwrite: bool = True
+    instance_name: Optional[str] = None
+    part_name: Optional[str] = None
+    async_submit: bool = False
+
+
+class Op2ModalVtuExportRequest(BaseModel):
+    op2_path: str
+    bdf_path: str
+    output_vtu: str
+    mode_number: int
+    subcase_id: Optional[int] = None
+    displacement_scale: float = 1.0
+
+
+class Op2SensitivityPreviewRequest(BaseModel):
+    op2_path: str
+    bdf_path: Optional[str] = None
+    metadata_json: Optional[str] = None
+    parameter_names: Optional[List[str]] = None
+    response_names: Optional[List[str]] = None
+
+
+class Op2SensitivityStoreRequest(BaseModel):
+    project_id: int
+    batch_no: str = "1"
+    case_name: str = "nastran_sol200"
+    op2_path: str
+    bdf_path: Optional[str] = None
+    metadata_json: Optional[str] = None
+    parameter_names: Optional[List[str]] = None
+    response_names: Optional[List[str]] = None
+    async_submit: bool = False
+
+
+class Op2SensitivityVtuExportRequest(BaseModel):
+    project_id: int
+    batch_no: str = "1"
+    input_bdf: str
+    output_vtu: str
+    response_name: str
+    metadata_json: Optional[str] = None

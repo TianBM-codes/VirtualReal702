@@ -1,0 +1,400 @@
+{
+  "info": {
+    "_postman_id": "0a2816c2-efdd-4d4f-9da8-24d96d4f7402",
+    "name": "VirtualReal702 Nastran Backend APIs",
+    "description": "可直接导入 APIfox 的 Nastran 后端接口集合，覆盖 SOL103、SOL200、OP2 模态、OP2 灵敏度和 VTU 导出。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    }
+  ],
+  "item": [
+    {
+      "name": "Nastran SOL103",
+      "item": [
+        {
+          "name": "SOL103 Preview",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": \"MASS\",\n    \"dynamic.size\": 0,\n    \"compute.lumped\": true,\n    \"fem.k6rot\": -1.0\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/solver/nastran/sol103/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "solver",
+                "nastran",
+                "sol103",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "SOL103 Generate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol103.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": \"MASS\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/solver/nastran/sol103/generate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "solver",
+                "nastran",
+                "sol103",
+                "generate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "SOL103 Run",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol103.bdf\",\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 20,\n    \"dynamic.norm\": \"MASS\"\n  },\n  \"nastran\": \"nastran\",\n  \"run_solver\": true,\n  \"timeout_sec\": 600,\n  \"extra_args\": [],\n  \"async_submit\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/solver/nastran/sol103/run",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "solver",
+                "nastran",
+                "sol103",
+                "run"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Nastran SOL200",
+      "item": [
+        {
+          "name": "SOL200 Preview",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    },\n    {\n      \"name\": \"E1\",\n      \"type\": \"E\",\n      \"material_id\": 201,\n      \"initial\": 210000.0,\n      \"lower\": 180000.0,\n      \"upper\": 230000.0\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": \"MASS\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/solver/nastran/sol200/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "solver",
+                "nastran",
+                "sol200",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "SOL200 Generate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol200.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": \"MASS\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/solver/nastran/sol200/generate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "solver",
+                "nastran",
+                "sol200",
+                "generate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "SOL200 Run",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_bdf\": \"D:/demo/model.bdf\",\n  \"output_bdf\": \"D:/demo/model_sol200.bdf\",\n  \"parameters\": [\n    {\n      \"name\": \"T1\",\n      \"type\": \"H\",\n      \"property_id\": 101,\n      \"initial\": 2.0,\n      \"lower\": 1.5,\n      \"upper\": 2.5\n    }\n  ],\n  \"responses\": [\n    {\n      \"name\": \"FREQ1\",\n      \"type\": \"FREQ\",\n      \"mode_number\": 1\n    }\n  ],\n  \"settings\": {\n    \"dynamic.fmin\": 0.0,\n    \"dynamic.fmax\": 1000.0,\n    \"dynamic.vectors\": 10,\n    \"dynamic.norm\": \"MASS\"\n  },\n  \"nastran\": \"nastran\",\n  \"run_solver\": true,\n  \"timeout_sec\": 1200,\n  \"extra_args\": [],\n  \"async_submit\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/solver/nastran/sol200/run",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "solver",
+                "nastran",
+                "sol200",
+                "run"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "OP2 Modal",
+      "item": [
+        {
+          "name": "Modal Preview",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"op2_path\": \"D:/demo/model_sol103.op2\",\n  \"bdf_path\": \"D:/demo/model.bdf\",\n  \"subcase_id\": 1,\n  \"mode_numbers\": [1, 2, 3],\n  \"preview_node_limit\": 5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/import/op2/modal/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "import",
+                "op2",
+                "modal",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Modal Store",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1001,\n  \"op2_path\": \"D:/demo/model_sol103.op2\",\n  \"bdf_path\": \"D:/demo/model.bdf\",\n  \"subcase_id\": 1,\n  \"mode_numbers\": [1, 2, 3],\n  \"overwrite\": true,\n  \"instance_name\": \"MODEL-1\",\n  \"part_name\": \"PART-1\",\n  \"async_submit\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/import/op2/modal/store",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "import",
+                "op2",
+                "modal",
+                "store"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Modal VTU Export",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"op2_path\": \"D:/demo/model_sol103.op2\",\n  \"bdf_path\": \"D:/demo/model.bdf\",\n  \"output_vtu\": \"D:/demo/modal_mode_1.vtu\",\n  \"mode_number\": 1,\n  \"subcase_id\": 1,\n  \"displacement_scale\": 1.0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/export/op2/modal/vtu",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "export",
+                "op2",
+                "modal",
+                "vtu"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "OP2 Sensitivity",
+      "item": [
+        {
+          "name": "Sensitivity Preview",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"op2_path\": \"D:/demo/model_sol200.op2\",\n  \"bdf_path\": \"D:/demo/model_sol200.bdf\",\n  \"metadata_json\": \"D:/demo/model_sol200.bdf.sol200.json\",\n  \"parameter_names\": [\"T1\", \"E1\"],\n  \"response_names\": [\"FREQ1\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/import/op2/sensitivity/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "import",
+                "op2",
+                "sensitivity",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Sensitivity Store",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1001,\n  \"batch_no\": \"1\",\n  \"case_name\": \"nastran_sol200\",\n  \"op2_path\": \"D:/demo/model_sol200.op2\",\n  \"bdf_path\": \"D:/demo/model_sol200.bdf\",\n  \"metadata_json\": \"D:/demo/model_sol200.bdf.sol200.json\",\n  \"parameter_names\": [\"T1\", \"E1\"],\n  \"response_names\": [\"FREQ1\"],\n  \"async_submit\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/import/op2/sensitivity/store",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "import",
+                "op2",
+                "sensitivity",
+                "store"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Sensitivity VTU Export",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1001,\n  \"batch_no\": \"1\",\n  \"input_bdf\": \"D:/demo/model_sol200.bdf\",\n  \"output_vtu\": \"D:/demo/sensitivity_freq1.vtu\",\n  \"response_name\": \"FREQ1\",\n  \"metadata_json\": \"D:/demo/model_sol200.bdf.sol200.json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/export/op2/sensitivity/vtu",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "export",
+                "op2",
+                "sensitivity",
+                "vtu"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Nastran Tasks",
+      "item": [
+        {
+          "name": "Task Status",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/solver/nastran/tasks?task_id=demo-task-id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "solver",
+                "nastran",
+                "tasks"
+              ],
+              "query": [
+                {
+                  "key": "task_id",
+                  "value": "demo-task-id"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
