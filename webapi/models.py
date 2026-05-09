@@ -462,3 +462,15 @@ class NastranSol103RunRequest(BaseModel):
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
+    async_submit: bool = False
+
+
+class NastranSol103PreviewRequest(BaseModel):
+    input_bdf: str
+    settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NastranSol103GenerateRequest(BaseModel):
+    input_bdf: str
+    output_bdf: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)

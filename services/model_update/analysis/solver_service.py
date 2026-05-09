@@ -9,7 +9,13 @@ from src.l3.core.errors import NotFoundError, ValidationError
 
 from .model_update_meta_service import resolve_abaqus_command
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
-from ..solver_prep.nastran_sol103 import convert_to_sol103
+from ..solver_prep.nastran_sol103 import (
+    build_sol103_controls,
+    convert_to_sol103,
+    filter_bulk_lines,
+    read_lines,
+    split_bdf,
+)
 from ..solver_prep.abaqus_sensitivity import generate_sensitivity_inp
 
 # This module stays at the "local solver orchestration" layer:
@@ -182,6 +188,58 @@ def _build_nastran_command(
     command = [str(nastran), bdf_path.name]
     command.extend(_normalize_extra_args(extra_args))
     return command
+
+
+def preview_nastran_sol103_job(
+    input_bdf: str,
+    settings: Optional[Dict[str, Any]] = None,
+) -> dict:
+    input_path = _abs_file(input_bdf, "input_bdf")
+    lines = read_lines(str(input_path))
+    _, bulk_lines = split_bdf(lines)
+    controls, has_bailout = build_sol103_controls(dict(settings or {}))
+    filtered_bulk = filter_bulk_lines(bulk_lines, has_bailout)
+
+    return {
+        "workflow": "nastran_sol103_preview",
+        "input_bdf": str(input_path),
+        "control_lines_preview": controls,
+        "filtered_cards": {
+            "original_bulk_line_count": len(bulk_lines),
+            "filtered_bulk_line_count": len(filtered_bulk),
+            "removed_bulk_line_count": max(0, len(bulk_lines) - len(filtered_bulk)),
+            "has_bailout": bool(has_bailout),
+        },
+        "warnings": [],
+    }
+
+
+def generate_nastran_sol103_job(
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    settings: Optional[Dict[str, Any]] = None,
+) -> dict:
+    input_path = _abs_file(input_bdf, "input_bdf")
+    output_path = Path(output_bdf).expanduser().resolve() if output_bdf else input_path.with_name(
+        f"{input_path.stem}_sol103.bdf"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    convert_to_sol103(
+        input_bdf=str(input_path),
+        output_bdf=str(output_path),
+        settings=dict(settings or {}),
+    )
+
+    return {
+        "workflow": "nastran_sol103_generate",
+        "input_bdf": str(input_path),
+        "output_bdf": str(output_path),
+        "generated_files": {
+            "analysis_bdf": str(output_path),
+        },
+        "warnings": [],
+    }
 
 
 def run_abaqus_sensitivity_job(
@@ -395,11 +453,12 @@ def run_nastran_sol103_job(
     )
 
     payload = {
-        "workflow": "nastran_sol103",
+        "workflow": "nastran_sol103_run",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
         "command_preview": command,
         "solver": None,
+        "warnings": [],
     }
     if run_solver:
         payload["solver"] = _run_local_solver(
