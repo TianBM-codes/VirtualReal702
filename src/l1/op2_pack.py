@@ -122,35 +122,46 @@ def _infer_procedure(result_obj):
 
 def _get_frame_values(result_obj, procedure):
     """
-    Return (frame_values [n_frames float64], descriptions [n_frames str]).
+    Return (frame_values, descriptions, mode_numbers).
 
-    For FREQUENCY results (eigenvectors): use .freqs (Hz) if available,
-    else compute from eigenvalues.
-    For other results: use .times (transient) or .lsdvmns (static load steps).
+    frame_values  : [n_frames] float64
+    descriptions  : [n_frames] str
+    mode_numbers  : [n_frames] int or None per frame (None for non-modal)
+
+    For FREQUENCY (eigenvectors): compute Hz from .eigns (confirmed attribute from
+    example code).  Fall back to sequential if unavailable.
+    For DYNAMIC: use .times.
+    For STATIC: use .lsdvmns (load step), or sequential.
     """
     n_frames = result_obj.data.shape[0]
 
     # --- Modal / FREQUENCY ---
     if procedure == 'FREQUENCY':
-        freqs = getattr(result_obj, 'freqs', None)
-        if freqs is not None and len(freqs) == n_frames:
-            fvals = np.asarray(freqs, dtype=np.float64)
+        # .eigns: raw eigenvalues λ; freq = sqrt(|λ|) / (2π)
+        eigns = getattr(result_obj, 'eigns', None)
+        if eigns is not None and len(eigns) == n_frames:
+            arr = np.asarray(eigns, dtype=np.float64)
+            fvals = np.where(arr > 0, np.sqrt(arr) / (2.0 * math.pi), 0.0)
         else:
-            eigns = getattr(result_obj, 'eigns', None)
-            if eigns is not None and len(eigns) == n_frames:
-                # eigenvalue = (2*pi*f)^2  →  f = sqrt(|eig|) / (2*pi)
-                fvals = np.sqrt(np.abs(np.asarray(eigns, dtype=np.float64))) / (2.0 * math.pi)
-            else:
-                fvals = np.arange(1.0, n_frames + 1.0)
-        descs = ['Mode {:d}  {:.4f} Hz'.format(i + 1, fvals[i]) for i in range(n_frames)]
-        return fvals, descs
+            fvals = np.arange(1.0, n_frames + 1.0)
+
+        # .modes: actual mode numbers (e.g. [1,2,3,...] or sparse like [2,4,6,...])
+        modes_attr = getattr(result_obj, 'modes', None)
+        if modes_attr is not None and len(modes_attr) == n_frames:
+            mode_nums = [int(m) for m in modes_attr]
+        else:
+            mode_nums = list(range(1, n_frames + 1))
+
+        descs = ['Mode {:d}  {:.4f} Hz'.format(mode_nums[i], fvals[i])
+                 for i in range(n_frames)]
+        return fvals, descs, mode_nums
 
     # --- Transient / DYNAMIC ---
     times = getattr(result_obj, 'times', None)
     if times is not None and len(times) == n_frames:
         fvals = np.asarray(times, dtype=np.float64)
         descs = ['t={:.6g}'.format(v) for v in fvals]
-        return fvals, descs
+        return fvals, descs, [None] * n_frames
 
     # --- Static / generic ---
     lsdvmns = getattr(result_obj, 'lsdvmns', None)
@@ -159,7 +170,7 @@ def _get_frame_values(result_obj, procedure):
     else:
         fvals = np.arange(0.0, float(n_frames))
     descs = ['frame {:d}'.format(i) for i in range(n_frames)]
-    return fvals, descs
+    return fvals, descs, [None] * n_frames
 
 
 def _align_data(raw_data, op2_node_ids, bdf_node_labels):
@@ -285,7 +296,7 @@ def pack(op2_path, workspace, result_group):
         op2_nids = result_obj.node_gridtype[:, 0].astype(np.int32)
 
         n_frames = raw_data.shape[0]
-        frame_values, frame_descs = _get_frame_values(result_obj, procedure)
+        frame_values, frame_descs, mode_nums = _get_frame_values(result_obj, procedure)
 
         print('  {} ({}): {} frame(s), {} op2 nodes'.format(
             step_name, procedure, n_frames, len(op2_nids)))
@@ -301,14 +312,14 @@ def pack(op2_path, workspace, result_group):
         _write_subcase_u(h5_abs, inst_name, step_name, bdf_node_labels, aligned,
                          frame_values, frame_descs)
 
-        written_steps.append((step_name, procedure, n_frames, frame_values, frame_descs, h5_rel))
+        written_steps.append((step_name, procedure, n_frames, frame_values, frame_descs, mode_nums, h5_rel))
 
     # ── 5. Write manifest.db ──────────────────────────────────────────────────
     print('  Writing manifest.db ...')
     components_json = json.dumps(['U1', 'U2', 'U3'])
     positions_json  = json.dumps(['NODAL'])
 
-    for step_number, (step_name, procedure, n_frames, frame_values, frame_descs, h5_rel) \
+    for step_number, (step_name, procedure, n_frames, frame_values, frame_descs, mode_nums, h5_rel) \
             in enumerate(written_steps):
 
         # steps
@@ -317,17 +328,17 @@ def pack(op2_path, workspace, result_group):
             (result_group, step_name, step_number, procedure, n_frames, None),
         )
 
-        # frames
-        for fi, (fval, fdesc) in enumerate(zip(frame_values, frame_descs)):
-            mode_num = (fi + 1) if procedure == 'FREQUENCY' else None
+        # frames — use real mode numbers from result_obj.modes
+        for fi, (fval, fdesc, mnum) in enumerate(zip(frame_values, frame_descs, mode_nums)):
+            freq_val = float(fval) if procedure == 'FREQUENCY' else None
             db_conn.execute(
                 "INSERT OR REPLACE INTO frames VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (result_group, step_name,
                  fi, float(fval), fdesc,
-                 None,                           # domain
-                 float(fval) if procedure == 'FREQUENCY' else None,  # frequency
-                 mode_num,                        # mode_number
-                 None, None, None, None, None),  # increment/imaginary/frame_id/cyclic/load_case
+                 None,      # domain
+                 freq_val,  # frequency
+                 mnum,      # mode_number (real mode number or None)
+                 None, None, None, None, None),
             )
 
         # result_files (one row per step+field)

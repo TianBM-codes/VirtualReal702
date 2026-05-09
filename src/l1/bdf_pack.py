@@ -230,6 +230,35 @@ def _refine_shell_sections(h5_path, angle_thresh_deg=20.0):
             '+'.join(shell_etypes), n_before, n_after))
 
 
+# ─── pyNastran xref helpers ───────────────────────────────────────────────────
+
+def _unwrap_mid(mid_attr):
+    """
+    xref=True 时 prop.mid 可能是 MAT* 对象而非整数；统一转成 str。
+    例：prop.mid → MAT1(mid=3) → '3'
+    """
+    if mid_attr is None:
+        return ''
+    if hasattr(mid_attr, 'mid'):
+        return str(mid_attr.mid)
+    try:
+        return str(int(mid_attr))
+    except (TypeError, ValueError):
+        return str(mid_attr)
+
+
+def _first_val(v, default=0.0):
+    """Handle scalar / ndarray / None safely."""
+    if v is None:
+        return default
+    if hasattr(v, '__len__'):
+        return float(v[0]) if len(v) > 0 else default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
 def pack(bdf_path, workspace):
@@ -321,18 +350,25 @@ def pack(bdf_path, workspace):
         prop = bdf.properties.get(pid)
         if prop is None:
             continue
-        if prop.type == 'PSHELL':
-            sid_to_mat[sid] = str(prop.mid)
+        ptype = prop.type
+        if ptype == 'PSHELL':
+            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
             sid_to_sty[sid] = 'SHELL'
-        elif prop.type == 'PSOLID':
-            sid_to_mat[sid] = str(getattr(prop, 'mid', '') or '')
+        elif ptype in ('PCOMP', 'PCOMPG'):
+            # Layered composite shell — use first ply material as representative
+            mids = getattr(prop, 'mids', None)
+            first_mid = (mids[0] if mids and len(mids) > 0 else None)
+            sid_to_mat[sid] = _unwrap_mid(first_mid)
+            sid_to_sty[sid] = 'SHELL'
+        elif ptype == 'PSOLID':
+            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
             sid_to_sty[sid] = 'SOLID'
-        elif prop.type in ('PBAR', 'PBEAM', 'PROD', 'PBARL', 'PBEAML'):
-            sid_to_mat[sid] = str(getattr(prop, 'mid', '') or '')
+        elif ptype in ('PBAR', 'PBEAM', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
+            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
             sid_to_sty[sid] = 'BEAM'
         else:
             sid_to_mat[sid] = ''
-            sid_to_sty[sid] = prop.type
+            sid_to_sty[sid] = ptype
 
     # ── 5. Setup output directories ───────────────────────────────────────────
     l1_dir   = os.path.join(workspace, 'l1')
@@ -429,27 +465,46 @@ def pack(bdf_path, workspace):
             prop = bdf.properties.get(pid)
             if prop is None:
                 continue
+            ptype = prop.type
             sg = f.require_group('sections/{}'.format(pid))
-            if prop.type == 'PSHELL':
+            sg.attrs['element_set'] = 'P{}_ELEMS'.format(pid)
+            if ptype == 'PSHELL':
                 sg.attrs['type']          = 'SHELL'
-                sg.attrs['thickness']     = float(prop.t if prop.t is not None else float('nan'))
-                sg.attrs['material_name'] = str(prop.mid)
-                sg.attrs['element_set']   = 'P{}_ELEMS'.format(pid)
-            elif prop.type == 'PSOLID':
+                sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
+                sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
+            elif ptype in ('PCOMP', 'PCOMPG'):
+                # Layered composite — report total thickness and first ply material
+                total_t = 0.0
+                if hasattr(prop, 'TotalThickness'):
+                    try:
+                        total_t = float(prop.TotalThickness())
+                    except Exception:
+                        pass
+                elif hasattr(prop, 'thicknesses'):
+                    try:
+                        total_t = float(sum(prop.thicknesses))
+                    except Exception:
+                        pass
+                mids = getattr(prop, 'mids', None)
+                first_mid = _unwrap_mid(mids[0] if mids and len(mids) > 0 else None)
+                sg.attrs['type']          = 'SHELL'
+                sg.attrs['thickness']     = total_t
+                sg.attrs['material_name'] = first_mid
+            elif ptype == 'PSOLID':
+                mid_raw = getattr(prop, 'mid', None)
+                if hasattr(mid_raw, 'mid'):
+                    mid_raw = mid_raw.mid
                 sg.attrs['type']          = 'SOLID'
                 sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = str(getattr(prop, 'mid', '') or '')
-                sg.attrs['element_set']   = 'P{}_ELEMS'.format(pid)
-            elif prop.type in ('PBAR', 'PBEAM', 'PROD', 'PBARL', 'PBEAML'):
+                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
+            elif ptype in ('PBAR', 'PBEAM', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
                 sg.attrs['type']          = 'BEAM'
                 sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = str(getattr(prop, 'mid', '') or '')
-                sg.attrs['element_set']   = 'P{}_ELEMS'.format(pid)
+                sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
             else:
-                sg.attrs['type']          = str(prop.type)
+                sg.attrs['type']          = ptype
                 sg.attrs['thickness']     = float('nan')
                 sg.attrs['material_name'] = ''
-                sg.attrs['element_set']   = 'P{}_ELEMS'.format(pid)
 
         # Materials
         for mid, mat in bdf.materials.items():
@@ -458,16 +513,19 @@ def pack(bdf_path, workspace):
                 mg.attrs['type'] = 'ISOTROPIC'
                 mg.create_dataset(
                     'elastic_table',
-                    data=np.array([[float(mat.e or 0.0), float(mat.nu or 0.0)]],
+                    data=np.array([[_first_val(mat.e), _first_val(mat.nu)]],
                                   dtype=np.float64))
             elif mat.type == 'MAT8':
                 mg.attrs['type'] = 'ORTHOTROPIC'
-                # Store the two in-plane moduli and Poisson's ratio as a minimum record
                 mg.create_dataset(
                     'elastic_table',
-                    data=np.array([[float(mat.e11 or 0.0), float(mat.e22 or 0.0),
-                                    float(mat.nu12 or 0.0)]],
+                    data=np.array([[_first_val(mat.e11), _first_val(mat.e22),
+                                    _first_val(mat.nu12), _first_val(mat.g12),
+                                    _first_val(getattr(mat, 'g1z', None)),
+                                    _first_val(getattr(mat, 'g2z', None))]],
                                   dtype=np.float64))
+            elif mat.type == 'MAT9':
+                mg.attrs['type'] = 'ANISO3D'
             else:
                 mg.attrs['type'] = str(mat.type)
 
