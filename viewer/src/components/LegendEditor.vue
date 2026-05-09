@@ -88,8 +88,9 @@ import { useViewerStore } from '../store/viewer'
 import { useOdbApi } from '../composables/useOdbApi'
 
 const props = defineProps({
-  visible: Boolean,
-  scheme:  { type: String, default: '' },
+  visible:  Boolean,
+  scheme:   { type: String, default: '' },
+  setNames: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['close', 'region-highlight', 'clear-region-highlight', 'saved'])
 
@@ -206,8 +207,8 @@ async function loadEntries() {
   if (!props.scheme || !store.currentInstance) return
   loading.value = true
   try {
-    const data = await api.fetchLegendEntries(store.currentInstance, props.scheme)
-    entries.value = (data?.entries ?? []).map(e => ({
+    const res = await api.fetchLegendEntries(store.currentInstance, props.scheme, props.setNames)
+    entries.value = (res?.data?.entries ?? []).map(e => ({
       ...e,
       _name:  e.display_name ?? e.default_title ?? e.legend_key,
       _color: e.user_color

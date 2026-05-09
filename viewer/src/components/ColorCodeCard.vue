@@ -2,7 +2,7 @@
   <div class="card" v-if="store.meta && schemes.length > 0">
     <div style="display:flex;align-items:center;margin-bottom:6px">
       <h2 style="margin:0;flex:1">Color Code</h2>
-      <button v-if="scheme && scheme !== 'instance' && scheme !== 'elset'"
+      <button v-if="scheme && scheme !== 'instance'"
               @click="showEditor = !showEditor"
               style="font-size:10px;padding:2px 7px;background:#21262d;border:1px solid #30363d;border-radius:3px;color:#58a6ff;cursor:pointer">
         {{ showEditor ? '关闭编辑' : '编辑 Sets' }}
@@ -16,8 +16,9 @@
     </select>
 
     <LegendEditor
-      :visible="showEditor && !!scheme && scheme !== 'instance' && scheme !== 'elset'"
+      :visible="showEditor && !!scheme && scheme !== 'instance'"
       :scheme="scheme"
+      :set-names="scheme === 'elset' ? selectedElsets : []"
       @close="showEditor = false"
       @region-highlight="opts => emit('region-highlight', opts)"
       @clear-region-highlight="emit('clear-region-highlight')"
