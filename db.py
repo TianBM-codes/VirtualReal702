@@ -159,6 +159,51 @@ CREATE_TABLE_SQL_LIST = [
     ) COMMENT='有限元模型各向同性材料表'
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_ortho2d (
+        Id INT NOT NULL COMMENT '涓婚敭ID',
+        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
+        RHO DOUBLE NULL COMMENT '瀵嗗害',
+        EX DOUBLE NULL COMMENT 'EX',
+        EY DOUBLE NULL COMMENT 'EY',
+        GXY DOUBLE NULL COMMENT 'GXY',
+        NUXY DOUBLE NULL COMMENT 'NUXY',
+        GXZ DOUBLE NULL COMMENT 'GXZ',
+        GYZ DOUBLE NULL COMMENT 'GYZ',
+        GE DOUBLE NULL COMMENT 'GE',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='鏈夐檺鍏冩ā鍨?2D 姝ｄ氦寮傛€ф潗鏂欒〃'
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_aniso3d (
+        Id INT NOT NULL COMMENT '涓婚敭ID',
+        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
+        RHO DOUBLE NULL COMMENT '瀵嗗害',
+        D11 DOUBLE NULL COMMENT 'D11',
+        D12 DOUBLE NULL COMMENT 'D12',
+        D13 DOUBLE NULL COMMENT 'D13',
+        D14 DOUBLE NULL COMMENT 'D14',
+        D15 DOUBLE NULL COMMENT 'D15',
+        D16 DOUBLE NULL COMMENT 'D16',
+        D22 DOUBLE NULL COMMENT 'D22',
+        D23 DOUBLE NULL COMMENT 'D23',
+        D24 DOUBLE NULL COMMENT 'D24',
+        D25 DOUBLE NULL COMMENT 'D25',
+        D26 DOUBLE NULL COMMENT 'D26',
+        D33 DOUBLE NULL COMMENT 'D33',
+        D34 DOUBLE NULL COMMENT 'D34',
+        D35 DOUBLE NULL COMMENT 'D35',
+        D36 DOUBLE NULL COMMENT 'D36',
+        D44 DOUBLE NULL COMMENT 'D44',
+        D45 DOUBLE NULL COMMENT 'D45',
+        D46 DOUBLE NULL COMMENT 'D46',
+        D55 DOUBLE NULL COMMENT 'D55',
+        D56 DOUBLE NULL COMMENT 'D56',
+        D66 DOUBLE NULL COMMENT 'D66',
+        GE DOUBLE NULL COMMENT 'GE',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='鏈夐檺鍏冩ā鍨?3D 鍚勫悜寮傛€ф潗鏂欒〃'
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_property (
         Id INT NOT NULL COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
@@ -193,6 +238,27 @@ CREATE_TABLE_SQL_LIST = [
         NSM DOUBLE NOT NULL COMMENT '非结构质量',
         PRIMARY KEY (Id, pid)
     ) COMMENT='有限元模型梁单元属性表'
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_solid_property (
+        Id INT NOT NULL COMMENT '涓婚敭ID',
+        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
+        MID INT NULL COMMENT '鏉愭枡ID',
+        CID INT NULL COMMENT '鍧愭爣绯籌D',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='鏈夐檺鍏冩ā鍨嬪疄浣撳崟鍏冨睘鎬ц〃'
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_layered_property (
+        Id INT NOT NULL COMMENT '涓婚敭ID',
+        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
+        Offset DOUBLE NULL COMMENT 'Offset',
+        Theta DOUBLE NULL COMMENT 'Theta',
+        GE DOUBLE NULL COMMENT 'GE',
+        NSM DOUBLE NULL COMMENT 'NSM',
+        Layers INT NULL COMMENT 'Layers',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='鏈夐檺鍏冩ā鍨嬪垎灞傚睘鎬ц〃'
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_boundary (
@@ -964,11 +1030,16 @@ def clear_unv_tables(cursor, pid):
 
 
 def clear_fem_tables(cursor, pid):
+    cursor.execute(f"DELETE FROM t_mt_py_fem_coord WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_material_overview WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_isotropic WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_ortho2d WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_aniso3d WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_property WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_shell_property WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_beam_property WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_solid_property WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_layered_property WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_boundary WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_transform_operation WHERE pid = {pid}")
