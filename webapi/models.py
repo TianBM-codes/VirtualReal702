@@ -191,6 +191,15 @@ class MatchNodeParametersRequest(BaseModel):
     project_id: int
 
 
+class MatchDofsRequest(BaseModel):
+    project_id: int
+    overwrite: bool = True
+
+
+class DofMatchResultRequest(BaseModel):
+    project_id: int
+
+
 class CorrelationEvaluateRequest(BaseModel):
     project_id: int
     load_case_no: Optional[int] = None

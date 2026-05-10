@@ -6,7 +6,7 @@ import numpy as np
 from db import get_connection, ensure_tables_exist, clear_unv_tables
 from FemToolsUNVParser import parse_unv
 from src.l3.core.errors import NotFoundError, ValidationError
-from services.model_update.analysis.project_config_service import save_test_model_dimensions
+from services.model_update.analysis.project_config_service import save_test_data_mode, save_test_model_dimensions
 
 
 def _to_builtin(value):
@@ -485,6 +485,12 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
                 )
                 for node in test_nodes
             ],
+            cursor=cursor,
+        )
+        project_config = save_test_data_mode(
+            project_id=project_id,
+            test_data_mode="modal_unv" if result_kind == "dynamic" else "static_unv",
+            test_data_source="unv",
             cursor=cursor,
         )
 

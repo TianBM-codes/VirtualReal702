@@ -332,3 +332,29 @@ def save_test_model_dimensions(
         test_model_dims=dims,
         cursor=cursor,
     )
+
+
+def get_test_data_mode(project_id: int, *, cursor=None) -> Optional[str]:
+    if cursor is not None:
+        config = _fetch_project_config(cursor, int(project_id))
+    else:
+        config = get_project_config(int(project_id))
+    value = str((config.get("extra_json") or {}).get("test_data_mode") or "").strip()
+    return value or None
+
+
+def save_test_data_mode(
+    project_id: int,
+    *,
+    test_data_mode: str,
+    test_data_source: Optional[str] = None,
+    cursor=None,
+) -> dict:
+    extra = {"test_data_mode": str(test_data_mode).strip()}
+    if test_data_source is not None:
+        extra["test_data_source"] = str(test_data_source).strip()
+    return upsert_project_config(
+        int(project_id),
+        extra_json=extra,
+        cursor=cursor,
+    )

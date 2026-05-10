@@ -1,5 +1,11 @@
+import os
+
+import numpy as np
+
 from db import get_connection, ensure_tables_exist, clear_fem_tables
 from BDFParserPyNastran import BDFParser
+from services.model_update.analysis.inp_service import _save_octree_cache
+from services.model_update.analysis.project_config_service import save_fem_model_dimensions, upsert_project_config
 
 
 def _safe_float(value):
@@ -22,6 +28,24 @@ def _safe_int(value):
     return int(value)
 
 
+def _build_bdf_octree_node_data(bdf_parser):
+    point_coords = np.asarray([node.coord for node in bdf_parser.nodes], dtype=np.float64).reshape((-1, 3))
+    if point_coords.size == 0:
+        raise ValueError("BDF 中未找到可用于构建 octree 的节点")
+
+    point_labels = np.asarray([int(node.id) for node in bdf_parser.nodes], dtype=np.int64)
+    point_instances = np.asarray(["BDF_MODEL"] * len(point_labels), dtype="U128")
+    point_parts = np.asarray(["BDF_MODEL"] * len(point_labels), dtype="U128")
+    return {
+        "point_coords": point_coords,
+        "point_labels": point_labels,
+        "point_instances": point_instances,
+        "point_parts": point_parts,
+        "bbox_min": point_coords.min(axis=0),
+        "bbox_max": point_coords.max(axis=0),
+    }
+
+
 def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=True):
     """
     将 BDF 解析结果写入数据库
@@ -37,6 +61,7 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
     bdf_parser = BDFParser(file_path)
     bdf_parser.parse()
     bdf_info = bdf_parser.GetDatabaseData()
+    octree_node_data = _build_bdf_octree_node_data(bdf_parser)
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -318,11 +343,58 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
                 _safe_float(rz)
             ))
 
+        cache_path = _save_octree_cache(
+            int(project_id),
+            os.path.abspath(file_path),
+            octree_node_data,
+            force_rebuild=True,
+        )
+        cursor.execute(
+            """
+            INSERT INTO t_mt_py_fem_node_octree_cache
+            (pid, source_file_path, cache_file_path, node_count, instance_count, bbox_min, bbox_max, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON DUPLICATE KEY UPDATE
+                cache_file_path = VALUES(cache_file_path),
+                node_count = VALUES(node_count),
+                instance_count = VALUES(instance_count),
+                bbox_min = VALUES(bbox_min),
+                bbox_max = VALUES(bbox_max),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(project_id),
+                os.path.abspath(file_path),
+                os.path.abspath(cache_path),
+                int(len(octree_node_data["point_labels"])),
+                1,
+                str(octree_node_data["bbox_min"].tolist()),
+                str(octree_node_data["bbox_max"].tolist()),
+            ),
+        )
+        project_config = save_fem_model_dimensions(
+            project_id=int(project_id),
+            bbox_min=octree_node_data["bbox_min"],
+            bbox_max=octree_node_data["bbox_max"],
+            cursor=cursor,
+        )
+        project_config = upsert_project_config(
+            int(project_id),
+            extra_json={
+                "fem_data_source": "bdf",
+                "fem_octree_source_file": os.path.abspath(file_path),
+            },
+            cursor=cursor,
+        )
+
         conn.commit()
 
         return {
-            "file_path": file_path,
+            "file_path": os.path.abspath(file_path),
             "cleared_before_insert": clear_before_insert,
+            "octree_cache_path": os.path.abspath(cache_path),
+            "octree_node_count": int(len(octree_node_data["point_labels"])),
+            "project_config": project_config,
         }
 
     except Exception:

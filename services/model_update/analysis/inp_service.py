@@ -19,6 +19,7 @@ from src.l3.infra.registry_repo import RegistryRepo
 from . import sensitivity_service as _sens
 from .console_log_service import safe_write_console_event
 from .project_config_service import (
+    get_test_data_mode,
     get_node_match_parameter_context,
     save_fem_model_dimensions,
 )
@@ -579,6 +580,37 @@ def _cache_part_lookup(cache: dict) -> Dict[Tuple[str, int], str]:
 def _safe_float_zero(value, default: float = 0.0) -> float:
     value = _safe_float(value)
     return default if value is None else value
+
+
+def _is_modal_unv_project(project_id: int, *, cursor=None) -> bool:
+    return str(get_test_data_mode(int(project_id), cursor=cursor) or "").strip().lower() == "modal_unv"
+
+
+def _load_test_nodes_for_matching(cursor, project_id: int):
+    if _is_modal_unv_project(int(project_id), cursor=cursor):
+        cursor.execute(
+            """
+            SELECT CAST(nid AS CHAR) AS test_node_id, x AS x_position, y AS y_position, z AS z_position
+            FROM t_mt_py_test_node
+            WHERE pid = %s
+            ORDER BY nid
+            """,
+            (int(project_id),),
+        )
+        rows = cursor.fetchall() or []
+        if rows:
+            return rows, "t_mt_py_test_node"
+
+    cursor.execute(
+        """
+        SELECT measuring_point_name AS test_node_id, x_position, y_position, z_position
+        FROM t_mt_measuring_point_info
+        WHERE project_id = %s
+        ORDER BY measuring_point_name
+        """,
+        (int(project_id),),
+    )
+    return cursor.fetchall() or [], "t_mt_measuring_point_info"
 
 
 def _extract_legacy_material_rows(model):
@@ -1920,13 +1952,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
         octree_meta = _get_latest_octree_meta(cursor, project_id)
         cache_path = _ensure_octree_cache_file(cursor, int(project_id), octree_meta)
 
-        cursor.execute("""
-            SELECT measuring_point_name, x_position, y_position, z_position
-            FROM t_mt_measuring_point_info
-            WHERE project_id = %s
-            ORDER BY measuring_point_name
-        """, (project_id,))
-        test_nodes = cursor.fetchall()
+        test_nodes, test_node_source_table = _load_test_nodes_for_matching(cursor, int(project_id))
         if not test_nodes:
             raise ValueError("未找到试验节点，请先导入 UNV 试验数据")
 
@@ -1993,7 +2019,8 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             inst_name = str(cache["point_instances"][point_idx])
             delta = fem_coord - coord_after
             match = {
-                "test_node_id": str(row["measuring_point_name"]),
+                "test_node_id": str(row["test_node_id"]),
+                "test_node_source": test_node_source_table,
                 "instance_name": inst_name,
                 "part_name": part_lookup.get((inst_name, fem_label)),
                 "fem_node_label": fem_label,
@@ -2079,6 +2106,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             "max_distance": resolved_max_distance,
             "matches_preview": matches[:20],
             "octree_cache_path": cache_path,
+            "test_node_source_table": test_node_source_table,
         }
     except Exception:
         conn.rollback()
@@ -2305,6 +2333,79 @@ def match_test_dofs(project_id, overwrite=True):
         cache = _load_octree_cache(octree_meta["cache_file_path"])
         part_lookup = _cache_part_lookup(cache)
         node_match_lookup = {str(row["test_node_id"]): row for row in node_matches}
+        modal_unv_mode = _is_modal_unv_project(int(project_id), cursor=cursor)
+
+        if overwrite:
+            cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_response_catalog WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
+
+        insert_sql = """
+        INSERT INTO t_mt_py_fem_dof_match
+        (pid, test_node_id, test_dof, instance_name, part_name, fem_node_label, fem_dof,
+         direction_x, direction_y, direction_z, transform_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            instance_name = VALUES(instance_name),
+            part_name = VALUES(part_name),
+            fem_node_label = VALUES(fem_node_label),
+            fem_dof = VALUES(fem_dof),
+            direction_x = VALUES(direction_x),
+            direction_y = VALUES(direction_y),
+            direction_z = VALUES(direction_z),
+            transform_json = VALUES(transform_json),
+            created_at = CURRENT_TIMESTAMP
+        """
+
+        if modal_unv_mode:
+            dof_matches = []
+            for row in node_matches:
+                test_node_id = str(row["test_node_id"])
+                inst_name = str(row["instance_name"] or "")
+                fem_node_label = int(row["fem_node_label"])
+                part_name = part_lookup.get((inst_name, fem_node_label))
+                transform_payload = _json_loads(row["transform_json"]) or {}
+                for test_dof, fem_dof, direction in (
+                    ("UX", "U1", np.array([1.0, 0.0, 0.0], dtype=np.float64)),
+                    ("UY", "U2", np.array([0.0, 1.0, 0.0], dtype=np.float64)),
+                    ("UZ", "U3", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
+                ):
+                    dof_row = {
+                        "test_node_id": test_node_id,
+                        "test_dof": test_dof,
+                        "instance_name": inst_name,
+                        "part_name": part_name,
+                        "fem_node_label": fem_node_label,
+                        "fem_dof": fem_dof,
+                        "direction": direction.tolist(),
+                        "match_score": None,
+                        "transform": transform_payload,
+                        "mode": "modal_unv",
+                    }
+                    dof_matches.append(dof_row)
+                    cursor.execute(insert_sql, (
+                        project_id,
+                        test_node_id,
+                        test_dof,
+                        inst_name,
+                        part_name,
+                        fem_node_label,
+                        fem_dof,
+                        float(direction[0]),
+                        float(direction[1]),
+                        float(direction[2]),
+                        _json_dumps(transform_payload),
+                    ))
+            conn.commit()
+            return {
+                "project_id": project_id,
+                "node_match_auto_created": auto_created_node_match,
+                "node_match_count": len(node_matches),
+                "channel_count": 0,
+                "dof_match_count": len(dof_matches),
+                "dof_matches_preview": dof_matches[:20],
+                "match_mode": "modal_unv",
+            }
 
         cursor.execute("""
             SELECT id, measuring_point_name, sensor_type_id
@@ -2354,28 +2455,6 @@ def match_test_dofs(project_id, overwrite=True):
         ]
         if not displacement_channels:
             raise ValueError("未找到位移传感器对应的通道方向配置")
-
-        if overwrite:
-            cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
-            cursor.execute("DELETE FROM t_mt_py_fem_response_catalog WHERE pid = %s", (project_id,))
-            cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
-
-        insert_sql = """
-        INSERT INTO t_mt_py_fem_dof_match
-        (pid, test_node_id, test_dof, instance_name, part_name, fem_node_label, fem_dof,
-         direction_x, direction_y, direction_z, transform_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            instance_name = VALUES(instance_name),
-            part_name = VALUES(part_name),
-            fem_node_label = VALUES(fem_node_label),
-            fem_dof = VALUES(fem_dof),
-            direction_x = VALUES(direction_x),
-            direction_y = VALUES(direction_y),
-            direction_z = VALUES(direction_z),
-            transform_json = VALUES(transform_json),
-            created_at = CURRENT_TIMESTAMP
-        """
 
         dof_matches_by_key = {}
         for channel_row in displacement_channels:
