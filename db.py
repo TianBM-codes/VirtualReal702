@@ -160,9 +160,9 @@ CREATE_TABLE_SQL_LIST = [
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_ortho2d (
-        Id INT NOT NULL COMMENT '涓婚敭ID',
-        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
-        RHO DOUBLE NULL COMMENT '瀵嗗害',
+        Id INT NOT NULL COMMENT 'primary key',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        RHO DOUBLE NULL COMMENT 'density',
         EX DOUBLE NULL COMMENT 'EX',
         EY DOUBLE NULL COMMENT 'EY',
         GXY DOUBLE NULL COMMENT 'GXY',
@@ -171,13 +171,13 @@ CREATE_TABLE_SQL_LIST = [
         GYZ DOUBLE NULL COMMENT 'GYZ',
         GE DOUBLE NULL COMMENT 'GE',
         PRIMARY KEY (Id, pid)
-    ) COMMENT='鏈夐檺鍏冩ā鍨?2D 姝ｄ氦寮傛€ф潗鏂欒〃'
+    ) COMMENT='FEM orthotropic 2D materials'
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_aniso3d (
-        Id INT NOT NULL COMMENT '涓婚敭ID',
-        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
-        RHO DOUBLE NULL COMMENT '瀵嗗害',
+        Id INT NOT NULL COMMENT 'primary key',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        RHO DOUBLE NULL COMMENT 'density',
         D11 DOUBLE NULL COMMENT 'D11',
         D12 DOUBLE NULL COMMENT 'D12',
         D13 DOUBLE NULL COMMENT 'D13',
@@ -201,7 +201,7 @@ CREATE_TABLE_SQL_LIST = [
         D66 DOUBLE NULL COMMENT 'D66',
         GE DOUBLE NULL COMMENT 'GE',
         PRIMARY KEY (Id, pid)
-    ) COMMENT='鏈夐檺鍏冩ā鍨?3D 鍚勫悜寮傛€ф潗鏂欒〃'
+    ) COMMENT='FEM anisotropic 3D materials'
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_property (
@@ -241,24 +241,24 @@ CREATE_TABLE_SQL_LIST = [
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_solid_property (
-        Id INT NOT NULL COMMENT '涓婚敭ID',
-        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
-        MID INT NULL COMMENT '鏉愭枡ID',
-        CID INT NULL COMMENT '鍧愭爣绯籌D',
+        Id INT NOT NULL COMMENT 'primary key',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        MID INT NULL COMMENT 'material id',
+        CID INT NULL COMMENT 'coordinate system id',
         PRIMARY KEY (Id, pid)
-    ) COMMENT='鏈夐檺鍏冩ā鍨嬪疄浣撳崟鍏冨睘鎬ц〃'
+    ) COMMENT='FEM solid properties'
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_layered_property (
-        Id INT NOT NULL COMMENT '涓婚敭ID',
-        pid BIGINT NOT NULL COMMENT '宸ョ▼ID',
+        Id INT NOT NULL COMMENT 'primary key',
+        pid BIGINT NOT NULL COMMENT 'project id',
         Offset DOUBLE NULL COMMENT 'Offset',
         Theta DOUBLE NULL COMMENT 'Theta',
         GE DOUBLE NULL COMMENT 'GE',
         NSM DOUBLE NULL COMMENT 'NSM',
         Layers INT NULL COMMENT 'Layers',
         PRIMARY KEY (Id, pid)
-    ) COMMENT='鏈夐檺鍏冩ā鍨嬪垎灞傚睘鎬ц〃'
+    ) COMMENT='FEM layered properties'
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_boundary (
