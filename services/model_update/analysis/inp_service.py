@@ -4281,6 +4281,7 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
     residual = test_vec - scale * fem_vec
     return {
         "dac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),
+        "mac": float((abs(cross) ** 2) / (test_energy * fem_energy)),
         "dsf": float(abs(scale)),
         "scale_real": float(scale.real),
         "scale_imag": float(scale.imag),
@@ -4332,12 +4333,13 @@ def compute_modal_correlation(project_id, overwrite=True):
 
         insert_sql = """
         INSERT INTO t_mt_py_fem_modal_correlation
-        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, freq_test, freq_fem, freq_error_ratio, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac, freq_test, freq_fem, freq_error_ratio, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             dof_pair_count = VALUES(dof_pair_count),
             dac = VALUES(dac),
             dsf = VALUES(dsf),
+            mac = VALUES(mac),
             freq_test = VALUES(freq_test),
             freq_fem = VALUES(freq_fem),
             freq_error_ratio = VALUES(freq_error_ratio),
@@ -4401,6 +4403,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                     "fem_mode_no": int(fem_mode_no),
                     "dof_pair_count": len(test_values),
                     "dac": metrics["dac"],
+                    "mac": metrics["mac"],
                     "dsf": metrics["dsf"],
                     "freq_test": freq_test,
                     "freq_fem": freq_fem,
@@ -4423,6 +4426,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                     item["dof_pair_count"],
                     item["dac"],
                     item["dsf"],
+                    item["mac"],
                     item["freq_test"],
                     item["freq_fem"],
                     item["freq_error_ratio"],
@@ -4479,15 +4483,31 @@ def get_modal_correlation(project_id):
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf,
+            SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac,
                    freq_test, freq_fem, freq_error_ratio, extra_json, created_at
             FROM t_mt_py_fem_modal_correlation
             WHERE pid = %s
             ORDER BY test_mode_no, dac DESC, fem_mode_no
         """, (project_id,))
+        rows = cursor.fetchall()
+        test_mode_order = sorted({int(row["test_mode_no"]) for row in rows})
+        fem_mode_order = sorted({int(row["fem_mode_no"]) for row in rows})
+        test_mode_index = {mode_no: idx for idx, mode_no in enumerate(test_mode_order)}
+        fem_mode_index = {mode_no: idx for idx, mode_no in enumerate(fem_mode_order)}
+        mac_matrix = [[None for _ in fem_mode_order] for _ in test_mode_order]
+        dac_matrix = [[None for _ in fem_mode_order] for _ in test_mode_order]
+        for row in rows:
+            row_idx = test_mode_index[int(row["test_mode_no"])]
+            col_idx = fem_mode_index[int(row["fem_mode_no"])]
+            mac_matrix[row_idx][col_idx] = float(row["mac"]) if row["mac"] is not None else None
+            dac_matrix[row_idx][col_idx] = float(row["dac"]) if row["dac"] is not None else None
         return {
             "project_id": project_id,
-            "correlations": cursor.fetchall(),
+            "test_mode_order": test_mode_order,
+            "fem_mode_order": fem_mode_order,
+            "mac_matrix": mac_matrix,
+            "dac_matrix": dac_matrix,
+            "correlations": rows,
         }
     finally:
         cursor.close()

@@ -38,6 +38,28 @@ def _load_bdf_model(bdf_path: str) -> BDF:
     return model
 
 
+def _resolve_modal_identity(
+    instance_name: Optional[str],
+    part_name: Optional[str],
+    bdf_path: Optional[str],
+) -> Tuple[str, str]:
+    # BDF import currently stores nodes under a synthetic single-instance model.
+    # Keep modal imports aligned with that convention unless the caller provides
+    # a more specific instance/part identity explicitly.
+    if instance_name:
+        resolved_instance = str(instance_name)
+    elif bdf_path:
+        resolved_instance = "BDF_MODEL"
+    else:
+        resolved_instance = ""
+
+    if part_name:
+        resolved_part = str(part_name)
+    else:
+        resolved_part = resolved_instance
+    return resolved_instance, resolved_part
+
+
 def _load_sidecar_metadata(metadata_json: Optional[str], bdf_path: Optional[str]) -> dict:
     candidate = metadata_json
     if not candidate and bdf_path:
@@ -222,14 +244,15 @@ def build_modal_import_payload(
     instance_name: Optional[str] = None,
     part_name: Optional[str] = None,
 ) -> dict:
+    resolved_instance_name, resolved_part_name = _resolve_modal_identity(instance_name, part_name, bdf_path)
     payload = _build_modal_modes(
         op2_path=op2_path,
         bdf_path=bdf_path,
         subcase_id=subcase_id,
         mode_numbers=mode_numbers,
         preview_node_limit=None,
-        instance_name=instance_name,
-        part_name=part_name,
+        instance_name=resolved_instance_name,
+        part_name=resolved_part_name,
     )
     modes: List[dict] = []
     for subcase in payload["subcases"]:
@@ -237,8 +260,8 @@ def build_modal_import_payload(
             nodes = []
             for node in mode.pop("nodes", []):
                 nodes.append({
-                    "instance_name": instance_name,
-                    "part_name": part_name,
+                    "instance_name": resolved_instance_name,
+                    "part_name": resolved_part_name,
                     "fem_node_label": int(node["node_id"]),
                     "u1": node["u1"],
                     "u2": node["u2"],
