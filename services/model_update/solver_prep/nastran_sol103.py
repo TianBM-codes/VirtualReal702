@@ -141,19 +141,24 @@ def build_eigrl_fields(settings):
     sid = 1
 
     fmin = float(settings.get("dynamic.fmin", 0.0))
-    fmax = float(settings.get("dynamic.fmax", 1.0e9))
-    vectors = int(settings.get("dynamic.vectors", 10))
+    fmax_raw = settings.get("dynamic.fmax", 1.0e9)
+    vectors_raw = settings.get("dynamic.vectors", 10)
     normalization = resolve_dynamic_norm(settings.get("dynamic.norm", 2))
     size = int(settings.get("dynamic.size", 0))
 
     v1 = format_float_like_bas(fmin)
+    fmax = None if fmax_raw in (None, "") else float(fmax_raw)
+    vectors = None if vectors_raw in (None, "") else int(vectors_raw)
 
-    if fmax > 1.0e6:
+    if fmax is None or fmax <= 0:
         v2 = ""
-        nd = str(vectors)
     else:
         v2 = format_float_like_bas(fmax)
+
+    if vectors is None or vectors <= 0:
         nd = ""
+    else:
+        nd = str(vectors)
 
     if size > 0:
         maxset = str(size)
