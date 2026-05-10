@@ -2309,24 +2309,20 @@ def _resolve_channel_direction_vector(direction_value, data_operate_value, *, me
     return test_dof, fem_dof, (base_direction * sign).astype(np.float64, copy=False)
 
 
-def _build_modal_unv_dof_scores(cursor, project_id: int) -> Dict[Tuple[str, str], float]:
-    # Derive per-point translational DOF participation from imported modal
-    # shapes so low-energy directions can be filtered before modal correlation.
+def _build_modal_unv_dof_amplitudes(cursor, project_id: int) -> Dict[Tuple[str, str], float]:
+    # Use the maximum measured modal amplitude of each translational direction
+    # as the DOF availability score. If one direction stays below the threshold
+    # across all imported modes, that direction is treated as unusable.
     modes = _load_test_mode_vectors(cursor, int(project_id))
-    energy_by_point: Dict[str, np.ndarray] = {}
+    amplitudes: Dict[Tuple[str, str], float] = {}
     for mode_map in modes.values():
         for point_id, vec in mode_map.items():
-            point_energy = energy_by_point.setdefault(str(point_id), np.zeros(3, dtype=np.float64))
-            point_energy += np.abs(np.asarray(vec, dtype=np.complex128)) ** 2
-
-    scores: Dict[Tuple[str, str], float] = {}
-    for point_id, energy_vec in energy_by_point.items():
-        total = float(np.sum(energy_vec))
-        if total <= 1e-18:
-            continue
-        for idx, test_dof in enumerate(TEST_DOF_SEQUENCE):
-            scores[(point_id, test_dof)] = float(math.sqrt(float(energy_vec[idx]) / total))
-    return scores
+            vec_abs = np.abs(np.asarray(vec, dtype=np.complex128))
+            point_id_text = str(point_id)
+            for idx, test_dof in enumerate(TEST_DOF_SEQUENCE):
+                key = (point_id_text, test_dof)
+                amplitudes[key] = max(float(amplitudes.get(key, 0.0)), float(vec_abs[idx]))
+    return amplitudes
 
 
 def match_test_dofs(project_id, overwrite=True, min_match_score=None):
@@ -2380,7 +2376,7 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
 
         if modal_unv_mode:
             score_threshold = 1e-8 if min_match_score is None else float(min_match_score)
-            dof_scores = _build_modal_unv_dof_scores(cursor, int(project_id))
+            dof_scores = _build_modal_unv_dof_amplitudes(cursor, int(project_id))
             dof_matches = []
             rejected_matches = []
             for row in node_matches:
