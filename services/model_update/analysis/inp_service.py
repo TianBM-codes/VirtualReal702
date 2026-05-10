@@ -4483,31 +4483,26 @@ def get_modal_correlation(project_id):
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac,
-                   freq_test, freq_fem, freq_error_ratio, extra_json, created_at
+            SELECT test_mode_no, fem_mode_no, mac
             FROM t_mt_py_fem_modal_correlation
             WHERE pid = %s
-            ORDER BY test_mode_no, dac DESC, fem_mode_no
+            ORDER BY fem_mode_no, test_mode_no
         """, (project_id,))
         rows = cursor.fetchall()
-        test_mode_order = sorted({int(row["test_mode_no"]) for row in rows})
         fem_mode_order = sorted({int(row["fem_mode_no"]) for row in rows})
-        test_mode_index = {mode_no: idx for idx, mode_no in enumerate(test_mode_order)}
+        test_mode_order = sorted({int(row["test_mode_no"]) for row in rows})
         fem_mode_index = {mode_no: idx for idx, mode_no in enumerate(fem_mode_order)}
-        mac_matrix = [[None for _ in fem_mode_order] for _ in test_mode_order]
-        dac_matrix = [[None for _ in fem_mode_order] for _ in test_mode_order]
+        test_mode_index = {mode_no: idx for idx, mode_no in enumerate(test_mode_order)}
+        mac_matrix = [[None for _ in test_mode_order] for _ in fem_mode_order]
         for row in rows:
-            row_idx = test_mode_index[int(row["test_mode_no"])]
-            col_idx = fem_mode_index[int(row["fem_mode_no"])]
+            row_idx = fem_mode_index[int(row["fem_mode_no"])]
+            col_idx = test_mode_index[int(row["test_mode_no"])]
             mac_matrix[row_idx][col_idx] = float(row["mac"]) if row["mac"] is not None else None
-            dac_matrix[row_idx][col_idx] = float(row["dac"]) if row["dac"] is not None else None
         return {
             "project_id": project_id,
-            "test_mode_order": test_mode_order,
-            "fem_mode_order": fem_mode_order,
-            "mac_matrix": mac_matrix,
-            "dac_matrix": dac_matrix,
-            "correlations": rows,
+            "row_mode_order": fem_mode_order,
+            "column_mode_order": test_mode_order,
+            "matrix": mac_matrix,
         }
     finally:
         cursor.close()
