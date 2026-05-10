@@ -4,9 +4,12 @@ from typing import Any, Dict, List, Optional
 from src.l3.core.errors import ValidationError
 
 from .nastran_sol103 import (
+    build_displacement_request,
     build_eigrl_fields,
     format_float_like_bas,
     read_lines,
+    resolve_post_value,
+    resolve_result_target,
     split_bdf,
     write_lines,
 )
@@ -119,6 +122,9 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
 def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str]:
     settings = dict(settings or {})
     eigrl = build_eigrl_fields(settings)
+    result_target = resolve_result_target(settings.get("result.target", "OP2"))
+    displacement_line = build_displacement_request(settings.get("displacement", "ALL"), result_target)
+    post = resolve_post_value(settings, result_target=result_target, default_post=-1)
 
     k6rot = float(settings.get("fem.k6rot", -1.0))
     if k6rot < 0:
@@ -133,7 +139,7 @@ def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str
         "SOL 200",
         "CEND",
         f"METHOD = {eigrl['sid']}",
-        "DISPLACEMENT = ALL",
+        displacement_line,
         "DESSUB = 1",
         "DSAPRT(NOPRINT,EXPORT,END=SENS)",
         "",
@@ -141,7 +147,7 @@ def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str
         "  ANALYSIS = MODES",
         "",
         "BEGIN BULK",
-        "PARAM   POST          -5",
+        f"PARAM   POST          {post}",
         "PARAM   GRDPNT         0",
         f"PARAM   K6ROT   {k6rot_text}",
         f"PARAM   COUPMASS      {coupmass}",

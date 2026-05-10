@@ -71,6 +71,15 @@ _NASTRAN_EXTRA_GLOB_PATTERNS = (
     "*.f??",
 )
 
+_NASTRAN_BINARY_SUFFIXES = {
+    ".op2",
+    ".xdb",
+    ".h5",
+    ".pch",
+    ".plt",
+    ".bin",
+}
+
 
 def _abs_file(path: str, field_name: str) -> Path:
     file_path = Path(path).expanduser().resolve()
@@ -126,6 +135,33 @@ def _collect_nastran_extra_artifacts(workdir: Path, artifacts: Dict[str, str]) -
     return resolved
 
 
+def _summarize_nastran_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "has_f06": False,
+        "has_op2": False,
+        "f06_files": [],
+        "op2_files": [],
+        "unit11_candidates": [],
+        "binary_result_files": [],
+        "all_files": sorted(str(path) for path in artifacts.values()),
+    }
+    for path_text in sorted(set(str(path) for path in artifacts.values())):
+        path = Path(path_text)
+        suffix = path.suffix.lower()
+        name = path.name.lower()
+        if suffix == ".f06":
+            summary["has_f06"] = True
+            summary["f06_files"].append(str(path))
+        if suffix == ".op2":
+            summary["has_op2"] = True
+            summary["op2_files"].append(str(path))
+        if suffix in _NASTRAN_BINARY_SUFFIXES:
+            summary["binary_result_files"].append(str(path))
+        if not suffix and ("unit11" in name or name.endswith("11")):
+            summary["unit11_candidates"].append(str(path))
+    return summary
+
+
 def delete_abaqus_process_files(workdir: Path, job_name: str) -> List[str]:
     deleted: List[str] = []
     for suffix in _ABAQUS_PROCESS_FILE_SUFFIXES:
@@ -149,6 +185,7 @@ def _run_local_solver(
     if timeout_sec is not None and int(timeout_sec) <= 0:
         raise ValidationError("timeout_sec 必须大于 0", {"timeout_sec": timeout_sec})
 
+    print(command)
     try:
         result = subprocess.run(
             command,
@@ -187,6 +224,7 @@ def _run_local_solver(
     }
     if artifact_suffixes is _NASTRAN_ARTIFACT_SUFFIXES:
         payload["artifacts"] = _collect_nastran_extra_artifacts(workdir, payload["artifacts"])
+        payload["artifacts_summary"] = _summarize_nastran_artifacts(payload["artifacts"])
     return payload
 
 
@@ -235,6 +273,7 @@ def preview_nastran_sol103_job(
         "workflow": "nastran_sol103_preview",
         "input_bdf": str(input_path),
         "control_lines_preview": controls,
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
         "filtered_cards": {
             "original_bulk_line_count": len(bulk_lines),
             "filtered_bulk_line_count": len(filtered_bulk),
@@ -266,6 +305,7 @@ def generate_nastran_sol103_job(
         "workflow": "nastran_sol103_generate",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
         "generated_files": {
             "analysis_bdf": str(output_path),
         },
@@ -289,6 +329,7 @@ def preview_nastran_sol200_job(
     return {
         "workflow": "nastran_sol200_preview",
         "input_bdf": str(input_path),
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
         "control_lines_preview": payload["control_lines"],
         "desvar_preview": payload["desvar_lines"],
         "relation_preview": payload["relation_lines"],
@@ -330,6 +371,7 @@ def generate_nastran_sol200_job(
         "workflow": "nastran_sol200_generate",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
         "parameter_count": len(list(parameters or [])),
         "response_count": len(list(responses or [])),
         "generated_files": {
@@ -389,6 +431,12 @@ def run_nastran_sol200_job(
             artifact_suffixes=_NASTRAN_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
+        summary = payload["solver"].get("artifacts_summary") or {}
+        if not summary.get("has_op2"):
+            payload["warnings"].append({
+                "code": "NASTRAN_OP2_NOT_FOUND",
+                "message": "solve completed without an OP2 file; inspect result.target/post settings and produced binary files",
+            })
     return payload
 
 
@@ -618,4 +666,10 @@ def run_nastran_sol103_job(
             artifact_suffixes=_NASTRAN_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
+        summary = payload["solver"].get("artifacts_summary") or {}
+        if not summary.get("has_op2"):
+            payload["warnings"].append({
+                "code": "NASTRAN_OP2_NOT_FOUND",
+                "message": "solve completed without an OP2 file; inspect result.target/post settings and produced binary files",
+            })
     return payload

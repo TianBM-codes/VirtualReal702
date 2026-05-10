@@ -108,6 +108,35 @@ def resolve_dynamic_norm(value):
     raise ValueError("dynamic.norm must be 1 or 2")
 
 
+def resolve_result_target(value):
+    token = str(value or "OP2").strip().upper()
+    if token in {"OP2", "F06", "BOTH"}:
+        return token
+    raise ValueError("result.target must be one of: OP2, F06, BOTH")
+
+
+def resolve_post_value(settings, result_target="OP2", default_post=None):
+    if "post" in settings and settings.get("post") is not None:
+        return int(settings.get("post"))
+
+    if default_post is not None:
+        return int(default_post)
+
+    if str(result_target).upper() == "F06":
+        return -1
+    return -1
+
+
+def build_displacement_request(displacement, result_target):
+    target = resolve_result_target(result_target)
+    rhs = str(displacement or "ALL").strip() or "ALL"
+    if target == "OP2":
+        return f"DISPLACEMENT(PLOT) = {rhs}"
+    if target == "BOTH":
+        return f"DISPLACEMENT(PLOT,PRINT) = {rhs}"
+    return f"DISPLACEMENT = {rhs}"
+
+
 def build_eigrl_fields(settings):
     sid = 1
 
@@ -147,7 +176,9 @@ def build_sol103_controls(settings):
 
     echo = settings.get("echo", "NONE")
     displacement = settings.get("displacement", "ALL")
-    post = int(settings.get("post", -5))
+    result_target = resolve_result_target(settings.get("result.target", "OP2"))
+    displacement_line = build_displacement_request(displacement, result_target)
+    post = resolve_post_value(settings, result_target=result_target, default_post=-1)
     grdpnt = int(settings.get("grdpnt", 0))
 
     k6rot = float(settings.get("fem.k6rot", -1.0))
@@ -168,7 +199,7 @@ def build_sol103_controls(settings):
         "CEND",
         "METHOD = {}".format(eigrl["sid"]),
         "ECHO={}".format(echo),
-        "DISPLACEMENT = {}".format(displacement),
+        displacement_line,
         "BEGIN BULK",
         "PARAM   POST          {}".format(post),
         "PARAM   GRDPNT         {}".format(grdpnt),
