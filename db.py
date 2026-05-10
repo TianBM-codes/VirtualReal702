@@ -521,6 +521,7 @@ CREATE_TABLE_SQL_LIST = [
         dof_pair_count INT NOT NULL DEFAULT 0 COMMENT '自由度配对数量',
         dac DOUBLE NOT NULL COMMENT 'DAC百分比',
         dsf DOUBLE NOT NULL COMMENT 'DSF值',
+        mac DOUBLE NOT NULL COMMENT 'MAC值',
         freq_test DOUBLE NULL COMMENT '试验频率',
         freq_fem DOUBLE NULL COMMENT '有限元频率',
         freq_error_ratio DOUBLE NULL COMMENT '频率误差比',
