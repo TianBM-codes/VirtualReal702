@@ -42,6 +42,18 @@ def _empty_payload(project_id: int) -> dict:
 def _build_payload(row: Optional[dict], project_id: int) -> dict:
     if not row:
         return _empty_payload(project_id)
+    if not hasattr(row, "get"):
+        row = {
+            "pid": row[0] if len(row) > 0 else project_id,
+            "test_model_x": row[1] if len(row) > 1 else None,
+            "test_model_y": row[2] if len(row) > 2 else None,
+            "test_model_z": row[3] if len(row) > 3 else None,
+            "fem_model_x": row[4] if len(row) > 4 else None,
+            "fem_model_y": row[5] if len(row) > 5 else None,
+            "fem_model_z": row[6] if len(row) > 6 else None,
+            "coefficients_json": row[7] if len(row) > 7 else None,
+            "extra_json": row[8] if len(row) > 8 else None,
+        }
     return {
         "project_id": int(project_id),
         "test_model_dims": {
