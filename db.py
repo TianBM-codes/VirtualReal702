@@ -162,14 +162,14 @@ CREATE_TABLE_SQL_LIST = [
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_ortho2d (
         Id INT NOT NULL COMMENT 'primary key',
         pid BIGINT NOT NULL COMMENT 'project id',
-        RHO DOUBLE NULL COMMENT 'density',
-        EX DOUBLE NULL COMMENT 'EX',
-        EY DOUBLE NULL COMMENT 'EY',
-        GXY DOUBLE NULL COMMENT 'GXY',
-        NUXY DOUBLE NULL COMMENT 'NUXY',
-        GXZ DOUBLE NULL COMMENT 'GXZ',
-        GYZ DOUBLE NULL COMMENT 'GYZ',
-        GE DOUBLE NULL COMMENT 'GE',
+        RHO DOUBLE NULL COMMENT '密度',
+        EX DOUBLE NULL COMMENT '弹性模量x方向',
+        EY DOUBLE NULL COMMENT '弹性模量y方向',
+        GXY DOUBLE NULL COMMENT '剪切模量XY',
+        NUXY DOUBLE NULL COMMENT '泊松比XY',
+        GXZ DOUBLE NULL COMMENT '剪切模量XZ',
+        GYZ DOUBLE NULL COMMENT '剪切模量YZ',
+        GE DOUBLE NULL COMMENT '材料阻尼',
         PRIMARY KEY (Id, pid)
     ) COMMENT='FEM orthotropic 2D materials'
     """,
@@ -177,7 +177,7 @@ CREATE_TABLE_SQL_LIST = [
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_aniso3d (
         Id INT NOT NULL COMMENT 'primary key',
         pid BIGINT NOT NULL COMMENT 'project id',
-        RHO DOUBLE NULL COMMENT 'density',
+        RHO DOUBLE NULL COMMENT '密度',
         D11 DOUBLE NULL COMMENT 'D11',
         D12 DOUBLE NULL COMMENT 'D12',
         D13 DOUBLE NULL COMMENT 'D13',
@@ -199,7 +199,7 @@ CREATE_TABLE_SQL_LIST = [
         D55 DOUBLE NULL COMMENT 'D55',
         D56 DOUBLE NULL COMMENT 'D56',
         D66 DOUBLE NULL COMMENT 'D66',
-        GE DOUBLE NULL COMMENT 'GE',
+        GE DOUBLE NULL COMMENT '材料阻尼',
         PRIMARY KEY (Id, pid)
     ) COMMENT='FEM anisotropic 3D materials'
     """,
@@ -241,10 +241,10 @@ CREATE_TABLE_SQL_LIST = [
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_solid_property (
-        Id INT NOT NULL COMMENT 'primary key',
-        pid BIGINT NOT NULL COMMENT 'project id',
-        MID INT NULL COMMENT 'material id',
-        CID INT NULL COMMENT 'coordinate system id',
+        Id INT NOT NULL COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        MID INT NULL COMMENT '材料ID',
+        CID INT NULL COMMENT '坐标系ID',
         PRIMARY KEY (Id, pid)
     ) COMMENT='FEM solid properties'
     """,

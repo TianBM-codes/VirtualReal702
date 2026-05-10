@@ -4315,7 +4315,7 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
     residual = test_vec - scale * fem_vec
     return {
         "dac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),
-        "mac": float((abs(cross) ** 2) / (test_energy * fem_energy)),
+        "mac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),
         "dsf": float(abs(scale)),
         "scale_real": float(scale.real),
         "scale_imag": float(scale.imag),
