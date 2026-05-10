@@ -73,6 +73,7 @@ async def match_dofs_api(request: Request, body: MatchDofsRequest):
         result = match_test_dofs(
             project_id=body.project_id,
             overwrite=body.overwrite,
+            min_match_score=body.min_match_score,
         )
         return success_response(result, "自由度匹配成功")
     except AppError as exc:

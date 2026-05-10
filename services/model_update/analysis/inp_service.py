@@ -2309,7 +2309,27 @@ def _resolve_channel_direction_vector(direction_value, data_operate_value, *, me
     return test_dof, fem_dof, (base_direction * sign).astype(np.float64, copy=False)
 
 
-def match_test_dofs(project_id, overwrite=True):
+def _build_modal_unv_dof_scores(cursor, project_id: int) -> Dict[Tuple[str, str], float]:
+    # Derive per-point translational DOF participation from imported modal
+    # shapes so low-energy directions can be filtered before modal correlation.
+    modes = _load_test_mode_vectors(cursor, int(project_id))
+    energy_by_point: Dict[str, np.ndarray] = {}
+    for mode_map in modes.values():
+        for point_id, vec in mode_map.items():
+            point_energy = energy_by_point.setdefault(str(point_id), np.zeros(3, dtype=np.float64))
+            point_energy += np.abs(np.asarray(vec, dtype=np.complex128)) ** 2
+
+    scores: Dict[Tuple[str, str], float] = {}
+    for point_id, energy_vec in energy_by_point.items():
+        total = float(np.sum(energy_vec))
+        if total <= 1e-18:
+            continue
+        for idx, test_dof in enumerate(TEST_DOF_SEQUENCE):
+            scores[(point_id, test_dof)] = float(math.sqrt(float(energy_vec[idx]) / total))
+    return scores
+
+
+def match_test_dofs(project_id, overwrite=True, min_match_score=None):
     ensure_tables_exist()
     auto_created_node_match = _ensure_node_matches(int(project_id))
     conn = get_connection()
@@ -2343,8 +2363,8 @@ def match_test_dofs(project_id, overwrite=True):
         insert_sql = """
         INSERT INTO t_mt_py_fem_dof_match
         (pid, test_node_id, test_dof, instance_name, part_name, fem_node_label, fem_dof,
-         direction_x, direction_y, direction_z, transform_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         direction_x, direction_y, direction_z, match_score, transform_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             instance_name = VALUES(instance_name),
             part_name = VALUES(part_name),
@@ -2353,12 +2373,16 @@ def match_test_dofs(project_id, overwrite=True):
             direction_x = VALUES(direction_x),
             direction_y = VALUES(direction_y),
             direction_z = VALUES(direction_z),
+            match_score = VALUES(match_score),
             transform_json = VALUES(transform_json),
             created_at = CURRENT_TIMESTAMP
         """
 
         if modal_unv_mode:
+            score_threshold = 1e-8 if min_match_score is None else float(min_match_score)
+            dof_scores = _build_modal_unv_dof_scores(cursor, int(project_id))
             dof_matches = []
+            rejected_matches = []
             for row in node_matches:
                 test_node_id = str(row["test_node_id"])
                 inst_name = str(row["instance_name"] or "")
@@ -2370,6 +2394,15 @@ def match_test_dofs(project_id, overwrite=True):
                     ("UY", "U2", np.array([0.0, 1.0, 0.0], dtype=np.float64)),
                     ("UZ", "U3", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
                 ):
+                    match_score = float(dof_scores.get((test_node_id, test_dof), 0.0))
+                    if match_score < score_threshold:
+                        if len(rejected_matches) < 20:
+                            rejected_matches.append({
+                                "test_node_id": test_node_id,
+                                "test_dof": test_dof,
+                                "match_score": match_score,
+                            })
+                        continue
                     dof_row = {
                         "test_node_id": test_node_id,
                         "test_dof": test_dof,
@@ -2378,7 +2411,7 @@ def match_test_dofs(project_id, overwrite=True):
                         "fem_node_label": fem_node_label,
                         "fem_dof": fem_dof,
                         "direction": direction.tolist(),
-                        "match_score": None,
+                        "match_score": match_score,
                         "transform": transform_payload,
                         "mode": "modal_unv",
                     }
@@ -2394,6 +2427,7 @@ def match_test_dofs(project_id, overwrite=True):
                         float(direction[0]),
                         float(direction[1]),
                         float(direction[2]),
+                        match_score,
                         _json_dumps(transform_payload),
                     ))
             conn.commit()
@@ -2404,6 +2438,9 @@ def match_test_dofs(project_id, overwrite=True):
                 "channel_count": 0,
                 "dof_match_count": len(dof_matches),
                 "dof_matches_preview": dof_matches[:20],
+                "rejected_dof_count": int(len(node_matches) * len(TEST_DOF_SEQUENCE) - len(dof_matches)),
+                "rejected_dof_preview": rejected_matches,
+                "min_match_score": score_threshold,
                 "match_mode": "modal_unv",
             }
 
@@ -2498,6 +2535,7 @@ def match_test_dofs(project_id, overwrite=True):
                 float(direction[0]),
                 float(direction[1]),
                 float(direction[2]),
+                1.0,
                 _json_dumps(transform_payload),
             ))
 

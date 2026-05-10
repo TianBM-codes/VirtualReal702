@@ -85,6 +85,7 @@ async def match_dofs_api(request: Request):
     result = match_test_dofs(
         project_id=int(body["project_id"]),
         overwrite=bool(body.get("overwrite", True)),
+        min_match_score=body.get("min_match_score"),
     )
     return {"ok": True, "message": "dof match success", "data": result}
 

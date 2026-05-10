@@ -194,6 +194,7 @@ class MatchNodeParametersRequest(BaseModel):
 class MatchDofsRequest(BaseModel):
     project_id: int
     overwrite: bool = True
+    min_match_score: Optional[float] = None
 
 
 class DofMatchResultRequest(BaseModel):
