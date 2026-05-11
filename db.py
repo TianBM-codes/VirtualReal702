@@ -613,6 +613,7 @@ CREATE_TABLE_SQL_LIST = [
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_response_def (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        project_id BIGINT NULL COMMENT '项目ID',
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
         response_code VARCHAR(100) NOT NULL COMMENT '响应编码',
         response_name VARCHAR(200) NOT NULL COMMENT '响应名称',
@@ -626,6 +627,7 @@ CREATE_TABLE_SQL_LIST = [
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_def (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        project_id BIGINT NULL COMMENT '项目ID',
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
         param_code VARCHAR(100) NOT NULL COMMENT '参数编码',
         param_name VARCHAR(200) NOT NULL COMMENT '参数名称',
@@ -639,6 +641,7 @@ CREATE_TABLE_SQL_LIST = [
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_sensitivity_result (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        project_id BIGINT NULL COMMENT '项目ID',
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
         parameter_id BIGINT NOT NULL COMMENT '参数ID',
         response_id BIGINT NOT NULL COMMENT '响应ID',
