@@ -1881,11 +1881,11 @@ def _persist_sensitivity_matrix(
             cursor.execute(
                 """
                 INSERT INTO t_mt_py_fem_response_def (
-                    analysis_run_id, response_code, response_name, unit, seq_no, project_id
+                    analysis_run_id, response_code, response_name, unit, seq_no
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (analysis_run_id, f"R{index:04d}", str(response_name), None, index, project_id),
+                (analysis_run_id, f"R{index:04d}", str(response_name), None, index),
             )
             response_ids.append(int(cursor.lastrowid))
 
