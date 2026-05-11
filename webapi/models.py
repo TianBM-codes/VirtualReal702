@@ -508,6 +508,7 @@ class NastranSol200ParameterPresetRequest(BaseModel):
     upper_scale: float = 1.2
     include_e: bool = True
     include_rho: bool = True
+    element_ids: Optional[List[int]] = None
 
 
 class NastranSol200PreviewRequest(BaseModel):

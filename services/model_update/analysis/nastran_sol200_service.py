@@ -1,4 +1,7 @@
-from typing import Any, Dict, List, Optional, Sequence
+import copy
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pyNastran.bdf.bdf import BDF
 from src.l3.core.errors import ValidationError
@@ -142,6 +145,119 @@ def _build_all_used_material_e_rho_parameters(
     return parameters
 
 
+def _clone_property_with_material(prop: Any, *, new_pid: int, new_mid: int) -> Any:
+    cloned = copy.deepcopy(prop)
+    if hasattr(cloned, "pid"):
+        cloned.pid = int(new_pid)
+    if hasattr(cloned, "mid"):
+        cloned.mid = int(new_mid)
+        return cloned
+    if hasattr(cloned, "mid1"):
+        cloned.mid1 = int(new_mid)
+        return cloned
+    raise ValidationError(
+        "property type does not support single-material E localization in phase 1",
+        {"property_type": str(getattr(prop, "type", "")), "property_id": int(getattr(prop, "pid", new_pid))},
+    )
+
+
+def _material_copy_with_new_id(material: Any, *, new_mid: int) -> Any:
+    cloned = copy.deepcopy(material)
+    if hasattr(cloned, "mid"):
+        cloned.mid = int(new_mid)
+        return cloned
+    raise ValidationError(
+        "material type does not support cloning in phase 1",
+        {"material_type": str(getattr(material, "type", "")), "material_id": int(getattr(material, "mid", new_mid))},
+    )
+
+
+def _localize_elements_e_parameters(
+    *,
+    input_bdf: str,
+    output_bdf: str,
+    preset: Dict[str, Any],
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    model = BDF(debug=False)
+    model.read_bdf(input_bdf, xref=False)
+    lower_scale = float(preset.get("lower_scale", 0.8))
+    upper_scale = float(preset.get("upper_scale", 1.2))
+    requested_element_ids = {
+        int(item) for item in (preset.get("element_ids") or [])
+    } if preset.get("element_ids") else None
+
+    next_pid = (max(model.properties.keys()) if model.properties else 0) + 1
+    next_mid = (max(model.materials.keys()) if model.materials else 0) + 1
+    parameters: List[Dict[str, Any]] = []
+    localized_count = 0
+    skipped: List[dict] = []
+
+    for eid, element in sorted(model.elements.items()):
+        if requested_element_ids is not None and int(eid) not in requested_element_ids:
+            continue
+        pid = getattr(element, "pid", None)
+        if pid is None:
+            skipped.append({"element_id": int(eid), "reason": "element has no property id"})
+            continue
+        prop = model.properties.get(int(pid))
+        if prop is None:
+            skipped.append({"element_id": int(eid), "reason": f"property {int(pid)} not found"})
+            continue
+        source_mid = _property_material_id(prop)
+        if source_mid is None:
+            skipped.append({"element_id": int(eid), "reason": f"property {int(pid)} has no supported material reference"})
+            continue
+        material = model.materials.get(int(source_mid))
+        if material is None or str(getattr(material, "type", "")).upper() != "MAT1":
+            skipped.append({"element_id": int(eid), "reason": f"material {int(source_mid)} is not a supported MAT1"})
+            continue
+        e_value = _material_scalar(material, "E")
+        if e_value is None:
+            skipped.append({"element_id": int(eid), "reason": f"material {int(source_mid)} has no E value"})
+            continue
+
+        new_mid = int(next_mid)
+        next_mid += 1
+        new_pid = int(next_pid)
+        next_pid += 1
+
+        cloned_material = _material_copy_with_new_id(material, new_mid=new_mid)
+        cloned_property = _clone_property_with_material(prop, new_pid=new_pid, new_mid=new_mid)
+        model.materials[new_mid] = cloned_material
+        model.properties[new_pid] = cloned_property
+        element.pid = int(new_pid)
+        localized_count += 1
+        parameters.append({
+            "name": f"E_ELEM_{int(eid)}",
+            "type": "E",
+            "element_id": int(eid),
+            "property_id": int(new_pid),
+            "material_id": int(new_mid),
+            "source_property_id": int(pid),
+            "source_material_id": int(source_mid),
+            "initial": float(e_value),
+            "lower": float(e_value * lower_scale),
+            "upper": float(e_value * upper_scale),
+        })
+
+    if not parameters:
+        raise ValidationError(
+            "parameter_preset did not produce any supported per-element E parameters",
+            {"input_bdf": input_bdf, "parameter_preset": preset, "skipped": skipped[:20]},
+        )
+
+    output_path = Path(output_bdf).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bdf(str(output_path), interspersed=False)
+    info = {
+        "localized_input_bdf": str(output_path),
+        "localized_element_count": int(localized_count),
+        "parameter_count": len(parameters),
+        "skipped_preview": skipped[:20],
+    }
+    return str(output_path), parameters, info
+
+
 def _resolve_phase1_parameters(
     *,
     input_bdf: str,
@@ -151,24 +267,73 @@ def _resolve_phase1_parameters(
     resolved = [dict(item) for item in (parameters or [])]
     if parameter_preset:
         preset_name = str(parameter_preset.get("preset") or "").strip().lower()
-        if preset_name != "all_used_material_e_rho":
+        if preset_name == "all_used_material_e_rho":
+            resolved.extend(_build_all_used_material_e_rho_parameters(
+                input_bdf=input_bdf,
+                preset=parameter_preset,
+            ))
+        else:
             raise ValidationError(
                 "unsupported SOL200 parameter preset",
                 {
                     "preset": parameter_preset.get("preset"),
-                    "supported_presets": ["all_used_material_e_rho"],
+                    "supported_presets": ["all_used_material_e_rho", "all_elements_e"],
                 },
             )
-        resolved.extend(_build_all_used_material_e_rho_parameters(
-            input_bdf=input_bdf,
-            preset=parameter_preset,
-        ))
     if not resolved:
         raise ValidationError(
             "SOL200 parameters are required",
             {"parameters": parameters, "parameter_preset": parameter_preset},
         )
     return resolved
+
+
+def _resolve_phase1_input_and_parameters(
+    *,
+    input_bdf: str,
+    output_bdf: Optional[str],
+    parameters: Optional[List[Dict[str, Any]]],
+    parameter_preset: Optional[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    if not parameter_preset:
+        return input_bdf, _resolve_phase1_parameters(
+            input_bdf=input_bdf,
+            parameters=parameters,
+            parameter_preset=None,
+        ), {}
+
+    preset_name = str(parameter_preset.get("preset") or "").strip().lower()
+    if preset_name != "all_elements_e":
+        return input_bdf, _resolve_phase1_parameters(
+            input_bdf=input_bdf,
+            parameters=parameters,
+            parameter_preset=parameter_preset,
+        ), {}
+
+    if parameters:
+        raise ValidationError(
+            "all_elements_e preset must not be mixed with manual parameters in phase 1",
+            {"parameters_count": len(parameters or []), "preset": parameter_preset},
+        )
+    if output_bdf:
+        localized_output = str(Path(output_bdf).expanduser().resolve().with_name(
+            Path(output_bdf).expanduser().resolve().stem + ".localized_source.bdf"
+        ))
+        localized_input_bdf, preset_parameters, info = _localize_elements_e_parameters(
+            input_bdf=input_bdf,
+            output_bdf=localized_output,
+            preset=parameter_preset,
+        )
+        return localized_input_bdf, preset_parameters, info
+
+    base_input = Path(input_bdf).expanduser().resolve()
+    localized_output = str(base_input.with_name(f"{base_input.stem}_sol200_localized_source.bdf"))
+    localized_input_bdf, preset_parameters, info = _localize_elements_e_parameters(
+        input_bdf=input_bdf,
+        output_bdf=localized_output,
+        preset=parameter_preset,
+    )
+    return localized_input_bdf, preset_parameters, info
 
 
 def preview_sol200_workflow(
@@ -178,7 +343,29 @@ def preview_sol200_workflow(
     parameter_preset: Optional[Dict[str, Any]] = None,
     responses: List[Dict[str, Any]],
     settings: Optional[Dict[str, Any]] = None,
-) -> dict:
+    ) -> dict:
+    preset_name = str((parameter_preset or {}).get("preset") or "").strip().lower()
+    if preset_name == "all_elements_e":
+        localized_preview_path = str(
+            Path(input_bdf).expanduser().resolve().with_name(
+                Path(input_bdf).expanduser().resolve().stem + "_sol200_preview_localized_source.bdf"
+            )
+        )
+        localized_input_bdf, resolved_parameters, info = _localize_elements_e_parameters(
+            input_bdf=input_bdf,
+            output_bdf=localized_preview_path,
+            preset=parameter_preset or {},
+        )
+        payload = preview_nastran_sol200_job(
+            input_bdf=localized_input_bdf,
+            parameters=resolved_parameters,
+            responses=list(responses or []),
+            settings=dict(settings or {}),
+        )
+        payload["input_bdf"] = str(Path(input_bdf).expanduser().resolve())
+        payload["parameter_preset_info"] = info
+        return payload
+
     resolved_parameters = _resolve_phase1_parameters(
         input_bdf=input_bdf,
         parameters=parameters,
@@ -201,18 +388,31 @@ def generate_sol200_workflow(
     responses: Optional[List[Dict[str, Any]]] = None,
     settings: Optional[Dict[str, Any]] = None,
 ) -> dict:
-    resolved_parameters = _resolve_phase1_parameters(
+    localized_input_bdf, resolved_parameters, preset_info = _resolve_phase1_input_and_parameters(
         input_bdf=input_bdf,
+        output_bdf=output_bdf,
         parameters=parameters,
         parameter_preset=parameter_preset,
     )
-    return generate_nastran_sol200_job(
-        input_bdf=input_bdf,
+    payload = generate_nastran_sol200_job(
+        input_bdf=localized_input_bdf,
         output_bdf=output_bdf,
         parameters=resolved_parameters,
         responses=list(responses or []),
         settings=dict(settings or {}),
     )
+    payload["input_bdf"] = str(Path(input_bdf).expanduser().resolve())
+    if preset_info:
+        payload["parameter_preset_info"] = preset_info
+        payload.setdefault("generated_files", {})["localized_input_bdf"] = localized_input_bdf
+        metadata_json = payload.get("generated_files", {}).get("metadata_json")
+        if metadata_json and Path(metadata_json).exists():
+            metadata = json.loads(Path(metadata_json).read_text(encoding="utf-8"))
+            metadata["source_input_bdf"] = str(Path(input_bdf).expanduser().resolve())
+            metadata["localized_input_bdf"] = localized_input_bdf
+            metadata["parameter_preset_info"] = preset_info
+            Path(metadata_json).write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
 
 
 def run_sol200_workflow(
@@ -228,13 +428,14 @@ def run_sol200_workflow(
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
 ) -> dict:
-    resolved_parameters = _resolve_phase1_parameters(
+    localized_input_bdf, resolved_parameters, preset_info = _resolve_phase1_input_and_parameters(
         input_bdf=input_bdf,
+        output_bdf=output_bdf,
         parameters=parameters,
         parameter_preset=parameter_preset,
     )
     payload = run_nastran_sol200_job(
-        input_bdf=input_bdf,
+        input_bdf=localized_input_bdf,
         output_bdf=output_bdf,
         parameters=resolved_parameters,
         responses=list(responses or []),
@@ -245,6 +446,17 @@ def run_sol200_workflow(
         extra_args=list(extra_args or []),
     )
     payload["service"] = "nastran_sol200_phase1"
+    payload["input_bdf"] = str(Path(input_bdf).expanduser().resolve())
+    if preset_info:
+        payload["parameter_preset_info"] = preset_info
+        payload.setdefault("generated_files", {})["localized_input_bdf"] = localized_input_bdf
+        metadata_json = payload.get("generated_files", {}).get("metadata_json")
+        if metadata_json and Path(metadata_json).exists():
+            metadata = json.loads(Path(metadata_json).read_text(encoding="utf-8"))
+            metadata["source_input_bdf"] = str(Path(input_bdf).expanduser().resolve())
+            metadata["localized_input_bdf"] = localized_input_bdf
+            metadata["parameter_preset_info"] = preset_info
+            Path(metadata_json).write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
 
 

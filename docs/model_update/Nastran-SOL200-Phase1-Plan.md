@@ -65,9 +65,17 @@ workflow.
   - optional `settings.sol200.sensitivity_csv_path`
 - Convenience preset for automatically expanding all used `MAT1` material `E`
   and `RHO` values into design parameters
+- Convenience preset for localizing **each element** into its own `E` design
+  variable:
+  - `parameter_preset.preset = "all_elements_e"`
+  - the service clones per-element property/material ownership first
+  - then writes one `DESVAR + DVMREL1` pair per element
+  - the generated metadata keeps `element_id / property_id / material_id`
+    mappings for later CSV parsing and VTU export
 - Basic sensitivity matrix import from:
   - OP2
   - explicit matrix result file path
+  - formatted Nastran sensitivity CSV (`sens.csv` / `sol200_sens.csv`)
 - Database storage through the existing sensitivity tables
 - VTU export for stored sensitivity results
 
@@ -193,3 +201,28 @@ That means:
 
 That finer-grained "per-element E/RHO" capability is a follow-up extension, not
 the current phase-1 preset behavior.
+
+## 10. Element-Level E Preset Note
+
+The new preset:
+
+- `parameter_preset.preset = "all_elements_e"`
+
+means:
+
+- one element -> one localized material -> one `E` design variable
+- parameter count therefore follows element count directly
+
+For example:
+
+- 1548 elements -> 1548 `E` parameters
+
+This is intentionally different from:
+
+- `all_used_material_e_rho`
+
+which expands by **used MAT1 cards**, not by element count.
+
+The element-level preset is currently intended for response rows such as the
+first two elastic frequencies, and for VTU cloud export where each cell should
+receive its own sensitivity value directly.

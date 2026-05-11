@@ -498,6 +498,127 @@ def _choose_matrix_candidate(candidates: List[dict], response_names: List[str], 
 _FLOAT_TOKEN_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[EeDd][-+]?\d+)?")
 
 
+def _split_csv_like_line(line: str) -> List[str]:
+    return [item.strip() for item in str(line).split(",")]
+
+
+def _parse_formatted_sensitivity_csv(
+    result_path: str,
+    *,
+    parameter_names: Optional[Sequence[str]] = None,
+    response_names: Optional[Sequence[str]] = None,
+) -> Optional[dict]:
+    resolved = _abs_file(result_path, "matrix_path")
+    if Path(resolved).suffix.lower() not in {".csv", ".txt", ".dat"}:
+        return None
+    try:
+        text = Path(resolved).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = Path(resolved).read_text(encoding="latin-1")
+    if "Local Sensitivity Results File" not in text:
+        return None
+
+    lines = text.splitlines()
+    dv_names: List[str] = []
+    response_blocks: List[dict] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx].strip()
+        if line.startswith("DV ID,Label,Current Value,Lower Limit,Upper Limit"):
+            idx += 1
+            while idx < len(lines):
+                row = lines[idx].rstrip()
+                if not row.strip():
+                    break
+                parts = _split_csv_like_line(row)
+                if len(parts) >= 2 and parts[0].strip().isdigit():
+                    dv_names.append(parts[1].strip())
+                    idx += 1
+                    continue
+                break
+        if line.startswith("Design Response ID,"):
+            if idx + 2 >= len(lines):
+                break
+            desc_parts = _split_csv_like_line(lines[idx + 1])
+            if len(desc_parts) < 8:
+                idx += 1
+                continue
+            label = desc_parts[1].strip()
+            response_type = desc_parts[2].strip().upper()
+            labels_line = lines[idx + 2].rstrip()
+            value_line = lines[idx + 3].rstrip() if idx + 3 < len(lines) else ""
+            response_labels = [item.strip() for item in _split_csv_like_line(labels_line) if item.strip()]
+            response_values = [
+                float(item.replace("D", "E").replace("d", "e"))
+                for item in _split_csv_like_line(value_line)
+                if item.strip()
+            ]
+            response_blocks.append({
+                "label": label,
+                "response_type": response_type,
+                "parameter_labels": response_labels,
+                "values": response_values,
+            })
+            idx += 4
+            continue
+        idx += 1
+
+    eign_blocks = [item for item in response_blocks if item.get("response_type") == "EIGN" and item.get("values")]
+    if not eign_blocks:
+        return None
+
+    available_parameter_names = list(parameter_names or dv_names or eign_blocks[0].get("parameter_labels") or [])
+    if not available_parameter_names:
+        available_parameter_names = [f"PARAM_{ii + 1}" for ii in range(len(eign_blocks[0]["values"]))]
+    requested_response_names = list(response_names or [])
+    if requested_response_names:
+        ordered_blocks = []
+        block_by_name = {str(item.get("label")): item for item in eign_blocks}
+        for name in requested_response_names:
+            block = block_by_name.get(str(name))
+            if block is None:
+                raise NotFoundError(
+                    "requested sensitivity response not found in formatted CSV",
+                    {"response_name": str(name), "available_response_names": [item.get("label") for item in eign_blocks]},
+                )
+            ordered_blocks.append(block)
+    else:
+        ordered_blocks = eign_blocks
+
+    matrix_rows: List[List[float]] = []
+    for block in ordered_blocks:
+        labels = list(block.get("parameter_labels") or available_parameter_names)
+        values = list(block.get("values") or [])
+        if len(labels) != len(values):
+            raise ValidationError(
+                "formatted sensitivity csv label/value length mismatch",
+                {
+                    "response_name": block.get("label"),
+                    "label_count": len(labels),
+                    "value_count": len(values),
+                    "matrix_path": resolved,
+                },
+            )
+        value_map = {str(label): float(value) for label, value in zip(labels, values)}
+        row = []
+        for param_name in available_parameter_names:
+            if str(param_name) not in value_map:
+                raise NotFoundError(
+                    "requested parameter not found in formatted sensitivity csv",
+                    {"parameter_name": str(param_name), "available_parameter_names": labels},
+                )
+            row.append(float(value_map[str(param_name)]))
+        matrix_rows.append(row)
+
+    return {
+        "path": "formatted_csv",
+        "matrix": np.asarray(matrix_rows, dtype=np.float64),
+        "row_labels": [str(item.get("label")) for item in ordered_blocks],
+        "column_labels": [str(item) for item in available_parameter_names],
+        "response_types": [str(item.get("response_type")) for item in ordered_blocks],
+    }
+
+
 def _parse_text_matrix_file(result_path: str, expected_shape: Optional[Tuple[int, int]] = None) -> dict:
     resolved = _abs_file(result_path, "matrix_path")
     try:
@@ -601,11 +722,22 @@ def preview_op2_sensitivity(
         candidates = _collect_matrix_candidates(op2)
         chosen = _choose_matrix_candidate(candidates, response_names, parameter_names)
     else:
-        chosen = _parse_text_matrix_file(result_path, expected_shape=expected_shape)
-        warnings.append({
-            "code": "SENSITIVITY_TEXT_MATRIX_HEURISTIC",
-            "message": "matrix file was parsed heuristically from plain numeric text; verify row/column order against the solver output",
-        })
+        chosen = _parse_formatted_sensitivity_csv(
+            result_path,
+            parameter_names=parameter_names,
+            response_names=response_names,
+        )
+        if chosen is not None:
+            warnings.append({
+                "code": "SENSITIVITY_FORMATTED_CSV_PARSED",
+                "message": "formatted Nastran sensitivity csv was parsed successfully; response rows were limited to EIGN blocks when present",
+            })
+        else:
+            chosen = _parse_text_matrix_file(result_path, expected_shape=expected_shape)
+            warnings.append({
+                "code": "SENSITIVITY_TEXT_MATRIX_HEURISTIC",
+                "message": "matrix file was parsed heuristically from plain numeric text; verify row/column order against the solver output",
+            })
     matrix = np.asarray(chosen["matrix"], dtype=np.float64)
     if not response_names:
         response_names = chosen.get("row_labels") or [f"RESP_{idx + 1}" for idx in range(matrix.shape[0])]
@@ -762,7 +894,9 @@ def export_sensitivity_to_vtu(
                 if not meta:
                     continue
                 ptype = str(meta.get("type") or "").upper()
-                if ptype == "H" and meta.get("property_id") is not None and pid == int(meta["property_id"]):
+                if meta.get("element_id") is not None and int(meta["element_id"]) == int(element_id):
+                    candidates.append(float(matrix[row_index, col_idx]))
+                elif ptype == "H" and meta.get("property_id") is not None and pid == int(meta["property_id"]):
                     candidates.append(float(matrix[row_index, col_idx]))
                 elif ptype in {"E", "RHO"} and meta.get("material_id") is not None and mid == int(meta["material_id"]):
                     candidates.append(float(matrix[row_index, col_idx]))
