@@ -325,15 +325,19 @@ def preview_nastran_sol200_job(
         parameters=list(parameters or []),
         responses=list(responses or []),
         settings=dict(settings or {}),
+        output_bdf=str(input_path.with_name(f"{input_path.stem}_sol200.bdf")),
+        output_design_bdf=str(input_path.with_name("design_model.bdf")),
     )
     return {
         "workflow": "nastran_sol200_preview",
         "input_bdf": str(input_path),
         "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
+        "deck_mode": payload.get("deck_mode", "inline"),
         "control_lines_preview": payload["control_lines"],
         "desvar_preview": payload["desvar_lines"],
         "relation_preview": payload["relation_lines"],
         "response_preview": payload["response_lines"],
+        "design_model_preview": payload.get("design_lines") or [],
         "warnings": [],
     }
 
@@ -350,10 +354,13 @@ def generate_nastran_sol200_job(
         f"{input_path.stem}_sol200.bdf"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    deck_mode = str((settings or {}).get("sol200.deck_mode", "inline")).strip().lower()
+    design_output_path = output_path.with_name("design_model.bdf") if deck_mode == "include" else None
 
     payload = convert_to_sol200(
         input_bdf=str(input_path),
         output_bdf=str(output_path),
+        output_design_bdf=str(design_output_path) if design_output_path else None,
         parameters=list(parameters or []),
         responses=list(responses or []),
         settings=dict(settings or {}),
@@ -367,11 +374,12 @@ def generate_nastran_sol200_job(
         "settings": dict(settings or {}),
     }
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {
+    result = {
         "workflow": "nastran_sol200_generate",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
         "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
+        "deck_mode": payload.get("deck_mode", deck_mode),
         "parameter_count": len(list(parameters or [])),
         "response_count": len(list(responses or [])),
         "generated_files": {
@@ -383,9 +391,15 @@ def generate_nastran_sol200_job(
             "desvar_preview": payload["desvar_lines"],
             "relation_preview": payload["relation_lines"],
             "response_preview": payload["response_lines"],
+            "design_model_preview": payload.get("design_lines") or [],
         },
         "warnings": [],
     }
+    if payload.get("output_design_bdf"):
+        result["generated_files"]["design_model_bdf"] = str(payload["output_design_bdf"])
+    if payload.get("deck_mode") == "include":
+        result["generated_files"]["include_bdf"] = str(output_path)
+    return result
 
 
 def run_nastran_sol200_job(

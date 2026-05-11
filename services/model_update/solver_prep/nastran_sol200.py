@@ -39,6 +39,16 @@ def _normalize_sol200_settings(settings: Optional[Dict[str, Any]] = None) -> Dic
     return resolved
 
 
+def _resolve_sol200_deck_mode(settings: Optional[Dict[str, Any]] = None) -> str:
+    token = str((settings or {}).get("sol200.deck_mode", "inline")).strip().lower()
+    if token not in {"inline", "include"}:
+        raise ValidationError(
+            "sol200.deck_mode must be one of: inline, include",
+            {"sol200.deck_mode": (settings or {}).get("sol200.deck_mode")},
+        )
+    return token
+
+
 def _normalize_card_name(line: str) -> str:
     stripped = line.lstrip()
     if not stripped or stripped.startswith("$"):
@@ -181,23 +191,16 @@ def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str
     ]
 
 
-def build_sol200_lines(
+def build_sol200_design_lines(
     *,
-    input_bdf: str,
     parameters: List[Dict[str, Any]],
     responses: List[Dict[str, Any]],
-    settings: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    settings = _normalize_sol200_settings(settings)
+) -> Dict[str, List[str]]:
     if not parameters:
         raise ValidationError("SOL200 parameters are required", {"parameters": parameters})
     if not responses:
         raise ValidationError("SOL200 responses are required", {"responses": responses})
 
-    lines = read_lines(input_bdf)
-    _, bulk_lines = split_bdf(lines)
-
-    control_lines = build_sol200_controls(settings)
     desvar_lines: List[str] = []
     relation_lines: List[str] = []
     response_lines: List[str] = []
@@ -209,13 +212,77 @@ def build_sol200_lines(
     for index, response in enumerate(responses, start=1):
         response_lines.extend(_build_response_lines(index, response))
 
-    filtered_bulk_lines = filter_sol200_bulk_lines(bulk_lines)
-    output_lines = control_lines + desvar_lines + relation_lines + response_lines + filtered_bulk_lines
+    design_lines = [
+        "$ -----------------------------------------------------------------------------",
+        "$ Phase-1 SOL200 design model include",
+        "$ -----------------------------------------------------------------------------",
+        *desvar_lines,
+        *relation_lines,
+        *response_lines,
+    ]
     return {
+        "desvar_lines": desvar_lines,
+        "relation_lines": relation_lines,
+        "response_lines": response_lines,
+        "design_lines": design_lines,
+    }
+
+
+def _format_include_line(main_bdf_path: str, design_bdf_path: str) -> str:
+    main_path = Path(main_bdf_path).resolve()
+    design_path = Path(design_bdf_path).resolve()
+    rel_path = design_path.relative_to(main_path.parent) if design_path.parent == main_path.parent else Path(
+        design_path.as_posix()
+    )
+    rel_text = str(rel_path).replace("\\", "/")
+    if not rel_text.startswith("."):
+        rel_text = f"./{rel_text}"
+    return f"INCLUDE '{rel_text}'"
+
+
+def build_sol200_lines(
+    *,
+    input_bdf: str,
+    parameters: List[Dict[str, Any]],
+    responses: List[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]] = None,
+    output_bdf: Optional[str] = None,
+    output_design_bdf: Optional[str] = None,
+) -> Dict[str, Any]:
+    settings = _normalize_sol200_settings(settings)
+    deck_mode = _resolve_sol200_deck_mode(settings)
+
+    lines = read_lines(input_bdf)
+    _, bulk_lines = split_bdf(lines)
+
+    control_lines = build_sol200_controls(settings)
+    design_payload = build_sol200_design_lines(parameters=parameters, responses=responses)
+    filtered_bulk_lines = filter_sol200_bulk_lines(bulk_lines)
+    desvar_lines = design_payload["desvar_lines"]
+    relation_lines = design_payload["relation_lines"]
+    response_lines = design_payload["response_lines"]
+    design_lines = design_payload["design_lines"]
+
+    if deck_mode == "include":
+        if not output_bdf or not output_design_bdf:
+            raise ValidationError(
+                "include deck mode requires output_bdf and output_design_bdf",
+                {
+                    "output_bdf": output_bdf,
+                    "output_design_bdf": output_design_bdf,
+                },
+            )
+        include_line = _format_include_line(output_bdf, output_design_bdf)
+        output_lines = control_lines + [include_line, ""] + filtered_bulk_lines
+    else:
+        output_lines = control_lines + design_lines + filtered_bulk_lines
+    return {
+        "deck_mode": deck_mode,
         "control_lines": control_lines,
         "desvar_lines": desvar_lines,
         "relation_lines": relation_lines,
         "response_lines": response_lines,
+        "design_lines": design_lines,
         "filtered_bulk_lines": filtered_bulk_lines,
         "output_lines": output_lines,
     }
@@ -254,16 +321,27 @@ def convert_to_sol200(
     *,
     input_bdf: str,
     output_bdf: str,
+    output_design_bdf: Optional[str] = None,
     parameters: List[Dict[str, Any]],
     responses: List[Dict[str, Any]],
     settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    deck_mode = _resolve_sol200_deck_mode(settings)
+    resolved_design_bdf = output_design_bdf
+    if deck_mode == "include" and not resolved_design_bdf:
+        resolved_design_bdf = str(Path(output_bdf).with_name("design_model.bdf"))
     payload = build_sol200_lines(
         input_bdf=input_bdf,
         parameters=parameters,
         responses=responses,
         settings=settings,
+        output_bdf=output_bdf,
+        output_design_bdf=resolved_design_bdf,
     )
     Path(output_bdf).parent.mkdir(parents=True, exist_ok=True)
     write_lines(output_bdf, payload["output_lines"])
+    if deck_mode == "include" and resolved_design_bdf:
+        Path(resolved_design_bdf).parent.mkdir(parents=True, exist_ok=True)
+        write_lines(resolved_design_bdf, payload["design_lines"])
+        payload["output_design_bdf"] = str(Path(resolved_design_bdf).resolve())
     return payload

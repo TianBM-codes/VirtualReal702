@@ -66,6 +66,7 @@ def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
         "input_bdf": body.input_bdf,
         "output_bdf": body.output_bdf,
         "parameters": [model_to_dict(item) for item in body.parameters],
+        "parameter_preset": model_to_dict(body.parameter_preset) if body.parameter_preset else None,
         "responses": [model_to_dict(item) for item in body.responses],
         "settings": body.settings,
         "nastran": body.nastran,
@@ -236,6 +237,7 @@ async def preview_nastran_sol200_api(request: Request, body: NastranSol200Previe
         data = preview_sol200_workflow(
             input_bdf=body.input_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
+            parameter_preset=model_to_dict(body.parameter_preset) if body.parameter_preset else None,
             responses=[model_to_dict(item) for item in body.responses],
             settings=body.settings,
         )
@@ -255,6 +257,7 @@ async def generate_nastran_sol200_api(request: Request, body: NastranSol200Gener
             input_bdf=body.input_bdf,
             output_bdf=body.output_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
+            parameter_preset=model_to_dict(body.parameter_preset) if body.parameter_preset else None,
             responses=[model_to_dict(item) for item in body.responses],
             settings=body.settings,
         )

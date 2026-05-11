@@ -502,9 +502,18 @@ class NastranResponseRequest(BaseModel):
     mode_number: Optional[int] = None
 
 
+class NastranSol200ParameterPresetRequest(BaseModel):
+    preset: str
+    lower_scale: float = 0.8
+    upper_scale: float = 1.2
+    include_e: bool = True
+    include_rho: bool = True
+
+
 class NastranSol200PreviewRequest(BaseModel):
     input_bdf: str
-    parameters: List[NastranParameterRequest]
+    parameters: List[NastranParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
     responses: List[NastranResponseRequest]
     settings: Dict[str, Any] = Field(default_factory=dict)
 
@@ -512,7 +521,8 @@ class NastranSol200PreviewRequest(BaseModel):
 class NastranSol200GenerateRequest(BaseModel):
     input_bdf: str
     output_bdf: Optional[str] = None
-    parameters: List[NastranParameterRequest]
+    parameters: List[NastranParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
     responses: List[NastranResponseRequest]
     settings: Dict[str, Any] = Field(default_factory=dict)
 
@@ -520,7 +530,8 @@ class NastranSol200GenerateRequest(BaseModel):
 class NastranSol200RunRequest(BaseModel):
     input_bdf: str
     output_bdf: Optional[str] = None
-    parameters: List[NastranParameterRequest]
+    parameters: List[NastranParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
     responses: List[NastranResponseRequest]
     settings: Dict[str, Any] = Field(default_factory=dict)
     nastran: Optional[str] = None

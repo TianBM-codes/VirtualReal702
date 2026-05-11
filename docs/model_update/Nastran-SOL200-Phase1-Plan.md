@@ -54,8 +54,13 @@ workflow.
 ### Included
 
 - Dedicated orchestration service for SOL200 workflows
+- Include-style deck generation:
+  - main analysis deck
+  - separate `design_model.bdf`
 - Preview/generate/run endpoints for SOL200
 - Force mass-normalized modal extraction for sensitivity decks
+- Convenience preset for automatically expanding all used `MAT1` material `E`
+  and `RHO` values into design parameters
 - Basic sensitivity matrix import from:
   - OP2
   - explicit matrix result file path
