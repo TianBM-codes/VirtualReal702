@@ -98,6 +98,30 @@ def _format_desvar_line(index: int, parameter: Dict[str, Any]) -> str:
     return ",".join(fields).rstrip(",")
 
 
+def _format_relation_header_line(
+    *,
+    card_name: str,
+    relation_id: int,
+    target_type: str,
+    target_id: int,
+    field_name: str,
+) -> str:
+    return (
+        f"{card_name:<8}"
+        f"{int(relation_id):>8}"
+        f"{target_type:<8}"
+        f"{int(target_id):>8}"
+        f"{field_name:<8}"
+        f"{'':>8}"
+        f"{'':>8}"
+        f"{'':>8}"
+    ).rstrip()
+
+
+def _format_relation_continuation_line(*, desvar_id: int, coefficient: float = 1.0) -> str:
+    return f"{'':<8}{int(desvar_id):>8}{format_float_like_bas(float(coefficient)):>8}".rstrip()
+
+
 def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> List[str]:
     ptype = str(parameter.get("type") or "").upper()
     if ptype == "H":
@@ -105,21 +129,42 @@ def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> Li
         if property_id is None:
             raise ValidationError("H parameter requires property_id", {"parameter": parameter})
         return [
-            f"DVPREL1,{int(index)},PSHELL,{int(property_id)},4,,,,{int(index)},1.0",
+            _format_relation_header_line(
+                card_name="DVPREL1",
+                relation_id=index,
+                target_type="PSHELL",
+                target_id=int(property_id),
+                field_name="T",
+            ),
+            _format_relation_continuation_line(desvar_id=index),
         ]
     if ptype == "E":
         material_id = parameter.get("material_id")
         if material_id is None:
             raise ValidationError("E parameter requires material_id", {"parameter": parameter})
         return [
-            f"DVMREL1,{int(index)},MAT1,{int(material_id)},E,,,,{int(index)},1.0",
+            _format_relation_header_line(
+                card_name="DVMREL1",
+                relation_id=index,
+                target_type="MAT1",
+                target_id=int(material_id),
+                field_name="E",
+            ),
+            _format_relation_continuation_line(desvar_id=index),
         ]
     if ptype == "RHO":
         material_id = parameter.get("material_id")
         if material_id is None:
             raise ValidationError("RHO parameter requires material_id", {"parameter": parameter})
         return [
-            f"DVMREL1,{int(index)},MAT1,{int(material_id)},RHO,,,,{int(index)},1.0",
+            _format_relation_header_line(
+                card_name="DVMREL1",
+                relation_id=index,
+                target_type="MAT1",
+                target_id=int(material_id),
+                field_name="RHO",
+            ),
+            _format_relation_continuation_line(desvar_id=index),
         ]
     raise ValidationError(
         "unsupported SOL200 parameter type",
