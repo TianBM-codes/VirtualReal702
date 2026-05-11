@@ -2,17 +2,23 @@ from fastapi import APIRouter, Request
 
 from services.model_update.analysis.inp_service import (
     evaluate_static_correlation,
+    get_dof_matches,
     get_pair_node_point_result,
+    match_test_dofs,
     get_transform_auto_info,
     match_test_nodes,
     save_transform_operation,
 )
+from services.model_update.analysis.project_config_service import get_node_match_parameter_context
 
 from src.l3.core.errors import AppError
 
 from ..common import error_response, server_error, success_response
 from ..models import (
     CorrelationEvaluateRequest,
+    DofMatchResultRequest,
+    MatchDofsRequest,
+    MatchNodeParametersRequest,
     MatchNodesRequest,
     PairNodePointResultRequest,
     TransformAutoInfoRequest,
@@ -35,6 +41,7 @@ async def match_nodes_api(request: Request, body: MatchNodesRequest):
             max_distance=body.max_distance,
             overwrite=body.overwrite,
             auto_translate=body.auto_translate,
+            auto_rotate=body.auto_rotate,
             translation=body.translation,
             rotation=model_to_dict(body.rotation) if body.rotation else None,
         )
@@ -52,6 +59,49 @@ async def get_pair_node_point_result_api(request: Request, body: PairNodePointRe
     try:
         result = get_pair_node_point_result(body.project_id)
         return success_response(result, "节点匹配结果获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/match/dofs")
+async def match_dofs_api(request: Request, body: MatchDofsRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = match_test_dofs(
+            project_id=body.project_id,
+            overwrite=body.overwrite,
+            min_match_score=body.min_match_score,
+        )
+        return success_response(result, "自由度匹配成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/get/dof_match_result")
+async def get_dof_match_result_api(request: Request, body: DofMatchResultRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_dof_matches(body.project_id)
+        return success_response(result, "自由度匹配结果获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/match/nodes/params")
+async def get_match_node_parameters_api(request: Request, body: MatchNodeParametersRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_node_match_parameter_context(body.project_id)
+        return success_response(result, "节点匹配参数获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

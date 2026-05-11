@@ -15,6 +15,7 @@ class _CreateParameterCursor:
         self.last_sql = ""
         self.last_params = None
         self.inserted = []
+        self.executemany_batches = []
 
     def execute(self, sql, params=None):
         self.last_sql = " ".join(sql.split())
@@ -22,9 +23,58 @@ class _CreateParameterCursor:
         if self.last_sql.startswith("INSERT INTO t_mt_py_fem_selected_parameter"):
             self.inserted.append(params)
 
+    def executemany(self, sql, seq_params):
+        self.last_sql = " ".join(sql.split())
+        batch = list(seq_params)
+        self.executemany_batches.append(batch)
+        if self.last_sql.startswith("INSERT INTO t_mt_py_fem_selected_parameter"):
+            self.inserted.extend(batch)
+
     def fetchall(self):
         if "FROM t_mt_py_fem_quantity_set_capability" in self.last_sql:
-            return [dict(row) for row in self.capability_rows]
+            params = list(self.last_params or [])
+            rows = [dict(row) for row in self.capability_rows]
+            idx = 1
+            quantity_codes = set()
+            while idx < len(params) and str(params[idx]).upper() in {"E", "T", "H"}:
+                quantity_codes.add(str(params[idx]).upper())
+                idx += 1
+            if quantity_codes:
+                rows = [row for row in rows if str(row.get("quantity_code") or "").upper() in quantity_codes]
+
+            if "AND set_name = %s" in self.last_sql:
+                set_name = params[idx]
+                idx += 1
+                rows = [row for row in rows if row.get("set_name") == set_name]
+                if "AND set_type = %s" in self.last_sql:
+                    set_type = params[idx]
+                    idx += 1
+                    rows = [row for row in rows if row.get("set_type") == set_type]
+                if "AND set_scope = %s" in self.last_sql:
+                    set_scope = params[idx]
+                    idx += 1
+                    rows = [row for row in rows if row.get("set_scope") == set_scope]
+                if "AND instance_name = %s" in self.last_sql:
+                    instance_name = params[idx]
+                    idx += 1
+                    rows = [row for row in rows if row.get("instance_name") == instance_name]
+                if "AND part_name = %s" in self.last_sql:
+                    part_name = params[idx]
+                    rows = [row for row in rows if row.get("part_name") == part_name]
+                return rows
+
+            if "AND set_name IN (" in self.last_sql:
+                set_scope = params[idx]
+                scope_identity_value = params[idx + 1]
+                set_names = set(params[idx + 2:])
+                rows = [row for row in rows if row.get("set_scope") == set_scope and row.get("set_name") in set_names]
+                if "AND instance_name <=> %s" in self.last_sql:
+                    rows = [row for row in rows if row.get("instance_name") == scope_identity_value]
+                if "AND part_name <=> %s" in self.last_sql:
+                    rows = [row for row in rows if row.get("part_name") == scope_identity_value]
+                return rows
+
+            return rows
         if "FROM t_mt_py_fem_selected_parameter" in self.last_sql:
             return [dict(row) for row in self.existing_rows]
         return []
@@ -159,6 +209,7 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
     assert [item["parameter_name"] for item in result["created_parameters_preview"]] == ["E_GROUP#1", "E_GROUP#2"]
     assert fake_conn.committed is True
     assert fake_conn.rolled_back is False
+    assert len(fake_conn.cursor_obj.executemany_batches) == 1
     assert [params[2] for params in fake_conn.cursor_obj.inserted] == ["E_GROUP#1", "E_GROUP#2"]
     assert [params[10] for params in fake_conn.cursor_obj.inserted] == [1, 2]
     assert [params[12] for params in fake_conn.cursor_obj.inserted] == [100000.0, 100000.0]
@@ -205,7 +256,108 @@ def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch
     existing_rows = [
         {
             "quantity_code": "E",
-            "extra_json": json.dumps({"target_keys": ["PART::P1::2"]}),
+            "set_name": "SET_EXISTING",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "element_label": 2,
+        }
+    ]
+    fake_conn = _CreateParameterConnection(capability_rows, existing_rows=existing_rows)
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    with pytest.raises(ValueError, match="overlaps with an existing parameter"):
+        inp_service.create_optimization_parameter(
+            project_id=101,
+            quantity_code="E",
+            lower=100000.0,
+            upper=300000.0,
+            selection_mode="LOCAL",
+            set_name="SET_SHELL",
+            set_type="ELSET",
+            set_scope="PART",
+            part_name="P1",
+            parameter_name="E_GROUP",
+        )
+
+    assert fake_conn.committed is False
+    assert fake_conn.rolled_back is True
+
+
+def test_create_optimization_parameter_rejects_overlap_with_existing_global_parameter(monkeypatch):
+    capability_rows = [
+        {
+            "quantity_code": "E",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 2,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": 210000.0,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [1, 2],
+                    "target_keys": ["PART::P1::1", "PART::P1::2"],
+                    "target_keys_by_label": {
+                        "1": ["PART::P1::1"],
+                        "2": ["PART::P1::2"],
+                    },
+                    "element_values": {
+                        "1": 210000.0,
+                        "2": 220000.0,
+                    },
+                }
+            ),
+        },
+        {
+            "quantity_code": "E",
+            "set_name": "SET_EXISTING",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 2,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": 210000.0,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [2, 3],
+                    "target_keys": ["PART::P1::2", "PART::P1::3"],
+                    "target_keys_by_label": {
+                        "2": ["PART::P1::2"],
+                        "3": ["PART::P1::3"],
+                    },
+                    "element_values": {
+                        "2": 210000.0,
+                        "3": 220000.0,
+                    },
+                }
+            ),
+        },
+    ]
+    existing_rows = [
+        {
+            "quantity_code": "E",
+            "set_name": "SET_EXISTING",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "element_label": None,
         }
     ]
     fake_conn = _CreateParameterConnection(capability_rows, existing_rows=existing_rows)
@@ -231,10 +383,12 @@ def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch
 
 
 def test_build_import_inp_catalog_summary_returns_simplified_parameter_level_sets():
+    e_description = inp_service._quantity_description("E", "E")
+    t_description = inp_service._quantity_description("T", "T")
     result = inp_service._build_inp_parameter_options(
         supported_quantities=[
             {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
-            {"quantity_code": "T", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+            {"quantity_code": "T", "quantity_name": "鍘氬害", "enabled": 1, "sort_no": 2},
         ],
         quantity_set_capabilities=[
             {
@@ -283,21 +437,15 @@ def test_build_import_inp_catalog_summary_returns_simplified_parameter_level_set
     assert result == [
         {
             "parameter_name": "E",
-            "description": "杨氏模量",
+            "description": e_description,
             "level": "GLOBAL",
-            "sets": ["SET_A"],
+            "sets": [{"rows": "SET_A"}, {"rows": "SET_B"}],
         },
         {
-            "parameter_name": "E",
-            "description": "杨氏模量",
-            "level": "LOCAL",
-            "sets": ["SET_A", "SET_B"],
-        },
-        {
-            "parameter_name": "厚度",
-            "description": "壳单元厚度",
+            "parameter_name": "T",
+            "description": t_description,
             "level": "GLOBAL",
-            "sets": ["SET_SHELL"],
+            "sets": [{"rows": "SET_SHELL"}],
         },
     ]
 
@@ -315,7 +463,7 @@ class _InpOptionsCursor:
         if "FROM t_mt_py_fem_supported_quantity" in self.last_sql:
             return [
                 {"quantity_code": "E", "quantity_name": "E", "enabled": 1, "sort_no": 1},
-                {"quantity_code": "T", "quantity_name": "厚度", "enabled": 1, "sort_no": 2},
+                {"quantity_code": "T", "quantity_name": "鍘氬害", "enabled": 1, "sort_no": 2},
             ]
         if "FROM t_mt_py_fem_quantity_set_capability" in self.last_sql:
             return [
@@ -340,6 +488,8 @@ class _InpOptionsConnection:
 
 
 def test_get_inp_parameter_options_reads_from_database(monkeypatch):
+    e_description = inp_service._quantity_description("E", "E")
+    t_description = inp_service._quantity_description("T", "T")
     monkeypatch.setattr(inp_service, "get_connection", lambda: _InpOptionsConnection())
 
     result = inp_service.get_inp_parameter_options(101)
@@ -347,23 +497,19 @@ def test_get_inp_parameter_options_reads_from_database(monkeypatch):
     assert result == [
         {
             "parameter_name": "E",
-            "description": "杨氏模量",
+            "description": e_description,
             "level": "GLOBAL",
-            "sets": ["SET_A"],
+            "sets": [{"rows": "SET_A"}],
         },
         {
-            "parameter_name": "厚度",
-            "description": "壳单元厚度",
+            "parameter_name": "T",
+            "description": t_description,
             "level": "GLOBAL",
-            "sets": ["SET_B"],
-        },
-        {
-            "parameter_name": "厚度",
-            "description": "壳单元厚度",
-            "level": "LOCAL",
-            "sets": ["SET_B"],
+            "sets": [{"rows": "SET_B"}],
         },
     ]
+
+
 def test_extract_legacy_material_rows_accepts_iso_elastic_type_alias():
     model = SimpleNamespace(
         materials={
@@ -391,4 +537,84 @@ def test_extract_legacy_material_rows_accepts_iso_elastic_type_alias():
             "nu": 0.3,
             "ge": 0.0,
         }
+    ]
+
+
+def test_extract_legacy_property_rows_includes_shell_element_set(tmp_path: Path):
+    inp_path = tmp_path / "shell_property.inp"
+    inp_path.write_text(
+        "\n".join(
+            [
+                "*Heading",
+                "*Material, name=MAT1",
+                "*Elastic",
+                "210000, 0.3",
+                "*Part, name=P1",
+                "*Node",
+                "1, 0, 0, 0",
+                "2, 1, 0, 0",
+                "3, 1, 1, 0",
+                "4, 0, 1, 0",
+                "*Element, type=S4, elset=SET_SHELL",
+                "1, 1, 2, 3, 4",
+                "*Shell Section, elset=SET_SHELL, material=MAT1",
+                "0.01",
+                "*End Part",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    model = parse_inp(str(inp_path))
+    result = inp_service._extract_legacy_property_rows(model)
+
+    assert result["shell_rows"] == [
+        {
+            "id": 1,
+            "thickness": 0.01,
+            "nsm": 0.0,
+            "theta": 0.0,
+            "element_set": "SET_SHELL",
+        }
+    ]
+
+
+def test_build_inp_parameter_options_uses_canonical_t_name_for_legacy_h_rows():
+    description = inp_service._quantity_description("T", "T")
+    result = inp_service._build_inp_parameter_options(
+        supported_quantities=[
+            {"quantity_code": "H", "quantity_name": "H", "enabled": 1, "sort_no": 1},
+            {"quantity_code": "T", "quantity_name": "T", "enabled": 1, "sort_no": 2},
+        ],
+        quantity_set_capabilities=[
+            {
+                "quantity_code": "H",
+                "set_name": "SET_H",
+                "set_scope": "PART",
+                "set_type": "ELSET",
+                "instance_name": None,
+                "part_name": "P1",
+                "supports_global": 1,
+                "supports_local": 1,
+            },
+            {
+                "quantity_code": "T",
+                "set_name": "SET_T",
+                "set_scope": "PART",
+                "set_type": "ELSET",
+                "instance_name": None,
+                "part_name": "P1",
+                "supports_global": 1,
+                "supports_local": 0,
+            },
+        ],
+    )
+
+    assert result == [
+        {
+            "parameter_name": "T",
+            "description": description,
+            "level": "GLOBAL",
+            "sets": [{"rows": "SET_H"}, {"rows": "SET_T"}],
+        },
     ]

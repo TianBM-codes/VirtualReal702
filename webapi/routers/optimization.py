@@ -10,6 +10,7 @@ from services.model_update.analysis.model_update_meta_service import (
     resolve_bayesian_output_dir,
     resolve_python3_command,
 )
+from services.model_update.analysis import sensitivity_service as _sens
 from services.model_update.analysis.inp_service import create_optimization_parameter
 from src.l3.core.errors import AppError, ValidationError
 
@@ -116,15 +117,23 @@ def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
 
 
 def _run_bayesian_update_workflow_compact(**kwargs) -> dict:
-    return _compact_bayesian_run_response(run_bayesian_update_workflow(**kwargs))
+    project_id = int(kwargs["project_id"])
+    return _sens._run_with_project_sensitivity_status(
+        project_id,
+        lambda: _compact_bayesian_run_response(run_bayesian_update_workflow(**kwargs)),
+    )
 
 
 def _run_bayesian_update_task(task_id: str, **kwargs) -> dict:
     def _progress_callback(progress: dict) -> None:
         update_background_task(task_id, progress=progress)
 
-    return _compact_bayesian_run_response(
-        run_bayesian_update_workflow(progress_callback=_progress_callback, **kwargs)
+    project_id = int(kwargs["project_id"])
+    return _sens._run_with_project_sensitivity_status(
+        project_id,
+        lambda: _compact_bayesian_run_response(
+            run_bayesian_update_workflow(progress_callback=_progress_callback, **kwargs)
+        ),
     )
 
 

@@ -16,19 +16,32 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.inp import parse_inp, InpModel
 
-
 # ANSI color codes (degrade gracefully if terminal doesn't support)
 _USE_COLOR = sys.stdout.isatty()
+
 
 def _c(code, text):
     return f"\033[{code}m{text}\033[0m" if _USE_COLOR else text
 
+
 def BOLD(t):   return _c("1", t)
+
+
 def DIM(t):    return _c("2", t)
+
+
 def CYAN(t):   return _c("36", t)
+
+
 def GREEN(t):  return _c("32", t)
+
+
 def YELLOW(t): return _c("33", t)
+
+
 def RED(t):    return _c("31", t)
+
+
 def BLUE(t):   return _c("34", t)
 
 
@@ -162,34 +175,34 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
                   f"  trans=({tx:.3g},{ty:.3g},{tz:.3g}){rot_str}")
 
         for ni, (nname, anset) in enumerate(asm.nsets.items()):
-            c = L if (ni == len(asm.nsets)-1 and not asm.elsets and not asm.surfaces) else T
+            c = L if (ni == len(asm.nsets) - 1 and not asm.elsets and not asm.surfaces) else T
             inst_tag = f"  inst={anset.instance_name}" if anset.instance_name else ""
             print(f"{I}{c}{GREEN('Nset')} {nname} ({len(anset.node_labels)}){inst_tag}"
                   + (f":  {_labels_summary(anset.node_labels, max_labels)}"
                      if show_labels else ""))
 
         for ei, (ename, aelset) in enumerate(asm.elsets.items()):
-            c = L if (ei == len(asm.elsets)-1 and not asm.surfaces) else T
+            c = L if (ei == len(asm.elsets) - 1 and not asm.surfaces) else T
             inst_tag = f"  inst={aelset.instance_name}" if aelset.instance_name else ""
             print(f"{I}{c}{GREEN('Elset')} {ename} ({len(aelset.elem_labels)}){inst_tag}"
                   + (f":  {_labels_summary(aelset.elem_labels, max_labels)}"
                      if show_labels else ""))
 
         for si, (sname, surf) in enumerate(asm.surfaces.items()):
-            c = L if (si == len(asm.surfaces)-1 and not asm.ties and not asm.couplings) else T
+            c = L if (si == len(asm.surfaces) - 1 and not asm.ties and not asm.couplings) else T
             print(f"{I}{c}{YELLOW('Surface')} {sname} [{surf.surface_type}]  "
                   f"{len(surf.entries)} entries")
 
         for ti, tie in enumerate(asm.ties):
-            c = L if (ti == len(asm.ties)-1 and not asm.couplings) else T
+            c = L if (ti == len(asm.ties) - 1 and not asm.couplings) else T
             adj = "adjust=YES" if tie.adjust else "adjust=NO"
             print(f"{I}{c}{YELLOW('Tie')} {tie.name}  [{tie.tie_type}]  {adj}")
-            c2 = S if (ti == len(asm.ties)-1 and not asm.couplings) else I
+            c2 = S if (ti == len(asm.ties) - 1 and not asm.couplings) else I
             print(f"{I}{c2}{L}{tie.master_surface} → {tie.slave_surface}")
 
         for ci, coup in enumerate(asm.couplings):
-            c = L if ci == len(asm.couplings)-1 else T
-            c2 = S if ci == len(asm.couplings)-1 else I
+            c = L if ci == len(asm.couplings) - 1 else T
+            c2 = S if ci == len(asm.couplings) - 1 else I
             ctype = coup.coupling_type if coup.coupling_type else "?"
             weights_note = DIM("  (weights not parsed)") if coup.coupling_type == "DISTRIBUTING" else ""
             print(f"{I}{c}{YELLOW('Coupling')} {coup.name}  [{ctype}]{weights_note}")
@@ -226,7 +239,7 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
 
         print(f"{I}{m0}{BOLD(mname)}")
         for pi2, prop in enumerate(props):
-            c = L if pi2 == len(props)-1 else T
+            c = L if pi2 == len(props) - 1 else T
             print(f"{I}{m1}{c}{BLUE(prop)}")
         if not props:
             print(f"{I}{m1}{L}{DIM('(no properties)')}")
@@ -236,7 +249,7 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
         print(f"{T}{BOLD(CYAN('Amplitudes'))}  ({len(model.amplitudes)})")
         amp_list = list(model.amplitudes.items())
         for ai, (aname, amp) in enumerate(amp_list):
-            c = L if ai == len(amp_list)-1 else T
+            c = L if ai == len(amp_list) - 1 else T
             t_range = ""
             if amp.times:
                 t_range = f"  t=[{amp.times[0]:.3g} … {amp.times[-1]:.3g}]  ({len(amp.times)} pts)"
@@ -247,20 +260,11 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
         print(f"{T}{BOLD(CYAN('Time Points'))}  ({len(model.time_points)})")
         tp_list = list(model.time_points.items())
         for ti, (tname, tp) in enumerate(tp_list):
-            c = L if ti == len(tp_list)-1 else T
+            c = L if ti == len(tp_list) - 1 else T
             t_range = ""
             if tp.times:
                 t_range = f"  ({len(tp.times)} pts)  t=[{tp.times[0]:.3g} … {tp.times[-1]:.3g}]"
             print(f"{I}{c}{tname}{t_range}")
-
-    # ---- Initial Boundary Conditions -------------------------------- #
-    if model.initial_boundary_conditions:
-        print(f"{T}{BOLD(CYAN('Initial Boundary Conditions'))}  ({len(model.initial_boundary_conditions)})")
-        for bi, entry in enumerate(model.initial_boundary_conditions[:max_labels]):
-            c = L if (bi == len(model.initial_boundary_conditions) - 1 or bi == max_labels - 1) else T
-            _print_bc_entry(f"{I}{c}", entry)
-        if len(model.initial_boundary_conditions) > max_labels:
-            print(f"{I}{L}{DIM(f'... and {len(model.initial_boundary_conditions)-max_labels} more')}")
 
     # ---- Steps ------------------------------------------------------- #
     print(f"{L}{BOLD(CYAN('Steps'))}  ({len(model.steps)})")
@@ -285,16 +289,16 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
             items.append((f"Surface Loads ({len(step.dsloads)})", step.dsloads))
 
         for ki, (label, entries) in enumerate(items):
-            c = L if ki == len(items)-1 else T
-            c2 = S if ki == len(items)-1 else I
+            c = L if ki == len(items) - 1 else T
+            c2 = S if ki == len(items) - 1 else I
             print(f"    {s1}{c}{YELLOW(label)}")
             for ei2, entry in enumerate(entries[:max_labels]):
-                ec = L if (ei2 == len(entries)-1 or ei2 == max_labels-1) else T
-                if hasattr(entry, 'dof_start'):   # BC
+                ec = L if (ei2 == len(entries) - 1 or ei2 == max_labels - 1) else T
+                if hasattr(entry, 'dof_start'):  # BC
                     print(f"    {s1}{c2}{ec}{entry.nset_name}  "
                           f"DOF {entry.dof_start}–{entry.dof_end} = {entry.value}"
                           + (f"  amp={entry.amplitude_name}" if entry.amplitude_name else ""))
-                elif hasattr(entry, 'dof'):        # Cload
+                elif hasattr(entry, 'dof'):  # Cload
                     print(f"    {s1}{c2}{ec}{entry.nset_name}  "
                           f"DOF {entry.dof} = {entry.value}"
                           + (f"  amp={entry.amplitude_name}" if entry.amplitude_name else ""))
@@ -307,10 +311,10 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
                           f"{entry.load_type} = {entry.magnitude}"
                           + (f"  amp={entry.amplitude_name}" if entry.amplitude_name else ""))
             if len(entries) > max_labels:
-                print(f"    {s1}{c2}{L}{DIM(f'... and {len(entries)-max_labels} more')}")
+                print(f"    {s1}{c2}{L}{DIM(f'... and {len(entries) - max_labels} more')}")
 
     # ---- Diagnostics summary ----------------------------------------- #
-    errors   = [d for d in model.diagnostics if d.severity == "ERROR"]
+    errors = [d for d in model.diagnostics if d.severity == "ERROR"]
     warnings = [d for d in model.diagnostics if d.severity == "WARNING"]
     if errors or warnings:
         print()
@@ -323,7 +327,7 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
             for d in warnings[:5]:
                 print(f"    {d}")
             if len(warnings) > 5:
-                print(f"    {DIM(f'... and {len(warnings)-5} more')}")
+                print(f"    {DIM(f'... and {len(warnings) - 5} more')}")
     else:
         print(DIM("\n  No errors or warnings."))
 
@@ -351,7 +355,8 @@ def main():
         # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\2d_cpe8p_gc_smallsliding.inp"
         # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\backhoe_deform_scoopdump_xpl.inp"
         # inp = r"D:\WorkSpace\WebThreeJS\PyModel2JsonDataFolder\model\inp\door.inp"
-        inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\ReactorHead_reference.inp"
+        # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\ReactorHead_reference.inp"
+        inp = r"C:\Users\12594\xwechat_files\wxid_j1zkqj0iq2n521_b4a6\msg\file\2026-05\zt_gx1_3ce.inp"
         model = parse_inp(inp)
         print_tree(model,
                    show_labels=True,

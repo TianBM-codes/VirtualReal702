@@ -115,6 +115,46 @@ class _NodeMatchConnection(_WriteConnection):
         self.rolled_back = False
 
 
+class _DofMatchCursor(_WriteCursor):
+    def __init__(self):
+        super().__init__()
+        self.last_sql = ""
+
+    def execute(self, sql, params=None):
+        self.last_sql = " ".join(sql.split())
+        self.executed.append((self.last_sql, params))
+
+    def fetchall(self):
+        sql = self.last_sql
+        if "SELECT test_node_id, instance_name, fem_node_label, transform_json FROM t_mt_py_fem_node_match" in sql:
+            return [
+                {
+                    "test_node_id": "WY1",
+                    "instance_name": "PART-1-1",
+                    "fem_node_label": 501,
+                    "transform_json": None,
+                }
+            ]
+        if "SELECT id, measuring_point_name, sensor_type_id FROM t_mt_measuring_point_info" in sql:
+            return [
+                {"id": 1, "measuring_point_name": "WY1", "sensor_type_id": 21},
+                {"id": 2, "measuring_point_name": "TEMP1", "sensor_type_id": 99},
+            ]
+        if "SELECT id, measure_point_id, direction, data_operate FROM t_mt_channel_info" in sql:
+            return [
+                {"id": 101, "measure_point_id": 1, "direction": 1, "data_operate": "+"},
+                {"id": 102, "measure_point_id": 1, "direction": 2, "data_operate": "-"},
+            ]
+        return []
+
+
+class _DofMatchConnection(_WriteConnection):
+    def __init__(self):
+        self.cursor_obj = _DofMatchCursor()
+        self.committed = False
+        self.rolled_back = False
+
+
 def test_evaluate_static_correlation_stores_dac_dsf(monkeypatch):
     fake_conn = _WriteConnection()
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
@@ -209,6 +249,14 @@ def test_match_test_nodes_marks_space_match_status_done(monkeypatch):
     fake_conn = _NodeMatchConnection()
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(
+        inp_service,
+        "get_node_match_parameter_context",
+        lambda project_id, cursor=None: {
+            "tolerance": 1e-6,
+            "maximum_node_point_distance": 0.25,
+        },
+    )
     monkeypatch.setattr(inp_service, "_load_octree_cache", lambda path: {
         "point_instances": ["PART-1-1", "PART-1-1"],
         "point_labels": [501, 502],
@@ -228,11 +276,115 @@ def test_match_test_nodes_marks_space_match_status_done(monkeypatch):
     result = inp_service.match_test_nodes(project_id=101, auto_translate=False, overwrite=False)
 
     assert result["matched_points"] == 2
+    assert result["tolerance"] == 1e-6
+    assert result["maximum_node_point_distance"] == 0.25
+    assert result["max_distance"] == 0.25
     assert fake_conn.committed is True
     assert fake_conn.cursor_obj.executed[-1] == (
         "UPDATE t_mt_work_condition_project SET space_match_status = %s WHERE project_id = %s",
         (1, 101),
     )
+
+
+def test_match_test_dofs_uses_channel_direction_and_sign(monkeypatch):
+    fake_conn = _DofMatchConnection()
+    ensure_calls = []
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(
+        inp_service,
+        "_ensure_node_matches",
+        lambda project_id: ensure_calls.append(project_id) or True,
+    )
+    monkeypatch.setattr(
+        inp_service,
+        "_get_latest_octree_meta",
+        lambda cursor, project_id: {"cache_file_path": "fake_cache.npz"},
+    )
+    monkeypatch.setattr(inp_service, "_load_octree_cache", lambda path: {"dummy": True})
+    monkeypatch.setattr(inp_service, "_cache_part_lookup", lambda cache: {("PART-1-1", 501): "PART-1"})
+
+    result = inp_service.match_test_dofs(101)
+
+    assert ensure_calls == [101]
+    assert result["node_match_auto_created"] is True
+    assert result["displacement_sensor_count"] == 1
+    assert result["channel_count"] == 2
+    assert result["dof_match_count"] == 2
+    assert result["dof_matches_preview"] == [
+        {
+            "measure_point_id": 1,
+            "channel_id": 101,
+            "test_node_id": "WY1",
+            "test_dof": "UX",
+            "instance_name": "PART-1-1",
+            "part_name": "PART-1",
+            "fem_node_label": 501,
+            "fem_dof": "U1",
+            "direction": [1.0, 0.0, 0.0],
+            "match_score": None,
+            "transform": {},
+        },
+        {
+            "measure_point_id": 1,
+            "channel_id": 102,
+            "test_node_id": "WY1",
+            "test_dof": "UY",
+            "instance_name": "PART-1-1",
+            "part_name": "PART-1",
+            "fem_node_label": 501,
+            "fem_dof": "U2",
+            "direction": [0.0, -1.0, 0.0],
+            "match_score": None,
+            "transform": {},
+        },
+    ]
+    assert fake_conn.committed is True
+    insert_rows = [
+        item for item in fake_conn.cursor_obj.executed
+        if item[0].startswith("INSERT INTO t_mt_py_fem_dof_match")
+    ]
+    assert insert_rows == [
+        (
+            "INSERT INTO t_mt_py_fem_dof_match (pid, test_node_id, test_dof, instance_name, part_name, fem_node_label, fem_dof, direction_x, direction_y, direction_z, transform_json) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE instance_name = VALUES(instance_name), part_name = VALUES(part_name), fem_node_label = VALUES(fem_node_label), fem_dof = VALUES(fem_dof), direction_x = VALUES(direction_x), direction_y = VALUES(direction_y), direction_z = VALUES(direction_z), transform_json = VALUES(transform_json), created_at = CURRENT_TIMESTAMP",
+            (101, "WY1", "UX", "PART-1-1", "PART-1", 501, "U1", 1.0, 0.0, 0.0, "{}"),
+        ),
+        (
+            "INSERT INTO t_mt_py_fem_dof_match (pid, test_node_id, test_dof, instance_name, part_name, fem_node_label, fem_dof, direction_x, direction_y, direction_z, transform_json) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE instance_name = VALUES(instance_name), part_name = VALUES(part_name), fem_node_label = VALUES(fem_node_label), fem_dof = VALUES(fem_dof), direction_x = VALUES(direction_x), direction_y = VALUES(direction_y), direction_z = VALUES(direction_z), transform_json = VALUES(transform_json), created_at = CURRENT_TIMESTAMP",
+            (101, "WY1", "UY", "PART-1-1", "PART-1", 501, "U2", 0.0, -1.0, 0.0, "{}"),
+        ),
+    ]
+
+
+def test_match_test_dofs_requires_node_match_for_all_displacement_sensors(monkeypatch):
+    class _MissingNodeCursor(_DofMatchCursor):
+        def fetchall(self):
+            sql = self.last_sql
+            if "SELECT test_node_id, instance_name, fem_node_label, transform_json FROM t_mt_py_fem_node_match" in sql:
+                return []
+            if "SELECT id, measuring_point_name, sensor_type_id FROM t_mt_measuring_point_info" in sql:
+                return [{"id": 1, "measuring_point_name": "WY1", "sensor_type_id": 21}]
+            if "SELECT id, measure_point_id, direction, data_operate FROM t_mt_channel_info" in sql:
+                return [{"id": 101, "measure_point_id": 1, "direction": 1, "data_operate": "+"}]
+            return []
+
+    class _MissingNodeConnection(_WriteConnection):
+        def __init__(self):
+            self.cursor_obj = _MissingNodeCursor()
+            self.committed = False
+            self.rolled_back = False
+
+    fake_conn = _MissingNodeConnection()
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(inp_service, "_ensure_node_matches", lambda project_id: False)
+
+    try:
+        inp_service.match_test_dofs(101)
+    except inp_service.ValidationError as exc:
+        assert "节点匹配" in exc.message
+    else:
+        raise AssertionError("expected ValidationError")
 
 
 def test_ensure_octree_cache_file_rebuilds_missing_cache(monkeypatch, tmp_path):

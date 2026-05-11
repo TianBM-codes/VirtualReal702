@@ -17,6 +17,12 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from . import sensitivity_service as _sens
+from .console_log_service import safe_write_console_event
+from .project_config_service import (
+    get_test_data_mode,
+    get_node_match_parameter_context,
+    save_fem_model_dimensions,
+)
 from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
 
@@ -576,6 +582,37 @@ def _safe_float_zero(value, default: float = 0.0) -> float:
     return default if value is None else value
 
 
+def _is_modal_unv_project(project_id: int, *, cursor=None) -> bool:
+    return str(get_test_data_mode(int(project_id), cursor=cursor) or "").strip().lower() == "modal_unv"
+
+
+def _load_test_nodes_for_matching(cursor, project_id: int):
+    if _is_modal_unv_project(int(project_id), cursor=cursor):
+        cursor.execute(
+            """
+            SELECT CAST(nid AS CHAR) AS test_node_id, x AS x_position, y AS y_position, z AS z_position
+            FROM t_mt_py_test_node
+            WHERE pid = %s
+            ORDER BY nid
+            """,
+            (int(project_id),),
+        )
+        rows = cursor.fetchall() or []
+        if rows:
+            return rows, "t_mt_py_test_node"
+
+    cursor.execute(
+        """
+        SELECT measuring_point_name AS test_node_id, x_position, y_position, z_position
+        FROM t_mt_measuring_point_info
+        WHERE project_id = %s
+        ORDER BY measuring_point_name
+        """,
+        (int(project_id),),
+    )
+    return cursor.fetchall() or [], "t_mt_measuring_point_info"
+
+
 def _extract_legacy_material_rows(model):
     overview_rows = []
     isotropic_rows = []
@@ -636,6 +673,7 @@ def _extract_legacy_property_rows(model):
                     "thickness": _safe_float_zero(section.thickness),
                     "nsm": _safe_float_zero(section.extra.get("nsm", 0.0)),
                     "theta": _safe_float_zero(section.extra.get("theta", 0.0)),
+                    "element_set": str(section.elset_name or "") or None,
                 })
             elif row["type"] == "BEAM":
                 dims = list(section.extra.get("dims", []) or [])
@@ -780,9 +818,20 @@ def _build_inp_parameter_options(
     ]
     quantity_rows.sort(key=lambda row: (int(row.get("sort_no", 0) or 0), str(row.get("quantity_code") or "")))
 
+    canonical_quantity_rows = []
+    seen_quantity_codes = set()
+    for quantity in quantity_rows:
+        quantity_code = _normalize_quantity_code_for_compare(quantity.get("quantity_code"))
+        if not quantity_code or quantity_code in seen_quantity_codes:
+            continue
+        seen_quantity_codes.add(quantity_code)
+        canonical_quantity = dict(quantity)
+        canonical_quantity["quantity_code"] = quantity_code
+        canonical_quantity_rows.append(canonical_quantity)
+
     capability_rows = [dict(row) for row in (quantity_set_capabilities or [])]
     result = []
-    for quantity in quantity_rows:
+    for quantity in canonical_quantity_rows:
         quantity_code = _normalize_quantity_code_for_compare(quantity.get("quantity_code"))
         quantity_name = str(quantity.get("quantity_name") or quantity_code).strip()
         description = _quantity_description(quantity_code, quantity_name)
@@ -790,33 +839,32 @@ def _build_inp_parameter_options(
             row for row in capability_rows
             if _normalize_quantity_code_for_compare(row.get("quantity_code")) == quantity_code
         ]
-        for level, support_key in (("GLOBAL", "supports_global"), ("LOCAL", "supports_local")):
-            set_names = []
-            seen_names = set()
-            ordered_rows = sorted(
-                matched_capabilities,
-                key=lambda row: (
-                    str(row.get("set_scope") or ""),
-                    str(row.get("set_type") or ""),
-                    str(row.get("set_name") or ""),
-                    str(row.get("instance_name") or ""),
-                    str(row.get("part_name") or ""),
-                ),
-            )
-            for row in ordered_rows:
-                if not row.get(support_key):
-                    continue
-                _append_unique_name(set_names, seen_names, row.get("set_name"))
-            if not set_names:
+        set_names = []
+        seen_names = set()
+        ordered_rows = sorted(
+            matched_capabilities,
+            key=lambda row: (
+                str(row.get("set_scope") or ""),
+                str(row.get("set_type") or ""),
+                str(row.get("set_name") or ""),
+                str(row.get("instance_name") or ""),
+                str(row.get("part_name") or ""),
+            ),
+        )
+        for row in ordered_rows:
+            if not row.get("supports_global") and not row.get("supports_local"):
                 continue
-            result.append(
-                {
-                    "parameter_name": quantity_name,
-                    "description": description,
-                    "level": level,
-                    "sets": [{"rows": val} for val in set_names],
-                }
-            )
+            _append_unique_name(set_names, seen_names, row.get("set_name"))
+        if not set_names:
+            continue
+        result.append(
+            {
+                "parameter_name": quantity_code,
+                "description": description,
+                "level": "GLOBAL",
+                "sets": [{"rows": val} for val in set_names],
+            }
+        )
     return result
 
 
@@ -1165,12 +1213,13 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             ))
 
         shell_property_sql = """
-        INSERT INTO t_mt_py_fem_shell_property (Id, pid, Thickness, NSM, THETA)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO t_mt_py_fem_shell_property (Id, pid, Thickness, NSM, THETA, element_set)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             Thickness = VALUES(Thickness),
             NSM = VALUES(NSM),
-            THETA = VALUES(THETA)
+            THETA = VALUES(THETA),
+            element_set = VALUES(element_set)
         """
         for item in legacy_properties["shell_rows"]:
             cursor.execute(shell_property_sql, (
@@ -1179,6 +1228,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 item["thickness"],
                 item["nsm"],
                 item["theta"],
+                item.get("element_set"),
             ))
 
         beam_property_sql = """
@@ -1356,8 +1406,15 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 _json_dumps(node_data["bbox_max"].tolist()),
             ))
 
+        project_config = save_fem_model_dimensions(
+            project_id=project_id,
+            bbox_min=node_data["bbox_min"],
+            bbox_max=node_data["bbox_max"],
+            cursor=cursor,
+        )
+
         conn.commit()
-        return {
+        result = {
             "file_path": os.path.abspath(file_path),
             "project_id": project_id,
             "material_count": len(legacy_materials["overview_rows"]),
@@ -1374,6 +1431,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "instance_count": len(node_data["entries"]),
             "node_count": int(len(node_data["point_labels"])),
             "octree_cache_path": os.path.abspath(cache_path) if cache_path else None,
+            "project_config": project_config,
             "diagnostics": len(getattr(model, "diagnostics", []) or []),
             "parameter_definitions_preview": parameter_definitions[:10],
             "parameter_targets_preview": parameter_targets[:10],
@@ -1381,6 +1439,18 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "supported_quantities_preview": supported_quantities[:10],
             "quantity_set_capabilities_preview": quantity_set_capabilities[:10],
         }
+        safe_write_console_event(
+            int(project_id),
+            "INP导入完成",
+            [
+                f"文件: {os.path.abspath(file_path)}",
+                f"节点数: {int(len(node_data['point_labels']))}",
+                f"实例数: {len(node_data['entries'])}",
+                f"设计参数数: {len(parameter_definitions)}",
+                f"设计响应数: {len(design_responses)}",
+            ],
+        )
+        return result
     except Exception:
         conn.rollback()
         raise
@@ -1548,6 +1618,23 @@ def _extract_target_keys(extra_json) -> set:
     return {str(item) for item in (payload.get("target_keys") or [])}
 
 
+def _set_identity_key(row: dict) -> Tuple[str, str, str, Optional[str], Optional[str]]:
+    return (
+        str(row.get("set_name") or ""),
+        str(row.get("set_type") or ""),
+        str(row.get("set_scope") or ""),
+        str(row.get("instance_name")) if row.get("instance_name") is not None else None,
+        str(row.get("part_name")) if row.get("part_name") is not None else None,
+    )
+
+
+def _scope_identity_filter(set_scope: str) -> Tuple[str, str]:
+    normalized_scope = str(set_scope or "").upper()
+    if normalized_scope == "ASSEMBLY":
+        return "instance_name", normalized_scope
+    return "part_name", normalized_scope
+
+
 def _resolve_selection_mode_from_capability(capability_row: dict, requested_mode: Optional[str]) -> str:
     if requested_mode:
         mode = _normalize_selection_mode(requested_mode)
@@ -1642,15 +1729,46 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         if not element_labels or not target_keys:
             raise ValueError("selected capability row does not contain target element information")
 
+        incoming_element_label_set = {int(label) for label in element_labels}
+        scope_identity_field, normalized_scope = _scope_identity_filter(capability_row.get("set_scope"))
+        scope_identity_value = capability_row.get(scope_identity_field)
         cursor.execute(f"""
-            SELECT quantity_code, extra_json
+            SELECT set_name, set_type, set_scope, instance_name, part_name, element_label
             FROM t_mt_py_fem_selected_parameter
-            WHERE pid = %s AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
-        """, (project_id, *quantity_code_candidates))
-        incoming_overlap_keys = set(target_keys)
+            WHERE pid = %s
+              AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
+              AND set_scope = %s
+              AND {scope_identity_field} <=> %s
+        """, (project_id, *quantity_code_candidates, normalized_scope, scope_identity_value))
+        overlap_global_set_keys = set()
         for row in cursor.fetchall() or []:
-            if incoming_overlap_keys & _extract_target_keys(row.get("extra_json")):
-                raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
+            element_label = row.get("element_label")
+            if element_label is not None:
+                if int(element_label) in incoming_element_label_set:
+                    raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
+                continue
+            overlap_global_set_keys.add(_set_identity_key(row))
+
+        if overlap_global_set_keys:
+            overlapping_set_names = sorted({key[0] for key in overlap_global_set_keys})
+            cursor.execute(f"""
+                SELECT set_name, set_type, set_scope, instance_name, part_name, extra_json
+                FROM t_mt_py_fem_quantity_set_capability
+                WHERE pid = %s
+                  AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
+                  AND set_scope = %s
+                  AND {scope_identity_field} <=> %s
+                  AND set_name IN ({", ".join(["%s"] * len(overlapping_set_names))})
+            """, (project_id, *quantity_code_candidates, normalized_scope, scope_identity_value, *overlapping_set_names))
+            for row in cursor.fetchall() or []:
+                if _set_identity_key(row) not in overlap_global_set_keys:
+                    continue
+                existing_extra = _json_loads(row.get("extra_json")) or {}
+                existing_labels = {
+                    int(label) for label in (existing_extra.get("element_labels") or [])
+                }
+                if incoming_element_label_set & existing_labels:
+                    raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
 
         insert_sql = """
         INSERT INTO t_mt_py_fem_selected_parameter
@@ -1659,9 +1777,10 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         created_parameters = []
+        insert_rows = []
         if resolved_mode == "GLOBAL":
             resolved_parameter_name = parameter_group_name
-            cursor.execute(insert_sql, (
+            insert_rows.append((
                 project_id,
                 parameter_group_name,
                 resolved_parameter_name,
@@ -1696,7 +1815,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 resolved_parameter_name = f"{parameter_group_name}#{int(element_label)}"
                 row_target_keys = target_keys_by_label.get(str(element_label)) or []
                 current_value = element_values.get(str(element_label), capability_row.get("current_value"))
-                cursor.execute(insert_sql, (
+                insert_rows.append((
                     project_id,
                     parameter_group_name,
                     resolved_parameter_name,
@@ -1726,6 +1845,13 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                         "current_value": current_value,
                     }
                 )
+        if len(insert_rows) == 1:
+            cursor.execute(insert_sql, insert_rows[0])
+        elif hasattr(cursor, "executemany"):
+            cursor.executemany(insert_sql, insert_rows)
+        else:
+            for row in insert_rows:
+                cursor.execute(insert_sql, row)
         conn.commit()
 
         return {
@@ -1816,7 +1942,7 @@ def _ensure_octree_cache_file(cursor, project_id: int, octree_meta: dict) -> str
 
 
 def match_test_nodes(project_id, max_distance=None, overwrite=True,
-                     auto_translate=True, translation=None, rotation=None, auto_rotate=True):
+                     auto_translate=False, translation=None, rotation=None, auto_rotate=False):
     # Match imported test nodes onto the FE node cloud stored in the octree
     # cache. The saved mapping is reused by DOF matching and correlation steps.
     ensure_tables_exist()
@@ -1826,13 +1952,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
         octree_meta = _get_latest_octree_meta(cursor, project_id)
         cache_path = _ensure_octree_cache_file(cursor, int(project_id), octree_meta)
 
-        cursor.execute("""
-            SELECT measuring_point_name, x_position, y_position, z_position
-            FROM t_mt_measuring_point_info
-            WHERE project_id = %s
-            ORDER BY measuring_point_name
-        """, (project_id,))
-        test_nodes = cursor.fetchall()
+        test_nodes, test_node_source_table = _load_test_nodes_for_matching(cursor, int(project_id))
         if not test_nodes:
             raise ValueError("未找到试验节点，请先导入 UNV 试验数据")
 
@@ -1842,6 +1962,10 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             [[float(row["x_position"]), float(row["y_position"]), float(row["z_position"])] for row in test_nodes],
             dtype=np.float64,
         )
+        match_context = get_node_match_parameter_context(int(project_id), cursor=cursor)
+        tolerance = float(match_context["tolerance"])
+        recommended_max_distance = float(match_context["maximum_node_point_distance"])
+        resolved_max_distance = recommended_max_distance if max_distance is None else float(max_distance)
 
         manual_transform = translation is not None or rotation is not None
         transform_mode = "none"
@@ -1895,7 +2019,8 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             inst_name = str(cache["point_instances"][point_idx])
             delta = fem_coord - coord_after
             match = {
-                "test_node_id": str(row["measuring_point_name"]),
+                "test_node_id": str(row["test_node_id"]),
+                "test_node_source": test_node_source_table,
                 "instance_name": inst_name,
                 "part_name": part_lookup.get((inst_name, fem_label)),
                 "fem_node_label": fem_label,
@@ -1905,7 +2030,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
                 "y_offset": float(delta[1]),
                 "z_offset": float(delta[2]),
             }
-            if max_distance is None or float(distance) <= float(max_distance):
+            if float(distance) <= resolved_max_distance:
                 matches.append(match)
 
         if overwrite:
@@ -1975,10 +2100,13 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             "project_id": project_id,
             "tested_points": len(test_nodes),
             "matched_points": len(matches),
+            "tolerance": tolerance,
+            "maximum_node_point_distance": recommended_max_distance,
             "transform": transform_payload,
-            "max_distance": max_distance,
+            "max_distance": resolved_max_distance,
             "matches_preview": matches[:20],
             "octree_cache_path": cache_path,
+            "test_node_source_table": test_node_source_table,
         }
     except Exception:
         conn.rollback()
@@ -2120,7 +2248,11 @@ def get_transform_auto_info(project_id: int, transform_type: str = None):
             )
         row = cursor.fetchone()
         if not row:
-            raise ValueError("未找到变换操作记录")
+            # raise ValueError("未找到变换操作记录")
+            return {
+                "type": "fem",
+                "matrix4": np.eye(4, dtype=np.int32).tolist(),
+            }
         return {
             "type": str(row["transform_type"]),
             "matrix4": _normalize_matrix4(_json_loads(row["matrix4_json"])),
@@ -2130,25 +2262,72 @@ def get_transform_auto_info(project_id: int, transform_type: str = None):
         conn.close()
 
 
-def _get_test_modal_point_ids(cursor, project_id: int) -> set:
-    point_ids = set()
-    cursor.execute("""
-        SELECT DISTINCT point
-        FROM t_mt_py_test_modal_shape_real
-        WHERE pid = %s
-    """, (project_id,))
-    point_ids.update(str(row["point"]) for row in cursor.fetchall())
-    cursor.execute("""
-        SELECT DISTINCT point
-        FROM t_mt_py_test_modal_shape_imag
-        WHERE pid = %s
-    """, (project_id,))
-    point_ids.update(str(row["point"]) for row in cursor.fetchall())
-    return point_ids
+_CHANNEL_DIRECTION_TO_DOF = {
+    1: ("UX", "U1", np.array([1.0, 0.0, 0.0], dtype=np.float64)),
+    2: ("UY", "U2", np.array([0.0, 1.0, 0.0], dtype=np.float64)),
+    3: ("UZ", "U3", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
+}
 
 
-def match_test_dofs(project_id, overwrite=True):
+def _resolve_channel_direction_vector(direction_value, data_operate_value, *, measuring_point_name: str, channel_id=None):
+    try:
+        direction = int(direction_value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            "通道方向无效，必须为 1/2/3",
+            {
+                "measuring_point_name": measuring_point_name,
+                "channel_id": channel_id,
+                "direction": direction_value,
+            },
+        ) from exc
+
+    direction_spec = _CHANNEL_DIRECTION_TO_DOF.get(direction)
+    if direction_spec is None:
+        raise ValidationError(
+            "通道方向无效，必须为 1/2/3",
+            {
+                "measuring_point_name": measuring_point_name,
+                "channel_id": channel_id,
+                "direction": direction,
+            },
+        )
+
+    sign_text = str(data_operate_value or "").strip()
+    if sign_text not in {"+", "-"}:
+        raise ValidationError(
+            "通道 data_operate 无效，必须为 '+' 或 '-'",
+            {
+                "measuring_point_name": measuring_point_name,
+                "channel_id": channel_id,
+                "data_operate": data_operate_value,
+            },
+        )
+
+    sign = -1.0 if sign_text == "-" else 1.0
+    test_dof, fem_dof, base_direction = direction_spec
+    return test_dof, fem_dof, (base_direction * sign).astype(np.float64, copy=False)
+
+
+def _build_modal_unv_dof_amplitudes(cursor, project_id: int) -> Dict[Tuple[str, str], float]:
+    # Use the maximum measured modal amplitude of each translational direction
+    # as the DOF availability score. If one direction stays below the threshold
+    # across all imported modes, that direction is treated as unusable.
+    modes = _load_test_mode_vectors(cursor, int(project_id))
+    amplitudes: Dict[Tuple[str, str], float] = {}
+    for mode_map in modes.values():
+        for point_id, vec in mode_map.items():
+            vec_abs = np.abs(np.asarray(vec, dtype=np.complex128))
+            point_id_text = str(point_id)
+            for idx, test_dof in enumerate(TEST_DOF_SEQUENCE):
+                key = (point_id_text, test_dof)
+                amplitudes[key] = max(float(amplitudes.get(key, 0.0)), float(vec_abs[idx]))
+    return amplitudes
+
+
+def match_test_dofs(project_id, overwrite=True, min_match_score=None):
     ensure_tables_exist()
+    auto_created_node_match = _ensure_node_matches(int(project_id))
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -2169,15 +2348,8 @@ def match_test_dofs(project_id, overwrite=True):
         octree_meta = _get_latest_octree_meta(cursor, project_id)
         cache = _load_octree_cache(octree_meta["cache_file_path"])
         part_lookup = _cache_part_lookup(cache)
-        test_modal_points = _get_test_modal_point_ids(cursor, project_id)
-        filtered_matches = [row for row in node_matches if not test_modal_points or str(row["test_node_id"]) in test_modal_points]
-        if not filtered_matches:
-            raise ValidationError(
-                "已匹配的试验节点中没有可用于自由度匹配的模态振型数据",
-                {
-                    "required_operation": "先导入试验模态振型数据，并确认已匹配测点包含对应振型结果",
-                },
-            )
+        node_match_lookup = {str(row["test_node_id"]): row for row in node_matches}
+        modal_unv_mode = _is_modal_unv_project(int(project_id), cursor=cursor)
 
         if overwrite:
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
@@ -2202,58 +2374,175 @@ def match_test_dofs(project_id, overwrite=True):
             created_at = CURRENT_TIMESTAMP
         """
 
-        dof_matches = []
-        for row in filtered_matches:
-            transform_payload = _json_loads(row["transform_json"]) or {}
-            rot_m = _rotation_to_matrix(transform_payload.get("rotation"))
-            inst_name = str(row["instance_name"])
-            fem_node_label = int(row["fem_node_label"])
+        if modal_unv_mode:
+            score_threshold = 1e-8 if min_match_score is None else float(min_match_score)
+            dof_scores = _build_modal_unv_dof_amplitudes(cursor, int(project_id))
+            dof_matches = []
+            rejected_matches = []
+            for row in node_matches:
+                test_node_id = str(row["test_node_id"])
+                inst_name = str(row["instance_name"] or "")
+                fem_node_label = int(row["fem_node_label"])
+                part_name = part_lookup.get((inst_name, fem_node_label))
+                transform_payload = _json_loads(row["transform_json"]) or {}
+                for test_dof, fem_dof, direction in (
+                    ("UX", "U1", np.array([1.0, 0.0, 0.0], dtype=np.float64)),
+                    ("UY", "U2", np.array([0.0, 1.0, 0.0], dtype=np.float64)),
+                    ("UZ", "U3", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
+                ):
+                    match_score = float(dof_scores.get((test_node_id, test_dof), 0.0))
+                    if match_score < score_threshold:
+                        if len(rejected_matches) < 20:
+                            rejected_matches.append({
+                                "test_node_id": test_node_id,
+                                "test_dof": test_dof,
+                                "match_score": match_score,
+                            })
+                        continue
+                    dof_row = {
+                        "test_node_id": test_node_id,
+                        "test_dof": test_dof,
+                        "instance_name": inst_name,
+                        "part_name": part_name,
+                        "fem_node_label": fem_node_label,
+                        "fem_dof": fem_dof,
+                        "direction": direction.tolist(),
+                        "match_score": match_score,
+                        "transform": transform_payload,
+                        "mode": "modal_unv",
+                    }
+                    dof_matches.append(dof_row)
+                    cursor.execute(insert_sql, (
+                        project_id,
+                        test_node_id,
+                        test_dof,
+                        inst_name,
+                        part_name,
+                        fem_node_label,
+                        fem_dof,
+                        float(direction[0]),
+                        float(direction[1]),
+                        float(direction[2]),
+                        match_score,
+                        _json_dumps(transform_payload),
+                    ))
+            conn.commit()
+            return {
+                "project_id": project_id,
+                "node_match_auto_created": auto_created_node_match,
+                "node_match_count": len(node_matches),
+                "channel_count": 0,
+                "dof_match_count": len(dof_matches),
+                "dof_matches_preview": dof_matches[:20],
+                "rejected_dof_count": int(len(node_matches) * len(TEST_DOF_SEQUENCE) - len(dof_matches)),
+                "rejected_dof_preview": rejected_matches,
+                "min_match_score": score_threshold,
+                "match_mode": "modal_unv",
+            }
+
+        cursor.execute("""
+            SELECT id, measuring_point_name, sensor_type_id
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id, measuring_point_name
+        """, (project_id,))
+        measuring_rows = cursor.fetchall() or []
+        displacement_sensors = [
+            row for row in measuring_rows
+            if _is_displacement_static_test_sensor_type(row.get("sensor_type_id"))
+        ]
+        if not displacement_sensors:
+            raise ValueError("未找到位移传感器测点")
+
+        missing_node_matches = [
+            str(row["measuring_point_name"])
+            for row in displacement_sensors
+            if str(row.get("measuring_point_name") or "") not in node_match_lookup
+        ]
+        if missing_node_matches:
+            raise ValidationError(
+                "存在位移传感器尚未完成节点匹配，无法进行自由度匹配",
+                {
+                    "missing_measuring_points": missing_node_matches[:20],
+                    "missing_count": len(missing_node_matches),
+                },
+            )
+
+        displacement_sensor_by_id = {
+            int(row["id"]): row
+            for row in displacement_sensors
+            if row.get("id") is not None
+        }
+
+        cursor.execute("""
+            SELECT id, measure_point_id, direction, data_operate
+            FROM t_mt_channel_info
+            WHERE project_id = %s
+            ORDER BY measure_point_id, id
+        """, (project_id,))
+        channel_rows = cursor.fetchall() or []
+        displacement_channels = [
+            row for row in channel_rows
+            if row.get("measure_point_id") is not None
+            and int(row["measure_point_id"]) in displacement_sensor_by_id
+        ]
+        if not displacement_channels:
+            raise ValueError("未找到位移传感器对应的通道方向配置")
+
+        dof_matches_by_key = {}
+        for channel_row in displacement_channels:
+            measure_point_id = int(channel_row["measure_point_id"])
+            measuring_row = displacement_sensor_by_id[measure_point_id]
+            test_node_id = str(measuring_row["measuring_point_name"])
+            node_match = node_match_lookup[test_node_id]
+            inst_name = str(node_match["instance_name"])
+            fem_node_label = int(node_match["fem_node_label"])
             part_name = part_lookup.get((inst_name, fem_node_label))
+            transform_payload = _json_loads(node_match["transform_json"]) or {}
+            test_dof, fem_dof, direction = _resolve_channel_direction_vector(
+                channel_row.get("direction"),
+                channel_row.get("data_operate"),
+                measuring_point_name=test_node_id,
+                channel_id=channel_row.get("id"),
+            )
 
-            for axis_idx, test_dof in enumerate(TEST_DOF_SEQUENCE):
-                basis = np.zeros(3, dtype=np.float64)
-                basis[axis_idx] = 1.0
-                direction = rot_m @ basis
-                direction_norm = float(np.linalg.norm(direction))
-                if direction_norm <= 1e-12:
-                    direction = basis
-                    direction_norm = 1.0
-                direction = direction / direction_norm
-                best_idx = int(np.argmax(np.abs(direction)))
-                fem_dof = FE_DOF_SEQUENCE[best_idx]
-                match_score = float(abs(direction[best_idx]))
-
-                dof_row = {
-                    "test_node_id": str(row["test_node_id"]),
-                    "test_dof": test_dof,
-                    "instance_name": inst_name,
-                    "part_name": part_name,
-                    "fem_node_label": fem_node_label,
-                    "fem_dof": fem_dof,
-                    "direction": direction.tolist(),
-                    "match_score": match_score,
-                    "transform": transform_payload,
-                }
-                dof_matches.append(dof_row)
-                cursor.execute(insert_sql, (
-                    project_id,
-                    dof_row["test_node_id"],
-                    dof_row["test_dof"],
-                    dof_row["instance_name"],
-                    dof_row["part_name"],
-                    dof_row["fem_node_label"],
-                    dof_row["fem_dof"],
-                    float(direction[0]),
-                    float(direction[1]),
-                    float(direction[2]),
-                    match_score,
-                    _json_dumps(transform_payload),
-                ))
+            dof_row = {
+                "measure_point_id": measure_point_id,
+                "channel_id": channel_row.get("id"),
+                "test_node_id": test_node_id,
+                "test_dof": test_dof,
+                "instance_name": inst_name,
+                "part_name": part_name,
+                "fem_node_label": fem_node_label,
+                "fem_dof": fem_dof,
+                "direction": direction.tolist(),
+                "match_score": None,
+                "transform": transform_payload,
+            }
+            dof_matches_by_key[(test_node_id, test_dof)] = dof_row
+            cursor.execute(insert_sql, (
+                project_id,
+                test_node_id,
+                test_dof,
+                inst_name,
+                part_name,
+                fem_node_label,
+                fem_dof,
+                float(direction[0]),
+                float(direction[1]),
+                float(direction[2]),
+                1.0,
+                _json_dumps(transform_payload),
+            ))
 
         conn.commit()
+        dof_matches = list(dof_matches_by_key.values())
         return {
             "project_id": project_id,
-            "node_match_count": len(filtered_matches),
+            "node_match_auto_created": auto_created_node_match,
+            "node_match_count": len(node_matches),
+            "displacement_sensor_count": len(displacement_sensors),
+            "channel_count": len(displacement_channels),
             "dof_match_count": len(dof_matches),
             "dof_matches_preview": dof_matches[:20],
         }
@@ -3855,7 +4144,7 @@ def compute_static_correlation(
         conn.close()
 
 
-def _ensure_static_node_matches(project_id: int) -> bool:
+def _ensure_node_matches(project_id: int) -> bool:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -3875,6 +4164,10 @@ def _ensure_static_node_matches(project_id: int) -> bool:
 
     match_test_nodes(int(project_id), overwrite=False)
     return True
+
+
+def _ensure_static_node_matches(project_id: int) -> bool:
+    return _ensure_node_matches(project_id)
 
 
 def evaluate_static_correlation(
@@ -4022,6 +4315,7 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
     residual = test_vec - scale * fem_vec
     return {
         "dac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),
+        "mac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),
         "dsf": float(abs(scale)),
         "scale_real": float(scale.real),
         "scale_imag": float(scale.imag),
@@ -4073,12 +4367,13 @@ def compute_modal_correlation(project_id, overwrite=True):
 
         insert_sql = """
         INSERT INTO t_mt_py_fem_modal_correlation
-        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, freq_test, freq_fem, freq_error_ratio, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac, freq_test, freq_fem, freq_error_ratio, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             dof_pair_count = VALUES(dof_pair_count),
             dac = VALUES(dac),
             dsf = VALUES(dsf),
+            mac = VALUES(mac),
             freq_test = VALUES(freq_test),
             freq_fem = VALUES(freq_fem),
             freq_error_ratio = VALUES(freq_error_ratio),
@@ -4142,6 +4437,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                     "fem_mode_no": int(fem_mode_no),
                     "dof_pair_count": len(test_values),
                     "dac": metrics["dac"],
+                    "mac": metrics["mac"],
                     "dsf": metrics["dsf"],
                     "freq_test": freq_test,
                     "freq_fem": freq_fem,
@@ -4164,6 +4460,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                     item["dof_pair_count"],
                     item["dac"],
                     item["dsf"],
+                    item["mac"],
                     item["freq_test"],
                     item["freq_fem"],
                     item["freq_error_ratio"],
@@ -4220,15 +4517,26 @@ def get_modal_correlation(project_id):
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf,
-                   freq_test, freq_fem, freq_error_ratio, extra_json, created_at
+            SELECT test_mode_no, fem_mode_no, mac
             FROM t_mt_py_fem_modal_correlation
             WHERE pid = %s
-            ORDER BY test_mode_no, dac DESC, fem_mode_no
+            ORDER BY fem_mode_no, test_mode_no
         """, (project_id,))
+        rows = cursor.fetchall()
+        fem_mode_order = sorted({int(row["fem_mode_no"]) for row in rows})
+        test_mode_order = sorted({int(row["test_mode_no"]) for row in rows})
+        fem_mode_index = {mode_no: idx for idx, mode_no in enumerate(fem_mode_order)}
+        test_mode_index = {mode_no: idx for idx, mode_no in enumerate(test_mode_order)}
+        mac_matrix = [[None for _ in test_mode_order] for _ in fem_mode_order]
+        for row in rows:
+            row_idx = fem_mode_index[int(row["fem_mode_no"])]
+            col_idx = test_mode_index[int(row["test_mode_no"])]
+            mac_matrix[row_idx][col_idx] = float(row["mac"]) if row["mac"] is not None else None
         return {
             "project_id": project_id,
-            "correlations": cursor.fetchall(),
+            "row_mode_order": fem_mode_order,
+            "column_mode_order": test_mode_order,
+            "matrix": mac_matrix,
         }
     finally:
         cursor.close()

@@ -88,33 +88,82 @@ def format_float_like_bas(value):
         return text
 
 
+def resolve_dynamic_norm(value):
+    raw = value if value is not None else 2
+    if isinstance(raw, str):
+        token = raw.strip().upper()
+        if not token:
+            return "MASS"
+        if token in {"1", "MAX"}:
+            return "MAX"
+        if token in {"2", "MASS"}:
+            return "MASS"
+        raise ValueError("dynamic.norm must be one of: 1, 2, MAX, MASS")
+
+    norm = int(raw)
+    if norm == 1:
+        return "MAX"
+    if norm == 2:
+        return "MASS"
+    raise ValueError("dynamic.norm must be 1 or 2")
+
+
+def resolve_result_target(value):
+    token = str(value or "OP2").strip().upper()
+    if token in {"OP2", "F06", "BOTH"}:
+        return token
+    raise ValueError("result.target must be one of: OP2, F06, BOTH")
+
+
+def resolve_post_value(settings, result_target="OP2", default_post=None):
+    if "post" in settings and settings.get("post") is not None:
+        return int(settings.get("post"))
+
+    if default_post is not None:
+        return int(default_post)
+
+    if str(result_target).upper() == "F06":
+        return -1
+    return -1
+
+
+def build_displacement_request(displacement, result_target):
+    target = resolve_result_target(result_target)
+    rhs = str(displacement or "ALL").strip() or "ALL"
+    if target == "OP2":
+        return f"DISPLACEMENT(PLOT) = {rhs}"
+    if target == "BOTH":
+        return f"DISPLACEMENT(PLOT,PRINT) = {rhs}"
+    return f"DISPLACEMENT = {rhs}"
+
+
 def build_eigrl_fields(settings):
     sid = 1
 
     fmin = float(settings.get("dynamic.fmin", 0.0))
-    fmax = float(settings.get("dynamic.fmax", 1.0e9))
-    vectors = int(settings.get("dynamic.vectors", 10))
-    norm = int(settings.get("dynamic.norm", 2))
+    fmax_raw = settings.get("dynamic.fmax", 1.0e9)
+    vectors_raw = settings.get("dynamic.vectors", 10)
+    normalization = resolve_dynamic_norm(settings.get("dynamic.norm", 2))
     size = int(settings.get("dynamic.size", 0))
 
     v1 = format_float_like_bas(fmin)
+    fmax = None if fmax_raw in (None, "") else float(fmax_raw)
+    vectors = None if vectors_raw in (None, "") else int(vectors_raw)
 
-    if fmax > 1.0e6:
+    if fmax is None or fmax <= 0:
         v2 = ""
-        nd = str(vectors)
     else:
         v2 = format_float_like_bas(fmax)
+
+    if vectors is None or vectors <= 0:
         nd = ""
+    else:
+        nd = str(vectors)
 
     if size > 0:
         maxset = str(size)
     else:
         maxset = ""
-
-    if norm == 1:
-        normalization = "MAX"
-    else:
-        normalization = "MASS"
 
     return {
         "sid": str(sid),
@@ -132,7 +181,9 @@ def build_sol103_controls(settings):
 
     echo = settings.get("echo", "NONE")
     displacement = settings.get("displacement", "ALL")
-    post = int(settings.get("post", -5))
+    result_target = resolve_result_target(settings.get("result.target", "OP2"))
+    displacement_line = build_displacement_request(displacement, result_target)
+    post = resolve_post_value(settings, result_target=result_target, default_post=-1)
     grdpnt = int(settings.get("grdpnt", 0))
 
     k6rot = float(settings.get("fem.k6rot", -1.0))
@@ -153,7 +204,7 @@ def build_sol103_controls(settings):
         "CEND",
         "METHOD = {}".format(eigrl["sid"]),
         "ECHO={}".format(echo),
-        "DISPLACEMENT = {}".format(displacement),
+        displacement_line,
         "BEGIN BULK",
         "PARAM   POST          {}".format(post),
         "PARAM   GRDPNT         {}".format(grdpnt),

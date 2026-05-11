@@ -1,3 +1,7 @@
+import json
+import time
+from datetime import datetime
+
 from config import APP_CONFIG
 from fastapi import Request
 from src.l3.main import app
@@ -20,12 +24,68 @@ from services.model_update.analysis.inp_service import (
 app.include_router(model_update_router)
 
 
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="milliseconds")
+
+
+@app.middleware("http")
+async def log_request_timing(request: Request, call_next):
+    start_perf = time.perf_counter()
+    start_iso = _now_iso()
+    request_info = {
+        "event": "request_start",
+        "time": start_iso,
+        "method": request.method,
+        "path": request.url.path,
+        "query": str(request.url.query or ""),
+        "client_ip": request.client.host if request.client else None,
+    }
+    print("[HTTP Timing] " + json.dumps(request_info, ensure_ascii=False, default=str))
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        end_iso = _now_iso()
+        elapsed_ms = round((time.perf_counter() - start_perf) * 1000.0, 3)
+        error_info = {
+            "event": "request_error",
+            "start_time": start_iso,
+            "end_time": end_iso,
+            "elapsed_ms": elapsed_ms,
+            "method": request.method,
+            "path": request.url.path,
+            "query": str(request.url.query or ""),
+            "client_ip": request.client.host if request.client else None,
+            "error": repr(exc),
+        }
+        print("[HTTP Timing] " + json.dumps(error_info, ensure_ascii=False, default=str))
+        raise
+
+    end_iso = _now_iso()
+    elapsed_ms = round((time.perf_counter() - start_perf) * 1000.0, 3)
+    response.headers["X-Elapsed-Time-Ms"] = str(elapsed_ms)
+    response_info = {
+        "event": "request_end",
+        "start_time": start_iso,
+        "end_time": end_iso,
+        "elapsed_ms": elapsed_ms,
+        "method": request.method,
+        "path": request.url.path,
+        "query": str(request.url.query or ""),
+        "client_ip": request.client.host if request.client else None,
+        "status_code": response.status_code,
+    }
+    print("[HTTP Timing] " + json.dumps(response_info, ensure_ascii=False, default=str))
+    return response
+
+
 @app.post("/match/dofs")
 async def match_dofs_api(request: Request):
     body = await request.json()
     result = match_test_dofs(
         project_id=int(body["project_id"]),
         overwrite=bool(body.get("overwrite", True)),
+        min_match_score=body.get("min_match_score"),
     )
     return {"ok": True, "message": "dof match success", "data": result}
 

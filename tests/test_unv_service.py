@@ -13,6 +13,9 @@ class _FakeCursor:
             self._measuring_point_seq += 1
             self.lastrowid = self._measuring_point_seq
 
+    def fetchone(self):
+        return None
+
     def close(self):
         return None
 
@@ -179,6 +182,52 @@ def test_import_unv_data_keeps_dynamic_modal_tables_for_modal_results(monkeypatc
     assert "INSERT INTO t_mt_py_test_modal_frequency" in executed_sql
     assert "INSERT INTO t_mt_py_test_modal_shape_real" in executed_sql
     assert "INSERT INTO t_mt_py_test_static_result" not in executed_sql
+
+
+def test_import_unv_data_saves_test_model_dimensions(monkeypatch):
+    fake_conn = _FakeConnection()
+    saved = []
+
+    monkeypatch.setattr(unv_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(unv_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(unv_service, "clear_unv_tables", lambda cursor, pid: None)
+    monkeypatch.setattr(
+        unv_service,
+        "parse_unv_file",
+        lambda _: (
+            [
+                {"nid": 1001, "ics": 0, "ocs": 0, "x": 1.0, "y": 2.0, "z": 3.0},
+                {"nid": 1002, "ics": 0, "ocs": 0, "x": 4.0, "y": 8.0, "z": 13.0},
+            ],
+            _sample_elements(),
+            [],
+            {"is_static": False, "is_real": True},
+        ),
+    )
+    monkeypatch.setattr(unv_service, "_classify_unv_result", lambda message, test_modes: "dynamic")
+    monkeypatch.setattr(unv_service, "_insert_dynamic_modal_data", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        unv_service,
+        "save_test_model_dimensions",
+        lambda **kwargs: saved.append(kwargs) or {"test_model_dims": {"x": 3.0, "y": 6.0, "z": 10.0}},
+    )
+
+    result = unv_service.import_unv_data(
+        file_path="modal.unv",
+        project_id=101,
+        file_id=202,
+        clear_before_insert=False,
+    )
+
+    assert fake_conn.committed is True
+    assert saved == [
+        {
+            "project_id": 101,
+            "points": [(1.0, 2.0, 3.0), (4.0, 8.0, 13.0)],
+            "cursor": fake_conn.cursor_obj,
+        }
+    ]
+    assert result["project_config"] == {"test_model_dims": {"x": 3.0, "y": 6.0, "z": 10.0}}
 
 
 class _QueryCursor:

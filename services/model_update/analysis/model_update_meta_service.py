@@ -30,6 +30,15 @@ def resolve_abaqus_command(abaqus: Optional[str] = None) -> str:
     return str(payload.get("APP_ABAQUS_CMD") or "abaqus").strip() or "abaqus"
 
 
+def resolve_nastran_command(nastran: Optional[str] = None) -> str:
+    explicit = str(nastran or "").strip()
+    if explicit:
+        return explicit
+
+    payload = _load_service_config()
+    return str(payload.get("NASTRAN") or "nastran").strip() or "nastran"
+
+
 def resolve_python3_command(python3: Optional[str] = None) -> Optional[str]:
     explicit = str(python3 or "").strip()
     if explicit:

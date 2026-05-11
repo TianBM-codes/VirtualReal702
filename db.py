@@ -1,4 +1,7 @@
+import threading
+
 import mysql.connector
+import mysql.connector.pooling
 
 try:
     from VirtualReal702.config import DB_CONFIG
@@ -6,6 +9,14 @@ except ImportError:  # pragma: no cover - local direct run fallback
     from config import DB_CONFIG
 
 CREATE_TABLE_SQL_LIST = [
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_console_log (
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        `time` BIGINT NOT NULL COMMENT '日志时间戳(毫秒)',
+        log_text VARCHAR(2048) NOT NULL COMMENT 'HTML格式日志内容',
+        KEY idx_pid_time (pid, `time`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='控制台日志表';
+    """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_test_node (
         nid VARCHAR(100) NOT NULL COMMENT '主键ID',
@@ -148,6 +159,51 @@ CREATE_TABLE_SQL_LIST = [
     ) COMMENT='有限元模型各向同性材料表'
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_ortho2d (
+        Id INT NOT NULL COMMENT 'primary key',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        RHO DOUBLE NULL COMMENT '密度',
+        EX DOUBLE NULL COMMENT '弹性模量x方向',
+        EY DOUBLE NULL COMMENT '弹性模量y方向',
+        GXY DOUBLE NULL COMMENT '剪切模量XY',
+        NUXY DOUBLE NULL COMMENT '泊松比XY',
+        GXZ DOUBLE NULL COMMENT '剪切模量XZ',
+        GYZ DOUBLE NULL COMMENT '剪切模量YZ',
+        GE DOUBLE NULL COMMENT '材料阻尼',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='FEM orthotropic 2D materials'
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_aniso3d (
+        Id INT NOT NULL COMMENT 'primary key',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        RHO DOUBLE NULL COMMENT '密度',
+        D11 DOUBLE NULL COMMENT 'D11',
+        D12 DOUBLE NULL COMMENT 'D12',
+        D13 DOUBLE NULL COMMENT 'D13',
+        D14 DOUBLE NULL COMMENT 'D14',
+        D15 DOUBLE NULL COMMENT 'D15',
+        D16 DOUBLE NULL COMMENT 'D16',
+        D22 DOUBLE NULL COMMENT 'D22',
+        D23 DOUBLE NULL COMMENT 'D23',
+        D24 DOUBLE NULL COMMENT 'D24',
+        D25 DOUBLE NULL COMMENT 'D25',
+        D26 DOUBLE NULL COMMENT 'D26',
+        D33 DOUBLE NULL COMMENT 'D33',
+        D34 DOUBLE NULL COMMENT 'D34',
+        D35 DOUBLE NULL COMMENT 'D35',
+        D36 DOUBLE NULL COMMENT 'D36',
+        D44 DOUBLE NULL COMMENT 'D44',
+        D45 DOUBLE NULL COMMENT 'D45',
+        D46 DOUBLE NULL COMMENT 'D46',
+        D55 DOUBLE NULL COMMENT 'D55',
+        D56 DOUBLE NULL COMMENT 'D56',
+        D66 DOUBLE NULL COMMENT 'D66',
+        GE DOUBLE NULL COMMENT '材料阻尼',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='FEM anisotropic 3D materials'
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_property (
         Id INT NOT NULL COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
@@ -162,6 +218,7 @@ CREATE_TABLE_SQL_LIST = [
         Thickness DOUBLE NOT NULL COMMENT '厚度',
         NSM DOUBLE NOT NULL COMMENT '非结构质量',
         THETA DOUBLE NOT NULL COMMENT '旋转角',
+        element_set VARCHAR(255) NULL COMMENT '单元集名称',
         PRIMARY KEY (Id, pid)
     ) COMMENT='有限元模型壳单元属性表'
     """,
@@ -181,6 +238,27 @@ CREATE_TABLE_SQL_LIST = [
         NSM DOUBLE NOT NULL COMMENT '非结构质量',
         PRIMARY KEY (Id, pid)
     ) COMMENT='有限元模型梁单元属性表'
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_solid_property (
+        Id INT NOT NULL COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        MID INT NULL COMMENT '材料ID',
+        CID INT NULL COMMENT '坐标系ID',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='FEM solid properties'
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_layered_property (
+        Id INT NOT NULL COMMENT 'primary key',
+        pid BIGINT NOT NULL COMMENT 'project id',
+        Offset DOUBLE NULL COMMENT 'Offset',
+        Theta DOUBLE NULL COMMENT 'Theta',
+        GE DOUBLE NULL COMMENT 'GE',
+        NSM DOUBLE NULL COMMENT 'NSM',
+        Layers INT NULL COMMENT 'Layers',
+        PRIMARY KEY (Id, pid)
+    ) COMMENT='FEM layered properties'
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_boundary (
@@ -220,6 +298,27 @@ CREATE_TABLE_SQL_LIST = [
         UNIQUE KEY uk_pid_transform_type (pid, transform_type),
         KEY idx_pid_updated_at (pid, updated_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='空间匹配变换记录表';
+    """,
+    """
+    -- project configuration table
+    -- test_model_x/y/z: test model size
+    -- fem_model_x/y/z: fem model size
+    -- coefficients_json: coefficient map
+    -- extra_json: extra config payload
+    CREATE TABLE IF NOT EXISTS t_mt_py_project_config (
+        pid BIGINT NOT NULL COMMENT 'project id',
+        test_model_x DOUBLE NULL COMMENT '试验模型x方向尺寸',
+        test_model_y DOUBLE NULL COMMENT '试验模型y方向尺寸',
+        test_model_z DOUBLE NULL COMMENT '试验模型z方向尺寸',
+        fem_model_x DOUBLE NULL COMMENT '有限元模型x方向尺寸',
+        fem_model_y DOUBLE NULL COMMENT '有限元模型y方向尺寸',
+        fem_model_z DOUBLE NULL COMMENT '有限元模型z方向尺寸',
+        coefficients_json JSON NULL COMMENT '系数对应表',
+        extra_json JSON NULL COMMENT '额外系数对应表',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+        PRIMARY KEY (pid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='project configuration';
     """,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_dof_pairs (
@@ -488,6 +587,7 @@ CREATE_TABLE_SQL_LIST = [
         dof_pair_count INT NOT NULL DEFAULT 0 COMMENT '自由度配对数量',
         dac DOUBLE NOT NULL COMMENT 'DAC百分比',
         dsf DOUBLE NOT NULL COMMENT 'DSF值',
+        mac DOUBLE NOT NULL COMMENT 'MAC值',
         freq_test DOUBLE NULL COMMENT '试验频率',
         freq_fem DOUBLE NULL COMMENT '有限元频率',
         freq_error_ratio DOUBLE NULL COMMENT '频率误差比',
@@ -806,37 +906,111 @@ CREATE_TABLE_SQL_LIST = [
         x_position DOUBLE NOT NULL COMMENT 'X坐标',
         y_position DOUBLE NOT NULL COMMENT 'Y坐标',
         z_position DOUBLE NOT NULL COMMENT 'Z坐标',
+        x_angle DOUBLE NOT NULL COMMENT '角度x',
+        y_angle DOUBLE NOT NULL COMMENT '角度y',
+        z_angle DOUBLE NOT NULL COMMENT '角度z',
         data_source VARCHAR(32) NOT NULL COMMENT '数据来源',
         PRIMARY KEY (id, measuring_point_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='测点信息表'; 
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_channel_info (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        channel_name VARCHAR(64) NOT NULL COMMENT '通道名称',
+        measure_point_id BIGINT NOT NULL COMMENT '测点ID',
+        project_id BIGINT NOT NULL COMMENT '项目ID',
+        direction INT NOT NULL COMMENT '方向:1-x, 2-y, 3-z',
+        data_operate CHAR(1) NOT NULL COMMENT '+ - 操作类型',
+        PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通道信息表';
     """
 ]
 
+_tables_ensured = False
+_tables_ensure_lock = threading.Lock()
+_connection_pool = None
+_connection_pool_lock = threading.Lock()
+
+
+def _connection_kwargs():
+    return {
+        "host": DB_CONFIG["host"],
+        "port": DB_CONFIG["port"],
+        "user": DB_CONFIG["user"],
+        "password": DB_CONFIG["password"],
+        "database": DB_CONFIG["database"],
+        "charset": DB_CONFIG["charset"],
+        "use_pure": True,
+    }
+
+
+def _get_connection_pool():
+    global _connection_pool
+    if _connection_pool is not None:
+        return _connection_pool
+
+    _connection_pool_lock.acquire()
+    try:
+        if _connection_pool is None:
+            pool_name = str(DB_CONFIG.get("pool_name", "virtualreal702_pool"))
+            pool_size = max(1, int(DB_CONFIG.get("pool_size", 10)))
+            pool_reset_session = bool(DB_CONFIG.get("pool_reset_session", True))
+            _connection_pool = mysql.connector.pooling.MySQLConnectionPool(
+                pool_name=pool_name,
+                pool_size=pool_size,
+                pool_reset_session=pool_reset_session,
+                **_connection_kwargs(),
+            )
+        return _connection_pool
+    finally:
+        if _connection_pool_lock.locked():
+            _connection_pool_lock.release()
+
 def get_connection():
-    return mysql.connector.connect(
-        host=DB_CONFIG["host"],
-        port=DB_CONFIG["port"],
-        user=DB_CONFIG["user"],
-        password=DB_CONFIG["password"],
-        database=DB_CONFIG["database"],
-        charset=DB_CONFIG["charset"],
-        use_pure=True
-    )
+    return _get_connection_pool().get_connection()
 
 
 def ensure_tables_exist():
+    global _tables_ensured
+    if _tables_ensured:
+        return
+    _tables_ensure_lock.acquire()
+    if _tables_ensured:
+        _tables_ensure_lock.release()
+        return
     conn = get_connection()
     cursor = conn.cursor()
     try:
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            LIMIT 1
+            """,
+            (DB_CONFIG["database"], "t_mt_py_fem_shell_property", "element_set"),
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                """
+                ALTER TABLE t_mt_py_fem_shell_property
+                ADD COLUMN element_set VARCHAR(255) NULL COMMENT '单元集名称'
+                """
+            )
         conn.commit()
+        _tables_ensured = True
     except Exception:
         conn.rollback()
         raise
     finally:
         cursor.close()
         conn.close()
+        if _tables_ensure_lock.locked():
+            _tables_ensure_lock.release()
 
 
 def clear_unv_tables(cursor, pid):
@@ -856,11 +1030,16 @@ def clear_unv_tables(cursor, pid):
 
 
 def clear_fem_tables(cursor, pid):
+    cursor.execute(f"DELETE FROM t_mt_py_fem_coord WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_material_overview WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_isotropic WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_ortho2d WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_aniso3d WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_property WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_shell_property WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_beam_property WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_solid_property WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_layered_property WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_boundary WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_transform_operation WHERE pid = {pid}")

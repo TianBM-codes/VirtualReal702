@@ -2,14 +2,22 @@ import os
 import re
 import shutil
 import subprocess
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.l3.core.errors import NotFoundError, ValidationError
 
-from .model_update_meta_service import resolve_abaqus_command
+from .model_update_meta_service import resolve_abaqus_command, resolve_nastran_command
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
-from ..solver_prep.nastran_sol103 import convert_to_sol103
+from ..solver_prep.nastran_sol103 import (
+    build_sol103_controls,
+    convert_to_sol103,
+    filter_bulk_lines,
+    read_lines,
+    split_bdf,
+)
+from ..solver_prep.nastran_sol200 import convert_to_sol200, build_sol200_lines
 from ..solver_prep.abaqus_sensitivity import generate_sensitivity_inp
 
 # This module stays at the "local solver orchestration" layer:
@@ -48,6 +56,29 @@ _NASTRAN_ARTIFACT_SUFFIXES = (
     ".plt",
     ".h5",
 )
+
+_NASTRAN_EXTRA_GLOB_PATTERNS = (
+    "*.op2",
+    "*.f06",
+    "*.xdb",
+    "*.h5",
+    "*.pch",
+    "*.plt",
+    "*.out",
+    "*.log",
+    "*.bin",
+    "*.u??",
+    "*.f??",
+)
+
+_NASTRAN_BINARY_SUFFIXES = {
+    ".op2",
+    ".xdb",
+    ".h5",
+    ".pch",
+    ".plt",
+    ".bin",
+}
 
 
 def _abs_file(path: str, field_name: str) -> Path:
@@ -92,6 +123,45 @@ def _collect_artifacts(workdir: Path, stem: str, suffixes) -> Dict[str, str]:
     return artifacts
 
 
+def _collect_nastran_extra_artifacts(workdir: Path, artifacts: Dict[str, str]) -> Dict[str, str]:
+    resolved = dict(artifacts)
+    for pattern in _NASTRAN_EXTRA_GLOB_PATTERNS:
+        for path in workdir.glob(pattern):
+            if not path.is_file():
+                continue
+            key = path.name
+            if key not in resolved:
+                resolved[key] = str(path.resolve())
+    return resolved
+
+
+def _summarize_nastran_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "has_f06": False,
+        "has_op2": False,
+        "f06_files": [],
+        "op2_files": [],
+        "unit11_candidates": [],
+        "binary_result_files": [],
+        "all_files": sorted(str(path) for path in artifacts.values()),
+    }
+    for path_text in sorted(set(str(path) for path in artifacts.values())):
+        path = Path(path_text)
+        suffix = path.suffix.lower()
+        name = path.name.lower()
+        if suffix == ".f06":
+            summary["has_f06"] = True
+            summary["f06_files"].append(str(path))
+        if suffix == ".op2":
+            summary["has_op2"] = True
+            summary["op2_files"].append(str(path))
+        if suffix in _NASTRAN_BINARY_SUFFIXES:
+            summary["binary_result_files"].append(str(path))
+        if not suffix and ("unit11" in name or name.endswith("11")):
+            summary["unit11_candidates"].append(str(path))
+    return summary
+
+
 def delete_abaqus_process_files(workdir: Path, job_name: str) -> List[str]:
     deleted: List[str] = []
     for suffix in _ABAQUS_PROCESS_FILE_SUFFIXES:
@@ -115,6 +185,7 @@ def _run_local_solver(
     if timeout_sec is not None and int(timeout_sec) <= 0:
         raise ValidationError("timeout_sec 必须大于 0", {"timeout_sec": timeout_sec})
 
+    print(command)
     try:
         result = subprocess.run(
             command,
@@ -142,7 +213,7 @@ def _run_local_solver(
             },
         ) from exc
 
-    return {
+    payload = {
         "ok": result.returncode == 0,
         "returncode": int(result.returncode),
         "command": command,
@@ -151,6 +222,10 @@ def _run_local_solver(
         "stderr_tail": _tail_text(result.stderr),
         "artifacts": _collect_artifacts(workdir, artifact_stem, artifact_suffixes),
     }
+    if artifact_suffixes is _NASTRAN_ARTIFACT_SUFFIXES:
+        payload["artifacts"] = _collect_nastran_extra_artifacts(workdir, payload["artifacts"])
+        payload["artifacts_summary"] = _summarize_nastran_artifacts(payload["artifacts"])
+    return payload
 
 
 def _build_abaqus_command(
@@ -175,13 +250,194 @@ def _build_abaqus_command(
 
 
 def _build_nastran_command(
-    nastran: str,
+    nastran: Optional[str],
     bdf_path: Path,
     extra_args: Optional[List[str]] = None,
 ) -> List[str]:
-    command = [str(nastran), bdf_path.name]
+    command = [resolve_nastran_command(nastran), bdf_path.name]
     command.extend(_normalize_extra_args(extra_args))
     return command
+
+
+def preview_nastran_sol103_job(
+    input_bdf: str,
+    settings: Optional[Dict[str, Any]] = None,
+) -> dict:
+    input_path = _abs_file(input_bdf, "input_bdf")
+    lines = read_lines(str(input_path))
+    _, bulk_lines = split_bdf(lines)
+    controls, has_bailout = build_sol103_controls(dict(settings or {}))
+    filtered_bulk = filter_bulk_lines(bulk_lines, has_bailout)
+
+    return {
+        "workflow": "nastran_sol103_preview",
+        "input_bdf": str(input_path),
+        "control_lines_preview": controls,
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
+        "filtered_cards": {
+            "original_bulk_line_count": len(bulk_lines),
+            "filtered_bulk_line_count": len(filtered_bulk),
+            "removed_bulk_line_count": max(0, len(bulk_lines) - len(filtered_bulk)),
+            "has_bailout": bool(has_bailout),
+        },
+        "warnings": [],
+    }
+
+
+def generate_nastran_sol103_job(
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    settings: Optional[Dict[str, Any]] = None,
+) -> dict:
+    input_path = _abs_file(input_bdf, "input_bdf")
+    output_path = Path(output_bdf).expanduser().resolve() if output_bdf else input_path.with_name(
+        f"{input_path.stem}_sol103.bdf"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    convert_to_sol103(
+        input_bdf=str(input_path),
+        output_bdf=str(output_path),
+        settings=dict(settings or {}),
+    )
+
+    return {
+        "workflow": "nastran_sol103_generate",
+        "input_bdf": str(input_path),
+        "output_bdf": str(output_path),
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
+        "generated_files": {
+            "analysis_bdf": str(output_path),
+        },
+        "warnings": [],
+    }
+
+
+def preview_nastran_sol200_job(
+    input_bdf: str,
+    parameters: List[Dict[str, Any]],
+    responses: List[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> dict:
+    input_path = _abs_file(input_bdf, "input_bdf")
+    payload = build_sol200_lines(
+        input_bdf=str(input_path),
+        parameters=list(parameters or []),
+        responses=list(responses or []),
+        settings=dict(settings or {}),
+    )
+    return {
+        "workflow": "nastran_sol200_preview",
+        "input_bdf": str(input_path),
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
+        "control_lines_preview": payload["control_lines"],
+        "desvar_preview": payload["desvar_lines"],
+        "relation_preview": payload["relation_lines"],
+        "response_preview": payload["response_lines"],
+        "warnings": [],
+    }
+
+
+def generate_nastran_sol200_job(
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    parameters: Optional[List[Dict[str, Any]]] = None,
+    responses: Optional[List[Dict[str, Any]]] = None,
+    settings: Optional[Dict[str, Any]] = None,
+) -> dict:
+    input_path = _abs_file(input_bdf, "input_bdf")
+    output_path = Path(output_bdf).expanduser().resolve() if output_bdf else input_path.with_name(
+        f"{input_path.stem}_sol200.bdf"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = convert_to_sol200(
+        input_bdf=str(input_path),
+        output_bdf=str(output_path),
+        parameters=list(parameters or []),
+        responses=list(responses or []),
+        settings=dict(settings or {}),
+    )
+    metadata_path = output_path.with_suffix(output_path.suffix + ".sol200.json")
+    metadata = {
+        "input_bdf": str(input_path),
+        "output_bdf": str(output_path),
+        "parameters": list(parameters or []),
+        "responses": list(responses or []),
+        "settings": dict(settings or {}),
+    }
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "workflow": "nastran_sol200_generate",
+        "input_bdf": str(input_path),
+        "output_bdf": str(output_path),
+        "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
+        "parameter_count": len(list(parameters or [])),
+        "response_count": len(list(responses or [])),
+        "generated_files": {
+            "analysis_bdf": str(output_path),
+            "metadata_json": str(metadata_path),
+        },
+        "preview": {
+            "control_lines_preview": payload["control_lines"],
+            "desvar_preview": payload["desvar_lines"],
+            "relation_preview": payload["relation_lines"],
+            "response_preview": payload["response_lines"],
+        },
+        "warnings": [],
+    }
+
+
+def run_nastran_sol200_job(
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    parameters: Optional[List[Dict[str, Any]]] = None,
+    responses: Optional[List[Dict[str, Any]]] = None,
+    settings: Optional[Dict[str, Any]] = None,
+    nastran: Optional[str] = None,
+    run_solver: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+) -> dict:
+    generated = generate_nastran_sol200_job(
+        input_bdf=input_bdf,
+        output_bdf=output_bdf,
+        parameters=parameters,
+        responses=responses,
+        settings=settings,
+    )
+    output_path = Path(generated["output_bdf"]).resolve()
+    command = _build_nastran_command(
+        nastran=nastran,
+        bdf_path=output_path,
+        extra_args=extra_args,
+    )
+    payload = {
+        "workflow": "nastran_sol200_run",
+        "input_bdf": generated["input_bdf"],
+        "output_bdf": generated["output_bdf"],
+        "generated_files": generated.get("generated_files") or {},
+        "parameter_count": generated.get("parameter_count"),
+        "response_count": generated.get("response_count"),
+        "command_preview": command,
+        "solver": None,
+        "warnings": [],
+    }
+    if run_solver:
+        payload["solver"] = _run_local_solver(
+            command=command,
+            workdir=output_path.parent,
+            artifact_stem=output_path.stem,
+            artifact_suffixes=_NASTRAN_ARTIFACT_SUFFIXES,
+            timeout_sec=timeout_sec,
+        )
+        summary = payload["solver"].get("artifacts_summary") or {}
+        if not summary.get("has_op2"):
+            payload["warnings"].append({
+                "code": "NASTRAN_OP2_NOT_FOUND",
+                "message": "solve completed without an OP2 file; inspect result.target/post settings and produced binary files",
+            })
+    return payload
 
 
 def run_abaqus_sensitivity_job(
@@ -369,7 +625,7 @@ def run_nastran_sol103_job(
     input_bdf: str,
     output_bdf: Optional[str] = None,
     settings: Optional[Dict[str, Any]] = None,
-    nastran: str = "nastran",
+    nastran: Optional[str] = None,
     run_solver: bool = True,
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
@@ -395,11 +651,12 @@ def run_nastran_sol103_job(
     )
 
     payload = {
-        "workflow": "nastran_sol103",
+        "workflow": "nastran_sol103_run",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
         "command_preview": command,
         "solver": None,
+        "warnings": [],
     }
     if run_solver:
         payload["solver"] = _run_local_solver(
@@ -409,4 +666,10 @@ def run_nastran_sol103_job(
             artifact_suffixes=_NASTRAN_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
+        summary = payload["solver"].get("artifacts_summary") or {}
+        if not summary.get("has_op2"):
+            payload["warnings"].append({
+                "code": "NASTRAN_OP2_NOT_FOUND",
+                "message": "solve completed without an OP2 file; inspect result.target/post settings and produced binary files",
+            })
     return payload
