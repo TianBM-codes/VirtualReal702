@@ -696,6 +696,9 @@ def _response_display_name(row_meta: dict) -> str:
     row_key = str(row_meta.get("row_key") or "").strip()
     if row_key:
         return _normalize_response_display_name(row_key)
+    response_name = str(row_meta.get("response_name") or "").strip()
+    if response_name:
+        return _normalize_response_display_name(response_name)
     parts = [
         str(row_meta.get("instance") or "").strip(),
         str(row_meta.get("response_field") or "").strip(),
