@@ -390,6 +390,7 @@ async def preview_op2_sensitivity_api(request: Request, body: Op2SensitivityPrev
     try:
         data = preview_op2_sensitivity(
             op2_path=body.op2_path,
+            matrix_path=body.matrix_path,
             bdf_path=body.bdf_path,
             metadata_json=body.metadata_json,
             parameter_names=body.parameter_names,
@@ -412,6 +413,7 @@ async def store_op2_sensitivity_api(request: Request, body: Op2SensitivityStoreR
             "batch_no": body.batch_no,
             "case_name": body.case_name,
             "op2_path": body.op2_path,
+            "matrix_path": body.matrix_path,
             "bdf_path": body.bdf_path,
             "metadata_json": body.metadata_json,
             "parameter_names": body.parameter_names,

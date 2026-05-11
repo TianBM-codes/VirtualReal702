@@ -22,6 +22,23 @@ SKIP_SOL200_PARAM_NAMES = {
 }
 
 
+def _normalize_sol200_settings(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    resolved = dict(settings or {})
+    if resolved.get("dynamic.norm") in (None, ""):
+        resolved["dynamic.norm"] = "MASS"
+    if str(resolved.get("dynamic.norm", "")).strip().upper() not in {"2", "MASS"}:
+        raise ValidationError(
+            "SOL200 sensitivity requires MASS-normalized eigenvectors",
+            {
+                "dynamic.norm": resolved.get("dynamic.norm"),
+                "allowed_values": [2, "MASS"],
+            },
+        )
+    if resolved.get("result.target") in (None, ""):
+        resolved["result.target"] = "OP2"
+    return resolved
+
+
 def _normalize_card_name(line: str) -> str:
     stripped = line.lstrip()
     if not stripped or stripped.startswith("$"):
@@ -120,11 +137,11 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
 
 
 def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str]:
-    settings = dict(settings or {})
+    settings = _normalize_sol200_settings(settings)
     eigrl = build_eigrl_fields(settings)
     result_target = resolve_result_target(settings.get("result.target", "OP2"))
     displacement_line = build_displacement_request(settings.get("displacement", "ALL"), result_target)
-    post = resolve_post_value(settings, result_target=result_target, default_post=-1)
+    post = resolve_post_value(settings, result_target=result_target, default_post=-5)
 
     k6rot = float(settings.get("fem.k6rot", -1.0))
     if k6rot < 0:
@@ -171,6 +188,7 @@ def build_sol200_lines(
     responses: List[Dict[str, Any]],
     settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    settings = _normalize_sol200_settings(settings)
     if not parameters:
         raise ValidationError("SOL200 parameters are required", {"parameters": parameters})
     if not responses:

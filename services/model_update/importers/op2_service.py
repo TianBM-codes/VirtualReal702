@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -76,6 +77,20 @@ def _load_sidecar_metadata(metadata_json: Optional[str], bdf_path: Optional[str]
 
 def _read_op2(op2_path: str):
     return read_op2_geom(op2_path, debug=False)
+
+
+def _resolve_sensitivity_result_source(*, op2_path: Optional[str], matrix_path: Optional[str]) -> Tuple[str, str]:
+    if matrix_path:
+        resolved = _abs_file(matrix_path, "matrix_path")
+        if Path(resolved).suffix.lower() == ".op2":
+            return resolved, "op2"
+        return resolved, "matrix_file"
+    if op2_path:
+        return _abs_file(op2_path, "op2_path"), "op2"
+    raise ValidationError(
+        "either op2_path or matrix_path is required for sensitivity import",
+        {"op2_path": op2_path, "matrix_path": matrix_path},
+    )
 
 
 def _available_subcases(op2) -> List[int]:
@@ -468,21 +483,99 @@ def _choose_matrix_candidate(candidates: List[dict], response_names: List[str], 
                 chosen["matrix"] = matrix.T
                 chosen["transposed"] = True
                 return chosen
-    chosen = max(candidates, key=lambda item: int(item["matrix"].size))
+    priority_tokens = ("dscm2", "dscm", "sensitivity", "sens")
+    prioritized = [
+        item for item in candidates
+        if any(token in str(item.get("path", "")).lower() for token in priority_tokens)
+    ]
+    pool = prioritized or candidates
+    chosen = max(pool, key=lambda item: int(item["matrix"].size))
     chosen = dict(chosen)
     chosen["transposed"] = False
     return chosen
 
 
+_FLOAT_TOKEN_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[EeDd][-+]?\d+)?")
+
+
+def _parse_text_matrix_file(result_path: str, expected_shape: Optional[Tuple[int, int]] = None) -> dict:
+    resolved = _abs_file(result_path, "matrix_path")
+    try:
+        text = Path(resolved).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = Path(resolved).read_text(encoding="latin-1")
+
+    blocks: List[np.ndarray] = []
+    current_rows: List[List[float]] = []
+    current_width: Optional[int] = None
+    flat_values: List[float] = []
+
+    for raw_line in text.splitlines():
+        normalized = raw_line.replace("D", "E").replace("d", "e")
+        tokens = _FLOAT_TOKEN_RE.findall(normalized)
+        if not tokens:
+            if current_rows:
+                blocks.append(np.asarray(current_rows, dtype=np.float64))
+                current_rows = []
+                current_width = None
+            continue
+        row = [float(token.replace("D", "E").replace("d", "e")) for token in tokens]
+        flat_values.extend(row)
+        if current_width is None or len(row) == current_width:
+            current_rows.append(row)
+            current_width = len(row)
+            continue
+        if current_rows:
+            blocks.append(np.asarray(current_rows, dtype=np.float64))
+        current_rows = [row]
+        current_width = len(row)
+
+    if current_rows:
+        blocks.append(np.asarray(current_rows, dtype=np.float64))
+
+    candidates = [block for block in blocks if block.ndim == 2 and block.size > 0]
+    if expected_shape and flat_values:
+        rows, cols = expected_shape
+        if rows > 0 and cols > 0 and len(flat_values) == rows * cols:
+            candidates.insert(0, np.asarray(flat_values, dtype=np.float64).reshape(rows, cols))
+
+    if not candidates:
+        raise NotFoundError(
+            "SENSITIVITY_MATRIX_TEXT_NOT_FOUND",
+            {"matrix_path": resolved, "expected_shape": expected_shape},
+        )
+
+    chosen = None
+    if expected_shape:
+        rows, cols = expected_shape
+        for candidate in candidates:
+            if tuple(candidate.shape) == (rows, cols):
+                chosen = candidate
+                break
+            if tuple(candidate.shape) == (cols, rows):
+                chosen = candidate.T
+                break
+    if chosen is None:
+        chosen = max(candidates, key=lambda item: int(item.size))
+
+    return {
+        "path": "matrix_file",
+        "matrix": np.asarray(chosen, dtype=np.float64),
+        "row_labels": None,
+        "column_labels": None,
+    }
+
+
 def preview_op2_sensitivity(
     *,
-    op2_path: str,
+    op2_path: Optional[str] = None,
+    matrix_path: Optional[str] = None,
     bdf_path: Optional[str] = None,
     metadata_json: Optional[str] = None,
     parameter_names: Optional[Sequence[str]] = None,
     response_names: Optional[Sequence[str]] = None,
 ) -> dict:
-    resolved_op2 = _abs_file(op2_path, "op2_path")
+    result_path, source_kind = _resolve_sensitivity_result_source(op2_path=op2_path, matrix_path=matrix_path)
     resolved_bdf = _abs_file(bdf_path, "bdf_path") if bdf_path else None
     metadata = _load_sidecar_metadata(metadata_json, resolved_bdf)
 
@@ -498,12 +591,22 @@ def preview_op2_sensitivity(
     else:
         response_names = [str(item) for item in raw_response_names]
 
-    op2 = _read_op2(resolved_op2)
-    candidates = _collect_matrix_candidates(op2)
-    chosen = _choose_matrix_candidate(candidates, response_names, parameter_names)
-    matrix = np.asarray(chosen["matrix"], dtype=np.float64)
+    expected_shape = None
+    if response_names and parameter_names:
+        expected_shape = (len(response_names), len(parameter_names))
 
     warnings: List[dict] = []
+    if source_kind == "op2":
+        op2 = _read_op2(result_path)
+        candidates = _collect_matrix_candidates(op2)
+        chosen = _choose_matrix_candidate(candidates, response_names, parameter_names)
+    else:
+        chosen = _parse_text_matrix_file(result_path, expected_shape=expected_shape)
+        warnings.append({
+            "code": "SENSITIVITY_TEXT_MATRIX_HEURISTIC",
+            "message": "matrix file was parsed heuristically from plain numeric text; verify row/column order against the solver output",
+        })
+    matrix = np.asarray(chosen["matrix"], dtype=np.float64)
     if not response_names:
         response_names = chosen.get("row_labels") or [f"RESP_{idx + 1}" for idx in range(matrix.shape[0])]
         warnings.append({
@@ -525,8 +628,10 @@ def preview_op2_sensitivity(
     return {
         "workflow": "op2_sensitivity_preview",
         "source": {
-            "op2_path": resolved_op2,
+            "op2_path": result_path if source_kind == "op2" else None,
+            "matrix_path": result_path if source_kind != "op2" else None,
             "bdf_path": resolved_bdf,
+            "source_kind": source_kind,
             "candidate_path": chosen.get("path"),
         },
         "matrix_kind": "raw_sensitivity",
@@ -543,7 +648,8 @@ def store_op2_sensitivity(
     project_id: int,
     batch_no: str,
     case_name: str,
-    op2_path: str,
+    op2_path: Optional[str] = None,
+    matrix_path: Optional[str] = None,
     bdf_path: Optional[str] = None,
     metadata_json: Optional[str] = None,
     parameter_names: Optional[Sequence[str]] = None,
@@ -551,6 +657,7 @@ def store_op2_sensitivity(
 ) -> dict:
     preview = preview_op2_sensitivity(
         op2_path=op2_path,
+        matrix_path=matrix_path,
         bdf_path=bdf_path,
         metadata_json=metadata_json,
         parameter_names=parameter_names,

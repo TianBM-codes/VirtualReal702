@@ -560,7 +560,8 @@ class Op2ModalVtuExportRequest(BaseModel):
 
 
 class Op2SensitivityPreviewRequest(BaseModel):
-    op2_path: str
+    op2_path: Optional[str] = None
+    matrix_path: Optional[str] = None
     bdf_path: Optional[str] = None
     metadata_json: Optional[str] = None
     parameter_names: Optional[List[str]] = None
@@ -571,7 +572,8 @@ class Op2SensitivityStoreRequest(BaseModel):
     project_id: int
     batch_no: str = "1"
     case_name: str = "nastran_sol200"
-    op2_path: str
+    op2_path: Optional[str] = None
+    matrix_path: Optional[str] = None
     bdf_path: Optional[str] = None
     metadata_json: Optional[str] = None
     parameter_names: Optional[List[str]] = None
