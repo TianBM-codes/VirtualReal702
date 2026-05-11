@@ -502,6 +502,18 @@ def _split_csv_like_line(line: str) -> List[str]:
     return [item.strip() for item in str(line).split(",")]
 
 
+def _looks_like_numeric_csv_line(line: str) -> bool:
+    parts = [item.strip() for item in _split_csv_like_line(line) if item.strip()]
+    if not parts:
+        return False
+    try:
+        for item in parts:
+            float(item.replace("D", "E").replace("d", "e"))
+        return True
+    except Exception:
+        return False
+
+
 def _parse_formatted_sensitivity_csv(
     result_path: str,
     *,
@@ -537,7 +549,7 @@ def _parse_formatted_sensitivity_csv(
                     continue
                 break
         if line.startswith("Design Response ID,"):
-            if idx + 2 >= len(lines):
+            if idx + 1 >= len(lines):
                 break
             desc_parts = _split_csv_like_line(lines[idx + 1])
             if len(desc_parts) < 8:
@@ -545,21 +557,37 @@ def _parse_formatted_sensitivity_csv(
                 continue
             label = desc_parts[1].strip()
             response_type = desc_parts[2].strip().upper()
-            labels_line = lines[idx + 2].rstrip()
-            value_line = lines[idx + 3].rstrip() if idx + 3 < len(lines) else ""
-            response_labels = [item.strip() for item in _split_csv_like_line(labels_line) if item.strip()]
-            response_values = [
-                float(item.replace("D", "E").replace("d", "e"))
-                for item in _split_csv_like_line(value_line)
-                if item.strip()
-            ]
+            response_labels: List[str] = []
+            response_values: List[float] = []
+            next_idx = idx + 2
+            while next_idx < len(lines) and not lines[next_idx].strip():
+                next_idx += 1
+            if next_idx < len(lines):
+                labels_line = lines[next_idx].rstrip()
+                values_idx = next_idx + 1
+                while values_idx < len(lines) and not lines[values_idx].strip():
+                    values_idx += 1
+                value_line = lines[values_idx].rstrip() if values_idx < len(lines) else ""
+                if (
+                    labels_line
+                    and not labels_line.strip().startswith("Design Response ID,")
+                    and value_line
+                    and not value_line.strip().startswith("Design Response ID,")
+                    and _looks_like_numeric_csv_line(value_line)
+                ):
+                    response_labels = [item.strip() for item in _split_csv_like_line(labels_line) if item.strip()]
+                    response_values = [
+                        float(item.replace("D", "E").replace("d", "e"))
+                        for item in _split_csv_like_line(value_line)
+                        if item.strip()
+                    ]
             response_blocks.append({
                 "label": label,
                 "response_type": response_type,
                 "parameter_labels": response_labels,
                 "values": response_values,
             })
-            idx += 4
+            idx = next_idx + 1 if response_values else idx + 2
             continue
         idx += 1
 
