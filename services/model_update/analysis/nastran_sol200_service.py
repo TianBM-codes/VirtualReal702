@@ -228,7 +228,7 @@ def _localize_elements_e_parameters(
         element.pid = int(new_pid)
         localized_count += 1
         parameters.append({
-            "name": f"E_ELEM_{int(eid)}",
+            "name": f"E{int(eid)}",
             "type": "E",
             "element_id": int(eid),
             "property_id": int(new_pid),

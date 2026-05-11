@@ -212,6 +212,9 @@ means:
 
 - one element -> one localized material -> one `E` design variable
 - parameter count therefore follows element count directly
+- generated `DESVAR` labels are intentionally kept short (for example `E1`,
+  `E2`, `E1548`) so Nastran formatted sensitivity CSV output does not truncate
+  them into duplicate names
 
 For example:
 
