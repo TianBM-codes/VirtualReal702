@@ -40,6 +40,9 @@ from src.utils.file_fetch import download_if_url, is_http_url
 DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
 PACK_SCRIPT     = REPO_ROOT / "src" / "l1" / "l1_pack.py"
 INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
+BDF_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "bdf_pack.py"
+OP2_GEOM_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "op2_geom_pack.py"
+OP2_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "op2_pack.py"
 INGEST_SCRIPT   = REPO_ROOT / "src" / "l2" / "ingest.py"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -854,9 +857,145 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
         logger.warning("[%s] _adopt_odb_result_group: registry update failed: %s", project_id, exc)
 
 
+def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
+    if not bdf_path:
+        msg = "No BDF path stored for project {}".format(project_id)
+        logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    if not os.path.exists(bdf_path):
+        msg = "BDF file not found: {}".format(bdf_path)
+        logger.error("[%s] %s", project_id, msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    logger.info("[%s] BDF project: bdf_pack.py", project_id)
+    _log_job(project_id, "step",
+             "L1 解析：BDF 几何提取（bdf_pack.py）启动", stage="l1_bdf")
+    rc1, tail1 = _run_streaming(
+        [sys.executable, str(BDF_PACK_SCRIPT), "--bdf", bdf_path, "--workspace", workspace],
+        project_id, "l1_bdf",
+    )
+    if rc1 != 0:
+        msg = "bdf_pack failed: " + tail1
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 "BDF 解析失败 (rc={})：{}".format(rc1, tail1[-500:]), stage="l1_bdf")
+        logger.error("[%s] BDF project phase 1 failed (rc=%d)", project_id, rc1)
+        return False
+
+    _log_job(project_id, "step", "BDF 解析完成，开始 L2 预处理", stage="l1_done")
+
+    logger.info("[%s] BDF project: ingest.py (L2)", project_id)
+    _log_job(project_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest")
+    rc2, tail2 = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        project_id, "l2_ingest",
+    )
+    if rc2 != 0:
+        msg = "ingest failed: " + tail2[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 "L2 预处理失败 (rc={})：{}".format(rc2, tail2[-500:]),
+                 stage="l2_ingest")
+        logger.error("[%s] BDF project L2 failed (rc=%d)", project_id, rc2)
+        return False
+
+    _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", "BDF 几何解析完成，已就绪", stage="l2_done")
+    logger.info("[%s] BDF project ready", project_id)
+    return True
+
+
+def _op2_has_geom_tables(op2_path: str) -> bool:
+    """Quick binary scan — true when OP2 contains GEOM1 or GEOM2 table headers."""
+    try:
+        chunk_size = 64 * 1024
+        with open(op2_path, 'rb') as fh:
+            data = fh.read(min(os.path.getsize(op2_path), chunk_size))
+        return b'GEOM1' in data or b'GEOM2' in data
+    except OSError:
+        return False
+
+
+
+def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
+    """Single-OP2 project: auto-detect geometry source → geometry → L2 → results."""
+    if not op2_path:
+        msg = "No OP2 path stored for project {}".format(project_id)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    if not os.path.exists(op2_path):
+        msg = "OP2 file not found: {}".format(op2_path)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    # ── Detect geometry source ────────────────────────────────────────────────
+    if _op2_has_geom_tables(op2_path):
+        logger.info("[%s] OP2 has embedded geometry — using op2_geom_pack", project_id)
+        _log_job(project_id, "step",
+                 "OP2 含嵌入几何（GEOM1/GEOM2），直接提取几何", stage="l1_geom")
+        geom_cmd = [sys.executable, str(OP2_GEOM_PACK_SCRIPT),
+                    "--op2", op2_path, "--workspace", workspace]
+    else:
+        msg = ("此 OP2 文件不含嵌入几何（缺少 GEOM1/GEOM2 表，通常为 PARAM,POST,-2）。"
+               "请先用对应的 BDF 文件创建项目，再通过「追加结果组」上传此 OP2。")
+        logger.error("[%s] %s", project_id, msg)
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error", msg, stage="l1_geom")
+        return False
+
+    # ── Phase 1: geometry extraction ──────────────────────────────────────────
+    rc1, tail1 = _run_streaming(geom_cmd, project_id, "l1_geom")
+    if rc1 != 0:
+        msg = "geometry extraction failed: " + tail1[-500:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error", msg, stage="l1_geom")
+        logger.error("[%s] OP2 project geometry phase failed (rc=%d)", project_id, rc1)
+        return False
+
+    _log_job(project_id, "step", "几何提取完成，开始 L2 预处理", stage="l1_done")
+
+    # ── Phase 2: L2 ingest ────────────────────────────────────────────────────
+    rc2, tail2 = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        project_id, "l2_ingest",
+    )
+    if rc2 != 0:
+        msg = "ingest failed: " + tail2[-500:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error", msg, stage="l2_ingest")
+        logger.error("[%s] OP2 project L2 failed (rc=%d)", project_id, rc2)
+        return False
+
+    _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", "几何就绪，自动追加 OP2 结果组", stage="l2_done")
+
+    # ── Phase 3: results (auto result-group named after OP2 stem) ────────────
+    rg_name = os.path.splitext(os.path.basename(op2_path))[0]
+    repo = _repo()
+    existing = repo.get_result_group(project_id, rg_name)
+    if existing is None:
+        import json as _json
+        repo.create_result_group(
+            project_id=project_id,
+            result_group=rg_name,
+            display_name=rg_name,
+            source_path=op2_path,
+            source_file=os.path.basename(op2_path),
+            parse_options=None,
+        )
+    return _run_op2_result_group(project_id, rg_name, op2_path, workspace)
+
+
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
     if source_type == "odb":
         return _run_odb_project(project_id, source_path, workspace)
+    if source_type == "bdf":
+        return _run_bdf_project(project_id, source_path, workspace)
+    if source_type == "op2":
+        return _run_op2_project(project_id, source_path, workspace)
     return _run_geom_project(project_id, source_path, workspace)
 
 
@@ -924,17 +1063,47 @@ def _cleanup_result_group(workspace: str, result_group: str) -> None:
                 )
 
 
+def _run_op2_result_group(project_id: str, result_group: str,
+                          op2_path: str, workspace: str) -> bool:
+    label = "{}/{}".format(project_id, result_group)
+    _log_job(project_id, "step",
+             "[{}] OP2 结果打包启动".format(result_group), stage="rg_op2")
+    rc, tail = _run_streaming(
+        [sys.executable, str(OP2_PACK_SCRIPT),
+         "--op2", op2_path,
+         "--workspace", workspace,
+         "--result-group", result_group],
+        project_id, "rg_op2",
+    )
+    if rc != 0:
+        msg = "op2_pack failed: " + tail
+        _update_result_group_status(project_id, result_group, "error", msg)
+        _log_job(project_id, "error",
+                 "[{}] OP2 打包失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
+                 stage="rg_op2")
+        logger.error("[%s] OP2 result_group '%s' failed (rc=%d)", project_id, result_group, rc)
+        return False
+    _update_result_group_status(project_id, result_group, "ready")
+    _log_job(project_id, "step",
+             "[{}] OP2 结果打包完成".format(result_group), stage="rg_op2")
+    logger.info("[%s] OP2 result_group '%s' ready", project_id, result_group)
+    return True
+
+
 def _run_result_group(project_id: str, result_group: str,
                       source_path: str, parse_options_json: str,
                       workspace: str) -> bool:
     label = "{}/{}".format(project_id, result_group)
     if not source_path or not os.path.exists(source_path):
-        msg = "ODB file not found: {}".format(source_path)
+        msg = "source file not found: {}".format(source_path)
         logger.error("[%s] %s", label, msg)
         _update_result_group_status(project_id, result_group, "error", msg)
-        _log_job(project_id, "error", "[{}] ODB 文件不存在：{}".format(result_group, source_path),
+        _log_job(project_id, "error", "[{}] 源文件不存在：{}".format(result_group, source_path),
                  stage="rg_preflight")
         return False
+
+    if source_path.lower().endswith(".op2"):
+        return _run_op2_result_group(project_id, result_group, source_path, workspace)
 
     parse_opts = {}
     if parse_options_json:

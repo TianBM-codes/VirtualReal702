@@ -136,12 +136,12 @@ def _build_project_response(proj, repo) -> dict:
 
 
 def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str:
-    allowed = {"inp", "odb"}
+    allowed = {"inp", "odb", "bdf", "op2"}
     if explicit is not None:
         source_type = explicit.strip().lower()
         if source_type not in allowed:
             raise ValidationError(
-                "source_type must be one of: inp, odb",
+                "source_type must be one of: inp, odb, bdf, op2",
                 {"source_type": explicit},
             )
     else:
@@ -154,6 +154,10 @@ def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str
         inferred = "inp"
     elif suffix == ".odb":
         inferred = "odb"
+    elif suffix == ".bdf":
+        inferred = "bdf"
+    elif suffix == ".op2":
+        inferred = "op2"
 
     if source_type is None:
         if inferred is None:

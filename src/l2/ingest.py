@@ -34,6 +34,7 @@ FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
 
+SHELL_ELEM_CODES = frozenset({0, 1, 8})   # S3/S4R/S4/STRI65
 LINE_ELEM_CODES  = frozenset({9, 10})
 POINT_ELEM_CODES = frozenset({11})
 
@@ -184,7 +185,13 @@ def collect_faces(geom_h5):
         np.dtype((np.void, keys.dtype.itemsize * max_fn))
     ).ravel()
     _, inv, counts = np.unique(keys_bytes, return_inverse=True, return_counts=True)
-    is_surface = counts[inv] == 1
+    # count=1 → genuinely unpaired face (solid exterior, or standalone shell)
+    # count=2 + shell face → shell is bonded to a solid surface face; show the
+    #   shell and let the coincident solid face stay hidden (count=2 → False)
+    # count≥3 + shell face → shell is an internal rib between multiple solid
+    #   elements; keep it hidden (same as before)
+    is_shell_face = np.isin(ec, list(SHELL_ELEM_CODES))
+    is_surface = (counts[inv] == 1) | (is_shell_face & (counts[inv] == 2))
 
     return fnc, er, fs, ec, es, is_surface
 
@@ -791,7 +798,7 @@ def compute_feature_edges(surf_tri_nodes, coords_global,
 
 # ─── Element mesh edges (vectorized) ─────────────────────────────────────────
 
-def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
+def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs, surf_tri_ec):
     """
     Compute element_mesh_edges: every real surface unit boundary edge.
 
@@ -799,9 +806,12 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
     different element faces are retained, including co-planar ones.
 
     A shared edge (count == 2) is a triangulation diagonal if both its triangles
-    belong to the SAME original element face: same (tri_er, tri_fs) pair.
+    belong to the SAME original element face: same (etype_code, elem_row, face_seq).
     Quads are split into 2 triangles sharing one diagonal — that diagonal must be
     excluded, or the wireframe would show phantom lines cutting through quad faces.
+
+    elem_row is 0-based per element type, so etype_code must be included in the
+    diagonal key to avoid false matches between different element types.
 
     Returns:
         edge_nodes [E, 2] int32   sorted node row pairs
@@ -831,16 +841,27 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs):
     # Boundary edges are always real
     keep = counts == 1
 
-    # Shared edges: keep unless they are a triangulation diagonal.
-    # Diagonal = shared by 2 triangles from the same (elem_row, face_seq).
-    is_shared = counts == 2
+    # Shared edges (count >= 2): keep unless it is a triangulation diagonal.
+    # A diagonal comes from splitting a quad face into 2 triangles: both triangles
+    # belong to the SAME face → same (etype_code, elem_row, face_seq).
+    # This can only produce count==2 from that face (one tri on each side of diagonal).
+    # If count > 2, at least one extra triangle comes from a DIFFERENT face → real edge.
+    #
+    # Example where count==3 occurs: two bonded shell elements (Shell_A, Shell_B)
+    # sharing an edge that is also shared by an adjacent solid side face.
+    # The edge appears once per shell element face + once from the solid side face = 3.
+    # Old code (counts==2 only) would silently drop these → interior shell grid lines missing.
+    is_shared = counts >= 2
     if is_shared.any():
         sorted_faces = face_of_edge[order]
         shared_idx   = np.where(is_shared)[0]
         face_a = sorted_faces[starts[shared_idx]]
         face_b = sorted_faces[starts[shared_idx] + 1]
 
-        is_diagonal = (
+        # Diagonal check only applies when count==2; count>2 can never be pure diagonal.
+        is_count2    = counts[shared_idx] == 2
+        is_diagonal  = is_count2 & (
+            (surf_tri_ec[face_a] == surf_tri_ec[face_b]) &
             (surf_tri_er[face_a] == surf_tri_er[face_b]) &
             (surf_tri_fs[face_a] == surf_tri_fs[face_b])
         )
@@ -1149,7 +1170,7 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     logger.info("  {} feature edges".format(len(edge_nodes)))
 
     # 5b. Element mesh edges
-    mesh_edge_nodes = compute_all_surface_edges(surf_tri_nodes, tri_elem_row, tri_face_seq)
+    mesh_edge_nodes = compute_all_surface_edges(surf_tri_nodes, tri_elem_row, tri_face_seq, tri_etype_code)
     logger.info("  {} element mesh edges".format(len(mesh_edge_nodes)))
 
     render_face_idx = np.arange(Nt, dtype=np.int32)

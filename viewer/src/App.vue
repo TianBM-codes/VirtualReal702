@@ -18,6 +18,10 @@
         @load-mesh-edges="() => viewport?.loadEdges('mesh')"
         @load-features="() => viewport?.loadEdges('feature')"
       />
+      <button
+        @click="viewport?.toggleFaceOpacity()"
+        style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px"
+      >面透明切换</button>
 
       <ColorsCard @apply-colors="opts => viewport?.applyColors(opts)" />
 
