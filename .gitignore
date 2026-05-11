@@ -39,6 +39,7 @@ ecosystem.config.js
 
 # FEM/runtime data artifacts
 /data/
+/run/
 *.inp
 *.npz
 *.npy
