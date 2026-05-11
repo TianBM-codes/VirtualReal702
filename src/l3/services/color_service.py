@@ -443,6 +443,24 @@ def _compute_labels_and_legend(
 # Legend entries (for LegendEditor floating panel)
 # ---------------------------------------------------------------------------
 
+def get_all_legend_entries(
+    idx: ModelIndex,
+    scheme: str,
+    set_names: Optional[List[str]] = None,
+) -> List[dict]:
+    """Return legend entries for all instances, each entry augmented with an 'instance' field."""
+    all_entries: List[dict] = []
+    for inst in idx.source_elem_etype.keys():
+        try:
+            entries = get_legend_entries(idx, inst, scheme, set_names)
+            for e in entries:
+                e["instance"] = inst
+            all_entries.extend(entries)
+        except Exception:
+            pass
+    return all_entries
+
+
 def get_legend_entries(
     idx: ModelIndex,
     instance: str,

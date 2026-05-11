@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-09（新增 legend-entries、legend 端点；新增 node-displacements 批量节点位移查询接口）
+更新时间：2026-05-11（新增 GET /color-code/legend-entries 全量接口，返回所有 instance 的 legend 条目，每项含 instance 字段）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -170,6 +170,7 @@ project_id + result_group
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/schemes` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/legend` |
+| color code | GET | `/api/odb/{odb_id}/color-code/legend-entries` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
 | color code | POST | `/api/odb/{odb_id}/color-code/{instance}/legend-entries` |
 | color code | GET | `/api/odb/{odb_id}/color-code/{instance}/display-names` |
@@ -1453,6 +1454,27 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
 const res = await api.fetchLegend(instance, scheme)
 const legend = res.data?.legend ?? []
 ```
+
+### `GET /api/odb/{odb_id}/color-code/legend-entries`
+
+返回所有 instance 的 legend 条目（聚合版），与单 instance 接口格式相同，每项多一个 `instance` 字段。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `set_names` | elset 时必填 | 逗号分隔的集合名称 |
+
+响应 `data.entries` 数组，每项比单 instance 接口多：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `instance` | string | 该条目所属的 instance 名称 |
+
+其余字段同下方单 instance 接口。
+
+---
 
 ### `GET /api/odb/{odb_id}/color-code/{instance}/legend-entries`
 

@@ -60,6 +60,24 @@ async def get_display_names(
         return ok({})
 
 
+@router.get("/color-code/legend-entries")
+async def get_all_legend_entries(
+    odb_id: str,
+    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
+):
+    """Return legend entries for all instances.
+
+    Same fields as the per-instance endpoint, plus an 'instance' field on each entry.
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    parsed_sets = [s.strip() for s in set_names.split(",") if s.strip()]
+    entries = color_service.get_all_legend_entries(idx, scheme, parsed_sets or None)
+    return ok({"entries": entries})
+
+
 @router.get("/color-code/{instance}/legend-entries")
 async def get_legend_entries(
     odb_id: str,
