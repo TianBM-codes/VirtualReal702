@@ -49,6 +49,23 @@ def _resolve_sol200_deck_mode(settings: Optional[Dict[str, Any]] = None) -> str:
     return token
 
 
+def _resolve_sol200_csv_output(
+    output_bdf: Optional[str],
+    settings: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    resolved_settings = settings or {}
+    enabled = bool(resolved_settings.get("sol200.sensitivity_csv", False))
+    if not enabled:
+        return None
+    explicit = resolved_settings.get("sol200.sensitivity_csv_path")
+    if explicit:
+        return str(Path(str(explicit)).expanduser().resolve())
+    if output_bdf:
+        output_path = Path(output_bdf).expanduser().resolve()
+        return str(output_path.with_suffix(".sens.csv"))
+    return None
+
+
 def _normalize_card_name(line: str) -> str:
     stripped = line.lstrip()
     if not stripped or stripped.startswith("$"):
@@ -189,7 +206,11 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
     ]
 
 
-def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str]:
+def build_sol200_controls(
+    settings: Optional[Dict[str, Any]] = None,
+    *,
+    sensitivity_csv_path: Optional[str] = None,
+) -> List[str]:
     settings = _normalize_sol200_settings(settings)
     eigrl = build_eigrl_fields(settings)
     result_target = resolve_result_target(settings.get("result.target", "OP2"))
@@ -205,13 +226,18 @@ def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str
     lumped = bool(settings.get("compute.lumped", True))
     coupmass = "-1" if lumped else "1"
 
-    return [
+    lines: List[str] = []
+    if sensitivity_csv_path:
+        csv_text = str(Path(sensitivity_csv_path)).replace("\\", "/")
+        lines.append(f"ASSIGN USERFILE='{csv_text}' FORM=FORMATTED STATUS=UNKNOWN UNIT=52")
+
+    lines.extend([
         "SOL 200",
         "CEND",
         f"METHOD = {eigrl['sid']}",
         displacement_line,
         "DESSUB = 1",
-        "DSAPRT(NOPRINT,EXPORT,END=SENS)",
+        "DSAPRT(FORMATTED,EXPORT,END=SENS)" if sensitivity_csv_path else "DSAPRT(NOPRINT,EXPORT,END=SENS)",
         "",
         "SUBCASE 1",
         "  ANALYSIS = MODES",
@@ -221,6 +247,7 @@ def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str
         "PARAM   GRDPNT         0",
         f"PARAM   K6ROT   {k6rot_text}",
         f"PARAM   COUPMASS      {coupmass}",
+        "PARAM,XYUNIT,52" if sensitivity_csv_path else "",
         "EIGRL   {sid:>8}{v1:>8}{v2:>8}{nd:>8}{blank:>8}{maxset:>8}{shfscl:>8}{norm:>8}".format(
             sid=eigrl["sid"],
             v1=eigrl["v1"],
@@ -231,7 +258,8 @@ def build_sol200_controls(settings: Optional[Dict[str, Any]] = None) -> List[str
             shfscl=eigrl["shfscl"],
             norm=eigrl["normalization"],
         ),
-    ]
+    ])
+    return [line for line in lines if line != ""]
 
 
 def build_sol200_design_lines(
@@ -294,11 +322,12 @@ def build_sol200_lines(
 ) -> Dict[str, Any]:
     settings = _normalize_sol200_settings(settings)
     deck_mode = _resolve_sol200_deck_mode(settings)
+    sensitivity_csv_path = _resolve_sol200_csv_output(output_bdf, settings)
 
     lines = read_lines(input_bdf)
     _, bulk_lines = split_bdf(lines)
 
-    control_lines = build_sol200_controls(settings)
+    control_lines = build_sol200_controls(settings, sensitivity_csv_path=sensitivity_csv_path)
     design_payload = build_sol200_design_lines(parameters=parameters, responses=responses)
     filtered_bulk_lines = filter_sol200_bulk_lines(bulk_lines)
     desvar_lines = design_payload["desvar_lines"]
@@ -328,6 +357,7 @@ def build_sol200_lines(
         "design_lines": design_lines,
         "filtered_bulk_lines": filtered_bulk_lines,
         "output_lines": output_lines,
+        "sensitivity_csv_path": sensitivity_csv_path,
     }
 
 

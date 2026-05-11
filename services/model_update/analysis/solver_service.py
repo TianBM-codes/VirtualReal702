@@ -55,6 +55,7 @@ _NASTRAN_ARTIFACT_SUFFIXES = (
     ".out",
     ".plt",
     ".h5",
+    ".csv",
 )
 
 _NASTRAN_EXTRA_GLOB_PATTERNS = (
@@ -62,6 +63,7 @@ _NASTRAN_EXTRA_GLOB_PATTERNS = (
     "*.f06",
     "*.xdb",
     "*.h5",
+    "*.csv",
     "*.pch",
     "*.plt",
     "*.out",
@@ -333,6 +335,7 @@ def preview_nastran_sol200_job(
         "input_bdf": str(input_path),
         "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
         "deck_mode": payload.get("deck_mode", "inline"),
+        "sensitivity_csv_path": payload.get("sensitivity_csv_path"),
         "control_lines_preview": payload["control_lines"],
         "desvar_preview": payload["desvar_lines"],
         "relation_preview": payload["relation_lines"],
@@ -395,6 +398,8 @@ def generate_nastran_sol200_job(
         },
         "warnings": [],
     }
+    if payload.get("sensitivity_csv_path"):
+        result["generated_files"]["sensitivity_csv"] = str(payload["sensitivity_csv_path"])
     if payload.get("output_design_bdf"):
         result["generated_files"]["design_model_bdf"] = str(payload["output_design_bdf"])
     if payload.get("deck_mode") == "include":

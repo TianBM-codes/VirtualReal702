@@ -10,6 +10,7 @@ The first phase focuses on one narrow but usable SOL200 workflow:
 - parameter relations: `DVMREL1(MAT1)` and `DVPREL1(PSHELL)`
 - outputs:
   - generated SOL200 BDF
+  - optional formatted CSV sensitivity export from Nastran
   - solver artifacts
   - sensitivity matrix preview
   - sensitivity matrix storage
@@ -59,6 +60,9 @@ workflow.
   - separate `design_model.bdf`
 - Preview/generate/run endpoints for SOL200
 - Force mass-normalized modal extraction for sensitivity decks
+- Optional formatted CSV export by enabling:
+  - `settings.sol200.sensitivity_csv = true`
+  - optional `settings.sol200.sensitivity_csv_path`
 - Convenience preset for automatically expanding all used `MAT1` material `E`
   and `RHO` values into design parameters
 - Basic sensitivity matrix import from:
@@ -166,6 +170,26 @@ After phase 1 is stable, the next expansion order should be:
   perfectly clone every hidden FEMTools internal optimization step.
 - For the user-facing workflow, what matters first is:
   - the deck is valid
-  - the matrix can be found
+- the matrix can be found
+- the matrix can be exported as a formatted CSV file when requested
   - the labels and storage are auditable
   - the result can be visualized and compared
+
+## 9. Current Parameter Granularity Note
+
+The current preset:
+
+- `parameter_preset.preset = "all_used_material_e_rho"`
+
+expands parameters by **used MAT1 material cards**, not by element count.
+
+That means:
+
+- if 1548 elements share 4 used MAT1 cards, phase 1 currently creates
+  `4 * 2 = 8` parameters
+- to reach `1548 * 2` element-level `E/RHO` parameters, the generated deck must
+  first localize material ownership so each element has an independent material
+  target
+
+That finer-grained "per-element E/RHO" capability is a follow-up extension, not
+the current phase-1 preset behavior.
