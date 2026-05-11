@@ -1881,11 +1881,11 @@ def _persist_sensitivity_matrix(
             cursor.execute(
                 """
                 INSERT INTO t_mt_py_fem_response_def (
-                    analysis_run_id, response_code, response_name, unit, seq_no
+                    project_id, analysis_run_id, response_code, response_name, unit, seq_no
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (analysis_run_id, f"R{index:04d}", str(response_name), None, index),
+                (project_id, analysis_run_id, f"R{index:04d}", str(response_name), None, index),
             )
             response_ids.append(int(cursor.lastrowid))
 
@@ -1894,11 +1894,11 @@ def _persist_sensitivity_matrix(
             cursor.execute(
                 """
                 INSERT INTO t_mt_py_fem_parameter_def (
-                    analysis_run_id, param_code, param_name, unit, seq_no
+                    project_id, analysis_run_id, param_code, param_name, unit, seq_no
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (analysis_run_id, f"P{index:04d}", str(parameter_name), None, index),
+                (project_id, analysis_run_id, f"P{index:04d}", str(parameter_name), None, index),
             )
             parameter_ids.append(int(cursor.lastrowid))
 
@@ -1907,11 +1907,12 @@ def _persist_sensitivity_matrix(
                 cursor.execute(
                     """
                     INSERT INTO t_mt_py_fem_sensitivity_result (
-                        analysis_run_id, parameter_id, response_id, sensitivity_value
+                        project_id, analysis_run_id, parameter_id, response_id, sensitivity_value
                     )
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     (
+                        project_id,
                         analysis_run_id,
                         parameter_id,
                         response_id,
