@@ -3,22 +3,24 @@ from typing import Optional
 from fastapi import APIRouter, Request
 
 from services.model_update.analysis.solver_service import (
-    generate_nastran_sol200_job,
     generate_nastran_sol103_job,
-    preview_nastran_sol200_job,
     preview_nastran_sol103_job,
     run_abaqus_adjoint_job,
     run_abaqus_sensitivity_job,
-    run_nastran_sol200_job,
     run_nastran_sol103_job,
+)
+from services.model_update.analysis.nastran_sol200_service import (
+    export_sol200_sensitivity_vtu,
+    generate_sol200_workflow,
+    preview_sol200_sensitivity,
+    preview_sol200_workflow,
+    run_sol200_workflow,
+    store_sol200_sensitivity,
 )
 from services.model_update.importers.op2_service import (
     build_modal_import_payload,
     export_modal_to_vtu,
-    export_sensitivity_to_vtu,
     preview_op2_modal,
-    preview_op2_sensitivity,
-    store_op2_sensitivity,
 )
 from services.model_update.analysis.inp_service import import_fe_modal_results
 from src.l3.core.errors import AppError
@@ -231,7 +233,7 @@ async def nastran_task_status(task_id: str):
 async def preview_nastran_sol200_api(request: Request, body: NastranSol200PreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = preview_nastran_sol200_job(
+        data = preview_sol200_workflow(
             input_bdf=body.input_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
             responses=[model_to_dict(item) for item in body.responses],
@@ -249,7 +251,7 @@ async def preview_nastran_sol200_api(request: Request, body: NastranSol200Previe
 async def generate_nastran_sol200_api(request: Request, body: NastranSol200GenerateRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = generate_nastran_sol200_job(
+        data = generate_sol200_workflow(
             input_bdf=body.input_bdf,
             output_bdf=body.output_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
@@ -272,12 +274,12 @@ async def run_nastran_sol200_api(request: Request, body: NastranSol200RunRequest
         if body.async_submit:
             data = submit_background_task(
                 task_type="solver.nastran.sol200.run",
-                fn=run_nastran_sol200_job,
+                fn=run_sol200_workflow,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
             )
             return success_response(data, "Nastran SOL200 求解任务已提交")
-        data = run_nastran_sol200_job(**kwargs)
+        data = run_sol200_workflow(**kwargs)
         return success_response(data, "Nastran SOL200 求解成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
@@ -388,7 +390,7 @@ async def export_op2_modal_vtu_api(request: Request, body: Op2ModalVtuExportRequ
 async def preview_op2_sensitivity_api(request: Request, body: Op2SensitivityPreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = preview_op2_sensitivity(
+        data = preview_sol200_sensitivity(
             op2_path=body.op2_path,
             matrix_path=body.matrix_path,
             bdf_path=body.bdf_path,
@@ -422,12 +424,12 @@ async def store_op2_sensitivity_api(request: Request, body: Op2SensitivityStoreR
         if body.async_submit:
             data = submit_background_task(
                 task_type="import.op2.sensitivity.store",
-                fn=store_op2_sensitivity,
+                fn=store_sol200_sensitivity,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
             )
             return success_response(data, "OP2 灵敏度导入任务已提交")
-        data = store_op2_sensitivity(**kwargs)
+        data = store_sol200_sensitivity(**kwargs)
         return success_response(data, "OP2 灵敏度导入成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
@@ -440,7 +442,7 @@ async def store_op2_sensitivity_api(request: Request, body: Op2SensitivityStoreR
 async def export_op2_sensitivity_vtu_api(request: Request, body: Op2SensitivityVtuExportRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = export_sensitivity_to_vtu(
+        data = export_sol200_sensitivity_vtu(
             project_id=body.project_id,
             batch_no=body.batch_no,
             input_bdf=body.input_bdf,
