@@ -7,6 +7,7 @@ from fastapi import Request
 from src.l3.main import app
 
 from webapi.routes import router as model_update_router
+from src.modal_service.routes import router as modal_router
 from services.model_update.analysis.inp_service import (
     build_fe_response_catalog,
     compute_modal_correlation,
@@ -22,6 +23,7 @@ from services.model_update.analysis.inp_service import (
 )
 
 app.include_router(model_update_router)
+app.include_router(modal_router)
 
 
 def _now_iso() -> str:
