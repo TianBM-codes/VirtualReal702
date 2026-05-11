@@ -210,6 +210,7 @@ def build_sol200_controls(
     settings: Optional[Dict[str, Any]] = None,
     *,
     sensitivity_csv_path: Optional[str] = None,
+    csv_assign_text: Optional[str] = None,
 ) -> List[str]:
     settings = _normalize_sol200_settings(settings)
     eigrl = build_eigrl_fields(settings)
@@ -228,7 +229,7 @@ def build_sol200_controls(
 
     lines: List[str] = []
     if sensitivity_csv_path:
-        csv_text = str(Path(sensitivity_csv_path)).replace("\\", "/")
+        csv_text = str(csv_assign_text or Path(sensitivity_csv_path).name).replace("\\", "/")
         lines.append(f"ASSIGN USERFILE='{csv_text}' FORM=FORMATTED STATUS=UNKNOWN UNIT=52")
 
     lines.extend([
@@ -323,11 +324,28 @@ def build_sol200_lines(
     settings = _normalize_sol200_settings(settings)
     deck_mode = _resolve_sol200_deck_mode(settings)
     sensitivity_csv_path = _resolve_sol200_csv_output(output_bdf, settings)
+    csv_assign_text = None
+    if sensitivity_csv_path:
+        if output_bdf:
+            main_dir = Path(output_bdf).expanduser().resolve().parent
+            csv_path = Path(sensitivity_csv_path).expanduser().resolve()
+            try:
+                rel_path = csv_path.relative_to(main_dir)
+                rel_text = str(rel_path).replace("\\", "/")
+                csv_assign_text = f"./{rel_text}"
+            except ValueError:
+                csv_assign_text = csv_path.name
+        else:
+            csv_assign_text = Path(sensitivity_csv_path).name
 
     lines = read_lines(input_bdf)
     _, bulk_lines = split_bdf(lines)
 
-    control_lines = build_sol200_controls(settings, sensitivity_csv_path=sensitivity_csv_path)
+    control_lines = build_sol200_controls(
+        settings,
+        sensitivity_csv_path=sensitivity_csv_path,
+        csv_assign_text=csv_assign_text,
+    )
     design_payload = build_sol200_design_lines(parameters=parameters, responses=responses)
     filtered_bulk_lines = filter_sol200_bulk_lines(bulk_lines)
     desvar_lines = design_payload["desvar_lines"]
