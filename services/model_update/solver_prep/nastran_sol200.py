@@ -62,7 +62,7 @@ def _resolve_sol200_csv_output(
         return str(Path(str(explicit)).expanduser().resolve())
     if output_bdf:
         output_path = Path(output_bdf).expanduser().resolve()
-        return str(output_path.with_suffix(".sens.csv"))
+        return str(output_path.parent / "sol200_sens.csv")
     return None
 
 
@@ -230,7 +230,7 @@ def build_sol200_controls(
     lines: List[str] = []
     if sensitivity_csv_path:
         csv_text = str(csv_assign_text or Path(sensitivity_csv_path).name).replace("\\", "/")
-        lines.append(f"ASSIGN USERFILE='{csv_text}' FORM=FORMATTED STATUS=UNKNOWN UNIT=52")
+        lines.append(f"ASSIGN USERFILE='{csv_text}' FORM=FORMATTED STATUS=NEW UNIT=52")
 
     lines.extend([
         "SOL 200",
@@ -326,17 +326,7 @@ def build_sol200_lines(
     sensitivity_csv_path = _resolve_sol200_csv_output(output_bdf, settings)
     csv_assign_text = None
     if sensitivity_csv_path:
-        if output_bdf:
-            main_dir = Path(output_bdf).expanduser().resolve().parent
-            csv_path = Path(sensitivity_csv_path).expanduser().resolve()
-            try:
-                rel_path = csv_path.relative_to(main_dir)
-                rel_text = str(rel_path).replace("\\", "/")
-                csv_assign_text = f"./{rel_text}"
-            except ValueError:
-                csv_assign_text = csv_path.name
-        else:
-            csv_assign_text = Path(sensitivity_csv_path).name
+        csv_assign_text = "sens.csv"
 
     lines = read_lines(input_bdf)
     _, bulk_lines = split_bdf(lines)
@@ -376,6 +366,7 @@ def build_sol200_lines(
         "filtered_bulk_lines": filtered_bulk_lines,
         "output_lines": output_lines,
         "sensitivity_csv_path": sensitivity_csv_path,
+        "sensitivity_csv_assign_name": csv_assign_text,
     }
 
 

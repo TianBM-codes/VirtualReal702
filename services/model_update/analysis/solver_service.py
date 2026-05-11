@@ -137,6 +137,30 @@ def _collect_nastran_extra_artifacts(workdir: Path, artifacts: Dict[str, str]) -
     return resolved
 
 
+def _materialize_requested_sensitivity_csv(
+    *,
+    workdir: Path,
+    generated_files: Dict[str, str],
+    solver_payload: Dict[str, Any],
+) -> None:
+    target = generated_files.get("sensitivity_csv")
+    assign_name = generated_files.get("sensitivity_csv_assign_name")
+    if not target or not assign_name:
+        return
+    internal_path = (workdir / assign_name).resolve()
+    if not internal_path.exists() or not internal_path.is_file():
+        return
+    target_path = Path(target).expanduser().resolve()
+    if internal_path != target_path:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(internal_path), str(target_path))
+    artifacts = solver_payload.get("artifacts") or {}
+    artifacts.setdefault(target_path.name, str(target_path))
+    if internal_path != target_path:
+        artifacts.setdefault(internal_path.name, str(internal_path))
+    solver_payload["artifacts"] = artifacts
+
+
 def _summarize_nastran_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "has_f06": False,
@@ -400,6 +424,8 @@ def generate_nastran_sol200_job(
     }
     if payload.get("sensitivity_csv_path"):
         result["generated_files"]["sensitivity_csv"] = str(payload["sensitivity_csv_path"])
+    if payload.get("sensitivity_csv_assign_name"):
+        result["generated_files"]["sensitivity_csv_assign_name"] = str(payload["sensitivity_csv_assign_name"])
     if payload.get("output_design_bdf"):
         result["generated_files"]["design_model_bdf"] = str(payload["output_design_bdf"])
     if payload.get("deck_mode") == "include":
@@ -449,6 +475,11 @@ def run_nastran_sol200_job(
             artifact_stem=output_path.stem,
             artifact_suffixes=_NASTRAN_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
+        )
+        _materialize_requested_sensitivity_csv(
+            workdir=output_path.parent,
+            generated_files=payload.get("generated_files") or {},
+            solver_payload=payload["solver"],
         )
         summary = payload["solver"].get("artifacts_summary") or {}
         if not summary.get("has_op2"):
