@@ -92,6 +92,8 @@ Responsibilities:
 - assemble a complete phase-1 SOL200 deck
 - normalize settings for modal sensitivity
 - keep the supported card set small and explicit
+- use a safer free-field style for generated design cards so long numeric values
+  do not break fixed-column parsing
 
 ### Solver orchestration layer
 

@@ -87,14 +87,15 @@ def _format_desvar_line(index: int, parameter: Dict[str, Any]) -> str:
         raise ValidationError("SOL200 parameter initial is required", {"parameter": parameter})
     lower = parameter.get("lower")
     upper = parameter.get("upper")
-    return "DESVAR   {idx:<8}{name:<8}{xinit:>8}{xlb:>8}{xub:>8}{delxv:>8}".format(
-        idx=str(index),
-        name=name[:8],
-        xinit=format_float_like_bas(float(initial)),
-        xlb=format_float_like_bas(float(lower)) if lower is not None else "",
-        xub=format_float_like_bas(float(upper)) if upper is not None else "",
-        delxv="",
-    ).rstrip()
+    fields = [
+        "DESVAR",
+        str(int(index)),
+        name,
+        format_float_like_bas(float(initial)),
+        format_float_like_bas(float(lower)) if lower is not None else "",
+        format_float_like_bas(float(upper)) if upper is not None else "",
+    ]
+    return ",".join(fields).rstrip(",")
 
 
 def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> List[str]:
@@ -104,24 +105,21 @@ def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> Li
         if property_id is None:
             raise ValidationError("H parameter requires property_id", {"parameter": parameter})
         return [
-            f"DVPREL1  {index:<8}PSHELL  {int(property_id):<8}4",
-            f"         {index:<8}{'1.0':>8}",
+            f"DVPREL1,{int(index)},PSHELL,{int(property_id)},4,,,,{int(index)},1.0",
         ]
     if ptype == "E":
         material_id = parameter.get("material_id")
         if material_id is None:
             raise ValidationError("E parameter requires material_id", {"parameter": parameter})
         return [
-            f"DVMREL1  {index:<8}MAT1    {int(material_id):<8}E",
-            f"         {index:<8}{'1.0':>8}",
+            f"DVMREL1,{int(index)},MAT1,{int(material_id)},E,,,,{int(index)},1.0",
         ]
     if ptype == "RHO":
         material_id = parameter.get("material_id")
         if material_id is None:
             raise ValidationError("RHO parameter requires material_id", {"parameter": parameter})
         return [
-            f"DVMREL1  {index:<8}MAT1    {int(material_id):<8}RHO",
-            f"         {index:<8}{'1.0':>8}",
+            f"DVMREL1,{int(index)},MAT1,{int(material_id)},RHO,,,,{int(index)},1.0",
         ]
     raise ValidationError(
         "unsupported SOL200 parameter type",
@@ -141,8 +139,8 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
         raise ValidationError("FREQ response requires mode_number", {"response": response})
     name = str(response.get("name") or f"FREQ_MODE_{int(mode_number)}").strip()
     return [
-        f"DRESP1   {index:<8}{name[:8]:<8}FREQ                    {int(mode_number)}",
-        f"DCONSTR  1       {index:<8}{'1E30':>8}{'1E30':>8}",
+        f"DRESP1,{int(index)},{name},FREQ,STRUC,,{int(mode_number)}",
+        f"DCONSTR,1,{int(index)},1.0E30,1.0E30",
     ]
 
 
