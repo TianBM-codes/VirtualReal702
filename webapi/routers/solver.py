@@ -63,6 +63,9 @@ def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
 
 def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
     return {
+        "project_id": body.project_id,
+        "batch_no": body.batch_no,
+        "case_name": body.case_name,
         "input_bdf": body.input_bdf,
         "output_bdf": body.output_bdf,
         "parameters": [model_to_dict(item) for item in body.parameters],
@@ -254,6 +257,9 @@ async def generate_nastran_sol200_api(request: Request, body: NastranSol200Gener
     await log_request(request, model_to_dict(body))
     try:
         data = generate_sol200_workflow(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
+            case_name=body.case_name,
             input_bdf=body.input_bdf,
             output_bdf=body.output_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
@@ -395,6 +401,8 @@ async def preview_op2_sensitivity_api(request: Request, body: Op2SensitivityPrev
     await log_request(request, model_to_dict(body))
     try:
         data = preview_sol200_sensitivity(
+            project_id=body.project_id,
+            batch_no=body.batch_no,
             op2_path=body.op2_path,
             matrix_path=body.matrix_path,
             bdf_path=body.bdf_path,

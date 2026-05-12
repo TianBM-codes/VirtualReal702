@@ -520,6 +520,9 @@ class NastranSol200PreviewRequest(BaseModel):
 
 
 class NastranSol200GenerateRequest(BaseModel):
+    project_id: Optional[int] = None
+    batch_no: str = "1"
+    case_name: str = "nastran_sol200"
     input_bdf: str
     output_bdf: Optional[str] = None
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
@@ -529,6 +532,9 @@ class NastranSol200GenerateRequest(BaseModel):
 
 
 class NastranSol200RunRequest(BaseModel):
+    project_id: Optional[int] = None
+    batch_no: str = "1"
+    case_name: str = "nastran_sol200"
     input_bdf: str
     output_bdf: Optional[str] = None
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
@@ -572,6 +578,8 @@ class Op2ModalVtuExportRequest(BaseModel):
 
 
 class Op2SensitivityPreviewRequest(BaseModel):
+    project_id: Optional[int] = None
+    batch_no: str = "1"
     op2_path: Optional[str] = None
     matrix_path: Optional[str] = None
     bdf_path: Optional[str] = None

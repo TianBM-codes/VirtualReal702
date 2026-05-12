@@ -790,6 +790,8 @@ def _parse_text_matrix_file(result_path: str, expected_shape: Optional[Tuple[int
 
 def preview_op2_sensitivity(
     *,
+    project_id: Optional[int] = None,
+    batch_no: str = "1",
     op2_path: Optional[str] = None,
     matrix_path: Optional[str] = None,
     bdf_path: Optional[str] = None,
@@ -800,6 +802,25 @@ def preview_op2_sensitivity(
     result_path, source_kind = _resolve_sensitivity_result_source(op2_path=op2_path, matrix_path=matrix_path)
     resolved_bdf = _abs_file(bdf_path, "bdf_path") if bdf_path else None
     metadata, resolved_metadata_path = _resolve_sidecar_metadata_info(metadata_json, resolved_bdf)
+
+    if (not metadata) and project_id is not None:
+        try:
+            from services.model_update.analysis import sensitivity_service as _sens
+
+            stored = _sens._load_stored_sensitivity_run(project_id=int(project_id), batch_no=str(batch_no))
+        except Exception:
+            stored = None
+        if stored:
+            metadata = {
+                "parameters": [
+                    {"name": item.get("param_name") or item.get("parameter_name"), **dict(item)}
+                    for item in (stored.get("parameter_columns") or [])
+                ],
+                "responses": [
+                    {"name": item.get("response_name"), **dict(item)}
+                    for item in (stored.get("response_rows") or [])
+                ],
+            }
 
     available_parameter_columns = _normalize_named_metadata_items(
         metadata.get("parameters") or [],
@@ -917,6 +938,8 @@ def store_op2_sensitivity(
     response_names: Optional[Sequence[str]] = None,
 ) -> dict:
     preview = preview_op2_sensitivity(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
         op2_path=op2_path,
         matrix_path=matrix_path,
         bdf_path=bdf_path,

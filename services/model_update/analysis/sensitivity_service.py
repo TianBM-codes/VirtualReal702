@@ -2043,6 +2043,103 @@ def _persist_sensitivity_matrix(
         conn.close()
 
 
+def persist_sensitivity_metadata(
+        *,
+        project_id: int,
+        batch_no: str,
+        case_name: str,
+        response_rows: List[dict],
+        parameter_columns: List[dict],
+        source: Optional[dict] = None,
+) -> dict:
+    source = dict(source or {})
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        analysis_run_id = _upsert_analysis_run(
+            cursor,
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            source_kind=_meta_text(source, "source_kind"),
+            op2_path=_meta_text(source, "op2_path"),
+            matrix_path=_meta_text(source, "matrix_path"),
+            bdf_path=_meta_text(source, "bdf_path"),
+            metadata_path=_meta_text(source, "metadata_path"),
+        )
+
+        response_names = [_response_display_name(item) for item in (response_rows or [])]
+        parameter_names = _parameter_display_names(list(parameter_columns or []))
+
+        for index, response_name in enumerate(response_names, start=1):
+            row_meta = dict((response_rows or [])[index - 1] or {})
+            cursor.execute(
+                """
+                INSERT INTO t_mt_py_fem_response_def (
+                    project_id, analysis_run_id, response_code, response_name, response_type, mode_number, unit, seq_no
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(project_id),
+                    analysis_run_id,
+                    f"R{index:04d}",
+                    str(response_name),
+                    _meta_text(row_meta, "response_type", "type"),
+                    _meta_int(row_meta, "mode_number"),
+                    _meta_text(row_meta, "unit"),
+                    index,
+                ),
+            )
+
+        for index, parameter_name in enumerate(parameter_names, start=1):
+            column_meta = dict((parameter_columns or [])[index - 1] or {})
+            cursor.execute(
+                """
+                INSERT INTO t_mt_py_fem_parameter_def (
+                    project_id, analysis_run_id, param_code, param_name, param_type,
+                    material_id, property_id, element_id, source_material_id, source_property_id,
+                    initial_value, lower_bound, upper_bound, unit, seq_no
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(project_id),
+                    analysis_run_id,
+                    f"P{index:04d}",
+                    str(parameter_name),
+                    _meta_text(column_meta, "param_type", "type"),
+                    _meta_int(column_meta, "material_id"),
+                    _meta_int(column_meta, "property_id"),
+                    _meta_int(column_meta, "element_id"),
+                    _meta_int(column_meta, "source_material_id"),
+                    _meta_int(column_meta, "source_property_id"),
+                    _meta_float(column_meta, "initial_value", "initial"),
+                    _meta_float(column_meta, "lower_bound", "lower"),
+                    _meta_float(column_meta, "upper_bound", "upper"),
+                    _meta_text(column_meta, "unit"),
+                    index,
+                ),
+            )
+
+        conn.commit()
+        return {
+            "analysis_run_id": int(analysis_run_id),
+            "project_id": int(project_id),
+            "batch_no": str(batch_no),
+            "case_name": str(case_name),
+            "response_count": len(response_names),
+            "parameter_count": len(parameter_names),
+            "source": source,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) -> dict:
     ensure_tables_exist()
     normalized_batch_no = _normalize_batch_no(batch_no)

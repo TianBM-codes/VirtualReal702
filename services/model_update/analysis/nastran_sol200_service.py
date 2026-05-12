@@ -381,6 +381,9 @@ def preview_sol200_workflow(
 
 def generate_sol200_workflow(
     *,
+    project_id: Optional[int] = None,
+    batch_no: str = "1",
+    case_name: str = "nastran_sol200",
     input_bdf: str,
     output_bdf: Optional[str] = None,
     parameters: Optional[List[Dict[str, Any]]] = None,
@@ -412,11 +415,33 @@ def generate_sol200_workflow(
             metadata["localized_input_bdf"] = localized_input_bdf
             metadata["parameter_preset_info"] = preset_info
             Path(metadata_json).write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    if project_id is not None:
+        from . import sensitivity_service as _sens
+
+        _sens.persist_sensitivity_metadata(
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            response_rows=[{
+                "response_name": item.get("name"),
+                "response_type": item.get("type"),
+                "mode_number": item.get("mode_number"),
+            } for item in list(responses or [])],
+            parameter_columns=[dict(item) for item in resolved_parameters],
+            source={
+                "source_kind": "sol200_metadata",
+                "bdf_path": str(Path(payload["output_bdf"]).expanduser().resolve()),
+                "metadata_path": payload.get("generated_files", {}).get("metadata_json"),
+            },
+        )
     return payload
 
 
 def run_sol200_workflow(
     *,
+    project_id: Optional[int] = None,
+    batch_no: str = "1",
+    case_name: str = "nastran_sol200",
     input_bdf: str,
     output_bdf: Optional[str] = None,
     parameters: Optional[List[Dict[str, Any]]] = None,
@@ -457,11 +482,32 @@ def run_sol200_workflow(
             metadata["localized_input_bdf"] = localized_input_bdf
             metadata["parameter_preset_info"] = preset_info
             Path(metadata_json).write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    if project_id is not None:
+        from . import sensitivity_service as _sens
+
+        _sens.persist_sensitivity_metadata(
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            response_rows=[{
+                "response_name": item.get("name"),
+                "response_type": item.get("type"),
+                "mode_number": item.get("mode_number"),
+            } for item in list(responses or [])],
+            parameter_columns=[dict(item) for item in resolved_parameters],
+            source={
+                "source_kind": "sol200_metadata",
+                "bdf_path": str(Path(payload["output_bdf"]).expanduser().resolve()),
+                "metadata_path": payload.get("generated_files", {}).get("metadata_json"),
+            },
+        )
     return payload
 
 
 def preview_sol200_sensitivity(
     *,
+    project_id: Optional[int] = None,
+    batch_no: str = "1",
     op2_path: Optional[str] = None,
     matrix_path: Optional[str] = None,
     bdf_path: Optional[str] = None,
@@ -470,6 +516,8 @@ def preview_sol200_sensitivity(
     response_names: Optional[Sequence[str]] = None,
 ) -> dict:
     payload = preview_op2_sensitivity(
+        project_id=int(project_id) if project_id is not None else None,
+        batch_no=str(batch_no),
         op2_path=op2_path,
         matrix_path=matrix_path,
         bdf_path=bdf_path,
