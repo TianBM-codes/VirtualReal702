@@ -11,8 +11,10 @@ POST  /api/model/testMesh/colormap
 
 import logging
 
+from typing import Optional, Union
+
 from fastapi import APIRouter
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from . import service
 from ..l3.api.response import ok
@@ -23,17 +25,9 @@ router = APIRouter(prefix="/api/model/testMesh", tags=["modal"])
 
 
 class _ProjectRequest(BaseModel):
-    # 兼容旧字段名 project，同时推荐统一使用 project_id。
+    # 兼容旧字段名 project，同时推荐统一使用 project_id。前端可传 int 或 str。
     model_config = ConfigDict(populate_by_name=True)
-    project_id: str = Field(validation_alias=AliasChoices("project_id", "project"))
-
-
-class GeometryRequest(_ProjectRequest):
-    order: int
-    max_scalar_size: float = 1.0
-    coefficient: float = 1.0
-    component: str = "usum"
-    animation: bool = False
+    project_id: Union[int, str] = Field(validation_alias=AliasChoices("project_id", "project"))
 
 
 class ModelSelectRequest(_ProjectRequest):
@@ -41,7 +35,21 @@ class ModelSelectRequest(_ProjectRequest):
 
 
 class AnimationRequest(_ProjectRequest):
-    order: int
+    order: Optional[int] = 0
+
+    @field_validator("order", mode="before")
+    @classmethod
+    def _coerce_order(cls, v):
+        if v == "" or v is None:
+            return 0
+        return v
+
+
+class GeometryRequest(AnimationRequest):
+    max_scalar_size: float = 1.0
+    coefficient: float = 1.0
+    component: str = "usum"
+    animation: bool = False
 
 
 class ColormapRequest(AnimationRequest):
