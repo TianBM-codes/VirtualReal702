@@ -30,14 +30,6 @@ class _ProjectRequest(BaseModel):
     project_id: Union[int, str] = Field(validation_alias=AliasChoices("project_id", "project"))
 
 
-class GeometryRequest(_ProjectRequest):
-    order: Optional[int] = 0
-    max_scalar_size: float = 1.0
-    coefficient: float = 1.0
-    component: str = "usum"
-    animation: bool = False
-
-
 class ModelSelectRequest(_ProjectRequest):
     pass
 
@@ -51,6 +43,13 @@ class AnimationRequest(_ProjectRequest):
         if v == "" or v is None:
             return 0
         return v
+
+
+class GeometryRequest(AnimationRequest):
+    max_scalar_size: float = 1.0
+    coefficient: float = 1.0
+    component: str = "usum"
+    animation: bool = False
 
 
 class ColormapRequest(AnimationRequest):
