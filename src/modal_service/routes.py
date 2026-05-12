@@ -11,6 +11,8 @@ POST  /api/model/testMesh/colormap
 
 import logging
 
+from typing import Union
+
 from fastapi import APIRouter
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -23,9 +25,9 @@ router = APIRouter(prefix="/api/model/testMesh", tags=["modal"])
 
 
 class _ProjectRequest(BaseModel):
-    # 兼容旧字段名 project，同时推荐统一使用 project_id。
+    # 兼容旧字段名 project，同时推荐统一使用 project_id。前端可传 int 或 str。
     model_config = ConfigDict(populate_by_name=True)
-    project_id: str = Field(validation_alias=AliasChoices("project_id", "project"))
+    project_id: Union[int, str] = Field(validation_alias=AliasChoices("project_id", "project"))
 
 
 class GeometryRequest(_ProjectRequest):

@@ -223,7 +223,7 @@ def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficien
     if not pos:
         return {
             "ids": [], "componentData": [], "maxValue": 0.0, "minValue": 0.0,
-            "scaleFactor": 1.0, "originPos": [], "newPos": [], "edges": [],
+            "scaleFactor": 1.0, "originPos": [], "newPos": [], "elementIndex": [],
             "real": [], "imag": [],
         }
 
@@ -240,7 +240,7 @@ def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficien
         "scaleFactor":   1.0,
         "originPos":     pos,
         "newPos":        [],
-        "edges":         index,
+        "elementIndex":  index,
         "real":          [],
         "imag":          [],
     }
