@@ -989,6 +989,28 @@ def get_connection():
     return _get_connection_pool().get_connection()
 
 
+def initialize_database_runtime(*, ensure_tables: bool = True, warm_connection: bool = True) -> None:
+    """
+    Eagerly create the MySQL connection pool during application startup.
+
+    Why this exists:
+    - The old lazy-init path built the pool on the first business request.
+    - That makes the first few frontend calls look "stuck", even though the
+      actual delay is pool creation / initial database handshake.
+    - Moving this work to startup makes request latency more stable and also
+      fails fast when the database configuration is invalid.
+    """
+    _get_connection_pool()
+    if warm_connection:
+        conn = get_connection()
+        try:
+            conn.ping(reconnect=True, attempts=1, delay=0)
+        finally:
+            conn.close()
+    if ensure_tables:
+        ensure_tables_exist()
+
+
 def ensure_tables_exist():
     global _tables_ensured
     if _tables_ensured:

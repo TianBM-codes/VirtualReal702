@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 
 from config import APP_CONFIG
+from db import initialize_database_runtime
 from fastapi import Request
 from src.l3.main import app
 
@@ -17,6 +18,8 @@ from services.model_update.analysis.inp_service import (
     get_fe_response_catalog,
     get_fe_static_results,
     get_modal_correlation,
+    get_modal_correlation_matrix_payload,
+    get_modal_correlation_table_payload,
     import_fe_modal_results,
     import_fe_static_results,
     match_test_dofs,
@@ -24,6 +27,13 @@ from services.model_update.analysis.inp_service import (
 
 app.include_router(model_update_router)
 app.include_router(modal_router)
+
+
+@app.on_event("startup")
+async def initialize_model_update_runtime() -> None:
+    # Warm the DB pool before the first frontend request arrives. This moves
+    # the one-time handshake cost out of endpoints such as /get/sensor_position.
+    initialize_database_runtime(ensure_tables=True, warm_connection=True)
 
 
 def _now_iso() -> str:
@@ -175,8 +185,22 @@ async def compute_modal_correlation_api(request: Request):
 @app.post("/correlation/modal")
 async def get_modal_correlation_api(request: Request):
     body = await request.json()
-    result = get_modal_correlation(int(body["project_id"]))
-    return {"ok": True, "message": "modal correlation query success", "data": result}
+    result = get_modal_correlation_matrix_payload(int(body["project_id"]))
+    return {"ok": True, "message": "modal correlation matrix query success", "data": result}
+
+
+@app.post("/correlation/modal/matrix")
+async def get_modal_correlation_matrix_api(request: Request):
+    body = await request.json()
+    result = get_modal_correlation_matrix_payload(int(body["project_id"]))
+    return {"ok": True, "message": "modal correlation matrix query success", "data": result}
+
+
+@app.post("/correlation/modal/table")
+async def get_modal_correlation_table_api(request: Request):
+    body = await request.json()
+    result = get_modal_correlation_table_payload(int(body["project_id"]))
+    return {"ok": True, "message": "modal correlation table query success", "data": result}
 
 
 @app.post("/correlation/static/compute")

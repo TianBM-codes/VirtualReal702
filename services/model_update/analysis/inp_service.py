@@ -4561,3 +4561,65 @@ def get_modal_correlation(project_id):
     finally:
         cursor.close()
         conn.close()
+
+
+def get_modal_correlation_matrix_payload(project_id):
+    raw = get_modal_correlation(project_id)
+    row_mode_order = [str(item) for item in (raw.get("row_mode_order") or [])]
+    column_mode_order = [str(item) for item in (raw.get("column_mode_order") or [])]
+    matrix = [list(row) for row in (raw.get("matrix") or [])]
+
+    heatmap_points = []
+    for row_index, _row_name in enumerate(row_mode_order):
+        current_row = matrix[row_index] if row_index < len(matrix) else []
+        for col_index, _col_name in enumerate(column_mode_order):
+            heatmap_points.append([
+                row_index,
+                col_index,
+                current_row[col_index] if col_index < len(current_row) else None,
+            ])
+
+    return {
+        "project_id": int(project_id),
+        "row_mode_order": row_mode_order,
+        "column_mode_order": column_mode_order,
+        "data": {
+            "rows": row_mode_order,
+            "column": column_mode_order,
+            "data": heatmap_points,
+        },
+        "summary": {
+            "fem_mode_count": len(row_mode_order),
+            "test_mode_count": len(column_mode_order),
+            "point_count": len(heatmap_points),
+        },
+    }
+
+
+def get_modal_correlation_table_payload(project_id):
+    raw = get_modal_correlation(project_id)
+    row_mode_order = [str(item) for item in (raw.get("row_mode_order") or [])]
+    column_mode_order = [str(item) for item in (raw.get("column_mode_order") or [])]
+    matrix = [list(row) for row in (raw.get("matrix") or [])]
+
+    table_rows = []
+    for row_index, _row_name in enumerate(row_mode_order):
+        current_row = matrix[row_index] if row_index < len(matrix) else []
+        row_item = {}
+        for col_index, col_name in enumerate(column_mode_order):
+            row_item[col_name] = current_row[col_index] if col_index < len(current_row) else None
+        table_rows.append(row_item)
+
+    return {
+        "project_id": int(project_id),
+        "row_mode_order": row_mode_order,
+        "column_mode_order": column_mode_order,
+        "rows": row_mode_order,
+        "column": column_mode_order,
+        "data": table_rows,
+        "summary": {
+            "fem_mode_count": len(row_mode_order),
+            "test_mode_count": len(column_mode_order),
+            "point_count": len(row_mode_order) * len(column_mode_order),
+        },
+    }
