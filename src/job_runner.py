@@ -910,7 +910,7 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
     _log_job(project_id, "step", "自动导入 BDF 到 model_update", stage="mu_import_bdf")
     try:
         from services.model_update.importers.bdf_service import import_bdf_data
-        import_bdf_data(bdf_path, project_id, clear_before_insert=True)
+        import_bdf_data(bdf_path, int(project_id), clear_before_insert=True)
         _log_job(project_id, "step", "BDF 导入 model_update 完成", stage="mu_import_bdf")
         logger.info("[%s] model_update BDF import done", project_id)
     except Exception as exc:
@@ -1127,25 +1127,41 @@ def _run_op2_result_group(project_id: str, result_group: str,
                     bdf_path_mu = _row["inp_path"] if _row else None
             from services.model_update.importers.op2_service import build_modal_import_payload
             from services.model_update.analysis.inp_service import import_fe_modal_results
-            payload = build_modal_import_payload(
-                op2_path=op2_path,
-                bdf_path=bdf_path_mu,
-                subcase_id=modal_cfg.get("subcase_id"),
-                mode_numbers=modal_cfg.get("mode_numbers"),
-                instance_name=modal_cfg.get("instance_name"),
-                part_name=modal_cfg.get("part_name"),
-            )
-            import_fe_modal_results(
-                project_id=project_id,
-                overwrite=modal_cfg.get("overwrite", True),
-                modes=payload["modes"],
-            )
-            _log_job(project_id, "step",
-                     "[{}] OP2 模态导入 model_update 完成：{}阶".format(
-                         result_group, len(payload.get("modes") or [])),
-                     stage="mu_import_op2_modal")
-            logger.info("[%s] model_update OP2 modal import done (modes=%d)",
-                        project_id, len(payload.get("modes") or []))
+            from webapi.background_jobs import submit_background_task
+
+            def _do_import():
+                payload = build_modal_import_payload(
+                    op2_path=op2_path,
+                    bdf_path=bdf_path_mu,
+                    subcase_id=modal_cfg.get("subcase_id"),
+                    mode_numbers=modal_cfg.get("mode_numbers"),
+                    instance_name=modal_cfg.get("instance_name"),
+                    part_name=modal_cfg.get("part_name"),
+                )
+                import_fe_modal_results(
+                    project_id=int(project_id),
+                    overwrite=modal_cfg.get("overwrite", True),
+                    modes=payload["modes"],
+                )
+                return payload
+
+            if modal_cfg.get("async_submit", False):
+                submit_background_task(
+                    task_type="import.op2.modal.store",
+                    fn=lambda **_: _do_import(),
+                    kwargs={},
+                )
+                _log_job(project_id, "step",
+                         "[{}] OP2 模态导入已异步提交".format(result_group),
+                         stage="mu_import_op2_modal")
+            else:
+                payload = _do_import()
+                _log_job(project_id, "step",
+                         "[{}] OP2 模态导入 model_update 完成：{}阶".format(
+                             result_group, len(payload.get("modes") or [])),
+                         stage="mu_import_op2_modal")
+                logger.info("[%s] model_update OP2 modal import done (modes=%d)",
+                            project_id, len(payload.get("modes") or []))
         except Exception as exc:
             _log_job(project_id, "warning",
                      "[{}] model_update OP2 模态导入失败（非致命）：{}".format(result_group, exc),
