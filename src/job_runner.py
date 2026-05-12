@@ -1145,7 +1145,7 @@ def _run_op2_result_group(project_id: str, result_group: str,
                 )
                 return payload
 
-            if modal_cfg.get("async_submit", False):
+            if modal_cfg.get("async_submit", True):
                 submit_background_task(
                     task_type="import.op2.modal.store",
                     fn=lambda **_: _do_import(),
