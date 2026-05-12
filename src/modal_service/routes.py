@@ -3,13 +3,10 @@
 
 接口列表
 --------
-POST /api/modal/load                                 注册 JSON 文件路径，返回 model_id
-GET  /api/modal/{model_id}/geometry                  节点坐标 + 三角化索引
-GET  /api/modal/{model_id}/modes                     模态阶次下拉列表
-GET  /api/modal/{model_id}/components                分量下拉列表（固定）
-GET  /api/modal/{model_id}/deformed                  变形振型 + USUM 云图数据
-GET  /api/modal/{model_id}/animation                 实部/虚部（前端动画用）
-GET  /api/modal/{model_id}/colormap                  选定分量的云图数据
+POST  /api/model/testMesh/geometry                  节点坐标 + 三角化索引
+POST  /api/model/testMesh/modelSelect               模态阶次下拉列表
+POST  /api/model/testMesh/animation                 实部/虚部（前端动画用）
+POST  /api/model/testMesh/colormap                  选定分量的云图数据
 """
 import logging
 
@@ -17,128 +14,55 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from . import service
+from ...l3.api.response import ok, err
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/modal", tags=["modal"])
+router = APIRouter(prefix="/api/model/testMesh", tags=["modal"])
 
-
-# ── 辅助 ──────────────────────────────────────────────────────────────────
-
-def _check(model_id: str):
-    if not service.is_registered(model_id):
-        raise HTTPException(
-            status_code=404,
-            detail=f"model_id '{model_id}' 未注册。请先调用 POST /api/modal/load。",
-        )
-
-
-# ── 接口 1：注册 JSON 文件 ─────────────────────────────────────────────────
-
-class LoadRequest(BaseModel):
-    path: str
-
-@router.post("/load")
-async def load_model(req: LoadRequest):
-    """注册一个模态 JSON 文件路径，返回 model_id。重复注册同一文件不会报错。"""
-    try:
-        model_id = service.register(req.path)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"注册失败: {e}")
-    return {"ok": True, "model_id": model_id}
+STR_NO_PROJECT_ID = "项目ID缺失"
+STR_ERROR_OMP = "模态分量错误"
+STR_NO_PARAM = "缺少参数"
+STR_ERROR = "请求错误"
+STR_SUCCESS = "成功"
 
 
 # ── 接口 2：几何数据 ───────────────────────────────────────────────────────
 
-@router.get("/{model_id}/geometry")
-async def get_geometry(model_id: str):
+@router.post("/geometry")
+async def mesh_geometry(project_id: str, order: int, max_scalar_size: float, coefficient: float, component: str, animation: bool):
     """返回节点坐标（originPos）和三角化后的索引数组（index）。"""
-    _check(model_id)
-    try:
-        return {"ok": True, "data": service.get_geometry(model_id)}
-    except Exception as e:
-        logger.exception("get_geometry failed for %s", model_id)
-        raise HTTPException(status_code=500, detail=str(e))
+    return ok(service.get_geometry(project_id, order, max_scalar_size, coefficient, component, animation))
 
 
 # ── 接口 3：模态阶次列表 ───────────────────────────────────────────────────
 
-@router.get("/{model_id}/modes")
-async def get_modes(model_id: str):
+@router.post("/modelSelect")
+async def get_modes(project: str):
     """返回模态阶次下拉列表：[{label, value}, ...]，第一项为 Undeformed。"""
-    _check(model_id)
-    try:
-        return {"ok": True, "data": service.get_modes(model_id)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── 接口 4：分量列表 ───────────────────────────────────────────────────────
-
-@router.get("/{model_id}/components")
-async def get_components(model_id: str):
-    """返回可用分量列表：["U-Modulus:usum", "DOF UX", "DOF UY", "DOF UZ"]"""
-    _check(model_id)
-    return {"ok": True, "data": service.get_components()}
-
-
-# ── 接口 5：变形振型 ───────────────────────────────────────────────────────
-
-@router.get("/{model_id}/deformed")
-async def get_deformed(
-    model_id:        str,
-    order:           int,
-    max_scalar_size: float = 0.1,
-    coefficient:     float = 1.0,
-):
-    """返回变形振型数据（USUM 分量）：componentData / maxValue / minValue / scaleFactor / newPos"""
-    _check(model_id)
-    try:
-        return {"ok": True, "data": service.get_deformed(
-            model_id, order, max_scalar_size, coefficient
-        )}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ok(service.get_modes_select(project))
 
 
 # ── 接口 6：动画数据 ───────────────────────────────────────────────────────
 
-@router.get("/{model_id}/animation")
-async def get_animation(model_id: str, order: int):
+@router.post("/animation")
+async def get_animation(project: str, order: int):
     """返回实部和虚部 flat 数组（各 [N*3]），前端用于 cos/sin 动画。"""
-    _check(model_id)
-    try:
-        return {"ok": True, "data": service.get_animation(model_id, order)}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return ok(service.get_animation(project, order))
 
 # ── 接口 7：云图数据 ───────────────────────────────────────────────────────
 
-@router.get("/{model_id}/colormap")
+@router.post("/colormap")
 async def get_colormap(
-    model_id:        str,
+    project:        str,
     order:           int,
     component:       str   = "usum",
-    max_scalar_size: float = 0.1,
-    coefficient:     float = 1.0,
+    max_scalar_size: float,
+    coefficient:     float,
+    animation:       bool
 ):
     """
     返回选定分量的云图数据（结构与 /deformed 相同）。
     component: 'usum'|'ux'|'uy'|'uz' 或前端下拉标签 'U-Modulus:usum'|'DOF UX'|...
     """
-    _check(model_id)
-    try:
-        return {"ok": True, "data": service.get_colormap(
-            model_id, order, component, max_scalar_size, coefficient
-        )}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ok(service.get_colormap(project, order, component, max_scalar_size, coefficient, animation))

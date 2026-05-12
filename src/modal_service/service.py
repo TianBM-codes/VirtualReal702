@@ -24,47 +24,7 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 import numpy as np
-
-# ── 注册表：model_id → 文件路径（后续换成 DB 连接信息）────────────────────
-_registry: Dict[str, str] = {}
-
-
-def register(path: str) -> str:
-    """注册一个 JSON 文件，返回 model_id（路径的 MD5 前 8 位）。"""
-    abs_path = os.path.abspath(path)
-    if not os.path.exists(abs_path):
-        raise FileNotFoundError(f"文件不存在：{abs_path}")
-    model_id = hashlib.md5(abs_path.encode()).hexdigest()[:8]
-    _registry[model_id] = abs_path
-    return model_id
-
-
-def is_registered(model_id: str) -> bool:
-    return model_id in _registry
-
-
-# ── 数据读取层（换 DB 只改这里）──────────────────────────────────────────
-def _load_raw(model_id: str) -> dict:
-    """
-    从数据源读取模态数据，返回原始 dict。
-
-    当前实现：读 JSON 文件。
-    换 DB 时：改成查询对应表，返回相同结构的 dict 即可。
-    """
-    path = _registry.get(model_id)
-    if path is None:
-        raise KeyError(f"model_id '{model_id}' 未注册")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _get_mode(raw: dict, order: int) -> dict:
-    """从原始数据里取指定阶次（1-based）的模态。"""
-    for shape in raw["modal_shape"]:
-        if int(shape["order"]) == order:
-            return shape
-    orders = [s["order"] for s in raw["modal_shape"]]
-    raise ValueError(f"阶次 {order} 不存在，可用：{orders}")
+from db import get_connection, ensure_tables_exist, clear_unv_tables
 
 
 # ── 计算工具函数 ──────────────────────────────────────────────────────────
@@ -143,135 +103,195 @@ def _triangulate(index_flat: list, item_size: int) -> List[int]:
         return conn[:, :3].flatten().tolist()
 
 
+def _db_node_elements(project_id: str) -> dict:
+    conn = get_connection()
+    _cursor = conn.cursor()
+    try:
+        node_sql = """SELECT nid, x, y, z FROM t_mt_py_test_node WHERE pid=%s ORDER BY nid"""
+        elem_sql = """SELECT point1, point2 FROM t_mt_py_test_element WHERE pid=%s ORDER BY element_no"""
+        """
+        读取节点结果
+        """
+        _cursor.execute(node_sql, (f"{project_id}",))
+        nodes = _cursor.fetchall()
+
+        node_ids = np.array(nodes, dtype=int)[:, 0].flatten()
+        node2idx = {}
+        for ii, nd in enumerate(node_ids):
+            node2idx[nd] = ii
+        node_coords = np.array(nodes)[:, 1:].flatten().tolist()
+
+        """读取单元结果"""
+        _cursor.execute(elem_sql, (f"{project_id}",))
+        eles_fetchall = np.array(_cursor.fetchall()).flatten()
+        eles = [node2idx[ii] for ii in eles_fetchall]
+
+        return {
+            "node_ids": node_ids,
+            "node2idx": node2idx,
+            "node_coords": node_coords,
+            "eles": eles,
+        }
+    except Exception as e:
+        logger.error("数据库查询失败: %s", e)
+        raise
+
+    finally:
+        _cursor.close()
+        conn.close()
+
+
+def _db_node_shapes(project_id: str, node_ids: list, order: int) -> dict:
+    conn = get_connection()
+    _cursor = conn.cursor()
+    try:
+        freq_sql = """SELECT f.mode_no, f.frequency, s.modal_shape FROM t_mt_py_test_frequency f LEFT JOIN t_mt_py_test_modal_shape s ON f.pid=s.pid AND f.mode_no=s.mode_no WHERE f.pid=%s AND f.mode_no=%s ORDER BY f.mode_no"""
+        """读取模态阶次对应的频率和振型数据
+        """
+        _cursor.execute(freq_sql, (f"{project_id}", order,))
+        modal = _cursor.fetchone()
+
+        modal_shape = []
+        for iter_modal in modal:
+            shape = json.loads(iter_modal[2])
+            iter_modal_shape = []
+            real_modal_shape = []
+            imag_modal_shape = []
+            for n_id in node_ids:
+                iter_modal_shape.extend(shape[str(n_id)])
+                real_modal_shape.extend(shape[str(n_id)]['real'])
+                imag_modal_shape.extend(shape[str(n_id)]['imag'])
+            modal_shape.append({
+                "order": iter_modal[0],
+                "frequency": f"{iter_modal[1]}",
+                "unit": "Hz",
+                "real": real_modal_shape,
+                "imag": imag_modal_shape,
+            })
+        return modal_shape[0]
+    except Exception as e:
+        logger.error("数据库查询失败: %s", e)
+        raise
+    finally:
+        _cursor.close()
+        conn.close()
+
+
+def _db_frequency(project_id: str) -> list:
+    conn = get_connection()
+    _cursor = conn.cursor()
+    try:
+        freq_sql = """SELECT mode_no, frequency FROM t_mt_py_test_frequency WHERE pid=%s ORDER BY mode_no"""
+        """读取模态阶次对应的频率数据
+        """
+        _cursor.execute(freq_sql, (f"{project_id}",))
+        modal = _cursor.fetchall()
+        modal_shape = [{"label": "Undeformed", "value": 0, "show_name": ""}]
+        for ii, iter_modal in enumerate(modal):
+            obj = {"label": f"EMA {iter_modal[0]} - {iter_modal[1]} Hz", "value": iter_modal[0]}
+            obj["show_name"] = f"Mode {obj["value"]}"
+            modal_shape.append(obj)
+        return modal_shape
+    except Exception as e:
+        logger.error("数据库查询失败: %s", e)
+        raise
+    finally:
+        _cursor.close()
+        conn.close()
+
+
+def get_box_max_scalar_size(position):
+    """
+    计算模型包围盒的最大尺寸
+    """
+    box_xyz = np.reshape(np.array(position), (-1, 3))
+    box_x_max = np.max(box_xyz[:, 0])
+    box_x_min = np.min(box_xyz[:, 0])
+    box_y_max = np.max(box_xyz[:, 1])
+    box_y_min = np.min(box_xyz[:, 1])
+    box_z_max = np.max(box_xyz[:, 2])
+    box_z_min = np.min(box_xyz[:, 2])
+    return np.max([box_x_max - box_x_min, box_y_max - box_y_min, box_z_max - box_z_min])
+
+
 # ── 对外接口（被 router 调用）────────────────────────────────────────────
 
-def get_geometry(model_id: str) -> dict:
+def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficient: float, component: str="usum", animation: bool=False) -> dict:
     """
-    #1 模型接口。
-    返回原始节点坐标和三角化后的索引数组。
-    前端用这两个建 Three.js BufferGeometry（indexed mesh）。
-
-    注意：elements.index 里存的是节点 ID（来自 points.ids），
-    不一定是 0-based 行号，需要先映射。
+    模型接口: 返回原始/变形后坐标 + 选定分量幅值 + 云图数据（如果 animation=True）。
     """
-    raw   = _load_raw(model_id)
-    pts   = raw["points"]
-    elems = raw["elements"]
-
-    # 自动判断 elements.index 里存的是节点 ID 还是 0-based 行号：
-    # 如果最大值 < 节点数，说明已经是行号，直接用；否则做 ID→行号映射。
-    raw_idx = elems["index"]
-    N       = len(pts["ids"])
-    if raw_idx and max(raw_idx) < N:
-        # 直接是 0-based 行号
-        idx_rows = raw_idx
+    db_node_data = _db_node_elements(project_id)
+    pos = db_node_data["node_coords"]
+    ids = db_node_data["node_ids"]
+    index = db_node_data["eles"]
+    db_shape = _db_node_shapes(project_id, ids, order)
+    max_scalar_size = get_box_max_scalar_size(pos)
+    if db_shape is not None:
+        real = db_shape["real"]
+        imag = db_shape["imag"]
     else:
-        # 需要从节点 ID 映射
-        id_to_row = {nid: i for i, nid in enumerate(pts["ids"])}
-        try:
-            idx_rows = [id_to_row[nid] for nid in raw_idx]
-        except KeyError as e:
-            logger.error("get_geometry: index value %s not found in points.ids", e)
-            raise ValueError(f"elements.index 包含未知节点 ID: {e}") from e
-
-    # 原始 quad 边（去重），用于前端画干净的线框（不含三角化对角线）
-    item_size = elems["ItemSize"]
-    quads     = np.asarray(idx_rows, dtype=np.int32).reshape(-1, item_size)
-    edge_set: set = set()
-    for q in quads:
-        for k in range(item_size):
-            a, b = int(q[k]), int(q[(k + 1) % item_size])
-            edge_set.add((min(a, b), max(a, b)))
-    edges_flat = [v for e in sorted(edge_set) for v in e]
-
-    return {
-        "originPos": pts["position"],
-        "itemSize":  pts["ItemSize"],
-        "index":     _triangulate(idx_rows, item_size),
-        "edges":     edges_flat,               # flat [E*2] 原始单元边，行号索引
+        real = []
+        imag = []
+    obj = {
+        "ids":           ids.tolist(),
+        "componentData": [],
+        "maxValue":      0.0,
+        "minValue":      0.0,
+        "scaleFactor":   1.0,
+        "originPos":    pos,
+        "newPos":       [],
+        "elementIndex": index,
+        real:           [],
+        imag:           [],
     }
+    if animation:
+        obj["real"] = real
+        obj["imag"] = imag
+
+    if order == 0:
+        N = len(pos) // 3
+        obj["componentData"] = [0.0] * N
+        return obj
+    
+    scale = _scale_factor(real, imag, max_scalar_size, coefficient)
+    component_data, vmin, vmax = _component_data(real, imag, component)
+    obj["componentData"] = component_data
+    obj["maxValue"] = vmax
+    obj["minValue"] = vmin
+    obj["scaleFactor"] = scale
+    obj["newPos"] = _new_pos(pos, real, scale)
+    return obj
 
 
-def get_modes(model_id: str) -> List[dict]:
+def get_modes_select(model_id: str) -> list:
     """
     #2 模态阶次下拉。
     第一项固定为 Undeformed（order=0），其余按数据排列。
     返回 [{label: "Undeformed", value: 0}, {label: "EMA 1 - 12.34 Hz", value: 1}, ...]
     """
-    raw    = _load_raw(model_id)
-    result = [{"label": "Undeformed", "value": 0}]
-    for shape in raw["modal_shape"]:
-        order = int(shape["order"])
-        freq  = shape.get("frequency", 0)
-        unit  = shape.get("unit", "Hz")
-        result.append({
-            "label": f"EMA {order} - {freq} {unit}",
-            "value": order,
-        })
-    return result
+    return _db_frequency(model_id)
 
 
-def get_components() -> List[str]:
-    """
-    #3 模态分量下拉（固定列表，不依赖数据）。
-    """
-    return ["U-Modulus:usum", "DOF UX", "DOF UY", "DOF UZ"]
-
-
-def get_deformed(model_id: str, order: int,
-                 max_scalar_size: float, coefficient: float) -> dict:
-    """
-    #4 变形振型数据。order=0 返回原始位置 + 零位移。
-
-    返回：
-      componentData  每节点 USUM 幅值 [N]
-      maxValue       componentData 最大值
-      minValue       componentData 最小值
-      scaleFactor    变形放大系数
-      newPos         变形后坐标 flat [N*3]
-    """
-    raw = _load_raw(model_id)
-    pos = raw["points"]["position"]
-
-    if order == 0:
-        N = len(pos) // 3
-        return {
-            "componentData": [0.0] * N,
-            "maxValue":      0.0,
-            "minValue":      0.0,
-            "scaleFactor":   1.0,
-            "newPos":        list(pos),
-        }
-
-    mode = _get_mode(raw, order)
-    real = mode["position"]["real"]
-    imag = mode["position"]["imag"]
-
-    scale                         = _scale_factor(real, imag, max_scalar_size, coefficient)
-    component_data, vmin, vmax    = _component_data(real, imag, "usum")
-
-    return {
-        "componentData": component_data,
-        "maxValue":      vmax,
-        "minValue":      vmin,
-        "scaleFactor":   scale,
-        "newPos":        _new_pos(pos, real, scale),
-    }
-
-
-def get_animation(model_id: str, order: int) -> dict:
+def get_animation(project_id: str, order: int) -> dict:
     """
     #5 动画数据。order=0 返回全零数组（无位移）。
     返回实部和虚部 flat 数组，前端自行做 cos(ωt)/sin(ωt) 动画。
     """
-    raw = _load_raw(model_id)
+    db_node_data = _db_node_elements(project_id)
+    pos = db_node_data["node_coords"]
+
     if order == 0:
-        N3 = len(raw["points"]["position"])
-        return {"real": [0.0] * N3, "imag": [0.0] * N3}
-    mode = _get_mode(raw, order)
+        N3 = len(pos)
+        real = [0.0] * N3
+        imag = [0.0] * N3
+    else:
+        db_shape = _db_node_shapes(project_id, pos, order)
+        real = db_shape["real"]
+        imag = db_shape["imag"]
+    
     return {
-        "real": mode["position"]["real"],
-        "imag": mode["position"]["imag"],
+        "real": real,
+        "imag": imag,
     }
 
 
@@ -294,30 +314,4 @@ def get_colormap(model_id: str, order: int, component: str,
     }
     comp = _comp_map.get(component, "usum")
 
-    raw = _load_raw(model_id)
-    pos = raw["points"]["position"]
-
-    if order == 0:
-        N = len(pos) // 3
-        return {
-            "componentData": [0.0] * N,
-            "maxValue":      0.0,
-            "minValue":      0.0,
-            "scaleFactor":   1.0,
-            "newPos":        list(pos),
-        }
-
-    mode = _get_mode(raw, order)
-    real = mode["position"]["real"]
-    imag = mode["position"]["imag"]
-
-    scale                       = _scale_factor(real, imag, max_scalar_size, coefficient)
-    component_data, vmin, vmax  = _component_data(real, imag, comp)
-
-    return {
-        "componentData": component_data,
-        "maxValue":      vmax,
-        "minValue":      vmin,
-        "scaleFactor":   scale,
-        "newPos":        _new_pos(pos, real, scale),
-    }
+    return get_geometry(model_id, order, max_scalar_size, coefficient, component=comp, animation=False)
