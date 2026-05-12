@@ -207,8 +207,8 @@ async def get_color_code(
 async def get_region_mesh_edges(
     odb_id: str,
     instance: str,
-    scheme: str = Query(..., description="section | etype"),
-    region: str = Query(..., description="Region label, e.g. 'Region 1'"),
+    scheme: str = Query(..., description="section | etype | material | section_type | elset"),
+    region: str = Query(..., description="Region label (or elset name for elset scheme)"),
 ):
     """
     Return element mesh edges for one averaging region as L3BE binary.
@@ -275,8 +275,8 @@ async def get_region_mesh_edges(
 async def get_region_outline(
     odb_id: str,
     instance: str,
-    scheme: str = Query(..., description="section | etype"),
-    region: str = Query(..., description="Region label, e.g. 'Region 1'"),
+    scheme: str = Query(..., description="section | etype | material | section_type | elset"),
+    region: str = Query(..., description="Region label (or elset name for elset scheme)"),
 ):
     """
     Return the outer boundary of one averaging region as L3BE binary.
