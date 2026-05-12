@@ -95,14 +95,12 @@ class RegistryRepo:
         """Create odb_jobs table if it does not exist."""
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
-            for migration in (
-                "ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'inp'",
-                "ALTER TABLE projects ADD COLUMN model_update_project_id INTEGER",
-            ):
-                try:
-                    conn.execute(migration)
-                except Exception:
-                    pass
+            try:
+                conn.execute(
+                    "ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'inp'"
+                )
+            except Exception:
+                pass
 
     # ── write ────────────────────────────────────────────────────────────────
 
@@ -326,17 +324,14 @@ class RegistryRepo:
 
     def create_project(self, project_id: str, workspace: str,
                        inp_path: str = None,
-                       source_type: str = "inp",
-                       model_update_project_id: int = None) -> None:
+                       source_type: str = "inp") -> None:
         now = _now_iso()
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO projects"
-                " (project_id, workspace, inp_path, source_type, model_update_project_id,"
-                "  geom_status, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,'pending',?,?)",
-                (project_id, workspace, inp_path, source_type,
-                 model_update_project_id, now, now),
+                " (project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)"
+                " VALUES (?,?,?,?,'pending',?,?)",
+                (project_id, workspace, inp_path, source_type, now, now),
             )
 
     def list_projects(self) -> list:

@@ -175,14 +175,6 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _get_project_row(project_id: str):
-    """Return the projects table row for *project_id*, or None."""
-    with _connect() as conn:
-        return conn.execute(
-            "SELECT * FROM projects WHERE project_id=?", (project_id,)
-        ).fetchone()
-
-
 def _update_status(odb_id: str, status: str, **fields) -> None:
     allowed = {
         "l1_started_at", "l1_done_at",
@@ -915,27 +907,17 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
     logger.info("[%s] BDF project ready", project_id)
 
     # ── Auto model-update BDF import ──────────────────────────────────────────
-    proj_row = _get_project_row(project_id)
+    _log_job(project_id, "step", "自动导入 BDF 到 model_update", stage="mu_import_bdf")
     try:
-        mu_id = proj_row["model_update_project_id"] if proj_row else None
-    except Exception:
-        mu_id = None
-    if mu_id:
-        _log_job(project_id, "step",
-                 "自动导入 BDF 到 model_update（project_id={}）".format(mu_id),
+        from services.model_update.importers.bdf_service import import_bdf_data
+        import_bdf_data(bdf_path, project_id, clear_before_insert=True)
+        _log_job(project_id, "step", "BDF 导入 model_update 完成", stage="mu_import_bdf")
+        logger.info("[%s] model_update BDF import done", project_id)
+    except Exception as exc:
+        _log_job(project_id, "warning",
+                 "model_update BDF 导入失败（非致命）：{}".format(exc),
                  stage="mu_import_bdf")
-        try:
-            from services.model_update.importers.bdf_service import import_bdf_data
-            import_bdf_data(bdf_path, mu_id, clear_before_insert=True)
-            _log_job(project_id, "step",
-                     "BDF 导入 model_update 完成（project_id={}）".format(mu_id),
-                     stage="mu_import_bdf")
-            logger.info("[%s] model_update BDF import done (mu_id=%s)", project_id, mu_id)
-        except Exception as exc:
-            _log_job(project_id, "warning",
-                     "model_update BDF 导入失败（非致命）：{}".format(exc),
-                     stage="mu_import_bdf")
-            logger.warning("[%s] model_update BDF import failed: %s", project_id, exc)
+        logger.warning("[%s] model_update BDF import failed: %s", project_id, exc)
 
     return True
 
@@ -1131,50 +1113,44 @@ def _run_op2_result_group(project_id: str, result_group: str,
             pass
     modal_cfg = parse_opts.get("modal_import")
     if modal_cfg is not None:
-        proj_row = _get_project_row(project_id)
+        _log_job(project_id, "step",
+                 "[{}] 自动导入 OP2 模态到 model_update".format(result_group),
+                 stage="mu_import_op2_modal")
         try:
-            mu_id = proj_row["model_update_project_id"] if proj_row else None
-        except Exception:
-            mu_id = None
-        if mu_id:
-            try:
-                bdf_path_mu = None
-                if proj_row:
-                    try:
-                        bdf_path_mu = proj_row["inp_path"]
-                    except Exception:
-                        pass
-                _log_job(project_id, "step",
-                         "[{}] 自动导入 OP2 模态到 model_update（project_id={}）".format(
-                             result_group, mu_id),
-                         stage="mu_import_op2_modal")
-                from services.model_update.importers.op2_service import build_modal_import_payload
-                from services.model_update.analysis.inp_service import import_fe_modal_results
-                payload = build_modal_import_payload(
-                    op2_path=op2_path,
-                    bdf_path=bdf_path_mu,
-                    subcase_id=modal_cfg.get("subcase_id"),
-                    mode_numbers=modal_cfg.get("mode_numbers"),
-                    instance_name=modal_cfg.get("instance_name"),
-                    part_name=modal_cfg.get("part_name"),
-                )
-                stored = import_fe_modal_results(
-                    project_id=mu_id,
-                    overwrite=modal_cfg.get("overwrite", True),
-                    modes=payload["modes"],
-                )
-                stored["warnings"] = payload.get("warnings") or []
-                _log_job(project_id, "step",
-                         "[{}] OP2 模态导入 model_update 完成：{}阶".format(
-                             result_group, len(payload.get("modes") or [])),
-                         stage="mu_import_op2_modal")
-                logger.info("[%s] model_update OP2 modal import done (mu_id=%s, modes=%d)",
-                            project_id, mu_id, len(payload.get("modes") or []))
-            except Exception as exc:
-                _log_job(project_id, "warning",
-                         "[{}] model_update OP2 模态导入失败（非致命）：{}".format(result_group, exc),
-                         stage="mu_import_op2_modal")
-                logger.warning("[%s] model_update OP2 modal import failed: %s", project_id, exc)
+            # bdf_path: modal_cfg 里可显式指定，否则从 projects.inp_path 取
+            bdf_path_mu = modal_cfg.get("bdf_path")
+            if not bdf_path_mu:
+                with _connect() as _c:
+                    _row = _c.execute(
+                        "SELECT inp_path FROM projects WHERE project_id=?", (project_id,)
+                    ).fetchone()
+                    bdf_path_mu = _row["inp_path"] if _row else None
+            from services.model_update.importers.op2_service import build_modal_import_payload
+            from services.model_update.analysis.inp_service import import_fe_modal_results
+            payload = build_modal_import_payload(
+                op2_path=op2_path,
+                bdf_path=bdf_path_mu,
+                subcase_id=modal_cfg.get("subcase_id"),
+                mode_numbers=modal_cfg.get("mode_numbers"),
+                instance_name=modal_cfg.get("instance_name"),
+                part_name=modal_cfg.get("part_name"),
+            )
+            import_fe_modal_results(
+                project_id=project_id,
+                overwrite=modal_cfg.get("overwrite", True),
+                modes=payload["modes"],
+            )
+            _log_job(project_id, "step",
+                     "[{}] OP2 模态导入 model_update 完成：{}阶".format(
+                         result_group, len(payload.get("modes") or [])),
+                     stage="mu_import_op2_modal")
+            logger.info("[%s] model_update OP2 modal import done (modes=%d)",
+                        project_id, len(payload.get("modes") or []))
+        except Exception as exc:
+            _log_job(project_id, "warning",
+                     "[{}] model_update OP2 模态导入失败（非致命）：{}".format(result_group, exc),
+                     stage="mu_import_op2_modal")
+            logger.warning("[%s] model_update OP2 modal import failed: %s", project_id, exc)
 
     return True
 

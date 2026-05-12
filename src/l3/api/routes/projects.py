@@ -66,7 +66,6 @@ class CreateProjectRequest(BaseModel):
     project_id: str
     source_path: str
     source_type: Optional[str] = None
-    model_update_project_id: Optional[int] = None
 
 
 class AddResultGroupRequest(BaseModel):
@@ -248,7 +247,6 @@ async def create_project(body: CreateProjectRequest):
             workspace=project_id,
             inp_path=body.source_path,
             source_type=source_type,
-            model_update_project_id=body.model_update_project_id,
         )
     except Exception:
         safe_rmtree(workspace, settings.data_root, "project workspace")
