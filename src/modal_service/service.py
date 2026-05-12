@@ -109,22 +109,21 @@ def _db_node_elements(project_id: str) -> dict:
     try:
         node_sql = """SELECT nid, x, y, z FROM t_mt_py_test_node WHERE pid=%s ORDER BY nid"""
         elem_sql = """SELECT point1, point2 FROM t_mt_py_test_element WHERE pid=%s ORDER BY element_no"""
-        """
-        读取节点结果
-        """
         _cursor.execute(node_sql, (f"{project_id}",))
         nodes = _cursor.fetchall()
+        if not nodes:
+            return {"node_ids": np.array([], dtype=int), "node2idx": {}, "node_coords": [], "eles": []}
 
         node_ids = np.array(nodes, dtype=int)[:, 0].flatten()
-        node2idx = {}
-        for ii, nd in enumerate(node_ids):
-            node2idx[nd] = ii
+        node2idx = {int(nd): ii for ii, nd in enumerate(node_ids)}
         node_coords = np.array(nodes)[:, 1:].flatten().tolist()
 
-        """读取单元结果"""
         _cursor.execute(elem_sql, (f"{project_id}",))
-        eles_fetchall = np.array(_cursor.fetchall()).flatten()
-        eles = [node2idx[ii] for ii in eles_fetchall]
+        eles_fetchall = _cursor.fetchall()
+        if not eles_fetchall:
+            eles = []
+        else:
+            eles = [node2idx[ii] for ii in np.array(eles_fetchall).flatten()]
 
         return {
             "node_ids": node_ids,
@@ -135,40 +134,36 @@ def _db_node_elements(project_id: str) -> dict:
     except Exception as e:
         logger.error("数据库查询失败: %s", e)
         raise
-
     finally:
         _cursor.close()
         conn.close()
 
 
-def _db_node_shapes(project_id: str, node_ids: list, order: int) -> dict:
+def _db_node_shapes(project_id: str, node_ids: list, order: int) -> Optional[dict]:
     conn = get_connection()
     _cursor = conn.cursor()
     try:
         freq_sql = """SELECT f.mode_no, f.frequency, s.modal_shape FROM t_mt_py_test_frequency f LEFT JOIN t_mt_py_test_modal_shape s ON f.pid=s.pid AND f.mode_no=s.mode_no WHERE f.pid=%s AND f.mode_no=%s ORDER BY f.mode_no"""
-        """读取模态阶次对应的频率和振型数据
-        """
         _cursor.execute(freq_sql, (f"{project_id}", order,))
         modal = _cursor.fetchone()
+        if modal is None or modal[2] is None:
+            return None
 
-        modal_shape = []
-        for iter_modal in modal:
-            shape = json.loads(iter_modal[2])
-            iter_modal_shape = []
-            real_modal_shape = []
-            imag_modal_shape = []
-            for n_id in node_ids:
-                iter_modal_shape.extend(shape[str(n_id)])
-                real_modal_shape.extend(shape[str(n_id)]['real'])
-                imag_modal_shape.extend(shape[str(n_id)]['imag'])
-            modal_shape.append({
-                "order": iter_modal[0],
-                "frequency": f"{iter_modal[1]}",
-                "unit": "Hz",
-                "real": real_modal_shape,
-                "imag": imag_modal_shape,
-            })
-        return modal_shape[0]
+        shape = json.loads(modal[2])
+        real_modal_shape = []
+        imag_modal_shape = []
+        for n_id in node_ids:
+            node_data = shape.get(str(n_id))
+            if node_data:
+                real_modal_shape.extend(node_data['real'])
+                imag_modal_shape.extend(node_data['imag'])
+        return {
+            "order": modal[0],
+            "frequency": f"{modal[1]}",
+            "unit": "Hz",
+            "real": real_modal_shape,
+            "imag": imag_modal_shape,
+        }
     except Exception as e:
         logger.error("数据库查询失败: %s", e)
         raise
@@ -224,25 +219,30 @@ def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficien
     pos = db_node_data["node_coords"]
     ids = db_node_data["node_ids"]
     index = db_node_data["eles"]
+
+    if not pos:
+        return {
+            "ids": [], "componentData": [], "maxValue": 0.0, "minValue": 0.0,
+            "scaleFactor": 1.0, "originPos": [], "newPos": [], "elementIndex": [],
+            "real": [], "imag": [],
+        }
+
     db_shape = _db_node_shapes(project_id, ids, order)
+    real = db_shape["real"] if db_shape is not None else []
+    imag = db_shape["imag"] if db_shape is not None else []
+
     max_scalar_size = get_box_max_scalar_size(pos)
-    if db_shape is not None:
-        real = db_shape["real"]
-        imag = db_shape["imag"]
-    else:
-        real = []
-        imag = []
     obj = {
         "ids":           ids.tolist(),
         "componentData": [],
         "maxValue":      0.0,
         "minValue":      0.0,
         "scaleFactor":   1.0,
-        "originPos":    pos,
-        "newPos":       [],
-        "elementIndex": index,
-        real:           [],
-        imag:           [],
+        "originPos":     pos,
+        "newPos":        [],
+        "elementIndex":  index,
+        "real":          [],
+        "imag":          [],
     }
     if animation:
         obj["real"] = real
@@ -252,7 +252,10 @@ def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficien
         N = len(pos) // 3
         obj["componentData"] = [0.0] * N
         return obj
-    
+
+    if not real:
+        return obj
+
     scale = _scale_factor(real, imag, max_scalar_size, coefficient)
     component_data, vmin, vmax = _component_data(real, imag, component)
     obj["componentData"] = component_data
@@ -279,20 +282,19 @@ def get_animation(project_id: str, order: int) -> dict:
     """
     db_node_data = _db_node_elements(project_id)
     pos = db_node_data["node_coords"]
+    ids = db_node_data["node_ids"]
+
+    if not pos:
+        return {"real": [], "imag": []}
 
     if order == 0:
         N3 = len(pos)
-        real = [0.0] * N3
-        imag = [0.0] * N3
-    else:
-        db_shape = _db_node_shapes(project_id, pos, order)
-        real = db_shape["real"]
-        imag = db_shape["imag"]
-    
-    return {
-        "real": real,
-        "imag": imag,
-    }
+        return {"real": [0.0] * N3, "imag": [0.0] * N3}
+
+    db_shape = _db_node_shapes(project_id, ids, order)
+    if db_shape is None:
+        return {"real": [], "imag": []}
+    return {"real": db_shape["real"], "imag": db_shape["imag"]}
 
 
 def get_colormap(model_id: str, order: int, component: str,
