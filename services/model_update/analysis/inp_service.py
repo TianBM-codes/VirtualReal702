@@ -586,6 +586,24 @@ def _is_modal_unv_project(project_id: int, *, cursor=None) -> bool:
     return str(get_test_data_mode(int(project_id), cursor=cursor) or "").strip().lower() == "modal_unv"
 
 
+def _require_modal_project(project_id: int, *, cursor=None) -> None:
+    test_data_mode = str(get_test_data_mode(int(project_id), cursor=cursor) or "").strip().lower()
+    if test_data_mode != "modal_unv":
+        raise ValidationError(
+            "modal correlation requires a modal project",
+            {"project_id": int(project_id), "test_data_mode": test_data_mode or None, "expected": "modal_unv"},
+        )
+
+
+def _require_non_modal_project(project_id: int, *, cursor=None) -> None:
+    test_data_mode = str(get_test_data_mode(int(project_id), cursor=cursor) or "").strip().lower()
+    if test_data_mode == "modal_unv":
+        raise ValidationError(
+            "static correlation is not available for modal projects",
+            {"project_id": int(project_id), "test_data_mode": test_data_mode, "disallowed": "modal_unv"},
+        )
+
+
 def _load_test_nodes_for_matching(cursor, project_id: int):
     if _is_modal_unv_project(int(project_id), cursor=cursor):
         cursor.execute(
@@ -2375,7 +2393,7 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
         """
 
         if modal_unv_mode:
-            score_threshold = 1e-8 if min_match_score is None else float(min_match_score)
+            score_threshold = 1e-6 if min_match_score is None else float(min_match_score)
             dof_scores = _build_modal_unv_dof_amplitudes(cursor, int(project_id))
             dof_matches = []
             rejected_matches = []
@@ -4019,6 +4037,7 @@ def compute_static_correlation(
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        _require_non_modal_project(int(project_id), cursor=cursor)
         chosen_load_case_no, chosen_result_no = _resolve_static_case_selection_for_correlation(
             cursor,
             project_id,
@@ -4333,6 +4352,7 @@ def compute_modal_correlation(project_id, overwrite=True):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        _require_modal_project(int(project_id), cursor=cursor)
         cursor.execute("""
             SELECT test_node_id, test_dof, instance_name, fem_node_label, fem_dof,
                    direction_x, direction_y, direction_z

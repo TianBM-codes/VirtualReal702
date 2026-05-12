@@ -605,6 +605,11 @@ CREATE_TABLE_SQL_LIST = [
         project_id BIGINT NULL COMMENT '项目ID',
         case_name VARCHAR(200) NULL COMMENT '工况名称',
         run_no VARCHAR(100) NULL COMMENT '分析批次号',
+        source_kind VARCHAR(32) NULL COMMENT '灵敏度结果来源类型',
+        op2_path VARCHAR(1024) NULL COMMENT 'OP2结果文件路径',
+        matrix_path VARCHAR(1024) NULL COMMENT '矩阵结果文件路径',
+        bdf_path VARCHAR(1024) NULL COMMENT 'BDF文件路径',
+        metadata_path VARCHAR(1024) NULL COMMENT '元数据文件路径',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         PRIMARY KEY (id),
         KEY idx_created_at (created_at)
@@ -617,6 +622,8 @@ CREATE_TABLE_SQL_LIST = [
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
         response_code VARCHAR(100) NOT NULL COMMENT '响应编码',
         response_name VARCHAR(200) NOT NULL COMMENT '响应名称',
+        response_type VARCHAR(32) NULL COMMENT '响应类型',
+        mode_number INT NULL COMMENT '模态阶次',
         unit VARCHAR(50) NULL COMMENT '单位',
         seq_no INT NULL COMMENT '显示顺序',
         PRIMARY KEY (id),
@@ -631,6 +638,15 @@ CREATE_TABLE_SQL_LIST = [
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
         param_code VARCHAR(100) NOT NULL COMMENT '参数编码',
         param_name VARCHAR(200) NOT NULL COMMENT '参数名称',
+        param_type VARCHAR(32) NULL COMMENT '参数类型',
+        material_id BIGINT NULL COMMENT '材料ID',
+        property_id BIGINT NULL COMMENT '属性ID',
+        element_id BIGINT NULL COMMENT '单元ID',
+        source_material_id BIGINT NULL COMMENT '源材料ID',
+        source_property_id BIGINT NULL COMMENT '源属性ID',
+        initial_value DOUBLE NULL COMMENT '初始值',
+        lower_bound DOUBLE NULL COMMENT '下界',
+        upper_bound DOUBLE NULL COMMENT '上界',
         unit VARCHAR(50) NULL COMMENT '单位',
         seq_no INT NULL COMMENT '显示顺序',
         PRIMARY KEY (id),
@@ -984,6 +1000,21 @@ def ensure_tables_exist():
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        def _ensure_column(table_name, column_name, column_sql):
+            cursor.execute(
+                """
+                SELECT 1
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = %s
+                  AND TABLE_NAME = %s
+                  AND COLUMN_NAME = %s
+                LIMIT 1
+                """,
+                (DB_CONFIG["database"], table_name, column_name),
+            )
+            if cursor.fetchone() is None:
+                cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
         cursor.execute(
@@ -1004,6 +1035,86 @@ def ensure_tables_exist():
                 ADD COLUMN element_set VARCHAR(255) NULL COMMENT '单元集名称'
                 """
             )
+        _ensure_column(
+            "t_mt_py_fem_analysis_run",
+            "source_kind",
+            "source_kind VARCHAR(32) NULL COMMENT '灵敏度结果来源类型'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_analysis_run",
+            "op2_path",
+            "op2_path VARCHAR(1024) NULL COMMENT 'OP2结果文件路径'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_analysis_run",
+            "matrix_path",
+            "matrix_path VARCHAR(1024) NULL COMMENT '矩阵结果文件路径'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_analysis_run",
+            "bdf_path",
+            "bdf_path VARCHAR(1024) NULL COMMENT 'BDF文件路径'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_analysis_run",
+            "metadata_path",
+            "metadata_path VARCHAR(1024) NULL COMMENT '元数据文件路径'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_response_def",
+            "response_type",
+            "response_type VARCHAR(32) NULL COMMENT '响应类型'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_response_def",
+            "mode_number",
+            "mode_number INT NULL COMMENT '模态阶次'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "param_type",
+            "param_type VARCHAR(32) NULL COMMENT '参数类型'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "material_id",
+            "material_id BIGINT NULL COMMENT '材料ID'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "property_id",
+            "property_id BIGINT NULL COMMENT '属性ID'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "element_id",
+            "element_id BIGINT NULL COMMENT '单元ID'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "source_material_id",
+            "source_material_id BIGINT NULL COMMENT '源材料ID'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "source_property_id",
+            "source_property_id BIGINT NULL COMMENT '源属性ID'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "initial_value",
+            "initial_value DOUBLE NULL COMMENT '初始值'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "lower_bound",
+            "lower_bound DOUBLE NULL COMMENT '下界'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_parameter_def",
+            "upper_bound",
+            "upper_bound DOUBLE NULL COMMENT '上界'",
+        )
         conn.commit()
         _tables_ensured = True
     except Exception:

@@ -328,6 +328,7 @@ def _store_op2_modal_job(
         mode_numbers=mode_numbers,
         instance_name=instance_name,
         part_name=part_name,
+        all_subcases=subcase_id is None,
     )
     stored = import_fe_modal_results(
         project_id=project_id,

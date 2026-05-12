@@ -61,7 +61,7 @@ def _resolve_modal_identity(
     return resolved_instance, resolved_part
 
 
-def _load_sidecar_metadata(metadata_json: Optional[str], bdf_path: Optional[str]) -> dict:
+def _resolve_sidecar_metadata_info(metadata_json: Optional[str], bdf_path: Optional[str]) -> Tuple[dict, Optional[str]]:
     candidate = metadata_json
     if not candidate and bdf_path:
         path = Path(str(bdf_path))
@@ -69,10 +69,55 @@ def _load_sidecar_metadata(metadata_json: Optional[str], bdf_path: Optional[str]
         if sidecar.exists():
             candidate = str(sidecar)
     if not candidate:
-        return {}
+        return {}, None
     resolved = _abs_file(candidate, "metadata_json")
     with open(resolved, "r", encoding="utf-8") as fp:
-        return json.load(fp) or {}
+        return json.load(fp) or {}, resolved
+
+
+def _load_sidecar_metadata(metadata_json: Optional[str], bdf_path: Optional[str]) -> dict:
+    return _resolve_sidecar_metadata_info(metadata_json, bdf_path)[0]
+
+
+def _normalize_named_metadata_items(
+    raw_items: Sequence[Any],
+    *,
+    name_field: str,
+    output_name_field: str,
+) -> List[dict]:
+    items = list(raw_items or [])
+    normalized: List[dict] = []
+    for item in items:
+        if isinstance(item, dict):
+            copied = dict(item)
+            name = copied.get(name_field) or copied.get(output_name_field)
+            if name:
+                copied[output_name_field] = str(name)
+                normalized.append(copied)
+            continue
+        text = str(item or "").strip()
+        if text:
+            normalized.append({output_name_field: text})
+    return normalized
+
+
+def _select_named_metadata_items(
+    available_items: Sequence[dict],
+    requested_names: Optional[Sequence[str]],
+    *,
+    output_name_field: str,
+) -> List[dict]:
+    available = [dict(item) for item in (available_items or []) if item.get(output_name_field)]
+    if not requested_names:
+        return available
+    by_name = {str(item[output_name_field]): dict(item) for item in available}
+    selected: List[dict] = []
+    for name in requested_names:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        selected.append(dict(by_name.get(text) or {output_name_field: text}))
+    return selected
 
 
 def _read_op2(op2_path: str):
@@ -97,15 +142,21 @@ def _available_subcases(op2) -> List[int]:
     return sorted(int(key) for key in (getattr(op2, "eigenvectors", {}) or {}).keys())
 
 
-def _resolve_subcase(op2, requested: Optional[int]) -> int:
+def _resolve_subcases(op2, requested: Optional[int], *, all_subcases: bool = False) -> List[int]:
     subcases = _available_subcases(op2)
     if not subcases:
         raise NotFoundError("modal result blocks not found", {"op2_path": getattr(op2, "filename", None)})
     if requested is None:
-        return int(subcases[0])
+        if all_subcases:
+            return [int(subcase_id) for subcase_id in subcases]
+        return [int(subcases[0])]
     if int(requested) not in subcases:
         raise NotFoundError("modal subcase not found", {"subcase_id": int(requested), "available_subcases": subcases})
-    return int(requested)
+    return [int(requested)]
+
+
+def _resolve_subcase(op2, requested: Optional[int]) -> int:
+    return _resolve_subcases(op2, requested, all_subcases=False)[0]
 
 
 def _extract_mode_frequency(eigen_data, mode_index: int) -> Tuple[Optional[float], Optional[float], List[dict]]:
@@ -151,70 +202,75 @@ def _build_modal_modes(
     preview_node_limit: Optional[int] = None,
     instance_name: Optional[str] = None,
     part_name: Optional[str] = None,
+    all_subcases: bool = False,
 ) -> Dict[str, Any]:
     resolved_op2 = _abs_file(op2_path, "op2_path")
     resolved_bdf = _abs_file(bdf_path, "bdf_path") if bdf_path else None
     op2 = _read_op2(resolved_op2)
-    chosen_subcase = _resolve_subcase(op2, subcase_id)
-    eigen_data = op2.eigenvectors[chosen_subcase]
-    modes_array = np.asarray(getattr(eigen_data, "modes", []), dtype=np.int64)
-    if modes_array.size == 0:
-        raise NotFoundError("mode numbers not found in OP2", {"op2_path": resolved_op2, "subcase_id": chosen_subcase})
-
-    mode_indices = _extract_requested_mode_indices(modes_array, mode_numbers)
-    result_node_ids = np.asarray(eigen_data.node_gridtype[:, 0], dtype=np.int64)
-    result_node_index = {int(node_id): idx for idx, node_id in enumerate(result_node_ids.tolist())}
+    selected_subcases = _resolve_subcases(op2, subcase_id, all_subcases=all_subcases)
 
     if resolved_bdf:
         bdf_model = _load_bdf_model(resolved_bdf)
         ordered_node_ids = sorted(int(node_id) for node_id in bdf_model.nodes.keys())
     else:
-        bdf_model = None
-        ordered_node_ids = result_node_ids.tolist()
+        ordered_node_ids = None
 
-    subcase_payload = {"subcase_id": int(chosen_subcase), "modes": []}
+    subcase_payloads: List[dict] = []
     all_warnings: List[dict] = []
-    for mode_index in mode_indices:
-        mode_no = int(modes_array[mode_index])
-        mode_data = np.asarray(eigen_data.data[mode_index], dtype=np.float64)
-        frequency, eigenvalue, warnings = _extract_mode_frequency(eigen_data, mode_index)
-        all_warnings.extend(warnings)
-        nodes: List[dict] = []
-        missing_count = 0
-        for node_id in ordered_node_ids:
-            result_idx = result_node_index.get(int(node_id))
-            if result_idx is None:
-                missing_count += 1
-                continue
-            values = mode_data[result_idx]
-            node_payload = {
-                "node_id": int(node_id),
-                "u1": float(values[0]) if len(values) > 0 else 0.0,
-                "u2": float(values[1]) if len(values) > 1 else 0.0,
-                "u3": float(values[2]) if len(values) > 2 else 0.0,
-                "ur1": float(values[3]) if len(values) > 3 else 0.0,
-                "ur2": float(values[4]) if len(values) > 4 else 0.0,
-                "ur3": float(values[5]) if len(values) > 5 else 0.0,
-            }
-            if preview_node_limit is not None:
-                if len(nodes) < int(preview_node_limit):
+    for chosen_subcase in selected_subcases:
+        eigen_data = op2.eigenvectors[chosen_subcase]
+        modes_array = np.asarray(getattr(eigen_data, "modes", []), dtype=np.int64)
+        if modes_array.size == 0:
+            raise NotFoundError("mode numbers not found in OP2", {"op2_path": resolved_op2, "subcase_id": chosen_subcase})
+
+        mode_indices = _extract_requested_mode_indices(modes_array, mode_numbers)
+        result_node_ids = np.asarray(eigen_data.node_gridtype[:, 0], dtype=np.int64)
+        result_node_index = {int(node_id): idx for idx, node_id in enumerate(result_node_ids.tolist())}
+        active_ordered_node_ids = ordered_node_ids or result_node_ids.tolist()
+
+        subcase_payload = {"subcase_id": int(chosen_subcase), "modes": []}
+        for mode_index in mode_indices:
+            mode_no = int(modes_array[mode_index])
+            mode_data = np.asarray(eigen_data.data[mode_index], dtype=np.float64)
+            frequency, eigenvalue, warnings = _extract_mode_frequency(eigen_data, mode_index)
+            all_warnings.extend(warnings)
+            nodes: List[dict] = []
+            missing_count = 0
+            for node_id in active_ordered_node_ids:
+                result_idx = result_node_index.get(int(node_id))
+                if result_idx is None:
+                    missing_count += 1
+                    continue
+                values = mode_data[result_idx]
+                node_payload = {
+                    "node_id": int(node_id),
+                    "u1": float(values[0]) if len(values) > 0 else 0.0,
+                    "u2": float(values[1]) if len(values) > 1 else 0.0,
+                    "u3": float(values[2]) if len(values) > 2 else 0.0,
+                    "ur1": float(values[3]) if len(values) > 3 else 0.0,
+                    "ur2": float(values[4]) if len(values) > 4 else 0.0,
+                    "ur3": float(values[5]) if len(values) > 5 else 0.0,
+                }
+                if preview_node_limit is not None:
+                    if len(nodes) < int(preview_node_limit):
+                        nodes.append(node_payload)
+                else:
                     nodes.append(node_payload)
-            else:
-                nodes.append(node_payload)
-        if missing_count:
-            all_warnings.append({
-                "code": "MODE_NODE_MAPPING_INCOMPLETE",
-                "message": f"mode {mode_no} has {missing_count} missing nodes after node-id alignment",
+            if missing_count:
+                all_warnings.append({
+                    "code": "MODE_NODE_MAPPING_INCOMPLETE",
+                    "message": f"subcase {chosen_subcase} mode {mode_no} has {missing_count} missing nodes after node-id alignment",
+                })
+            subcase_payload["modes"].append({
+                "mode_no": mode_no,
+                "frequency": frequency,
+                "eigenvalue": eigenvalue,
+                "node_count": int(len(active_ordered_node_ids) - missing_count),
+                "nodes": nodes,
+                "instance_name": instance_name,
+                "part_name": part_name,
             })
-        subcase_payload["modes"].append({
-            "mode_no": mode_no,
-            "frequency": frequency,
-            "eigenvalue": eigenvalue,
-            "node_count": int(len(ordered_node_ids) - missing_count),
-            "nodes": nodes,
-            "instance_name": instance_name,
-            "part_name": part_name,
-        })
+        subcase_payloads.append(subcase_payload)
 
     return {
         "workflow": "op2_modal",
@@ -223,7 +279,7 @@ def _build_modal_modes(
             "bdf_path": resolved_bdf,
             "mode": "bdf_plus_op2" if resolved_bdf else "op2_only",
         },
-        "subcases": [subcase_payload],
+        "subcases": subcase_payloads,
         "warnings": all_warnings,
     }
 
@@ -258,6 +314,7 @@ def build_modal_import_payload(
     mode_numbers: Optional[Sequence[int]] = None,
     instance_name: Optional[str] = None,
     part_name: Optional[str] = None,
+    all_subcases: bool = False,
 ) -> dict:
     resolved_instance_name, resolved_part_name = _resolve_modal_identity(instance_name, part_name, bdf_path)
     payload = _build_modal_modes(
@@ -268,37 +325,53 @@ def build_modal_import_payload(
         preview_node_limit=None,
         instance_name=resolved_instance_name,
         part_name=resolved_part_name,
+        all_subcases=all_subcases,
     )
-    modes: List[dict] = []
+    mode_refs: List[Tuple[int, dict]] = []
     for subcase in payload["subcases"]:
         for mode in subcase["modes"]:
-            nodes = []
-            for node in mode.pop("nodes", []):
-                nodes.append({
-                    "instance_name": resolved_instance_name,
-                    "part_name": resolved_part_name,
-                    "fem_node_label": int(node["node_id"]),
-                    "u1": node["u1"],
-                    "u2": node["u2"],
-                    "u3": node["u3"],
-                    "extra_json": {
-                        "node_id": int(node["node_id"]),
-                        "ur1": node["ur1"],
-                        "ur2": node["ur2"],
-                        "ur3": node["ur3"],
-                        "subcase_id": int(subcase["subcase_id"]),
-                    },
-                })
-            modes.append({
-                "mode_no": int(mode["mode_no"]),
-                "frequency": mode.get("frequency"),
-                "nodes": nodes,
+            mode_refs.append((int(subcase["subcase_id"]), mode))
+
+    original_mode_nos = [int(mode["mode_no"]) for _, mode in mode_refs]
+    renumber_modes = len(original_mode_nos) != len(set(original_mode_nos))
+    warnings = list(payload.get("warnings") or [])
+    if renumber_modes:
+        warnings.append({
+            "code": "MODE_NO_RENUMBERED",
+            "message": "duplicate mode numbers were found across selected subcases; imported mode_no values were renumbered sequentially",
+        })
+
+    modes: List[dict] = []
+    for import_mode_no, (source_subcase_id, mode) in enumerate(mode_refs, start=1):
+        original_mode_no = int(mode["mode_no"])
+        nodes = []
+        for node in mode.pop("nodes", []):
+            nodes.append({
+                "instance_name": resolved_instance_name,
+                "part_name": resolved_part_name,
+                "fem_node_label": int(node["node_id"]),
+                "u1": node["u1"],
+                "u2": node["u2"],
+                "u3": node["u3"],
+                "extra_json": {
+                    "node_id": int(node["node_id"]),
+                    "ur1": node["ur1"],
+                    "ur2": node["ur2"],
+                    "ur3": node["ur3"],
+                    "subcase_id": int(source_subcase_id),
+                    "source_mode_no": original_mode_no,
+                },
             })
+        modes.append({
+            "mode_no": int(import_mode_no) if renumber_modes else original_mode_no,
+            "frequency": mode.get("frequency"),
+            "nodes": nodes,
+        })
     return {
         "workflow": "op2_modal_import_payload",
         "source": payload["source"],
         "modes": modes,
-        "warnings": payload["warnings"],
+        "warnings": warnings,
     }
 
 
@@ -726,19 +799,30 @@ def preview_op2_sensitivity(
 ) -> dict:
     result_path, source_kind = _resolve_sensitivity_result_source(op2_path=op2_path, matrix_path=matrix_path)
     resolved_bdf = _abs_file(bdf_path, "bdf_path") if bdf_path else None
-    metadata = _load_sidecar_metadata(metadata_json, resolved_bdf)
+    metadata, resolved_metadata_path = _resolve_sidecar_metadata_info(metadata_json, resolved_bdf)
 
-    raw_parameter_names = list(parameter_names or metadata.get("parameters") or [])
-    if raw_parameter_names and isinstance(raw_parameter_names[0], dict):
-        parameter_names = [str(item.get("name")) for item in raw_parameter_names if item.get("name")]
-    else:
-        parameter_names = [str(item) for item in raw_parameter_names]
-
-    raw_response_names = list(response_names or metadata.get("responses") or [])
-    if raw_response_names and isinstance(raw_response_names[0], dict):
-        response_names = [str(item.get("name")) for item in raw_response_names if item.get("name")]
-    else:
-        response_names = [str(item) for item in raw_response_names]
+    available_parameter_columns = _normalize_named_metadata_items(
+        metadata.get("parameters") or [],
+        name_field="name",
+        output_name_field="parameter_name",
+    )
+    available_response_rows = _normalize_named_metadata_items(
+        metadata.get("responses") or [],
+        name_field="name",
+        output_name_field="response_name",
+    )
+    selected_parameter_columns = _select_named_metadata_items(
+        available_parameter_columns,
+        parameter_names,
+        output_name_field="parameter_name",
+    )
+    selected_response_rows = _select_named_metadata_items(
+        available_response_rows,
+        response_names,
+        output_name_field="response_name",
+    )
+    parameter_names = [str(item["parameter_name"]) for item in selected_parameter_columns]
+    response_names = [str(item["response_name"]) for item in selected_response_rows]
 
     expected_shape = None
     if response_names and parameter_names:
@@ -769,16 +853,30 @@ def preview_op2_sensitivity(
     matrix = np.asarray(chosen["matrix"], dtype=np.float64)
     if not response_names:
         response_names = chosen.get("row_labels") or [f"RESP_{idx + 1}" for idx in range(matrix.shape[0])]
+        selected_response_rows = [{"response_name": str(name)} for name in response_names]
         warnings.append({
             "code": "SENSITIVITY_LABELS_INCOMPLETE",
             "message": "response names were inferred heuristically",
         })
+    else:
+        selected_response_rows = _select_named_metadata_items(
+            available_response_rows,
+            response_names,
+            output_name_field="response_name",
+        )
     if not parameter_names:
         parameter_names = chosen.get("column_labels") or [f"PARAM_{idx + 1}" for idx in range(matrix.shape[1])]
+        selected_parameter_columns = [{"parameter_name": str(name)} for name in parameter_names]
         warnings.append({
             "code": "SENSITIVITY_LABELS_INCOMPLETE",
             "message": "parameter names were inferred heuristically",
         })
+    else:
+        selected_parameter_columns = _select_named_metadata_items(
+            available_parameter_columns,
+            parameter_names,
+            output_name_field="parameter_name",
+        )
 
     value_mode = "unknown"
     warnings.append({
@@ -791,6 +889,7 @@ def preview_op2_sensitivity(
             "op2_path": result_path if source_kind == "op2" else None,
             "matrix_path": result_path if source_kind != "op2" else None,
             "bdf_path": resolved_bdf,
+            "metadata_path": resolved_metadata_path,
             "source_kind": source_kind,
             "candidate_path": chosen.get("path"),
         },
@@ -798,6 +897,8 @@ def preview_op2_sensitivity(
         "value_mode": value_mode,
         "row_labels": list(response_names),
         "column_labels": list(parameter_names),
+        "response_rows": selected_response_rows,
+        "parameter_columns": selected_parameter_columns,
         "matrix_preview": matrix.tolist(),
         "warnings": warnings,
     }
@@ -826,9 +927,10 @@ def store_op2_sensitivity(
     from services.model_update.analysis import sensitivity_service as _sens
 
     matrix_payload = {
-        "response_rows": [{"response_name": name} for name in preview["row_labels"]],
-        "parameter_columns": [{"parameter_name": name} for name in preview["column_labels"]],
+        "response_rows": [dict(item) for item in (preview.get("response_rows") or [])],
+        "parameter_columns": [dict(item) for item in (preview.get("parameter_columns") or [])],
         "matrix": preview["matrix_preview"],
+        "source": dict(preview.get("source") or {}),
     }
     stored = _sens._persist_sensitivity_matrix(
         project_id=int(project_id),
@@ -893,18 +995,25 @@ def export_sensitivity_to_vtu(
             "available_response_names": row_names,
         }) from exc
 
-    metadata = _load_sidecar_metadata(metadata_json, input_bdf)
-    parameters = list(metadata.get("parameters") or [])
-    if not parameters:
-        raise ValidationError(
-            "SOL200 metadata parameters are required for VTU export",
-            {"metadata_json": metadata_json, "input_bdf": input_bdf},
-        )
+    stored_parameter_columns = [dict(item) for item in (stored.get("parameter_columns") or [])]
     parameter_by_name = {
-        str(item.get("name")): dict(item)
-        for item in parameters
-        if isinstance(item, dict) and item.get("name")
+        str(item.get("param_name") or item.get("parameter_name") or ""): dict(item)
+        for item in stored_parameter_columns
+        if str(item.get("param_name") or item.get("parameter_name") or "").strip()
     }
+    if not parameter_by_name:
+        metadata = _load_sidecar_metadata(metadata_json, input_bdf)
+        parameters = list(metadata.get("parameters") or [])
+        parameter_by_name = {
+            str(item.get("name")): dict(item)
+            for item in parameters
+            if isinstance(item, dict) and item.get("name")
+        }
+    if not parameter_by_name:
+        raise ValidationError(
+            "stored sensitivity parameter metadata is required for VTU export",
+            {"project_id": int(project_id), "batch_no": str(batch_no), "metadata_json": metadata_json},
+        )
 
     coords, cell_blocks, cell_element_ids, _, bdf_model = _build_mesh_from_bdf(_abs_file(input_bdf, "input_bdf"))
     cell_data_blocks: List[np.ndarray] = []
@@ -921,7 +1030,7 @@ def export_sensitivity_to_vtu(
                 meta = parameter_by_name.get(str(param_name))
                 if not meta:
                     continue
-                ptype = str(meta.get("type") or "").upper()
+                ptype = str(meta.get("param_type") or meta.get("type") or "").upper()
                 if meta.get("element_id") is not None and int(meta["element_id"]) == int(element_id):
                     candidates.append(float(matrix[row_index, col_idx]))
                 elif ptype == "H" and meta.get("property_id") is not None and pid == int(meta["property_id"]):

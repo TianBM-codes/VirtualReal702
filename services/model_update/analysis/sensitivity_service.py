@@ -745,6 +745,41 @@ def _parameter_display_names(parameter_columns: List[dict]) -> List[str]:
     return display_names
 
 
+def _meta_text(row: dict, *keys: str) -> Optional[str]:
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _meta_int(row: dict, *keys: str) -> Optional[int]:
+    for key in keys:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except Exception:
+            continue
+    return None
+
+
+def _meta_float(row: dict, *keys: str) -> Optional[float]:
+    for key in keys:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return None
+
+
 def _load_dsa_normalized_sensitivity_matrix(**kwargs) -> dict:
     from .bayesian_service import build_dsa_normalized_sensitivity_matrix
 
@@ -1810,6 +1845,11 @@ def _upsert_analysis_run(
         project_id: int,
         batch_no: str,
         case_name: str,
+        source_kind: Optional[str] = None,
+        op2_path: Optional[str] = None,
+        matrix_path: Optional[str] = None,
+        bdf_path: Optional[str] = None,
+        metadata_path: Optional[str] = None,
 ) -> int:
     analysis_run_ids = _load_existing_analysis_run_ids(
         cursor,
@@ -1828,19 +1868,43 @@ def _upsert_analysis_run(
         cursor.execute(
             """
             UPDATE t_mt_py_fem_analysis_run
-            SET case_name = %s
+            SET case_name = %s,
+                source_kind = %s,
+                op2_path = %s,
+                matrix_path = %s,
+                bdf_path = %s,
+                metadata_path = %s
             WHERE id = %s
             """,
-            (str(case_name), keep_id),
+            (
+                str(case_name),
+                str(source_kind) if source_kind else None,
+                op2_path,
+                matrix_path,
+                bdf_path,
+                metadata_path,
+                keep_id,
+            ),
         )
         return keep_id
 
     cursor.execute(
         """
-        INSERT INTO t_mt_py_fem_analysis_run (project_id, case_name, run_no)
-        VALUES (%s, %s, %s)
+        INSERT INTO t_mt_py_fem_analysis_run (
+            project_id, case_name, run_no, source_kind, op2_path, matrix_path, bdf_path, metadata_path
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (int(project_id), str(case_name), str(batch_no)),
+        (
+            int(project_id),
+            str(case_name),
+            str(batch_no),
+            str(source_kind) if source_kind else None,
+            op2_path,
+            matrix_path,
+            bdf_path,
+            metadata_path,
+        ),
     )
     return int(cursor.lastrowid)
 
@@ -1855,6 +1919,7 @@ def _persist_sensitivity_matrix(
     response_rows = list(matrix_payload.get("response_rows") or [])
     parameter_columns = list(matrix_payload.get("parameter_columns") or [])
     matrix = np.asarray(matrix_payload.get("matrix") or [], dtype=np.float64)
+    source = dict(matrix_payload.get("source") or {})
 
     if matrix.shape != (len(response_rows), len(parameter_columns)):
         raise ValidationError(
@@ -1877,31 +1942,65 @@ def _persist_sensitivity_matrix(
             project_id=project_id,
             batch_no=batch_no,
             case_name=case_name,
+            source_kind=_meta_text(source, "source_kind"),
+            op2_path=_meta_text(source, "op2_path"),
+            matrix_path=_meta_text(source, "matrix_path"),
+            bdf_path=_meta_text(source, "bdf_path"),
+            metadata_path=_meta_text(source, "metadata_path"),
         )
 
         response_ids: List[int] = []
         for index, response_name in enumerate(response_names, start=1):
+            row_meta = dict(response_rows[index - 1] or {})
             cursor.execute(
                 """
                 INSERT INTO t_mt_py_fem_response_def (
-                    project_id, analysis_run_id, response_code, response_name, unit, seq_no
+                    project_id, analysis_run_id, response_code, response_name, response_type, mode_number, unit, seq_no
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (project_id, analysis_run_id, f"R{index:04d}", str(response_name), None, index),
+                (
+                    project_id,
+                    analysis_run_id,
+                    f"R{index:04d}",
+                    str(response_name),
+                    _meta_text(row_meta, "response_type", "type"),
+                    _meta_int(row_meta, "mode_number"),
+                    _meta_text(row_meta, "unit"),
+                    index,
+                ),
             )
             response_ids.append(int(cursor.lastrowid))
 
         parameter_ids: List[int] = []
         for index, parameter_name in enumerate(parameter_names, start=1):
+            column_meta = dict(parameter_columns[index - 1] or {})
             cursor.execute(
                 """
                 INSERT INTO t_mt_py_fem_parameter_def (
-                    project_id, analysis_run_id, param_code, param_name, unit, seq_no
+                    project_id, analysis_run_id, param_code, param_name, param_type,
+                    material_id, property_id, element_id, source_material_id, source_property_id,
+                    initial_value, lower_bound, upper_bound, unit, seq_no
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (project_id, analysis_run_id, f"P{index:04d}", str(parameter_name), None, index),
+                (
+                    project_id,
+                    analysis_run_id,
+                    f"P{index:04d}",
+                    str(parameter_name),
+                    _meta_text(column_meta, "param_type", "type"),
+                    _meta_int(column_meta, "material_id"),
+                    _meta_int(column_meta, "property_id"),
+                    _meta_int(column_meta, "element_id"),
+                    _meta_int(column_meta, "source_material_id"),
+                    _meta_int(column_meta, "source_property_id"),
+                    _meta_float(column_meta, "initial_value", "initial"),
+                    _meta_float(column_meta, "lower_bound", "lower"),
+                    _meta_float(column_meta, "upper_bound", "upper"),
+                    _meta_text(column_meta, "unit"),
+                    index,
+                ),
             )
             parameter_ids.append(int(cursor.lastrowid))
 
@@ -1934,6 +2033,7 @@ def _persist_sensitivity_matrix(
             "response_count": len(response_names),
             "parameter_count": len(parameter_names),
             "point_count": int(matrix.size),
+            "source": source,
         }
     except Exception:
         conn.rollback()
@@ -1952,7 +2052,7 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
     try:
         cursor.execute(
             """
-            SELECT id, project_id, case_name, run_no, created_at
+            SELECT id, project_id, case_name, run_no, source_kind, op2_path, matrix_path, bdf_path, metadata_path, created_at
             FROM t_mt_py_fem_analysis_run
             WHERE project_id = %s AND run_no = %s
             ORDER BY id DESC
@@ -1970,7 +2070,7 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
         analysis_run_id = int(analysis_run["id"])
         cursor.execute(
             """
-            SELECT id, response_code, response_name, seq_no
+            SELECT id, response_code, response_name, response_type, mode_number, unit, seq_no
             FROM t_mt_py_fem_response_def
             WHERE analysis_run_id = %s
             ORDER BY seq_no ASC, id ASC
@@ -1981,7 +2081,8 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
 
         cursor.execute(
             """
-            SELECT id, param_code, param_name, seq_no
+            SELECT id, param_code, param_name, param_type, material_id, property_id, element_id,
+                   source_material_id, source_property_id, initial_value, lower_bound, upper_bound, unit, seq_no
             FROM t_mt_py_fem_parameter_def
             WHERE analysis_run_id = %s
             ORDER BY seq_no ASC, id ASC
@@ -2024,6 +2125,15 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
         "batch_no": str(analysis_run["run_no"]),
         "case_name": analysis_run.get("case_name"),
         "created_at": analysis_run.get("created_at").isoformat() if analysis_run.get("created_at") else None,
+        "source": {
+            "source_kind": analysis_run.get("source_kind"),
+            "op2_path": analysis_run.get("op2_path"),
+            "matrix_path": analysis_run.get("matrix_path"),
+            "bdf_path": analysis_run.get("bdf_path"),
+            "metadata_path": analysis_run.get("metadata_path"),
+        },
+        "response_rows": response_rows,
+        "parameter_columns": parameter_rows,
         "row_names": row_names,
         "col_names": col_names,
         "matrix": matrix,
