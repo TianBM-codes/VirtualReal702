@@ -206,11 +206,20 @@ def region_face_mask(
     if etype_arr is None or elem_row_arr is None:
         return None
 
-    if scheme == "section":
-        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
-    elif scheme == "etype":
-        labels = _labels_from_etype(etype_arr)
-    else:
+    try:
+        if scheme == "section":
+            labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+        elif scheme == "etype":
+            labels = _labels_from_etype(etype_arr)
+        elif scheme in ("material", "section_type"):
+            attr_name = "material_name" if scheme == "material" else "section_type"
+            labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
+        elif scheme == "elset":
+            # _labels_from_elsets returns the set name or "other"; region IS the set name
+            labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, [region])
+        else:
+            return None
+    except Exception:
         return None
 
     return np.array([l == region for l in labels], dtype=bool)
