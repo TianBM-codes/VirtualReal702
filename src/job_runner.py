@@ -905,6 +905,20 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
     _update_project_geom_status(project_id, "ready")
     _log_job(project_id, "step", "BDF 几何解析完成，已就绪", stage="l2_done")
     logger.info("[%s] BDF project ready", project_id)
+
+    # ── Auto model-update BDF import ──────────────────────────────────────────
+    _log_job(project_id, "step", "自动导入 BDF 到 model_update", stage="mu_import_bdf")
+    try:
+        from services.model_update.importers.bdf_service import import_bdf_data
+        import_bdf_data(bdf_path, int(project_id), clear_before_insert=True)
+        _log_job(project_id, "step", "BDF 导入 model_update 完成", stage="mu_import_bdf")
+        logger.info("[%s] model_update BDF import done", project_id)
+    except Exception as exc:
+        _log_job(project_id, "warning",
+                 "model_update BDF 导入失败（非致命）：{}".format(exc),
+                 stage="mu_import_bdf")
+        logger.warning("[%s] model_update BDF import failed: %s", project_id, exc)
+
     return True
 
 
@@ -1064,7 +1078,8 @@ def _cleanup_result_group(workspace: str, result_group: str) -> None:
 
 
 def _run_op2_result_group(project_id: str, result_group: str,
-                          op2_path: str, workspace: str) -> bool:
+                          op2_path: str, workspace: str,
+                          parse_options_json: str = None) -> bool:
     label = "{}/{}".format(project_id, result_group)
     _log_job(project_id, "step",
              "[{}] OP2 结果打包启动".format(result_group), stage="rg_op2")
@@ -1083,10 +1098,76 @@ def _run_op2_result_group(project_id: str, result_group: str,
                  stage="rg_op2")
         logger.error("[%s] OP2 result_group '%s' failed (rc=%d)", project_id, result_group, rc)
         return False
+
     _update_result_group_status(project_id, result_group, "ready")
     _log_job(project_id, "step",
              "[{}] OP2 结果打包完成".format(result_group), stage="rg_op2")
     logger.info("[%s] OP2 result_group '%s' ready", project_id, result_group)
+
+    # ── Auto model-update OP2 modal import ────────────────────────────────────
+    parse_opts = {}
+    if parse_options_json:
+        try:
+            parse_opts = json.loads(parse_options_json)
+        except Exception:
+            pass
+    modal_cfg = parse_opts.get("modal_import")
+    if modal_cfg is not None:
+        _log_job(project_id, "step",
+                 "[{}] 自动导入 OP2 模态到 model_update".format(result_group),
+                 stage="mu_import_op2_modal")
+        try:
+            # bdf_path: modal_cfg 里可显式指定，否则从 projects.inp_path 取
+            bdf_path_mu = modal_cfg.get("bdf_path")
+            if not bdf_path_mu:
+                with _connect() as _c:
+                    _row = _c.execute(
+                        "SELECT inp_path FROM projects WHERE project_id=?", (project_id,)
+                    ).fetchone()
+                    bdf_path_mu = _row["inp_path"] if _row else None
+            from services.model_update.importers.op2_service import build_modal_import_payload
+            from services.model_update.analysis.inp_service import import_fe_modal_results
+            from webapi.background_jobs import submit_background_task
+
+            def _do_import():
+                payload = build_modal_import_payload(
+                    op2_path=op2_path,
+                    bdf_path=bdf_path_mu,
+                    subcase_id=modal_cfg.get("subcase_id"),
+                    mode_numbers=modal_cfg.get("mode_numbers"),
+                    instance_name=modal_cfg.get("instance_name"),
+                    part_name=modal_cfg.get("part_name"),
+                )
+                import_fe_modal_results(
+                    project_id=int(project_id),
+                    overwrite=modal_cfg.get("overwrite", True),
+                    modes=payload["modes"],
+                )
+                return payload
+
+            if modal_cfg.get("async_submit", True):
+                submit_background_task(
+                    task_type="import.op2.modal.store",
+                    fn=lambda **_: _do_import(),
+                    kwargs={},
+                )
+                _log_job(project_id, "step",
+                         "[{}] OP2 模态导入已异步提交".format(result_group),
+                         stage="mu_import_op2_modal")
+            else:
+                payload = _do_import()
+                _log_job(project_id, "step",
+                         "[{}] OP2 模态导入 model_update 完成：{}阶".format(
+                             result_group, len(payload.get("modes") or [])),
+                         stage="mu_import_op2_modal")
+                logger.info("[%s] model_update OP2 modal import done (modes=%d)",
+                            project_id, len(payload.get("modes") or []))
+        except Exception as exc:
+            _log_job(project_id, "warning",
+                     "[{}] model_update OP2 模态导入失败（非致命）：{}".format(result_group, exc),
+                     stage="mu_import_op2_modal")
+            logger.warning("[%s] model_update OP2 modal import failed: %s", project_id, exc)
+
     return True
 
 
@@ -1103,7 +1184,8 @@ def _run_result_group(project_id: str, result_group: str,
         return False
 
     if source_path.lower().endswith(".op2"):
-        return _run_op2_result_group(project_id, result_group, source_path, workspace)
+        return _run_op2_result_group(project_id, result_group, source_path, workspace,
+                                     parse_options_json=parse_options_json)
 
     parse_opts = {}
     if parse_options_json:
