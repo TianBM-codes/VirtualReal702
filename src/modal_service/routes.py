@@ -11,10 +11,10 @@ POST  /api/model/testMesh/colormap
 
 import logging
 
-from typing import Union
+from typing import Optional, Union
 
 from fastapi import APIRouter
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from . import service
 from ..l3.api.response import ok
@@ -31,7 +31,7 @@ class _ProjectRequest(BaseModel):
 
 
 class GeometryRequest(_ProjectRequest):
-    order: int
+    order: Optional[int] = 0
     max_scalar_size: float = 1.0
     coefficient: float = 1.0
     component: str = "usum"
@@ -43,7 +43,14 @@ class ModelSelectRequest(_ProjectRequest):
 
 
 class AnimationRequest(_ProjectRequest):
-    order: int
+    order: Optional[int] = 0
+
+    @field_validator("order", mode="before")
+    @classmethod
+    def _coerce_order(cls, v):
+        if v == "" or v is None:
+            return 0
+        return v
 
 
 class ColormapRequest(AnimationRequest):
