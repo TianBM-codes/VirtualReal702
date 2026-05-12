@@ -143,7 +143,7 @@ def _db_node_shapes(project_id: str, node_ids: list, order: int) -> Optional[dic
     conn = get_connection()
     _cursor = conn.cursor()
     try:
-        freq_sql = """SELECT f.mode_no, f.frequency, s.modal_shape FROM t_mt_py_test_frequency f LEFT JOIN t_mt_py_test_modal_shape s ON f.pid=s.pid AND f.mode_no=s.mode_no WHERE f.pid=%s AND f.mode_no=%s ORDER BY f.mode_no"""
+        freq_sql = """SELECT f.mode_no, f.frequency, s.modal_shape FROM t_mt_py_test_modal_frequency f LEFT JOIN t_mt_py_test_modal_shape s ON f.pid=s.pid AND f.mode_no=s.mode_no WHERE f.pid=%s AND f.mode_no=%s ORDER BY f.mode_no"""
         _cursor.execute(freq_sql, (f"{project_id}", order,))
         modal = _cursor.fetchone()
         if modal is None or modal[2] is None:
@@ -176,7 +176,7 @@ def _db_frequency(project_id: str) -> list:
     conn = get_connection()
     _cursor = conn.cursor()
     try:
-        freq_sql = """SELECT mode_no, frequency FROM t_mt_py_test_frequency WHERE pid=%s ORDER BY mode_no"""
+        freq_sql = """SELECT mode_no, frequency FROM t_mt_py_test_modal_frequency WHERE pid=%s ORDER BY mode_no"""
         """读取模态阶次对应的频率数据
         """
         _cursor.execute(freq_sql, (f"{project_id}",))
@@ -184,7 +184,7 @@ def _db_frequency(project_id: str) -> list:
         modal_shape = [{"label": "Undeformed", "value": 0, "show_name": ""}]
         for ii, iter_modal in enumerate(modal):
             obj = {"label": f"EMA {iter_modal[0]} - {iter_modal[1]} Hz", "value": iter_modal[0]}
-            obj["show_name"] = f"Mode {obj["value"]}"
+            obj["show_name"] = f"Mode {obj['value']}"
             modal_shape.append(obj)
         return modal_shape
     except Exception as e:
