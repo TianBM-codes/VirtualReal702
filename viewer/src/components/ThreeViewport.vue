@@ -2065,7 +2065,18 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
 
 function stopModalAnim() {
   _stopModalAnim()
+  // 把 globalPositions 和边线都归位到原始坐标
+  // shader 模式 RAF 最后一帧更新了 globalPositions/边线但没还原，precompute 同理
+  for (const inst of Object.keys(store.instanceMeshes)) {
+    const im   = store.instanceMeshes[inst]
+    const orig = origPositions[inst]
+    if (!im || !orig) continue
+    im.globalPositions.set(orig)
+    _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
+    _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+  }
   _rebuildBvhAll()
+  requestRender()
   store.setStatus('Modal animation stopped', 'ok')
 }
 
