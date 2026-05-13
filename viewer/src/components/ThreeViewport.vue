@@ -1929,7 +1929,12 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
         const patchedMat = c.mesh.material.clone()
         patchedMat.onBeforeCompile = shader => {
           Object.assign(shader.uniforms, sharedUniforms)
-          shader.vertexShader = 'attribute vec3 a_displacement;\n' + shader.vertexShader
+          // 声明 attribute + uniform，让 GLSL 编译器认识这些变量
+          shader.vertexShader =
+            'attribute vec3 a_displacement;\n' +
+            'uniform float u_modal_scale;\n' +
+            'uniform float u_modal_sin;\n' +
+            shader.vertexShader
           shader.vertexShader = shader.vertexShader.replace(
             '#include <begin_vertex>',
             'vec3 transformed = position + a_displacement * u_modal_scale * u_modal_sin;'
