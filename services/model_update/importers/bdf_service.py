@@ -4,6 +4,7 @@ import numpy as np
 
 from db import get_connection, ensure_tables_exist, clear_fem_tables
 from BDFParserPyNastran import BDFParser
+from services.model_update.analysis.console_log_service import safe_write_console_event
 from services.model_update.analysis.inp_service import _save_octree_cache
 from services.model_update.analysis.project_config_service import save_fem_model_dimensions, upsert_project_config
 
@@ -389,13 +390,40 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
 
         conn.commit()
 
-        return {
+        density_defined_count = sum(
+            1 for _mat_id, rho, _e_value, _nu, _ge in bdf_info.get("isotropic_list", [])
+            if rho is not None
+        )
+        result = {
             "file_path": os.path.abspath(file_path),
             "cleared_before_insert": clear_before_insert,
+            "material_count": len(bdf_info.get("materials_overview", [])),
+            "isotropic_material_count": len(bdf_info.get("isotropic_list", [])),
+            "isotropic_density_defined_count": int(density_defined_count),
+            "property_count": len(bdf_info.get("property_overview", [])),
+            "shell_property_count": len(bdf_info.get("shell_properties", [])),
+            "beam_property_count": len(bdf_info.get("bar_properties", [])),
+            "solid_property_count": len(bdf_info.get("solid_properties", [])),
+            "layered_property_count": len(bdf_info.get("layered_properties", [])),
+            "boundary_count": len(bdf_info.get("boundary", [])),
             "octree_cache_path": os.path.abspath(cache_path),
             "octree_node_count": int(len(octree_node_data["point_labels"])),
             "project_config": project_config,
         }
+        safe_write_console_event(
+            int(project_id),
+            "BDF导入完成",
+            [
+                f"文件: {os.path.abspath(file_path)}",
+                f"材料数: {result['material_count']}",
+                f"各向同性材料数: {result['isotropic_material_count']}",
+                f"已解析密度的各向同性材料数: {result['isotropic_density_defined_count']}",
+                f"属性数: {result['property_count']}",
+                f"节点数: {result['octree_node_count']}",
+            ],
+        )
+
+        return result
 
     except Exception:
         conn.rollback()

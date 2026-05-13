@@ -331,6 +331,24 @@ class BDFParser(object):
         ortho2d_list = []
         aniso3d_list = []
 
+        def _to_float_or_none(value):
+            if value in (None, ''):
+                return None
+            return float(value)
+
+        def _material_scalar(material, attr_name, *, raw_field_index=None):
+            value = _to_float_or_none(getattr(material, attr_name, None))
+            if value is not None:
+                return value
+            if raw_field_index is not None:
+                try:
+                    raw_fields = material.raw_fields()
+                    if len(raw_fields) > raw_field_index:
+                        return _to_float_or_none(raw_fields[raw_field_index])
+                except Exception:
+                    return None
+            return None
+
 
         for mat_id, mat in sorted(self.bdf.materials.items()):
             # =========================
@@ -340,10 +358,10 @@ class BDFParser(object):
                 materials_overview.append((mat_id, "ISOTROPIC"))
                 isotropic_list.append((
                     mat_id,
-                    mat.rho,  # RHO
-                    mat.e,  # E
-                    mat.nu,  # NU
-                    mat.ge  # GE
+                    _material_scalar(mat, "rho", raw_field_index=5),  # RHO
+                    _material_scalar(mat, "e", raw_field_index=2),  # E
+                    _material_scalar(mat, "nu", raw_field_index=4),  # NU
+                    _material_scalar(mat, "ge", raw_field_index=8)  # GE
                 ))
 
             # =========================
@@ -368,14 +386,14 @@ class BDFParser(object):
                 materials_overview.append((mat_id, "ORTHO2D"))
                 ortho2d_list.append((
                     mat_id,
-                    mat.rho,  # RHO
-                    mat.e11,  # EX
-                    mat.e22,  # EY
-                    mat.g12,  # GXY
-                    mat.nu12,  # NUXY
+                    _material_scalar(mat, "rho", raw_field_index=8),  # RHO
+                    _material_scalar(mat, "e11", raw_field_index=2),  # EX
+                    _material_scalar(mat, "e22", raw_field_index=3),  # EY
+                    _material_scalar(mat, "g12", raw_field_index=5),  # GXY
+                    _material_scalar(mat, "nu12", raw_field_index=4),  # NUXY
                     g1z,  # GXZ
                     g2z,  # GYZ
-                    mat.ge  # GE
+                    _material_scalar(mat, "ge", raw_field_index=19)  # GE
                 ))
 
             # =========================
