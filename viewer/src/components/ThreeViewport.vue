@@ -65,6 +65,7 @@ let _deformAnimActive = false  // animation loop guard
 // Modal harmonic animation state
 let _modalAnimRafId      = null   // requestAnimationFrame handle (shader mode)
 let _modalAnimActive     = false  // precompute loop guard
+let _modalAnimGeneration = 0      // 每次 stop 递增，用于中断正在加载的 startModalAnim
 let _modalShaderRefs     = []     // { uniforms } refs, one per chunk (shader mode)
 let _modalOrigMaterials  = []     // { inst, chunkIdx, mat } original materials to restore
 let _modalFrameBuffers   = {}     // instName → Float32Array[] (precompute mode)
@@ -1856,9 +1857,8 @@ function stopDeformAnim() {
 // ── Modal Harmonic Animation ──────────────────────────────────────────────
 
 function _stopModalAnim() {
-  // Cancel shader-mode RAF loop
+  _modalAnimGeneration++            // 令正在加载中的 startModalAnim 放弃
   if (_modalAnimRafId !== null) { cancelAnimationFrame(_modalAnimRafId); _modalAnimRafId = null }
-  // Stop precompute loop
   _modalAnimActive = false
 
   // Restore original materials (shader mode)
@@ -1890,6 +1890,8 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
 
   // speed：每秒完成的完整周期数，默认 1.0
   const cyclesPerSec = speed ?? 1.0
+  // 记录当前 generation，加载完成后若已变化说明期间被 stop，直接放弃
+  const myGen = ++_modalAnimGeneration
 
   if (mode === 'shader') {
     // ── GPU Shader mode ────────────────────────────────────────────────────
@@ -1905,7 +1907,27 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
       store.setStatus('Modal shape fetch failed: ' + e.message, 'err'); return
     }
 
-    // 2. 为每个 chunk 散射位移，注入 shader
+    if (myGen !== _modalAnimGeneration) return   // 加载期间被 stop，放弃
+
+    // 2. 先把 chunk position 属性重置为原始坐标，避免之前 applyDeform 导致的双倍偏移
+    for (const inst of instNames) {
+      const im   = store.instanceMeshes[inst]
+      const orig = origPositions[inst]
+      if (!im || !orig) continue
+      for (const c of im.chunks) {
+        const posArr = c.mesh.geometry.attributes.position.array
+        const vgid   = c.vertexGlobalId
+        for (let i = 0; i < vgid.length; i++) {
+          const g = vgid[i]
+          posArr[i*3]     = orig[g*3]
+          posArr[i*3 + 1] = orig[g*3 + 1]
+          posArr[i*3 + 2] = orig[g*3 + 2]
+        }
+        c.mesh.geometry.attributes.position.needsUpdate = true
+      }
+    }
+
+    // 3. 为每个 chunk 散射位移，注入 shader
     const sharedUniforms = { u_modal_scale: { value: scale }, u_modal_sin: { value: 0.0 } }
 
     for (const inst of instNames) {
@@ -1998,6 +2020,8 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
     } catch (e) {
       store.setStatus('Modal animation fetch failed: ' + e.message, 'err'); return
     }
+
+    if (myGen !== _modalAnimGeneration) return   // 加载期间被 stop，放弃
 
     const totalFrames = Object.values(_modalFrameBuffers)[0]?.length ?? nFrames
     // 每帧间隔 ms = 1000ms / (cyclesPerSec * totalFrames)
