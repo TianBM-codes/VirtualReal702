@@ -1878,7 +1878,7 @@ function _stopModalAnim() {
   _modalDispMap       = {}
 }
 
-async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
+async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
   if (Object.keys(store.instanceMeshes).length === 0) {
     store.setStatus('Load geometry first', 'err'); return
   }
