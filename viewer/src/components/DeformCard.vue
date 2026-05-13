@@ -39,6 +39,12 @@
           <input type="number" v-model.number="nFrames" min="4" max="60" step="4"
             style="width:100%;box-sizing:border-box;font-size:11px" />
         </div>
+
+        <div style="margin-top:6px">
+          <label style="font-size:11px">速度 (cycles/s)</label>
+          <input type="number" v-model.number="animSpeed" min="0.1" max="10" step="0.1"
+            style="width:100%;box-sizing:border-box;font-size:11px" />
+        </div>
       </div>
     </template>
 
@@ -69,6 +75,7 @@ const scale     = ref(1.0)
 const playing   = ref(false)
 const modalMode = ref('shader')   // 'shader' | 'precompute'
 const nFrames   = ref(20)
+const animSpeed = ref(1.0)        // cycles per second
 
 const isFrequency = computed(() => {
   const info = store.meta?.steps?.find(s => s.step_name === step.value)
@@ -129,6 +136,7 @@ function togglePlay() {
       scale: scale.value,
       mode: modalMode.value,
       nFrames: nFrames.value,
+      speed: animSpeed.value,
     })
   } else {
     emit('play', { step: step.value, totalFrames: maxFrame.value + 1, scale: scale.value })
