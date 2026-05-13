@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-11（新增 GET /color-code/legend-entries 全量接口，返回所有 instance 的 legend 条目，每项含 instance 字段）
+更新时间：2026-05-13（新增 GET /results/modal-shape 和 GET /results/modal-animation，用于 FREQUENCY step 谐波动画）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1080,6 +1080,61 @@ L3BE sections：
 
 - `positions = original_positions + scale * U_per_vertex`
 - 需要 indexed geometry，即后端 `ModelIndex` 中存在 `vtx_node_row`。
+
+### `GET /api/odb/{odb_id}/results/modal-shape`
+
+返回指定模态阶次的顶点位移向量（不乘 scale），供前端 GPU Shader 模式上传为 vertex attribute。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | FREQUENCY step name |
+| `frame` | 否 | 模态阶次索引，默认 `0` |
+| `result_group` | 否 | Project 模式结果组 |
+
+响应头：`X-Vertex-Count`, `X-Frame`
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `displacement` | `[Nv, 3]` | `float32` |
+
+---
+
+### `GET /api/odb/{odb_id}/results/modal-animation`
+
+预计算 N 帧谐波动画坐标，一次性返回。每帧 = `positions + scale * sin(2π*i/N) * displacement`。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | FREQUENCY step name |
+| `frame` | 否 | 模态阶次索引，默认 `0` |
+| `scale` | 否 | 变形放大系数，默认 `1.0` |
+| `n_frames` | 否 | 帧数，4–120，默认 `20` |
+| `result_group` | 否 | Project 模式结果组 |
+
+响应头：`X-N-Frames`, `X-Frame`, `X-Scale`
+
+响应体（原始二进制，非 L3BE）：
+
+```text
+[n_frames: uint32][n_verts: uint32][n_frames × n_verts × 3 × float32]
+```
+
+前端解析：
+```js
+const nF  = dv.getUint32(0, true)
+const nV  = dv.getUint32(4, true)
+const raw = new Float32Array(ab, 8, nF * nV * 3)
+```
+
+---
 
 ### `GET /api/odb/{odb_id}/results/raw-values`
 
