@@ -68,6 +68,7 @@ let _modalAnimActive     = false  // precompute loop guard
 let _modalShaderRefs     = []     // { uniforms } refs, one per chunk (shader mode)
 let _modalOrigMaterials  = []     // { inst, chunkIdx, mat } original materials to restore
 let _modalFrameBuffers   = {}     // instName → Float32Array[] (precompute mode)
+let _modalDispMap        = {}     // instName → Float32Array [Nv_global×3]，shader 模式边同步用
 
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
 let sectionMesh = null, sectionEdges = null, sectionAbortCtrl = null
@@ -1874,6 +1875,7 @@ function _stopModalAnim() {
   _modalOrigMaterials = []
   _modalShaderRefs    = []
   _modalFrameBuffers  = {}
+  _modalDispMap       = {}
 }
 
 async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
@@ -1886,27 +1888,29 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
   const instNames = Object.keys(store.instanceMeshes)
   const rg = store.activeResultGroup ?? undefined
 
+  // speed：每秒完成的完整周期数，默认 1.0
+  const cyclesPerSec = speed ?? 1.0
+
   if (mode === 'shader') {
     // ── GPU Shader mode ────────────────────────────────────────────────────
-    // 1. Fetch raw displacement for each instance (one-time request)
+    // 1. 一次性拉取原始位移向量
     store.setStatus('Modal anim (shader): loading displacement…')
-    const dispMap = {}
     try {
       await Promise.all(instNames.map(async inst => {
         const ab = await api.fetchModalShape(inst, step, frameIdx, rg)
         const sections = parseL3BE(ab)
-        dispMap[inst] = new Float32Array(sections.displacement.data)  // [Nv_global × 3]
+        _modalDispMap[inst] = new Float32Array(sections.displacement.data)  // [Nv_global × 3]
       }))
     } catch (e) {
       store.setStatus('Modal shape fetch failed: ' + e.message, 'err'); return
     }
 
-    // 2. For each chunk: scatter displacement, patch material with onBeforeCompile
+    // 2. 为每个 chunk 散射位移，注入 shader
     const sharedUniforms = { u_modal_scale: { value: scale }, u_modal_sin: { value: 0.0 } }
 
     for (const inst of instNames) {
-      const im  = store.instanceMeshes[inst]
-      const disp = dispMap[inst]
+      const im   = store.instanceMeshes[inst]
+      const disp = _modalDispMap[inst]
       if (!im || !disp) continue
 
       for (let ci = 0; ci < im.chunks.length; ci++) {
@@ -1914,7 +1918,6 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
         const vgid = c.vertexGlobalId
         const Nv   = vgid.length
 
-        // Scatter global displacement to chunk-local order
         const chunkDisp = new Float32Array(Nv * 3)
         for (let i = 0; i < Nv; i++) {
           const g = vgid[i]
@@ -1924,12 +1927,10 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
         }
         c.mesh.geometry.setAttribute('a_displacement', new THREE.BufferAttribute(chunkDisp, 3))
 
-        // Save original material, create patched clone
         _modalOrigMaterials.push({ inst, chunkIdx: ci, mat: c.mesh.material })
         const patchedMat = c.mesh.material.clone()
         patchedMat.onBeforeCompile = shader => {
           Object.assign(shader.uniforms, sharedUniforms)
-          // 声明 attribute + uniform，让 GLSL 编译器认识这些变量
           shader.vertexShader =
             'attribute vec3 a_displacement;\n' +
             'uniform float u_modal_scale;\n' +
@@ -1945,24 +1946,43 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
       }
     }
 
-    // 3. RAF loop — only updates one uniform float per frame
+    // 3. RAF 循环：每帧更新一个 uniform float + 同步边到 CPU 侧坐标
     let phase = 0
-    const speed = (2 * Math.PI) / 60   // 1 full cycle per ~60 ticks
-    function _rafLoop() {
-      phase += speed
+    const deltaPhase = (2 * Math.PI * cyclesPerSec) / 60
+    let lastRafTime = performance.now()
+
+    function _rafLoop(now) {
+      // 用实际帧间隔驱动 phase，让速度不依赖显示帧率
+      const dt = (now - lastRafTime) / 1000
+      lastRafTime = now
+      phase += 2 * Math.PI * cyclesPerSec * dt
+
       const sinVal = Math.sin(phase)
       sharedUniforms.u_modal_scale.value = scale
       sharedUniforms.u_modal_sin.value   = sinVal
-      // Uniforms are shared objects; Three.js reads them by reference — no per-chunk update needed
+
+      // 更新 globalPositions 让边跟着动（CPU 侧，edges 读这个数组）
+      for (const inst of instNames) {
+        const im   = store.instanceMeshes[inst]
+        const disp = _modalDispMap[inst]
+        const orig = origPositions[inst]
+        if (!im || !disp || !orig) continue
+        const Nv3 = orig.length
+        const s   = scale * sinVal
+        for (let i = 0; i < Nv3; i++) im.globalPositions[i] = orig[i] + disp[i] * s
+        _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
+        _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+      }
+
       requestRender()
       _modalAnimRafId = requestAnimationFrame(_rafLoop)
     }
     _modalAnimRafId = requestAnimationFrame(_rafLoop)
-    store.setStatus(`Modal anim (GPU shader) — mode ${frameIdx}, scale ${scale}`)
+    store.setStatus(`Modal anim (GPU shader) — mode ${frameIdx}, scale ${scale}, speed ${cyclesPerSec}x`)
 
   } else {
     // ── Precompute mode ────────────────────────────────────────────────────
-    // 1. Fetch all N frames for each instance
+    // 1. 一次性拉取 N 帧坐标
     store.setStatus(`Modal anim (预计算): loading ${nFrames} frames…`)
     try {
       await Promise.all(instNames.map(async inst => {
@@ -1971,21 +1991,21 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
         const nF  = dv.getUint32(0, true)
         const nV  = dv.getUint32(4, true)
         const raw = new Float32Array(ab, 8, nF * nV * 3)
-        // Split into per-frame Float32Arrays
         const frames = []
-        for (let i = 0; i < nF; i++) {
-          frames.push(raw.slice(i * nV * 3, (i + 1) * nV * 3))
-        }
+        for (let i = 0; i < nF; i++) frames.push(raw.slice(i * nV * 3, (i + 1) * nV * 3))
         _modalFrameBuffers[inst] = frames
       }))
     } catch (e) {
       store.setStatus('Modal animation fetch failed: ' + e.message, 'err'); return
     }
 
-    // 2. Play loop — same scatter logic as _applyDeformPositions but reads from cache
+    const totalFrames = Object.values(_modalFrameBuffers)[0]?.length ?? nFrames
+    // 每帧间隔 ms = 1000ms / (cyclesPerSec * totalFrames)
+    const frameIntervalMs = Math.max(0, Math.round(1000 / (cyclesPerSec * totalFrames)))
+
     _modalAnimActive = true
     let framePtr = 0
-    store.setStatus(`Modal anim (预计算) — mode ${frameIdx}, ${Object.values(_modalFrameBuffers)[0]?.length ?? 0} frames`)
+    store.setStatus(`Modal anim (预计算) — mode ${frameIdx}, ${totalFrames} frames, speed ${cyclesPerSec}x`)
 
     while (_modalAnimActive) {
       for (const inst of instNames) {
@@ -2012,7 +2032,7 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
       }
       requestRender()
       framePtr++
-      await new Promise(r => setTimeout(r, 0))
+      await new Promise(r => setTimeout(r, frameIntervalMs))
     }
     _modalAnimActive = false
     _rebuildBvhAll()
