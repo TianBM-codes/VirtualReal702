@@ -62,6 +62,15 @@ let orientationLines = null   // single merged LineSegments for all triads
 
 let _deformAnimActive = false  // animation loop guard
 
+// Modal harmonic animation state
+let _modalAnimRafId      = null   // requestAnimationFrame handle (shader mode)
+let _modalAnimActive     = false  // precompute loop guard
+let _modalAnimGeneration = 0      // 每次 stop 递增，用于中断正在加载的 startModalAnim
+let _modalShaderRefs     = []     // { uniforms } refs, one per chunk (shader mode)
+let _modalOrigMaterials  = []     // { inst, chunkIdx, mat } original materials to restore
+let _modalFrameBuffers   = {}     // instName → Float32Array[] (precompute mode)
+let _modalDispMap        = {}     // instName → Float32Array [Nv_global×3]，shader 模式边同步用
+
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
 let sectionMesh = null, sectionEdges = null, sectionAbortCtrl = null
 let sectionFillVisible = true
@@ -1845,6 +1854,232 @@ function stopDeformAnim() {
   }
 }
 
+// ── Modal Harmonic Animation ──────────────────────────────────────────────
+
+function _stopModalAnim() {
+  _modalAnimGeneration++            // 令正在加载中的 startModalAnim 放弃
+  if (_modalAnimRafId !== null) { cancelAnimationFrame(_modalAnimRafId); _modalAnimRafId = null }
+  _modalAnimActive = false
+
+  // Restore original materials (shader mode)
+  for (const { inst, chunkIdx, mat } of _modalOrigMaterials) {
+    const im = store.instanceMeshes[inst]
+    if (!im) continue
+    const c = im.chunks[chunkIdx]
+    if (!c) continue
+    c.mesh.material.dispose()
+    c.mesh.material = mat
+    // Remove displacement attribute
+    c.mesh.geometry.deleteAttribute('a_displacement')
+  }
+  _modalOrigMaterials = []
+  _modalShaderRefs    = []
+  _modalFrameBuffers  = {}
+  _modalDispMap       = {}
+}
+
+async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
+  if (Object.keys(store.instanceMeshes).length === 0) {
+    store.setStatus('Load geometry first', 'err'); return
+  }
+  stopDeformAnim()
+  _stopModalAnim()
+
+  const instNames = Object.keys(store.instanceMeshes)
+  const rg = store.activeResultGroup ?? undefined
+
+  // speed：每秒完成的完整周期数，默认 1.0
+  const cyclesPerSec = speed ?? 1.0
+  // 记录当前 generation，加载完成后若已变化说明期间被 stop，直接放弃
+  const myGen = ++_modalAnimGeneration
+
+  if (mode === 'shader') {
+    // ── GPU Shader mode ────────────────────────────────────────────────────
+    // 1. 一次性拉取原始位移向量
+    store.setStatus('Modal anim (shader): loading displacement…')
+    try {
+      await Promise.all(instNames.map(async inst => {
+        const ab = await api.fetchModalShape(inst, step, frameIdx, rg)
+        const sections = parseL3BE(ab)
+        _modalDispMap[inst] = new Float32Array(sections.displacement.data)  // [Nv_global × 3]
+      }))
+    } catch (e) {
+      store.setStatus('Modal shape fetch failed: ' + e.message, 'err'); return
+    }
+
+    if (myGen !== _modalAnimGeneration) return   // 加载期间被 stop，放弃
+
+    // 2. 先把 chunk position 属性重置为原始坐标，避免之前 applyDeform 导致的双倍偏移
+    for (const inst of instNames) {
+      const im   = store.instanceMeshes[inst]
+      const orig = origPositions[inst]
+      if (!im || !orig) continue
+      for (const c of im.chunks) {
+        const posArr = c.mesh.geometry.attributes.position.array
+        const vgid   = c.vertexGlobalId
+        for (let i = 0; i < vgid.length; i++) {
+          const g = vgid[i]
+          posArr[i*3]     = orig[g*3]
+          posArr[i*3 + 1] = orig[g*3 + 1]
+          posArr[i*3 + 2] = orig[g*3 + 2]
+        }
+        c.mesh.geometry.attributes.position.needsUpdate = true
+      }
+    }
+
+    // 3. 为每个 chunk 散射位移，注入 shader
+    const sharedUniforms = { u_modal_scale: { value: scale }, u_modal_sin: { value: 0.0 } }
+
+    for (const inst of instNames) {
+      const im   = store.instanceMeshes[inst]
+      const disp = _modalDispMap[inst]
+      if (!im || !disp) continue
+
+      for (let ci = 0; ci < im.chunks.length; ci++) {
+        const c    = im.chunks[ci]
+        const vgid = c.vertexGlobalId
+        const Nv   = vgid.length
+
+        const chunkDisp = new Float32Array(Nv * 3)
+        for (let i = 0; i < Nv; i++) {
+          const g = vgid[i]
+          chunkDisp[i*3]     = disp[g*3]
+          chunkDisp[i*3 + 1] = disp[g*3 + 1]
+          chunkDisp[i*3 + 2] = disp[g*3 + 2]
+        }
+        c.mesh.geometry.setAttribute('a_displacement', new THREE.BufferAttribute(chunkDisp, 3))
+
+        _modalOrigMaterials.push({ inst, chunkIdx: ci, mat: c.mesh.material })
+        const patchedMat = c.mesh.material.clone()
+        patchedMat.onBeforeCompile = shader => {
+          Object.assign(shader.uniforms, sharedUniforms)
+          shader.vertexShader =
+            'attribute vec3 a_displacement;\n' +
+            'uniform float u_modal_scale;\n' +
+            'uniform float u_modal_sin;\n' +
+            shader.vertexShader
+          shader.vertexShader = shader.vertexShader.replace(
+            '#include <begin_vertex>',
+            'vec3 transformed = position + a_displacement * u_modal_scale * u_modal_sin;'
+          )
+          _modalShaderRefs.push(shader)
+        }
+        c.mesh.material = patchedMat
+      }
+    }
+
+    // 3. RAF 循环：每帧更新一个 uniform float + 同步边到 CPU 侧坐标
+    let phase = 0
+    const deltaPhase = (2 * Math.PI * cyclesPerSec) / 60
+    let lastRafTime = performance.now()
+
+    function _rafLoop(now) {
+      // 用实际帧间隔驱动 phase，让速度不依赖显示帧率
+      const dt = (now - lastRafTime) / 1000
+      lastRafTime = now
+      phase += 2 * Math.PI * cyclesPerSec * dt
+
+      const sinVal = Math.sin(phase)
+      sharedUniforms.u_modal_scale.value = scale
+      sharedUniforms.u_modal_sin.value   = sinVal
+
+      // 更新 globalPositions 让边跟着动（CPU 侧，edges 读这个数组）
+      for (const inst of instNames) {
+        const im   = store.instanceMeshes[inst]
+        const disp = _modalDispMap[inst]
+        const orig = origPositions[inst]
+        if (!im || !disp || !orig) continue
+        const Nv3 = orig.length
+        const s   = scale * sinVal
+        for (let i = 0; i < Nv3; i++) im.globalPositions[i] = orig[i] + disp[i] * s
+        _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
+        _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+      }
+
+      requestRender()
+      _modalAnimRafId = requestAnimationFrame(_rafLoop)
+    }
+    _modalAnimRafId = requestAnimationFrame(_rafLoop)
+    store.setStatus(`Modal anim (GPU shader) — mode ${frameIdx}, scale ${scale}, speed ${cyclesPerSec}x`)
+
+  } else {
+    // ── Precompute mode ────────────────────────────────────────────────────
+    // 1. 一次性拉取 N 帧坐标
+    store.setStatus(`Modal anim (预计算): loading ${nFrames} frames…`)
+    try {
+      await Promise.all(instNames.map(async inst => {
+        const ab = await api.fetchModalAnimationFrames(inst, step, frameIdx, scale, nFrames, rg)
+        const dv = new DataView(ab)
+        const nF  = dv.getUint32(0, true)
+        const nV  = dv.getUint32(4, true)
+        const raw = new Float32Array(ab, 8, nF * nV * 3)
+        const frames = []
+        for (let i = 0; i < nF; i++) frames.push(raw.slice(i * nV * 3, (i + 1) * nV * 3))
+        _modalFrameBuffers[inst] = frames
+      }))
+    } catch (e) {
+      store.setStatus('Modal animation fetch failed: ' + e.message, 'err'); return
+    }
+
+    if (myGen !== _modalAnimGeneration) return   // 加载期间被 stop，放弃
+
+    const totalFrames = Object.values(_modalFrameBuffers)[0]?.length ?? nFrames
+    // 每帧间隔 ms = 1000ms / (cyclesPerSec * totalFrames)
+    const frameIntervalMs = Math.max(0, Math.round(1000 / (cyclesPerSec * totalFrames)))
+
+    _modalAnimActive = true
+    let framePtr = 0
+    store.setStatus(`Modal anim (预计算) — mode ${frameIdx}, ${totalFrames} frames, speed ${cyclesPerSec}x`)
+
+    while (_modalAnimActive) {
+      for (const inst of instNames) {
+        const im     = store.instanceMeshes[inst]
+        const frames = _modalFrameBuffers[inst]
+        if (!im || !frames) continue
+        const newPos = frames[framePtr % frames.length]
+        im.globalPositions.set(newPos)
+
+        for (const c of im.chunks) {
+          const geo    = c.mesh.geometry
+          const posArr = geo.attributes.position.array
+          const vgid   = c.vertexGlobalId
+          for (let i = 0; i < vgid.length; i++) {
+            const g = vgid[i]
+            posArr[i*3]     = newPos[g*3]
+            posArr[i*3 + 1] = newPos[g*3 + 1]
+            posArr[i*3 + 2] = newPos[g*3 + 2]
+          }
+          geo.attributes.position.needsUpdate = true
+        }
+        _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
+        _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+      }
+      requestRender()
+      framePtr++
+      await new Promise(r => setTimeout(r, frameIntervalMs))
+    }
+    _modalAnimActive = false
+    _rebuildBvhAll()
+  }
+}
+
+function stopModalAnim() {
+  _stopModalAnim()
+  // 把 globalPositions 和边线都归位到原始坐标
+  // shader 模式 RAF 最后一帧更新了 globalPositions/边线但没还原，precompute 同理
+  for (const inst of Object.keys(store.instanceMeshes)) {
+    const im   = store.instanceMeshes[inst]
+    const orig = origPositions[inst]
+    if (!im || !orig) continue
+    im.globalPositions.set(orig)
+    _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
+    _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+  }
+  _rebuildBvhAll()
+  requestRender()
+  store.setStatus('Modal animation stopped', 'ok')
+}
+
 // ── Filter geometry by arbitrary element labels ───────────────────────────
 // elem_labels: array of ODB element labels (integers).
 // Caller is responsible for computing which labels to include
@@ -1900,5 +2135,5 @@ function resetModelTransform() {
   requestRender()
 }
 
-defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform, loadRegionHighlight, clearRegionHighlight, toggleFaceOpacity })
+defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, startModalAnim, stopModalAnim, applyModelTransform, resetModelTransform, loadRegionHighlight, clearRegionHighlight, toggleFaceOpacity })
 </script>

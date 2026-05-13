@@ -30,7 +30,8 @@
         @apply="opts => viewport?.applyDeform(opts)"
         @reset="() => viewport?.resetDeform()"
         @play="opts => viewport?.startDeformAnim(opts)"
-        @stop="() => viewport?.stopDeformAnim()"
+        @play-modal="opts => viewport?.startModalAnim(opts)"
+        @stop="() => { viewport?.stopDeformAnim(); viewport?.stopModalAnim() }"
       />
 
       <ColorCodeCard

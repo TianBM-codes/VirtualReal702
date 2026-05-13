@@ -22,6 +22,8 @@ from ...services.result_service import (
     frame_scalars,
     frame_deformed_positions,
     suggest_deform_scale,
+    modal_shape_displacement,
+    modal_animation_frames,
 )
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
@@ -271,6 +273,71 @@ async def get_deformed_positions(
             "X-Vertex-Count": str(len(positions)),
             "X-Frame":        str(frame),
             "X-Scale":        str(scale),
+        },
+    )
+
+
+@router.get("/results/modal-shape")
+async def get_modal_shape(
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int = 0,
+    result_group: Optional[str] = Query(None),
+):
+    """
+    返回指定模态阶次的顶点位移向量 [Nv, 3] float32（L3BE binary）。
+    供前端 GPU shader 模式：上传为 vertex attribute，由着色器做 sin 动画。
+    """
+    disp = modal_shape_displacement(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame_idx=frame,
+        result_group=result_group,
+    )
+    payload = l3be_build([("displacement", disp)])
+    return Response(
+        content=payload,
+        media_type="application/octet-stream",
+        headers={"X-Vertex-Count": str(len(disp)), "X-Frame": str(frame)},
+    )
+
+
+@router.get("/results/modal-animation")
+async def get_modal_animation(
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int = 0,
+    scale: float = Query(1.0),
+    n_frames: int = Query(20, ge=4, le=120),
+    result_group: Optional[str] = Query(None),
+):
+    """
+    预计算 n_frames 帧谐波动画坐标，一次性返回。
+
+    二进制格式：[n_frames uint32][n_verts uint32][n_frames × n_verts × 3 × float32]
+    供前端预计算模式：收到后缓存，播放时只做 buffer 切换。
+    """
+    data = modal_animation_frames(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame_idx=frame,
+        scale=scale,
+        n_frames=n_frames,
+        result_group=result_group,
+    )
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "X-N-Frames": str(n_frames),
+            "X-Frame":    str(frame),
+            "X-Scale":    str(scale),
         },
     )
 
