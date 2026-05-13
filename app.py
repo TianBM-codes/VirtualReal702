@@ -34,6 +34,18 @@ def _now_iso() -> str:
 async def log_request_timing(request: Request, call_next):
     start_perf = time.perf_counter()
     start_iso = _now_iso()
+
+    # 读取 body 并回填，让下游路由仍能正常读取
+    raw_body = await request.body()
+    async def _receive():
+        return {"type": "http.request", "body": raw_body, "more_body": False}
+    request._receive = _receive
+
+    try:
+        body_text = raw_body.decode("utf-8")
+    except Exception:
+        body_text = f"<binary {len(raw_body)} bytes>"
+
     request_info = {
         "event": "request_start",
         "time": start_iso,
@@ -41,6 +53,7 @@ async def log_request_timing(request: Request, call_next):
         "path": request.url.path,
         "query": str(request.url.query or ""),
         "client_ip": request.client.host if request.client else None,
+        "body": body_text,
     }
     print("[HTTP Timing] " + json.dumps(request_info, ensure_ascii=False, default=str))
 

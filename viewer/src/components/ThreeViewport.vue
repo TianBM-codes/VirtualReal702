@@ -62,6 +62,13 @@ let orientationLines = null   // single merged LineSegments for all triads
 
 let _deformAnimActive = false  // animation loop guard
 
+// Modal harmonic animation state
+let _modalAnimRafId      = null   // requestAnimationFrame handle (shader mode)
+let _modalAnimActive     = false  // precompute loop guard
+let _modalShaderRefs     = []     // { uniforms } refs, one per chunk (shader mode)
+let _modalOrigMaterials  = []     // { inst, chunkIdx, mat } original materials to restore
+let _modalFrameBuffers   = {}     // instName → Float32Array[] (precompute mode)
+
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
 let sectionMesh = null, sectionEdges = null, sectionAbortCtrl = null
 let sectionFillVisible = true
@@ -1845,6 +1852,174 @@ function stopDeformAnim() {
   }
 }
 
+// ── Modal Harmonic Animation ──────────────────────────────────────────────
+
+function _stopModalAnim() {
+  // Cancel shader-mode RAF loop
+  if (_modalAnimRafId !== null) { cancelAnimationFrame(_modalAnimRafId); _modalAnimRafId = null }
+  // Stop precompute loop
+  _modalAnimActive = false
+
+  // Restore original materials (shader mode)
+  for (const { inst, chunkIdx, mat } of _modalOrigMaterials) {
+    const im = store.instanceMeshes[inst]
+    if (!im) continue
+    const c = im.chunks[chunkIdx]
+    if (!c) continue
+    c.mesh.material.dispose()
+    c.mesh.material = mat
+    // Remove displacement attribute
+    c.mesh.geometry.deleteAttribute('a_displacement')
+  }
+  _modalOrigMaterials = []
+  _modalShaderRefs    = []
+  _modalFrameBuffers  = {}
+}
+
+async function startModalAnim({ step, frameIdx, scale, mode, nFrames }) {
+  if (Object.keys(store.instanceMeshes).length === 0) {
+    store.setStatus('Load geometry first', 'err'); return
+  }
+  stopDeformAnim()
+  _stopModalAnim()
+
+  const instNames = Object.keys(store.instanceMeshes)
+  const rg = store.activeResultGroup ?? undefined
+
+  if (mode === 'shader') {
+    // ── GPU Shader mode ────────────────────────────────────────────────────
+    // 1. Fetch raw displacement for each instance (one-time request)
+    store.setStatus('Modal anim (shader): loading displacement…')
+    const dispMap = {}
+    try {
+      await Promise.all(instNames.map(async inst => {
+        const ab = await api.fetchModalShape(inst, step, frameIdx, rg)
+        const sections = parseL3BE(ab)
+        dispMap[inst] = new Float32Array(sections.displacement.data)  // [Nv_global × 3]
+      }))
+    } catch (e) {
+      store.setStatus('Modal shape fetch failed: ' + e.message, 'err'); return
+    }
+
+    // 2. For each chunk: scatter displacement, patch material with onBeforeCompile
+    const sharedUniforms = { u_modal_scale: { value: scale }, u_modal_sin: { value: 0.0 } }
+
+    for (const inst of instNames) {
+      const im  = store.instanceMeshes[inst]
+      const disp = dispMap[inst]
+      if (!im || !disp) continue
+
+      for (let ci = 0; ci < im.chunks.length; ci++) {
+        const c    = im.chunks[ci]
+        const vgid = c.vertexGlobalId
+        const Nv   = vgid.length
+
+        // Scatter global displacement to chunk-local order
+        const chunkDisp = new Float32Array(Nv * 3)
+        for (let i = 0; i < Nv; i++) {
+          const g = vgid[i]
+          chunkDisp[i*3]     = disp[g*3]
+          chunkDisp[i*3 + 1] = disp[g*3 + 1]
+          chunkDisp[i*3 + 2] = disp[g*3 + 2]
+        }
+        c.mesh.geometry.setAttribute('a_displacement', new THREE.BufferAttribute(chunkDisp, 3))
+
+        // Save original material, create patched clone
+        _modalOrigMaterials.push({ inst, chunkIdx: ci, mat: c.mesh.material })
+        const patchedMat = c.mesh.material.clone()
+        patchedMat.onBeforeCompile = shader => {
+          Object.assign(shader.uniforms, sharedUniforms)
+          shader.vertexShader = 'attribute vec3 a_displacement;\n' + shader.vertexShader
+          shader.vertexShader = shader.vertexShader.replace(
+            '#include <begin_vertex>',
+            'vec3 transformed = position + a_displacement * u_modal_scale * u_modal_sin;'
+          )
+          _modalShaderRefs.push(shader)
+        }
+        c.mesh.material = patchedMat
+      }
+    }
+
+    // 3. RAF loop — only updates one uniform float per frame
+    let phase = 0
+    const speed = (2 * Math.PI) / 60   // 1 full cycle per ~60 ticks
+    function _rafLoop() {
+      phase += speed
+      const sinVal = Math.sin(phase)
+      sharedUniforms.u_modal_scale.value = scale
+      sharedUniforms.u_modal_sin.value   = sinVal
+      // Uniforms are shared objects; Three.js reads them by reference — no per-chunk update needed
+      requestRender()
+      _modalAnimRafId = requestAnimationFrame(_rafLoop)
+    }
+    _modalAnimRafId = requestAnimationFrame(_rafLoop)
+    store.setStatus(`Modal anim (GPU shader) — mode ${frameIdx}, scale ${scale}`)
+
+  } else {
+    // ── Precompute mode ────────────────────────────────────────────────────
+    // 1. Fetch all N frames for each instance
+    store.setStatus(`Modal anim (预计算): loading ${nFrames} frames…`)
+    try {
+      await Promise.all(instNames.map(async inst => {
+        const ab = await api.fetchModalAnimationFrames(inst, step, frameIdx, scale, nFrames, rg)
+        const dv = new DataView(ab)
+        const nF  = dv.getUint32(0, true)
+        const nV  = dv.getUint32(4, true)
+        const raw = new Float32Array(ab, 8, nF * nV * 3)
+        // Split into per-frame Float32Arrays
+        const frames = []
+        for (let i = 0; i < nF; i++) {
+          frames.push(raw.slice(i * nV * 3, (i + 1) * nV * 3))
+        }
+        _modalFrameBuffers[inst] = frames
+      }))
+    } catch (e) {
+      store.setStatus('Modal animation fetch failed: ' + e.message, 'err'); return
+    }
+
+    // 2. Play loop — same scatter logic as _applyDeformPositions but reads from cache
+    _modalAnimActive = true
+    let framePtr = 0
+    store.setStatus(`Modal anim (预计算) — mode ${frameIdx}, ${Object.values(_modalFrameBuffers)[0]?.length ?? 0} frames`)
+
+    while (_modalAnimActive) {
+      for (const inst of instNames) {
+        const im     = store.instanceMeshes[inst]
+        const frames = _modalFrameBuffers[inst]
+        if (!im || !frames) continue
+        const newPos = frames[framePtr % frames.length]
+        im.globalPositions.set(newPos)
+
+        for (const c of im.chunks) {
+          const geo    = c.mesh.geometry
+          const posArr = geo.attributes.position.array
+          const vgid   = c.vertexGlobalId
+          for (let i = 0; i < vgid.length; i++) {
+            const g = vgid[i]
+            posArr[i*3]     = newPos[g*3]
+            posArr[i*3 + 1] = newPos[g*3 + 1]
+            posArr[i*3 + 2] = newPos[g*3 + 2]
+          }
+          geo.attributes.position.needsUpdate = true
+        }
+        _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
+        _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+      }
+      requestRender()
+      framePtr++
+      await new Promise(r => setTimeout(r, 0))
+    }
+    _modalAnimActive = false
+    _rebuildBvhAll()
+  }
+}
+
+function stopModalAnim() {
+  _stopModalAnim()
+  _rebuildBvhAll()
+  store.setStatus('Modal animation stopped', 'ok')
+}
+
 // ── Filter geometry by arbitrary element labels ───────────────────────────
 // elem_labels: array of ODB element labels (integers).
 // Caller is responsible for computing which labels to include
@@ -1900,5 +2075,5 @@ function resetModelTransform() {
   requestRender()
 }
 
-defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, applyModelTransform, resetModelTransform, loadRegionHighlight, clearRegionHighlight, toggleFaceOpacity })
+defineExpose({ loadGeometry, loadEdges, applyColors, applyColorCode, clearColorCode, resetColorCode, toggleCamera, updateClipPlane, showPatchHighlight, clearPatchHighlight, showNormalArrow, clearNormalArrow, filterGeometryBySet, clearGeometryFilter, filterGeometryByElemLabels, applyDeform, resetDeform, startDeformAnim, stopDeformAnim, startModalAnim, stopModalAnim, applyModelTransform, resetModelTransform, loadRegionHighlight, clearRegionHighlight, toggleFaceOpacity })
 </script>

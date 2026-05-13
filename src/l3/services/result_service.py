@@ -1397,3 +1397,130 @@ def suggest_deform_scale(
     if max_scalar_disp == 0.0:
         return 0.0
     return float(max_scalar_size / 10.0 / max_scalar_disp)
+
+
+# ── 模态谐波动画辅助 ─────────────────────────────────────────────────────────
+
+def _load_disp_vertex(
+    idx,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+):
+    """
+    共用帮助：读取指定帧的顶点位移向量 [Nv, 3] float32，以及原始坐标和索引。
+    返回 (positions [Nv,3], disp_vertex [Nv,3], indices [Nf*3] or None)
+    """
+    if frame_idx < 0:
+        raise ValidationError(f"frame_idx must be >= 0, got {frame_idx}", {"frame_idx": frame_idx})
+
+    vtx_nr = idx.vtx_node_row.get(instance)
+    if vtx_nr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
+            {"instance": instance},
+        )
+
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        raise NotFoundError(f"Render H5 not found for instance '{instance}'", {"instance": instance})
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
+        indices   = np.ascontiguousarray(f["render/indices"][:], dtype=np.int32) \
+                    if "render/indices" in f else None
+
+    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
+    if not os.path.exists(h5_path):
+        raise NotFoundError(f"U field not found for step='{step}'", {"step": step, "field": "U"})
+
+    with h5py.File(h5_path, "r") as f:
+        ds_path = f"/NODAL/{instance}/data"
+        if ds_path not in f:
+            raise NotFoundError(f"No NODAL U data for instance '{instance}'", {"instance": instance})
+        ds = f[ds_path]
+        num_frames = ds.shape[0]
+        if frame_idx >= num_frames:
+            raise ValidationError(
+                f"frame_idx {frame_idx} out of range [0, {num_frames})",
+                {"frame_idx": frame_idx},
+            )
+        disp_node = ds[frame_idx].astype(np.float32)   # [N_nodes, 3]
+
+    if disp_node.ndim == 1:
+        raise ValidationError("U field is scalar; expected 3-component vector", {"instance": instance})
+
+    n_nodes = disp_node.shape[0]
+    max_nr  = int(vtx_nr.max())
+    if max_nr >= n_nodes:
+        padded = np.zeros((max_nr + 1, disp_node.shape[1]), dtype=np.float32)
+        padded[:n_nodes] = disp_node
+        disp_node = padded
+
+    disp_vertex = disp_node[vtx_nr]   # [Nv, 3]
+    return positions, disp_vertex, indices
+
+
+def modal_shape_displacement(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+) -> np.ndarray:
+    """
+    返回指定模态阶次（frame_idx）的顶点位移向量 [Nv, 3] float32。
+    不乘 scale、不加坐标，供前端 GPU shader 模式使用。
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
+
+    _positions, disp_vertex, _indices = _load_disp_vertex(idx, instance, step, frame_idx, result_group)
+    return disp_vertex
+
+
+def modal_animation_frames(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    scale: float = 1.0,
+    n_frames: int = 20,
+    result_group: str = None,
+) -> bytes:
+    """
+    预计算 n_frames 帧谐波动画坐标，打包成二进制返回。
+
+    每帧 = positions + scale * sin(2π * i / n_frames) * disp_vertex
+
+    二进制格式：
+      [n_frames uint32][n_verts uint32][n_frames × n_verts × 3 × float32]
+    """
+    n_frames = max(4, min(n_frames, 120))   # 限制范围，防止内存爆炸
+
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
+
+    positions, disp_vertex, _indices = _load_disp_vertex(idx, instance, step, frame_idx, result_group)
+
+    n_verts = positions.shape[0]
+    phases  = np.sin(2.0 * np.pi * np.arange(n_frames) / n_frames, dtype=np.float64)
+
+    # [n_frames, Nv, 3] float32
+    frames = (
+        positions[np.newaxis, :, :]                                # [1, Nv, 3]
+        + np.float32(scale) * phases[:, np.newaxis, np.newaxis]    # [n_frames, 1, 1]
+        * disp_vertex[np.newaxis, :, :]                            # [1, Nv, 3]
+    ).astype(np.float32)
+
+    header = np.array([n_frames, n_verts], dtype=np.uint32)
+    return header.tobytes() + frames.tobytes()

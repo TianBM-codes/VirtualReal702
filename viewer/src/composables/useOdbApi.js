@@ -148,6 +148,27 @@ export function useOdbApi() {
     return res.data?.scale ?? 0
   }
 
+  // ── Modal Harmonic Animation ──────────────────────────────────────────────
+  async function fetchModalShape(instance, step, frameIdx, resultGroup) {
+    const params = new URLSearchParams({ instance, step, frame: frameIdx })
+    if (resultGroup) params.set('result_group', resultGroup)
+    const res = await http.get(
+      store.getApiUrl(`results/modal-shape?${params}`),
+      { responseType: 'arraybuffer' }
+    )
+    return res.data
+  }
+
+  async function fetchModalAnimationFrames(instance, step, frameIdx, scale, nFrames, resultGroup) {
+    const params = new URLSearchParams({ instance, step, frame: frameIdx, scale, n_frames: nFrames })
+    if (resultGroup) params.set('result_group', resultGroup)
+    const res = await http.get(
+      store.getApiUrl(`results/modal-animation?${params}`),
+      { responseType: 'arraybuffer' }
+    )
+    return res.data
+  }
+
   // ── Color Code ────────────────────────────────────────────────────────────
   function fetchColorSchemes(instance) {
     return http.get(store.getApiUrl(`color-code/${encodeURIComponent(instance)}/schemes`))
@@ -255,6 +276,7 @@ export function useOdbApi() {
     fetchLegendEntries, saveLegendEntries, fetchLegend,
     fetchRegionMeshEdges, fetchRegionOutline,
     fetchDeformedPositions, fetchDeformSuggestScale,
+    fetchModalShape, fetchModalAnimationFrames,
     fetchProjects, fetchProject, createProject,
     addResultGroup, renameResultGroup, deleteProject,
   }

@@ -7,7 +7,7 @@
       <option v-for="s in store.meta.steps" :key="s.step_name" :value="s.step_name">{{ s.step_name }}</option>
     </select>
 
-    <label>Frame: <span>{{ frameIdx }}</span></label>
+    <label>{{ isFrequency ? 'Mode' : 'Frame' }}: <span>{{ frameIdx }}</span></label>
     <input type="range" v-model.number="frameIdx" :min="0" :max="maxFrame" />
 
     <label>Scale Factor</label>
@@ -17,6 +17,30 @@
       <button class="primary" style="flex:1" @click="apply">Apply</button>
       <button style="flex:1" @click="reset">Reset</button>
     </div>
+
+    <!-- 模态谐波动画专属控制（仅 FREQUENCY step 显示） -->
+    <template v-if="isFrequency">
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid #30363d">
+        <label style="font-size:11px;color:#8b949e">Modal Animation Mode</label>
+        <div style="display:flex;gap:4px;margin-top:4px">
+          <button
+            @click="modalMode='shader'"
+            style="flex:1;font-size:11px;padding:3px 0;border:1px solid #30363d;border-radius:3px;cursor:pointer"
+            :style="modalMode==='shader' ? 'background:#1f6feb;color:#fff' : 'background:#21262d;color:#c9d1d9'"
+          >GPU Shader</button>
+          <button
+            @click="modalMode='precompute'"
+            style="flex:1;font-size:11px;padding:3px 0;border:1px solid #30363d;border-radius:3px;cursor:pointer"
+            :style="modalMode==='precompute' ? 'background:#1f6feb;color:#fff' : 'background:#21262d;color:#c9d1d9'"
+          >预计算</button>
+        </div>
+        <div v-if="modalMode==='precompute'" style="margin-top:6px">
+          <label style="font-size:11px">帧数 (4–60)</label>
+          <input type="number" v-model.number="nFrames" min="4" max="60" step="4"
+            style="width:100%;box-sizing:border-box;font-size:11px" />
+        </div>
+      </div>
+    </template>
 
     <div style="display:flex;gap:6px;margin-top:4px">
       <button
@@ -30,19 +54,26 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useViewerStore } from '../store/viewer'
 import { useOdbApi }      from '../composables/useOdbApi'
 
 const store = useViewerStore()
 const api   = useOdbApi()
-const emit  = defineEmits(['apply', 'reset', 'play', 'stop'])
+const emit  = defineEmits(['apply', 'reset', 'play', 'stop', 'play-modal'])
 
-const step     = ref('')
-const frameIdx = ref(0)
-const maxFrame = ref(0)
-const scale    = ref(1.0)
-const playing  = ref(false)
+const step      = ref('')
+const frameIdx  = ref(0)
+const maxFrame  = ref(0)
+const scale     = ref(1.0)
+const playing   = ref(false)
+const modalMode = ref('shader')   // 'shader' | 'precompute'
+const nFrames   = ref(20)
+
+const isFrequency = computed(() => {
+  const info = store.meta?.steps?.find(s => s.step_name === step.value)
+  return info?.procedure === 'FREQUENCY'
+})
 
 watch(() => store.meta, meta => {
   if (!meta?.steps?.length) return
@@ -58,7 +89,6 @@ function onStepChange() {
   autoFillScale()
 }
 
-// Auto-fill scale when frame slider moves
 watch(frameIdx, autoFillScale)
 
 async function autoFillScale() {
@@ -89,18 +119,26 @@ function togglePlay() {
   if (playing.value) {
     playing.value = false
     emit('stop')
+    return
+  }
+  playing.value = true
+  if (isFrequency.value) {
+    emit('play-modal', {
+      step: step.value,
+      frameIdx: frameIdx.value,
+      scale: scale.value,
+      mode: modalMode.value,
+      nFrames: nFrames.value,
+    })
   } else {
-    playing.value = true
     emit('play', { step: step.value, totalFrames: maxFrame.value + 1, scale: scale.value })
   }
 }
 
-// Called by parent when animation reaches a new frame — update slider
 function onAnimFrame(frame) {
   frameIdx.value = frame
 }
 
-// Called by parent when animation stops externally
 function onAnimStop() {
   playing.value = false
 }
