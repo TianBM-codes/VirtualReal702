@@ -1884,7 +1884,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 )
             else:
                 for element_label in provided_element_labels:
-                    resolved_parameter_name = f"{parameter_group_name}#{int(element_label)}"
+                    resolved_parameter_name = f"{parameter_group_name}_EL{int(element_label)}"
                     row_current_value = resolved_current_value
                     if row_current_value is None:
                         row_current_value = resolved_element_values.get(int(element_label))
@@ -2084,7 +2084,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             )
         else:
             for element_label in element_labels:
-                resolved_parameter_name = f"{parameter_group_name}#{int(element_label)}"
+                resolved_parameter_name = f"{parameter_group_name}_EL{int(element_label)}"
                 row_target_keys = target_keys_by_label.get(str(element_label)) or []
                 current_value = element_values.get(str(element_label), capability_row.get("current_value"))
                 insert_rows.append((

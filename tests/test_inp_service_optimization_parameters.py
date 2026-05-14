@@ -206,11 +206,11 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
 
     assert result["created_parameter_count"] == 2
     assert result["selection_mode"] == "LOCAL"
-    assert [item["parameter_name"] for item in result["created_parameters_preview"]] == ["E_GROUP#1", "E_GROUP#2"]
+    assert [item["parameter_name"] for item in result["created_parameters_preview"]] == ["E_GROUP_EL1", "E_GROUP_EL2"]
     assert fake_conn.committed is True
     assert fake_conn.rolled_back is False
     assert len(fake_conn.cursor_obj.executemany_batches) == 1
-    assert [params[2] for params in fake_conn.cursor_obj.inserted] == ["E_GROUP#1", "E_GROUP#2"]
+    assert [params[2] for params in fake_conn.cursor_obj.inserted] == ["E_GROUP_EL1", "E_GROUP_EL2"]
     assert [params[10] for params in fake_conn.cursor_obj.inserted] == [1, 2]
     assert [params[12] for params in fake_conn.cursor_obj.inserted] == [100000.0, 100000.0]
     assert [params[13] for params in fake_conn.cursor_obj.inserted] == [300000.0, 300000.0]
@@ -242,8 +242,8 @@ def test_create_optimization_parameter_manual_local_creates_virtual_set(monkeypa
     assert result["set_name"].startswith("MANUAL_H_LOCAL_")
     assert result["created_parameter_count"] == 2
     assert [item["parameter_name"] for item in result["created_parameters_preview"]] == [
-        "T_LOCAL_TEST#101",
-        "T_LOCAL_TEST#102",
+        "T_LOCAL_TEST_EL101",
+        "T_LOCAL_TEST_EL102",
     ]
     assert [params[10] for params in fake_conn.cursor_obj.inserted] == [101, 102]
     assert fake_conn.committed is True
