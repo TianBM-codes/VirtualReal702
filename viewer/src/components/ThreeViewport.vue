@@ -2065,13 +2065,25 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
 
 function stopModalAnim() {
   _stopModalAnim()
-  // 把 globalPositions 和边线都归位到原始坐标
-  // shader 模式 RAF 最后一帧更新了 globalPositions/边线但没还原，precompute 同理
+  // 归位 globalPositions、chunk position 属性和边线到原始坐标
+  // shader 模式：step2 已重置 chunk position，shader 只在 GPU 侧位移，归位 globalPositions 即可
+  // precompute 模式：loop 直接改了 chunk position 属性，停止时必须显式散射 origPositions 回去
   for (const inst of Object.keys(store.instanceMeshes)) {
     const im   = store.instanceMeshes[inst]
     const orig = origPositions[inst]
     if (!im || !orig) continue
     im.globalPositions.set(orig)
+    for (const c of im.chunks) {
+      const posArr = c.mesh.geometry.attributes.position.array
+      const vgid   = c.vertexGlobalId
+      for (let i = 0; i < vgid.length; i++) {
+        const g = vgid[i]
+        posArr[i*3]     = orig[g*3]
+        posArr[i*3 + 1] = orig[g*3 + 1]
+        posArr[i*3 + 2] = orig[g*3 + 2]
+      }
+      c.mesh.geometry.attributes.position.needsUpdate = true
+    }
     _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
     _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
   }
