@@ -63,13 +63,14 @@ let orientationLines = null   // single merged LineSegments for all triads
 let _deformAnimActive = false  // animation loop guard
 
 // Modal harmonic animation state
-let _modalAnimRafId      = null   // requestAnimationFrame handle (shader mode)
-let _modalAnimActive     = false  // precompute loop guard
-let _modalAnimGeneration = 0      // 每次 stop 递增，用于中断正在加载的 startModalAnim
-let _modalShaderRefs     = []     // { uniforms } refs, one per chunk (shader mode)
-let _modalOrigMaterials  = []     // { inst, chunkIdx, mat } original materials to restore
-let _modalFrameBuffers   = {}     // instName → Float32Array[] (precompute mode)
-let _modalDispMap        = {}     // instName → Float32Array [Nv_global×3]，shader 模式边同步用
+let _modalAnimRafId        = null   // requestAnimationFrame handle (shader mode)
+let _modalAnimActive       = false  // precompute loop guard
+let _modalAnimGeneration   = 0      // 每次 stop 递增，用于中断正在加载的 startModalAnim
+let _modalShaderRefs       = []     // { uniforms } refs, one per chunk (shader mode)
+let _modalOrigMaterials    = []     // { inst, chunkIdx, mat } original materials to restore
+let _modalFrameBuffers     = {}     // instName → Float32Array[] (precompute mode)
+let _modalDispMap          = {}     // instName → Float32Array [Nv_global×3]，shader 模式边同步用
+let _modalPreAnimPositions = {}     // instName → Float32Array，启动前快照，stop 时恢复
 
 let clipPlane = null, modelBbox = null, axesGroup = null, modelGroup = null
 let sectionMesh = null, sectionEdges = null, sectionAbortCtrl = null
@@ -1872,10 +1873,11 @@ function _stopModalAnim() {
     // Remove displacement attribute
     c.mesh.geometry.deleteAttribute('a_displacement')
   }
-  _modalOrigMaterials = []
-  _modalShaderRefs    = []
-  _modalFrameBuffers  = {}
-  _modalDispMap       = {}
+  _modalOrigMaterials    = []
+  _modalShaderRefs       = []
+  _modalFrameBuffers     = {}
+  _modalDispMap          = {}
+  _modalPreAnimPositions = {}
 }
 
 async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
@@ -1887,6 +1889,12 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
 
   const instNames = Object.keys(store.instanceMeshes)
   const rg = store.activeResultGroup ?? undefined
+
+  // 保存动画启动前的坐标快照（可能是 Apply 后的变形状态），stop 时恢复
+  for (const inst of instNames) {
+    const im = store.instanceMeshes[inst]
+    if (im) _modalPreAnimPositions[inst] = im.globalPositions.slice()
+  }
 
   // speed：每秒完成的完整周期数，默认 1.0
   const cyclesPerSec = speed ?? 1.0
@@ -2065,22 +2073,23 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
 
 function stopModalAnim() {
   _stopModalAnim()
-  // 归位 globalPositions、chunk position 属性和边线到原始坐标
-  // shader 模式：step2 已重置 chunk position，shader 只在 GPU 侧位移，归位 globalPositions 即可
-  // precompute 模式：loop 直接改了 chunk position 属性，停止时必须显式散射 origPositions 回去
+  // 恢复动画启动前的坐标状态（可能是 Apply 后的变形，或未变形的原始状态）
+  // shader 模式：step2 把 chunk position 重置为 origPositions，shader 只在 GPU 侧位移
+  //             恢复快照到 globalPositions 即可（chunk position 本来就是 origPositions，不用动）
+  // precompute 模式：loop 直接修改了 chunk position，必须显式散射快照坐标回去
   for (const inst of Object.keys(store.instanceMeshes)) {
-    const im   = store.instanceMeshes[inst]
-    const orig = origPositions[inst]
-    if (!im || !orig) continue
-    im.globalPositions.set(orig)
+    const im      = store.instanceMeshes[inst]
+    const restore = _modalPreAnimPositions[inst] ?? origPositions[inst]
+    if (!im || !restore) continue
+    im.globalPositions.set(restore)
     for (const c of im.chunks) {
       const posArr = c.mesh.geometry.attributes.position.array
       const vgid   = c.vertexGlobalId
       for (let i = 0; i < vgid.length; i++) {
         const g = vgid[i]
-        posArr[i*3]     = orig[g*3]
-        posArr[i*3 + 1] = orig[g*3 + 1]
-        posArr[i*3 + 2] = orig[g*3 + 2]
+        posArr[i*3]     = restore[g*3]
+        posArr[i*3 + 1] = restore[g*3 + 1]
+        posArr[i*3 + 2] = restore[g*3 + 2]
       }
       c.mesh.geometry.attributes.position.needsUpdate = true
     }
