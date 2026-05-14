@@ -504,6 +504,44 @@ class NastranSol103GenerateRequest(BaseModel):
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
+class NastranSol103RunAndStoreModalRequest(BaseModel):
+    project_id: int
+    input_bdf: str
+    output_bdf: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    nastran: Optional[str] = None
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    overwrite: bool = True
+    subcase_id: Optional[int] = None
+    mode_numbers: Optional[List[int]] = None
+    instance_name: Optional[str] = None
+    part_name: Optional[str] = None
+    async_submit: bool = False
+
+
+class AbaqusInpRunAndUploadResultRequest(BaseModel):
+    project_id: int
+    input_inp: str
+    output_dir: Optional[str] = None
+    abaqus: Optional[str] = None
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    result_group: Optional[str] = None
+    display_name: Optional[str] = None
+    base_url: Optional[str] = None
+    step: Optional[str] = None
+    frame: Optional[int] = None
+    field_prefix: Optional[str] = None
+    upload_timeout: int = 60
+    wait_timeout_sec: int = 3600
+    poll_interval_sec: float = 2.0
+    async_submit: bool = False
+
+
 class NastranParameterRequest(BaseModel):
     name: str
     type: str

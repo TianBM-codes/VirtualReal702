@@ -3,11 +3,16 @@ import re
 import shutil
 import subprocess
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from config import get_local_service_base_url
 from src.l3.core.errors import NotFoundError, ValidationError
+from tools.odb_client import ODBClient, ODBClientError
 
+from ..importers.op2_service import build_modal_import_payload
+from .inp_service import import_fe_modal_results
 from .model_update_meta_service import resolve_abaqus_command, resolve_nastran_command
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import (
@@ -81,6 +86,152 @@ _NASTRAN_BINARY_SUFFIXES = {
     ".plt",
     ".bin",
 }
+
+
+def _normalize_result_group_name(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    text = text.strip("._-")
+    if not text:
+        raise ValidationError("result_group name cannot be empty", {"value": value})
+    return text[:96]
+
+
+def _default_solver_project_result_group(job_name: str) -> str:
+    return _normalize_result_group_name(
+        f"solver_result_{job_name}_{int(time.time())}"
+    )
+
+
+def _build_project_result_parse_options(
+        *,
+        step: Optional[str],
+        frame: Optional[int],
+        field_prefix: Optional[str],
+) -> dict:
+    parse_options = {
+        "consistency_check": "count-only",
+        "steps": [str(step)] if step else None,
+        "frames": [int(frame)] if frame is not None else "all",
+        "invariants": "none",
+    }
+    if field_prefix:
+        parse_options["field_prefix"] = str(field_prefix)
+    return {key: value for key, value in parse_options.items() if value is not None}
+
+
+def _submit_project_result_group_and_wait(
+        *,
+        project_id: int,
+        odb_path: str,
+        job_name: str,
+        result_group: Optional[str],
+        display_name: Optional[str],
+        base_url: Optional[str],
+        step: Optional[str],
+        frame: Optional[int],
+        field_prefix: Optional[str],
+        timeout: int,
+        wait_timeout_sec: int,
+        poll_interval_sec: float,
+) -> dict:
+    resolved_odb_path = os.path.abspath(str(odb_path))
+    if not os.path.exists(resolved_odb_path):
+        raise NotFoundError("odb file not found", {"odb_path": resolved_odb_path})
+
+    resolved_result_group = _normalize_result_group_name(
+        result_group or _default_solver_project_result_group(job_name)
+    )
+    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
+    resolved_timeout = max(int(timeout or 0), 60)
+    resolved_wait_timeout_sec = max(int(wait_timeout_sec or 0), 1)
+    resolved_poll_interval = max(float(poll_interval_sec or 0), 0.1)
+    parse_options = _build_project_result_parse_options(
+        step=step,
+        frame=frame,
+        field_prefix=field_prefix,
+    )
+
+    client = ODBClient(base_url=resolved_base_url, timeout=resolved_timeout)
+    try:
+        submit_response = client.add_project_result_group(
+            str(project_id),
+            source_path=resolved_odb_path,
+            result_group=resolved_result_group,
+            display_name=display_name or resolved_result_group,
+            parse_options=parse_options,
+        )
+    except ODBClientError as exc:
+        details = {
+            "project_id": int(project_id),
+            "result_group": resolved_result_group,
+            "base_url": resolved_base_url,
+            "status_code": exc.status_code,
+            "detail": exc.detail,
+            "odb_path": resolved_odb_path,
+        }
+        if exc.status_code == 404:
+            raise NotFoundError("project result-group api target project was not found", details) from exc
+        raise ValidationError("project result-group api request failed", details) from exc
+
+    started_at = time.monotonic()
+    last_status = str(submit_response.get("status") or "pending")
+    while True:
+        try:
+            project_payload = client.get_project(str(project_id))
+        except ODBClientError as exc:
+            details = {
+                "project_id": int(project_id),
+                "result_group": resolved_result_group,
+                "base_url": resolved_base_url,
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            }
+            if exc.status_code == 404:
+                raise NotFoundError("project was not found while polling result-group status", details) from exc
+            raise ValidationError("failed to poll project result-group status", details) from exc
+
+        groups = list(project_payload.get("result_groups") or [])
+        matched = None
+        for item in groups:
+            if str(item.get("result_group") or "") == resolved_result_group:
+                matched = dict(item)
+                break
+
+        if matched:
+            last_status = str(matched.get("status") or last_status)
+            if last_status == "ready":
+                return {
+                    "result_group": resolved_result_group,
+                    "display_name": str(matched.get("display_name") or display_name or resolved_result_group),
+                    "status": last_status,
+                    "project_id": int(project_id),
+                    "base_url": resolved_base_url,
+                    "source_path": resolved_odb_path,
+                    "parse_options": parse_options,
+                    "project_result_group": matched,
+                }
+            if last_status in {"error", "failed"}:
+                raise ValidationError(
+                    "project result-group parsing failed",
+                    {
+                        "project_id": int(project_id),
+                        "result_group": resolved_result_group,
+                        "status": last_status,
+                        "group": matched,
+                    },
+                )
+
+        if time.monotonic() - started_at >= resolved_wait_timeout_sec:
+            raise ValidationError(
+                "waiting project result-group ready timed out",
+                {
+                    "project_id": int(project_id),
+                    "result_group": resolved_result_group,
+                    "status": last_status,
+                    "wait_timeout_sec": resolved_wait_timeout_sec,
+                },
+            )
+        time.sleep(resolved_poll_interval)
 
 
 def _abs_file(path: str, field_name: str) -> Path:
@@ -723,3 +874,151 @@ def run_nastran_sol103_job(
                 "message": "solve completed without an OP2 file; inspect result.target/post settings and produced binary files",
             })
     return payload
+
+
+def run_nastran_sol103_and_store_modal_results(
+    *,
+    project_id: int,
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    settings: Optional[Dict[str, Any]] = None,
+    nastran: Optional[str] = None,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+    overwrite: bool = True,
+    subcase_id: Optional[int] = None,
+    mode_numbers: Optional[List[int]] = None,
+    instance_name: Optional[str] = None,
+    part_name: Optional[str] = None,
+) -> dict:
+    solver_payload = run_nastran_sol103_job(
+        input_bdf=input_bdf,
+        output_bdf=output_bdf,
+        settings=settings,
+        nastran=nastran,
+        run_solver=True,
+        timeout_sec=timeout_sec,
+        extra_args=extra_args,
+    )
+    solver = solver_payload.get("solver") or {}
+    if not solver.get("ok", False):
+        raise ValidationError(
+            "nastran SOL103 solve failed; modal results were not stored",
+            {
+                "project_id": int(project_id),
+                "solver": solver,
+            },
+        )
+
+    summary = solver.get("artifacts_summary") or {}
+    op2_files = list(summary.get("op2_files") or [])
+    if not op2_files:
+        raise NotFoundError(
+            "op2 file not found after SOL103 solve",
+            {
+                "project_id": int(project_id),
+                "artifacts_summary": summary,
+            },
+        )
+    resolved_op2_path = os.path.abspath(str(op2_files[0]))
+    payload = build_modal_import_payload(
+        op2_path=resolved_op2_path,
+        bdf_path=input_bdf,
+        subcase_id=subcase_id,
+        mode_numbers=mode_numbers,
+        instance_name=instance_name,
+        part_name=part_name,
+        all_subcases=subcase_id is None,
+    )
+    stored = import_fe_modal_results(
+        project_id=project_id,
+        overwrite=overwrite,
+        modes=payload["modes"],
+    )
+    stored["warnings"] = payload.get("warnings") or []
+    return {
+        "workflow": "nastran_sol103_run_and_store_modal",
+        "project_id": int(project_id),
+        "input_bdf": solver_payload.get("input_bdf"),
+        "output_bdf": solver_payload.get("output_bdf"),
+        "op2_path": resolved_op2_path,
+        "solver": solver,
+        "store": stored,
+    }
+
+
+def run_abaqus_inp_and_upload_project_result(
+    *,
+    project_id: int,
+    input_inp: str,
+    output_dir: Optional[str] = None,
+    abaqus: Optional[str] = None,
+    job_name: Optional[str] = None,
+    cpus: Optional[int] = None,
+    interactive: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+    result_group: Optional[str] = None,
+    display_name: Optional[str] = None,
+    base_url: Optional[str] = None,
+    step: Optional[str] = None,
+    frame: Optional[int] = None,
+    field_prefix: Optional[str] = None,
+    upload_timeout: int = 60,
+    wait_timeout_sec: int = 3600,
+    poll_interval_sec: float = 2.0,
+) -> dict:
+    solver_payload = run_abaqus_job(
+        input_inp=input_inp,
+        output_dir=output_dir,
+        abaqus=abaqus,
+        job_name=job_name,
+        cpus=cpus,
+        interactive=interactive,
+        run_solver=True,
+        timeout_sec=timeout_sec,
+        extra_args=extra_args,
+    )
+    solver = solver_payload.get("solver") or {}
+    if not solver.get("ok", False):
+        raise ValidationError(
+            "abaqus solve failed; project result upload was not started",
+            {
+                "project_id": int(project_id),
+                "solver": solver,
+            },
+        )
+    odb_path = solver.get("artifacts", {}).get("odb")
+    if not odb_path:
+        raise NotFoundError(
+            "odb file not found after Abaqus solve",
+            {
+                "project_id": int(project_id),
+                "artifacts": solver.get("artifacts") or {},
+            },
+        )
+
+    resolved_job_name = str(solver_payload.get("job_name") or job_name or Path(input_inp).stem)
+    upload = _submit_project_result_group_and_wait(
+        project_id=project_id,
+        odb_path=odb_path,
+        job_name=resolved_job_name,
+        result_group=result_group,
+        display_name=display_name,
+        base_url=base_url,
+        step=step,
+        frame=frame,
+        field_prefix=field_prefix,
+        timeout=upload_timeout,
+        wait_timeout_sec=wait_timeout_sec,
+        poll_interval_sec=poll_interval_sec,
+    )
+    return {
+        "workflow": "abaqus_inp_run_and_upload_project_result",
+        "project_id": int(project_id),
+        "input_inp": solver_payload.get("input_inp"),
+        "output_dir": solver_payload.get("output_dir"),
+        "odb_path": os.path.abspath(str(odb_path)),
+        "solver": solver,
+        "upload": upload,
+    }
