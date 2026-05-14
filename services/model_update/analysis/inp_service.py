@@ -2,6 +2,7 @@ import heapq
 import json
 import math
 import os
+import re
 from src.inp import parse_inp
 from src.inp.parameter_mapping import (
     extract_design_response_rows,
