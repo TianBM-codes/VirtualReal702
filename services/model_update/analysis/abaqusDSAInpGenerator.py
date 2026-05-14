@@ -1123,6 +1123,8 @@ def normalize_step_line_to_dsa(step_line: str) -> str:
         upper = param.upper()
         if upper == "DSA":
             continue
+        if upper == "PERTURBATION":
+            continue
         if upper.startswith("SENSITIVITY"):
             continue
         kept_params.append(param)

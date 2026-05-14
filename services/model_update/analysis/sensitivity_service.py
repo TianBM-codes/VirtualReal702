@@ -9,7 +9,7 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import h5py
 import numpy as np
@@ -885,6 +885,64 @@ def _parse_id_list(raw_value) -> List[int]:
     return labels
 
 
+def _normalize_abaqus_dsa_response_variables(
+        *,
+        region_type: str,
+        variables: List[str],
+) -> Tuple[List[str], List[Dict[str, str]]]:
+    """
+    将数据库里偏“分量语义”的变量，映射成 Abaqus DSA 设计响应更常用的基础变量。
+
+    例如：
+    - U1/U2/U3 -> U
+    - UR1/UR2/UR3 -> UR
+
+    这样做的原因很简单：前端/数据库通常喜欢按分量表达，
+    但 Abaqus 在 *NODE RESPONSE 这里更常接受基础变量名。
+    """
+    normalized: List[str] = []
+    mappings: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+
+    node_variable_map = {
+        "U": "U",
+        "U1": "U",
+        "U2": "U",
+        "U3": "U",
+        "UR": "UR",
+        "UR1": "UR",
+        "UR2": "UR",
+        "UR3": "UR",
+        "RF": "RF",
+        "RF1": "RF",
+        "RF2": "RF",
+        "RF3": "RF",
+        "RM": "RM",
+        "RM1": "RM",
+        "RM2": "RM",
+        "RM3": "RM",
+    }
+
+    for raw_item in variables:
+        item = str(raw_item or "").strip()
+        if not item:
+            continue
+
+        upper_item = item.upper()
+        mapped = item
+        if str(region_type).upper() == "NODE":
+            mapped = node_variable_map.get(upper_item, item)
+
+        if mapped not in seen:
+            normalized.append(mapped)
+            seen.add(mapped)
+
+        if mapped != item:
+            mappings.append({"original": item, "mapped": mapped})
+
+    return normalized, mappings
+
+
 def _safe_dsa_set_name(parameter_name: str) -> str:
     base = re.sub(r"[^A-Za-z0-9_]+", "_", str(parameter_name or "").strip())
     base = base.strip("_") or "PARAM"
@@ -1076,6 +1134,10 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
             except json.JSONDecodeError:
                 variables = []
         variables = [str(item).strip() for item in (variables or []) if str(item).strip()]
+        variables, variable_mappings = _normalize_abaqus_dsa_response_variables(
+            region_type=region_type,
+            variables=variables,
+        )
         if not variables:
             warnings.append(
                 {
@@ -1084,6 +1146,18 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
                     "response_no": row.get("response_no"),
                     "request_no": row.get("request_no"),
                     "set_name": set_name,
+                }
+            )
+
+        if variables and variable_mappings:
+            warnings.append(
+                {
+                    "code": "RESPONSE_VARIABLES_MAPPED_TO_ABAQUS_BASE",
+                    "message": "检测到分量型响应变量，已在 DSA 预览中自动映射为 Abaqus 更容易接受的基础变量名",
+                    "response_no": row.get("response_no"),
+                    "request_no": row.get("request_no"),
+                    "set_name": set_name,
+                    "mappings": variable_mappings,
                 }
             )
 
