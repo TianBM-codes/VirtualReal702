@@ -1673,6 +1673,14 @@ def _safe_manual_set_name(quantity_code: str, selection_mode: str, parameter_nam
     return f"MANUAL_{str(quantity_code).upper()}_{str(selection_mode).upper()}_{token}"
 
 
+def _safe_manual_response_set_name(region_type: str, response_name: Optional[str], response_no: int) -> str:
+    region = str(region_type or "").strip().upper()
+    prefix = "NODE" if region == "NODE" else "ELEMENT"
+    raw = str(response_name or f"RESP_{int(response_no)}").strip()
+    token = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_") or f"RESP_{int(response_no)}"
+    return f"MANUAL_RESP_{prefix}_{token}_{int(response_no)}"
+
+
 def _row_element_labels(row: dict) -> set:
     labels = set()
     element_label = row.get("element_label")
@@ -1732,6 +1740,22 @@ def _resolve_manual_element_current_values(
             "could not resolve current_value for some element_labels from imported inp catalog"
         )
     return value_map
+
+
+def _normalize_response_variables(raw_variables) -> List[str]:
+    if not isinstance(raw_variables, (list, tuple, set)):
+        raise ValidationError("variables must be a non-empty list", {"variables": raw_variables})
+    result = []
+    seen = set()
+    for item in raw_variables:
+        token = str(item or "").strip().upper()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+    if not result:
+        raise ValidationError("variables must contain at least one non-empty item", {"variables": raw_variables})
+    return result
 
 
 def create_optimization_parameter(project_id, candidate_code=None, quantity_code=None, lower=None, upper=None, prob_id=0,
@@ -2126,6 +2150,214 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
     finally:
         cursor.close()
         conn.close()
+
+
+def create_design_response_catalog_entry(
+        *,
+        project_id: int,
+        region_type: str,
+        variables,
+        set_name: Optional[str] = None,
+        node_labels: Optional[List[int]] = None,
+        element_labels: Optional[List[int]] = None,
+        step_name: Optional[str] = None,
+        frequency: int = 1,
+        response_name: Optional[str] = None,
+) -> dict:
+    ensure_tables_exist()
+
+    resolved_region = str(region_type or "").strip().upper()
+    if resolved_region not in {"NODE", "ELEMENT"}:
+        raise ValidationError("region_type must be NODE or ELEMENT", {"region_type": region_type})
+
+    resolved_variables = _normalize_response_variables(variables)
+    normalized_set_name = str(set_name or "").strip()
+    normalized_node_labels = sorted({int(item) for item in (node_labels or [])})
+    normalized_element_labels = sorted({int(item) for item in (element_labels or [])})
+
+    if resolved_region == "NODE" and normalized_element_labels:
+        raise ValidationError(
+            "NODE response cannot use element_labels",
+            {"element_label_count": len(normalized_element_labels)},
+        )
+    if resolved_region == "ELEMENT" and normalized_node_labels:
+        raise ValidationError(
+            "ELEMENT response cannot use node_labels",
+            {"node_label_count": len(normalized_node_labels)},
+        )
+
+    has_set = bool(normalized_set_name)
+    has_manual_labels = bool(normalized_node_labels or normalized_element_labels)
+    if has_set == has_manual_labels:
+        raise ValidationError(
+            "set_name and labels must choose exactly one input mode",
+            {
+                "set_name": normalized_set_name or None,
+                "node_label_count": len(normalized_node_labels),
+                "element_label_count": len(normalized_element_labels),
+            },
+        )
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT COALESCE(MAX(response_no), 0) AS max_no
+            FROM t_mt_py_fem_design_response_catalog
+            WHERE pid = %s
+            """,
+            (int(project_id),),
+        )
+        max_no_row = cursor.fetchone() or {}
+        response_no = int(max_no_row.get("max_no") or 0) + 1
+        request_no = 1
+        resolved_step_name = str(step_name or "").strip() or None
+        resolved_response_name = str(response_name or "").strip() or f"RESP_{response_no}"
+
+        extra_json = {"response_name": resolved_response_name}
+        if has_manual_labels:
+            normalized_set_name = _safe_manual_response_set_name(
+                resolved_region, resolved_response_name, response_no
+            )
+            extra_json["set_source"] = "manual"
+            extra_json["virtual_set_name"] = normalized_set_name
+            if resolved_region == "NODE":
+                extra_json["node_labels"] = normalized_node_labels
+            else:
+                extra_json["element_labels"] = normalized_element_labels
+
+        cursor.execute(
+            """
+            INSERT INTO t_mt_py_fem_design_response_catalog
+            (pid, response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(project_id),
+                int(response_no),
+                int(request_no),
+                resolved_step_name,
+                int(frequency),
+                resolved_region,
+                normalized_set_name,
+                _json_dumps(resolved_variables),
+                _json_dumps(extra_json),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    safe_write_console_event(
+        int(project_id),
+        "设计响应创建完成",
+        [
+            f"响应名: {resolved_response_name}",
+            f"区域类型: {resolved_region}",
+            f"集合名: {normalized_set_name}",
+            f"变量: {', '.join(resolved_variables)}",
+            f"来源: {'手工标签' if has_manual_labels else '已有集合'}",
+        ],
+    )
+
+    payload = {
+        "project_id": int(project_id),
+        "response_no": int(response_no),
+        "request_no": int(request_no),
+        "response_name": resolved_response_name,
+        "step_name": resolved_step_name,
+        "frequency": int(frequency),
+        "region_type": resolved_region,
+        "set_name": normalized_set_name,
+        "variables": resolved_variables,
+    }
+    if resolved_region == "NODE" and normalized_node_labels:
+        payload["node_labels"] = normalized_node_labels
+    if resolved_region == "ELEMENT" and normalized_element_labels:
+        payload["element_labels"] = normalized_element_labels
+    return payload
+
+
+def list_design_response_catalog_entries(project_id: int) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json
+            FROM t_mt_py_fem_design_response_catalog
+            WHERE pid = %s
+            ORDER BY response_no ASC, request_no ASC
+            """,
+            (int(project_id),),
+        )
+        responses = []
+        for row in cursor.fetchall() or []:
+            item = dict(row)
+            extra_json = _parse_optional_json_object(item.get("extra_json"))
+            try:
+                variables = json.loads(item.get("variables_json")) if item.get("variables_json") else []
+            except Exception:
+                variables = []
+            payload = {
+                "response_no": int(item.get("response_no") or 0),
+                "request_no": int(item.get("request_no") or 0),
+                "response_name": str(extra_json.get("response_name") or f"RESP_{item.get('response_no') or 0}"),
+                "step_name": item.get("step_name"),
+                "frequency": int(item.get("frequency") or 1),
+                "region_type": str(item.get("region_type") or "").upper(),
+                "set_name": str(item.get("set_name") or ""),
+                "variables": [str(v).strip().upper() for v in (variables or []) if str(v).strip()],
+                "set_source": str(extra_json.get("set_source") or "catalog"),
+                "extra_json": extra_json,
+            }
+            if payload["region_type"] == "NODE":
+                payload["node_labels"] = _parse_id_list(extra_json.get("node_labels"))
+            elif payload["region_type"] == "ELEMENT":
+                payload["element_labels"] = _parse_id_list(extra_json.get("element_labels"))
+            responses.append(payload)
+        return {
+            "project_id": int(project_id),
+            "response_count": len(responses),
+            "responses": responses,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def clear_design_response_catalog_entries(project_id: int) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = %s",
+            (int(project_id),),
+        )
+        deleted = int(cursor.rowcount or 0)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    safe_write_console_event(
+        int(project_id),
+        "设计响应已清空",
+        [f"删除条数: {deleted}"],
+    )
+    return {
+        "project_id": int(project_id),
+        "deleted_count": deleted,
+    }
 
 
 def _get_latest_octree_meta(cursor, project_id):

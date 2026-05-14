@@ -1038,6 +1038,9 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
     responses = []
     for idx, row in enumerate(response_rows, start=1):
         region_type = str(row.get("region_type") or "").strip().upper()
+        extra_json = _parse_optional_json_object(row.get("extra_json"))
+        manual_node_labels = _parse_id_list(extra_json.get("node_labels"))
+        manual_element_labels = _parse_id_list(extra_json.get("element_labels"))
         if region_type == "NODE":
             response_type = "node"
         elif region_type == "ELEMENT":
@@ -1089,6 +1092,12 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
             "set": set_name,
             "variables": variables,
         }
+        if response_type == "node" and manual_node_labels:
+            response_item["nodes"] = manual_node_labels
+            response_item["set_name"] = set_name
+        elif response_type == "element" and manual_element_labels:
+            response_item["elements"] = manual_element_labels
+            response_item["set_name"] = set_name
         responses.append(response_item)
 
     config_json = {
