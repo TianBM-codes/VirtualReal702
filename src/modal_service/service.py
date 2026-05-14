@@ -184,7 +184,7 @@ def _db_frequency(project_id: str) -> list:
         modal_shape = [{"label": "Undeformed", "value": 0, "show_name": ""}]
         for ii, iter_modal in enumerate(modal):
             obj = {"label": f"EMA {iter_modal[0]} - {iter_modal[1]} Hz", "value": iter_modal[0]}
-            obj["show_name"] = f"Mode {obj["value"]}"
+            obj["show_name"] = f"Mode {obj['value']}"
             modal_shape.append(obj)
         return modal_shape
     except Exception as e:
