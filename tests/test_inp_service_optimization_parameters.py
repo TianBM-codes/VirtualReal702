@@ -274,6 +274,97 @@ def test_create_optimization_parameter_manual_global_keeps_group_parameter(monke
     assert '"element_labels": [101, 102, 103]' in inserted[17]
 
 
+def test_create_optimization_parameter_manual_local_auto_resolves_current_value(monkeypatch):
+    capability_rows = [
+        {
+            "quantity_code": "T",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 3,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": None,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [101, 102, 103],
+                    "element_values": {
+                        "101": 0.0021,
+                        "102": 0.0022,
+                        "103": 0.0023,
+                    },
+                }
+            ),
+        }
+    ]
+    fake_conn = _CreateParameterConnection(capability_rows)
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.create_optimization_parameter(
+        project_id=101,
+        quantity_code="H",
+        lower=0.001,
+        upper=0.003,
+        selection_mode="LOCAL",
+        parameter_name="T_LOCAL_AUTO",
+        element_labels=[101, 102, 103],
+    )
+
+    assert result["created_parameter_count"] == 3
+    assert [item["current_value"] for item in result["created_parameters_preview"]] == [0.0021, 0.0022, 0.0023]
+
+
+def test_create_optimization_parameter_manual_global_requires_unique_auto_value(monkeypatch):
+    capability_rows = [
+        {
+            "quantity_code": "T",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 2,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": None,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [101, 102],
+                    "element_values": {
+                        "101": 0.0021,
+                        "102": 0.0035,
+                    },
+                }
+            ),
+        }
+    ]
+    fake_conn = _CreateParameterConnection(capability_rows)
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    with pytest.raises(ValueError, match="manual GLOBAL parameter spans multiple current values"):
+        inp_service.create_optimization_parameter(
+            project_id=101,
+            quantity_code="H",
+            lower=0.001,
+            upper=0.004,
+            selection_mode="GLOBAL",
+            parameter_name="T_GLOBAL_AUTO",
+            element_labels=[101, 102],
+        )
+
+
 def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch):
     capability_rows = [
         {

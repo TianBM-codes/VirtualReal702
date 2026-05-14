@@ -1684,6 +1684,56 @@ def _row_element_labels(row: dict) -> set:
     return labels
 
 
+def _resolve_manual_element_current_values(
+        cursor,
+        *,
+        project_id: int,
+        quantity_code_candidates: List[str],
+        element_labels: List[int],
+) -> Dict[int, float]:
+    cursor.execute(
+        f"""
+        SELECT set_name, current_value, extra_json
+        FROM t_mt_py_fem_quantity_set_capability
+        WHERE pid = %s
+          AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
+        """,
+        (int(project_id), *quantity_code_candidates),
+    )
+    requested = {int(label) for label in element_labels}
+    value_map: Dict[int, float] = {}
+    for row in cursor.fetchall() or []:
+        extra = _json_loads(row.get("extra_json")) or {}
+        row_labels = [int(item) for item in (extra.get("element_labels") or [])]
+        if not row_labels:
+            continue
+        row_values = {
+            int(key): _safe_float(value)
+            for key, value in dict(extra.get("element_values") or {}).items()
+            if _safe_float(value) is not None
+        }
+        shared_value = _safe_float(row.get("current_value"))
+        for label in row_labels:
+            if label not in requested:
+                continue
+            candidate = row_values.get(label, shared_value)
+            if candidate is None:
+                continue
+            existing = value_map.get(label)
+            if existing is not None and not np.isclose(existing, candidate):
+                raise ValueError(
+                    f"conflicting current_value detected for element_label={label}"
+                )
+            value_map[label] = float(candidate)
+
+    missing = sorted(label for label in requested if label not in value_map)
+    if missing:
+        raise ValueError(
+            "could not resolve current_value for some element_labels from imported inp catalog"
+        )
+    return value_map
+
+
 def create_optimization_parameter(project_id, candidate_code=None, quantity_code=None, lower=None, upper=None, prob_id=0,
                                   selection_mode=None, set_name=None, parameter_name=None, scatter=None,
                                   description="", set_type=None, set_scope=None,
@@ -1735,8 +1785,21 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 parameter_group_name,
             ))
             resolved_current_value = None if current_value is None else _safe_float(current_value)
+            resolved_element_values: Dict[int, float] = {}
             if resolved_current_value is None:
-                raise ValueError("current_value is required when element_labels is provided")
+                resolved_element_values = _resolve_manual_element_current_values(
+                    cursor,
+                    project_id=int(project_id),
+                    quantity_code_candidates=quantity_code_candidates,
+                    element_labels=provided_element_labels,
+                )
+                if resolved_mode == "GLOBAL":
+                    distinct_values = sorted({float(value) for value in resolved_element_values.values()})
+                    if len(distinct_values) != 1:
+                        raise ValueError(
+                            "manual GLOBAL parameter spans multiple current values; specify current_value explicitly or switch to LOCAL"
+                        )
+                    resolved_current_value = float(distinct_values[0])
 
             incoming_element_label_set = {int(label) for label in provided_element_labels}
             cursor.execute(
@@ -1798,6 +1861,9 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             else:
                 for element_label in provided_element_labels:
                     resolved_parameter_name = f"{parameter_group_name}#{int(element_label)}"
+                    row_current_value = resolved_current_value
+                    if row_current_value is None:
+                        row_current_value = resolved_element_values.get(int(element_label))
                     insert_rows.append((
                         project_id,
                         parameter_group_name,
@@ -1810,7 +1876,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                         instance_name,
                         part_name,
                         int(element_label),
-                        resolved_current_value,
+                        row_current_value,
                         resolved_lower,
                         resolved_upper,
                         resolved_prob_id,
@@ -1821,14 +1887,14 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                             "element_labels": [int(element_label)],
                             "set_source": "manual",
                             "virtual_set_name": manual_set_name,
-                            "current_value": resolved_current_value,
+                            "current_value": row_current_value,
                         }),
                     ))
                     created_parameters.append(
                         {
                             "parameter_name": resolved_parameter_name,
                             "element_label": int(element_label),
-                            "current_value": resolved_current_value,
+                            "current_value": row_current_value,
                         }
                     )
 
