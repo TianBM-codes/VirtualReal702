@@ -72,11 +72,13 @@ class ImportProjectStaticResultRequest(BaseModel):
 
 class CreateOptimizationParameterRequest(BaseModel):
     project_id: int
-    set_name: Union[str, List[str]]
+    set_name: Optional[Union[str, List[str]]] = None
+    element_labels: Optional[List[int]] = None
     quantity_code: Optional[str] = None
     candidate_code: Optional[str] = None
     lower: float
     upper: float
+    current_value: Optional[float] = None
     prob_id: int = 0
     selection_mode: Optional[str] = None
     parameter_name: Optional[str] = None

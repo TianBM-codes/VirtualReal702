@@ -1666,10 +1666,28 @@ def _resolve_selection_mode_from_capability(capability_row: dict, requested_mode
     return mode
 
 
+def _safe_manual_set_name(quantity_code: str, selection_mode: str, parameter_name: Optional[str]) -> str:
+    raw = str(parameter_name or f"{quantity_code}_{selection_mode}").strip()
+    token = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_") or f"{quantity_code}_{selection_mode}"
+    return f"MANUAL_{str(quantity_code).upper()}_{str(selection_mode).upper()}_{token}"
+
+
+def _row_element_labels(row: dict) -> set:
+    labels = set()
+    element_label = row.get("element_label")
+    if element_label not in (None, ""):
+        labels.add(int(element_label))
+    payload = _json_loads(row.get("extra_json")) or {}
+    for item in payload.get("element_labels") or []:
+        labels.add(int(item))
+    return labels
+
+
 def create_optimization_parameter(project_id, candidate_code=None, quantity_code=None, lower=None, upper=None, prob_id=0,
                                   selection_mode=None, set_name=None, parameter_name=None, scatter=None,
                                   description="", set_type=None, set_scope=None,
-                                  instance_name=None, part_name=None):
+                                  instance_name=None, part_name=None,
+                                  element_labels=None, current_value=None):
     # This API turns a generic candidate type plus one cataloged set into a
     # concrete optimization parameter record that Bayesian update can address.
     ensure_tables_exist()
@@ -1679,8 +1697,6 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         resolved_quantity_code = _normalize_quantity_code(
             quantity_code or _derive_quantity_code_from_candidate(candidate_code)
         )
-        if not set_name:
-            raise ValueError("set_name is required")
         if lower is None or upper is None:
             raise ValueError("lower and upper are required")
         resolved_lower = float(lower)
@@ -1691,6 +1707,159 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         quantity_code_candidates = [resolved_quantity_code]
         if resolved_quantity_code == "T":
             quantity_code_candidates.append("H")
+        provided_element_labels = [int(item) for item in (element_labels or [])]
+        has_manual_elements = bool(provided_element_labels)
+        if has_manual_elements and set_name:
+            raise ValueError("set_name and element_labels cannot be provided together")
+        if not has_manual_elements and not set_name:
+            raise ValueError("set_name is required when element_labels is not provided")
+
+        resolved_scatter = float(
+            _DEFAULT_PARAMETER_SCATTER if scatter is None else scatter
+        )
+        if resolved_scatter <= 0:
+            raise ValueError("scatter must be > 0")
+
+        if has_manual_elements:
+            resolved_mode = _normalize_selection_mode(selection_mode or "LOCAL")
+            parameter_group_name = str(
+                parameter_name or _default_parameter_group_name(
+                    resolved_quantity_code,
+                    _safe_manual_set_name(resolved_quantity_code, resolved_mode, parameter_name),
+                )
+            )
+            manual_set_name = str(set_name or _safe_manual_set_name(
+                resolved_quantity_code,
+                resolved_mode,
+                parameter_group_name,
+            ))
+            resolved_current_value = None if current_value is None else _safe_float(current_value)
+            if resolved_current_value is None:
+                raise ValueError("current_value is required when element_labels is provided")
+
+            incoming_element_label_set = {int(label) for label in provided_element_labels}
+            cursor.execute(
+                f"""
+                SELECT set_name, set_type, set_scope, instance_name, part_name, element_label, extra_json
+                FROM t_mt_py_fem_selected_parameter
+                WHERE pid = %s
+                  AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))})
+                """,
+                (project_id, *quantity_code_candidates),
+            )
+            for row in cursor.fetchall() or []:
+                if incoming_element_label_set & _row_element_labels(row):
+                    raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
+
+            insert_sql = """
+            INSERT INTO t_mt_py_fem_selected_parameter
+            (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
+             instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            created_parameters = []
+            insert_rows = []
+            if resolved_mode == "GLOBAL":
+                resolved_parameter_name = parameter_group_name
+                insert_rows.append((
+                    project_id,
+                    parameter_group_name,
+                    resolved_parameter_name,
+                    resolved_quantity_code,
+                    resolved_mode,
+                    manual_set_name,
+                    str(set_type or "ELSET"),
+                    str(set_scope or "MANUAL"),
+                    instance_name,
+                    part_name,
+                    None,
+                    resolved_current_value,
+                    resolved_lower,
+                    resolved_upper,
+                    resolved_prob_id,
+                    resolved_scatter,
+                    description or "",
+                    _json_dumps({
+                        "target_keys": [],
+                        "element_labels": provided_element_labels,
+                        "set_source": "manual",
+                        "virtual_set_name": manual_set_name,
+                        "current_value": resolved_current_value,
+                    }),
+                ))
+                created_parameters.append(
+                    {
+                        "parameter_name": resolved_parameter_name,
+                        "element_label": None,
+                        "current_value": resolved_current_value,
+                    }
+                )
+            else:
+                for element_label in provided_element_labels:
+                    resolved_parameter_name = f"{parameter_group_name}#{int(element_label)}"
+                    insert_rows.append((
+                        project_id,
+                        parameter_group_name,
+                        resolved_parameter_name,
+                        resolved_quantity_code,
+                        resolved_mode,
+                        manual_set_name,
+                        str(set_type or "ELSET"),
+                        str(set_scope or "MANUAL"),
+                        instance_name,
+                        part_name,
+                        int(element_label),
+                        resolved_current_value,
+                        resolved_lower,
+                        resolved_upper,
+                        resolved_prob_id,
+                        resolved_scatter,
+                        description or "",
+                        _json_dumps({
+                            "target_keys": [],
+                            "element_labels": [int(element_label)],
+                            "set_source": "manual",
+                            "virtual_set_name": manual_set_name,
+                            "current_value": resolved_current_value,
+                        }),
+                    ))
+                    created_parameters.append(
+                        {
+                            "parameter_name": resolved_parameter_name,
+                            "element_label": int(element_label),
+                            "current_value": resolved_current_value,
+                        }
+                    )
+
+            if len(insert_rows) == 1:
+                cursor.execute(insert_sql, insert_rows[0])
+            elif hasattr(cursor, "executemany"):
+                cursor.executemany(insert_sql, insert_rows)
+            else:
+                for row in insert_rows:
+                    cursor.execute(insert_sql, row)
+            conn.commit()
+
+            return {
+                "project_id": project_id,
+                "parameter_group_name": parameter_group_name,
+                "quantity_code": resolved_quantity_code,
+                "selection_mode": resolved_mode,
+                "set_name": manual_set_name,
+                "set_type": str(set_type or "ELSET"),
+                "set_scope": str(set_scope or "MANUAL"),
+                "instance_name": instance_name,
+                "part_name": part_name,
+                "lower": resolved_lower,
+                "upper": resolved_upper,
+                "prob_id": resolved_prob_id,
+                "scatter": resolved_scatter,
+                "description": description or "",
+                "created_parameter_count": len(created_parameters),
+                "created_parameters_preview": created_parameters[:20],
+                "element_labels_preview": provided_element_labels[:20],
+                "manual_set_created": True,
+            }
 
         query = f"""
             SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
@@ -1726,12 +1895,6 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
 
         resolved_mode = _resolve_selection_mode_from_capability(capability_row, selection_mode)
         parameter_group_name = str(parameter_name or _default_parameter_group_name(resolved_quantity_code, capability_row["set_name"]))
-
-        resolved_scatter = float(
-            _DEFAULT_PARAMETER_SCATTER if scatter is None else scatter
-        )
-        if resolved_scatter <= 0:
-            raise ValueError("scatter must be > 0")
 
         capability_extra = _json_loads(capability_row.get("extra_json")) or {}
         element_labels = [int(item) for item in (capability_extra.get("element_labels") or [])]

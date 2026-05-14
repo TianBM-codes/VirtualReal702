@@ -220,6 +220,60 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
     assert result["prob_id"] == 2
 
 
+def test_create_optimization_parameter_manual_local_creates_virtual_set(monkeypatch):
+    fake_conn = _CreateParameterConnection([])
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.create_optimization_parameter(
+        project_id=101,
+        quantity_code="H",
+        lower=1.0,
+        upper=3.0,
+        prob_id=2,
+        selection_mode="LOCAL",
+        parameter_name="T_LOCAL_TEST",
+        element_labels=[101, 102],
+        current_value=2.5,
+    )
+
+    assert result["selection_mode"] == "LOCAL"
+    assert result["manual_set_created"] is True
+    assert result["set_name"].startswith("MANUAL_H_LOCAL_")
+    assert result["created_parameter_count"] == 2
+    assert [item["parameter_name"] for item in result["created_parameters_preview"]] == [
+        "T_LOCAL_TEST#101",
+        "T_LOCAL_TEST#102",
+    ]
+    assert [params[10] for params in fake_conn.cursor_obj.inserted] == [101, 102]
+    assert fake_conn.committed is True
+
+
+def test_create_optimization_parameter_manual_global_keeps_group_parameter(monkeypatch):
+    fake_conn = _CreateParameterConnection([])
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.create_optimization_parameter(
+        project_id=101,
+        quantity_code="H",
+        lower=1.0,
+        upper=3.0,
+        selection_mode="GLOBAL",
+        parameter_name="T_GLOBAL_TEST",
+        element_labels=[101, 102, 103],
+        current_value=2.5,
+    )
+
+    assert result["selection_mode"] == "GLOBAL"
+    assert result["manual_set_created"] is True
+    assert result["created_parameter_count"] == 1
+    assert result["created_parameters_preview"][0]["parameter_name"] == "T_GLOBAL_TEST"
+    inserted = fake_conn.cursor_obj.inserted[0]
+    assert inserted[10] is None
+    assert '"element_labels": [101, 102, 103]' in inserted[17]
+
+
 def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch):
     capability_rows = [
         {
