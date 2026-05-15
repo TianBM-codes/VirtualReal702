@@ -11,7 +11,12 @@ from services.model_update.analysis.model_update_meta_service import (
     resolve_python3_command,
 )
 from services.model_update.analysis import sensitivity_service as _sens
-from services.model_update.analysis.inp_service import create_optimization_parameter
+from services.model_update.analysis.inp_service import (
+    clear_design_response_catalog_entries,
+    create_design_response_catalog_entry,
+    create_optimization_parameter,
+    list_design_response_catalog_entries,
+)
 from src.l3.core.errors import AppError, ValidationError
 
 from ..background_jobs import get_background_task, submit_background_task, update_background_task
@@ -20,7 +25,9 @@ from ..models import (
     AddResponseRequest,
     BayesianModelUpdateRequest,
     BayesianTextCheckRequest,
+    CreateDesignResponseRequest,
     CreateOptimizationParameterRequest,
+    DesignResponseCatalogRequest,
 )
 from ..utils import log_request, model_to_dict
 
@@ -40,6 +47,32 @@ def _normalize_set_names(raw_value) -> list[str]:
             continue
         seen.add(token)
         result.append(token)
+    return result
+
+
+def _normalize_element_labels(raw_value) -> list[int]:
+    values = list(raw_value or [])
+    result = []
+    seen = set()
+    for item in values:
+        label = int(item)
+        if label in seen:
+            continue
+        seen.add(label)
+        result.append(label)
+    return result
+
+
+def _normalize_node_labels(raw_value) -> list[int]:
+    values = list(raw_value or [])
+    result = []
+    seen = set()
+    for item in values:
+        label = int(item)
+        if label in seen:
+            continue
+        seen.add(label)
+        result.append(label)
     return result
 
 
@@ -163,11 +196,41 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
     await log_request(request, model_to_dict(body))
     try:
         set_names = _normalize_set_names(body.set_name)
-        if (not body.candidate_code and not body.quantity_code) or not set_names:
+        element_labels = _normalize_element_labels(body.element_labels)
+        if not body.candidate_code and not body.quantity_code:
             raise ValidationError(
-                "project_id、set_name 和优化参数类型不能为空；"
+                "project_id、优化参数类型不能为空；"
                 "请优先使用 quantity_code，candidate_code 仅作为兼容别名"
             )
+        if bool(set_names) == bool(element_labels):
+            raise ValidationError(
+                "set_name 和 element_labels 必须二选一，且不能同时传入",
+                {
+                    "set_name_count": len(set_names),
+                    "element_label_count": len(element_labels),
+                },
+            )
+
+        if element_labels:
+            result = create_optimization_parameter(
+                project_id=body.project_id,
+                candidate_code=body.candidate_code,
+                quantity_code=body.quantity_code,
+                lower=body.lower,
+                upper=body.upper,
+                prob_id=body.prob_id,
+                selection_mode=body.selection_mode,
+                parameter_name=body.parameter_name,
+                scatter=body.scatter,
+                description=body.description,
+                set_type=body.set_type,
+                set_scope=body.set_scope,
+                instance_name=body.instance_name,
+                part_name=body.part_name,
+                element_labels=element_labels,
+                current_value=body.current_value,
+            )
+            return success_response(result, "优化参数创建成功")
 
         results = []
         multi_set = len(set_names) > 1
@@ -192,6 +255,7 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
                     set_scope=body.set_scope,
                     instance_name=body.instance_name,
                     part_name=body.part_name,
+                    current_value=body.current_value,
                 )
             )
         result = (
@@ -205,6 +269,57 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
             }
         )
         return success_response(result, "优化参数创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/response/create")
+async def create_design_response_api(request: Request, body: CreateDesignResponseRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        node_labels = _normalize_node_labels(body.node_labels)
+        element_labels = _normalize_element_labels(body.element_labels)
+        data = create_design_response_catalog_entry(
+            project_id=body.project_id,
+            region_type=body.region_type,
+            variables=body.variables,
+            set_name=body.set_name,
+            node_labels=node_labels or None,
+            element_labels=element_labels or None,
+            step_name=body.step_name,
+            frequency=body.frequency,
+            response_name=body.response_name,
+        )
+        return success_response(data, "设计响应创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/response")
+async def list_design_response_api(request: Request, body: DesignResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = list_design_response_catalog_entries(body.project_id)
+        return success_response(data, "设计响应目录加载成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/response/clear")
+async def clear_design_response_api(request: Request, body: DesignResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = clear_design_response_catalog_entries(body.project_id)
+        return success_response(data, "设计响应已清空")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

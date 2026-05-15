@@ -72,11 +72,13 @@ class ImportProjectStaticResultRequest(BaseModel):
 
 class CreateOptimizationParameterRequest(BaseModel):
     project_id: int
-    set_name: Union[str, List[str]]
+    set_name: Optional[Union[str, List[str]]] = None
+    element_labels: Optional[List[int]] = None
     quantity_code: Optional[str] = None
     candidate_code: Optional[str] = None
     lower: float
     upper: float
+    current_value: Optional[float] = None
     prob_id: int = 0
     selection_mode: Optional[str] = None
     parameter_name: Optional[str] = None
@@ -94,6 +96,22 @@ class AddResponseRequest(BaseModel):
     scatter: float
     dof: str
     step: Optional[str] = None
+
+
+class CreateDesignResponseRequest(BaseModel):
+    project_id: int
+    region_type: str
+    variables: List[str]
+    set_name: Optional[str] = None
+    node_labels: Optional[List[int]] = None
+    element_labels: Optional[List[int]] = None
+    step_name: Optional[str] = None
+    frequency: int = Field(default=1, ge=1)
+    response_name: Optional[str] = None
+
+
+class DesignResponseCatalogRequest(BaseModel):
+    project_id: int
 
 
 class BayesianModelUpdateRequest(BaseModel):
@@ -484,6 +502,44 @@ class NastranSol103GenerateRequest(BaseModel):
     input_bdf: str
     output_bdf: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NastranSol103RunAndStoreModalRequest(BaseModel):
+    project_id: int
+    input_bdf: str
+    output_bdf: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    nastran: Optional[str] = None
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    overwrite: bool = True
+    subcase_id: Optional[int] = None
+    mode_numbers: Optional[List[int]] = None
+    instance_name: Optional[str] = None
+    part_name: Optional[str] = None
+    async_submit: bool = False
+
+
+class AbaqusInpRunAndUploadResultRequest(BaseModel):
+    project_id: int
+    input_inp: str
+    output_dir: Optional[str] = None
+    abaqus: Optional[str] = None
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    result_group: Optional[str] = None
+    display_name: Optional[str] = None
+    base_url: Optional[str] = None
+    step: Optional[str] = None
+    frame: Optional[int] = None
+    field_prefix: Optional[str] = None
+    upload_timeout: int = 60
+    wait_timeout_sec: int = 3600
+    poll_interval_sec: float = 2.0
+    async_submit: bool = False
 
 
 class NastranParameterRequest(BaseModel):

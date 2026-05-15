@@ -1092,6 +1092,39 @@ def _persist_bayesian_tracking_results(*, project_id: int, batch_no: int, iterat
         conn.close()
 
 
+def _clear_bayesian_run_outputs(*, project_id: int, batch_no: int) -> dict:
+    resolved_batch_no = _normalize_batch_no(batch_no)
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        deleted = {}
+        sql_list = [
+            ("t_mt_py_fem_tracking_iteration", "DELETE FROM t_mt_py_fem_tracking_iteration WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
+            ("t_mt_py_fem_bayesian_iteration_metric", "DELETE FROM t_mt_py_fem_bayesian_iteration_metric WHERE project_id = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
+            ("t_mt_py_fem_relevance_tracking", "DELETE FROM t_mt_py_fem_relevance_tracking WHERE pid = %s", (int(project_id),)),
+            ("t_mt_py_fem_response_difference", "DELETE FROM t_mt_py_fem_response_difference WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
+            ("t_mt_py_fem_parameter_variation", "DELETE FROM t_mt_py_fem_parameter_variation WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
+            ("t_mt_py_fem_tracking_value", "DELETE FROM t_mt_py_fem_tracking_value WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
+            ("t_mt_py_fem_model_update_static_result", "DELETE FROM t_mt_py_fem_model_update_static_result WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
+        ]
+        for table_name, sql, params in sql_list:
+            cursor.execute(sql, params)
+            deleted[table_name] = int(cursor.rowcount or 0)
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "batch_no": resolved_batch_no,
+            "deleted": deleted,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def _group_scoped_targets(targets: Sequence[object]) -> Dict[str, List[int]]:
     grouped: Dict[str, List[int]] = {}
     for item in targets:
@@ -2546,6 +2579,19 @@ def run_bayesian_update_workflow(
     if exit_diff_percent is not None and float(exit_diff_percent) < 0:
         raise ValidationError("exit_diff_percent must be >= 0", {"exit_diff_percent": exit_diff_percent})
     resolved_batch_no = _normalize_batch_no(batch_no)
+    cleanup_result = _clear_bayesian_run_outputs(
+        project_id=int(project_id),
+        batch_no=resolved_batch_no,
+    )
+    safe_write_console_event(
+        int(project_id),
+        "模型修正开始",
+        [
+            f"批次号: {resolved_batch_no}",
+            "已先清空上一轮模型修正结果",
+            f"清理表数: {len(cleanup_result.get('deleted') or {})}",
+        ],
+    )
 
     input_path = _solver._abs_file(input_inp, "input_inp")
     input_base_stem = input_path.stem
@@ -2870,6 +2916,7 @@ def run_bayesian_update_workflow(
         result = {
             "project_id": project_id,
             "batch_no": resolved_batch_no,
+            "cleanup_result": cleanup_result,
             "input_inp": str(input_path),
             "output_dir": str(root_dir) if save_results else None,
             "save_results": bool(save_results),

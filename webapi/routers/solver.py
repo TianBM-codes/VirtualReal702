@@ -5,9 +5,11 @@ from fastapi import APIRouter, Request
 from services.model_update.analysis.solver_service import (
     generate_nastran_sol103_job,
     preview_nastran_sol103_job,
+    run_abaqus_inp_and_upload_project_result,
     run_abaqus_adjoint_job,
     run_abaqus_sensitivity_job,
     run_nastran_sol103_job,
+    run_nastran_sol103_and_store_modal_results,
 )
 from services.model_update.analysis.nastran_sol200_service import (
     export_sol200_sensitivity_vtu,
@@ -28,6 +30,7 @@ from src.l3.core.errors import AppError
 from ..background_jobs import get_background_task, submit_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
+    AbaqusInpRunAndUploadResultRequest,
     AbaqusAdjointRunRequest,
     AbaqusSensitivityRunRequest,
     NastranResponseRequest,
@@ -36,6 +39,7 @@ from ..models import (
     NastranSol200RunRequest,
     NastranSol103GenerateRequest,
     NastranSol103PreviewRequest,
+    NastranSol103RunAndStoreModalRequest,
     NastranSol103RunRequest,
     Op2ModalPreviewRequest,
     Op2ModalStoreRequest,
@@ -58,6 +62,46 @@ def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
         "run_solver": body.run_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
+    }
+
+
+def _sol103_run_and_store_modal_kwargs(body: NastranSol103RunAndStoreModalRequest) -> dict:
+    return {
+        "project_id": body.project_id,
+        "input_bdf": body.input_bdf,
+        "output_bdf": body.output_bdf,
+        "settings": body.settings,
+        "nastran": body.nastran,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
+        "overwrite": body.overwrite,
+        "subcase_id": body.subcase_id,
+        "mode_numbers": body.mode_numbers,
+        "instance_name": body.instance_name,
+        "part_name": body.part_name,
+    }
+
+
+def _abaqus_run_and_upload_result_kwargs(body: AbaqusInpRunAndUploadResultRequest) -> dict:
+    return {
+        "project_id": body.project_id,
+        "input_inp": body.input_inp,
+        "output_dir": body.output_dir,
+        "abaqus": body.abaqus,
+        "job_name": body.job_name,
+        "cpus": body.cpus,
+        "interactive": body.interactive,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
+        "result_group": body.result_group,
+        "display_name": body.display_name,
+        "base_url": body.base_url,
+        "step": body.step,
+        "frame": body.frame,
+        "field_prefix": body.field_prefix,
+        "upload_timeout": body.upload_timeout,
+        "wait_timeout_sec": body.wait_timeout_sec,
+        "poll_interval_sec": body.poll_interval_sec,
     }
 
 
@@ -207,6 +251,50 @@ async def run_nastran_sol103_run_api(request: Request, body: NastranSol103RunReq
             return success_response(data, "Nastran SOL103 求解任务已提交")
         data = run_nastran_sol103_job(**kwargs)
         return success_response(data, "Nastran SOL103 求解成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/nastran/sol103/run_and_store_modal")
+async def run_nastran_sol103_run_and_store_modal_api(request: Request, body: NastranSol103RunAndStoreModalRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _sol103_run_and_store_modal_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="solver.nastran.sol103.run_and_store_modal",
+                fn=run_nastran_sol103_and_store_modal_results,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "Nastran SOL103 求解并导入模态结果任务已提交")
+        data = run_nastran_sol103_and_store_modal_results(**kwargs)
+        return success_response(data, "Nastran SOL103 求解并导入模态结果成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/abaqus/inp/run_and_upload_result")
+async def run_abaqus_inp_and_upload_result_api(request: Request, body: AbaqusInpRunAndUploadResultRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _abaqus_run_and_upload_result_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="solver.abaqus.inp.run_and_upload_result",
+                fn=run_abaqus_inp_and_upload_project_result,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "Abaqus 求解并上传结果任务已提交")
+        data = run_abaqus_inp_and_upload_project_result(**kwargs)
+        return success_response(data, "Abaqus 求解并上传结果成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

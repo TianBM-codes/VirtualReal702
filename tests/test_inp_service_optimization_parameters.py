@@ -206,11 +206,11 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
 
     assert result["created_parameter_count"] == 2
     assert result["selection_mode"] == "LOCAL"
-    assert [item["parameter_name"] for item in result["created_parameters_preview"]] == ["E_GROUP#1", "E_GROUP#2"]
+    assert [item["parameter_name"] for item in result["created_parameters_preview"]] == ["E_GROUP_EL1", "E_GROUP_EL2"]
     assert fake_conn.committed is True
     assert fake_conn.rolled_back is False
     assert len(fake_conn.cursor_obj.executemany_batches) == 1
-    assert [params[2] for params in fake_conn.cursor_obj.inserted] == ["E_GROUP#1", "E_GROUP#2"]
+    assert [params[2] for params in fake_conn.cursor_obj.inserted] == ["E_GROUP_EL1", "E_GROUP_EL2"]
     assert [params[10] for params in fake_conn.cursor_obj.inserted] == [1, 2]
     assert [params[12] for params in fake_conn.cursor_obj.inserted] == [100000.0, 100000.0]
     assert [params[13] for params in fake_conn.cursor_obj.inserted] == [300000.0, 300000.0]
@@ -218,6 +218,151 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
     assert result["lower"] == 100000.0
     assert result["upper"] == 300000.0
     assert result["prob_id"] == 2
+
+
+def test_create_optimization_parameter_manual_local_creates_virtual_set(monkeypatch):
+    fake_conn = _CreateParameterConnection([])
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.create_optimization_parameter(
+        project_id=101,
+        quantity_code="H",
+        lower=1.0,
+        upper=3.0,
+        prob_id=2,
+        selection_mode="LOCAL",
+        parameter_name="T_LOCAL_TEST",
+        element_labels=[101, 102],
+        current_value=2.5,
+    )
+
+    assert result["selection_mode"] == "LOCAL"
+    assert result["manual_set_created"] is True
+    assert result["set_name"].startswith("MANUAL_H_LOCAL_")
+    assert result["created_parameter_count"] == 2
+    assert [item["parameter_name"] for item in result["created_parameters_preview"]] == [
+        "T_LOCAL_TEST_EL101",
+        "T_LOCAL_TEST_EL102",
+    ]
+    assert [params[10] for params in fake_conn.cursor_obj.inserted] == [101, 102]
+    assert fake_conn.committed is True
+
+
+def test_create_optimization_parameter_manual_global_keeps_group_parameter(monkeypatch):
+    fake_conn = _CreateParameterConnection([])
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.create_optimization_parameter(
+        project_id=101,
+        quantity_code="H",
+        lower=1.0,
+        upper=3.0,
+        selection_mode="GLOBAL",
+        parameter_name="T_GLOBAL_TEST",
+        element_labels=[101, 102, 103],
+        current_value=2.5,
+    )
+
+    assert result["selection_mode"] == "GLOBAL"
+    assert result["manual_set_created"] is True
+    assert result["created_parameter_count"] == 1
+    assert result["created_parameters_preview"][0]["parameter_name"] == "T_GLOBAL_TEST"
+    inserted = fake_conn.cursor_obj.inserted[0]
+    assert inserted[10] is None
+    assert '"element_labels": [101, 102, 103]' in inserted[17]
+
+
+def test_create_optimization_parameter_manual_local_auto_resolves_current_value(monkeypatch):
+    capability_rows = [
+        {
+            "quantity_code": "T",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 3,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": None,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [101, 102, 103],
+                    "element_values": {
+                        "101": 0.0021,
+                        "102": 0.0022,
+                        "103": 0.0023,
+                    },
+                }
+            ),
+        }
+    ]
+    fake_conn = _CreateParameterConnection(capability_rows)
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    result = inp_service.create_optimization_parameter(
+        project_id=101,
+        quantity_code="H",
+        lower=0.001,
+        upper=0.003,
+        selection_mode="LOCAL",
+        parameter_name="T_LOCAL_AUTO",
+        element_labels=[101, 102, 103],
+    )
+
+    assert result["created_parameter_count"] == 3
+    assert [item["current_value"] for item in result["created_parameters_preview"]] == [0.0021, 0.0022, 0.0023]
+
+
+def test_create_optimization_parameter_manual_global_requires_unique_auto_value(monkeypatch):
+    capability_rows = [
+        {
+            "quantity_code": "T",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 2,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": None,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [101, 102],
+                    "element_values": {
+                        "101": 0.0021,
+                        "102": 0.0035,
+                    },
+                }
+            ),
+        }
+    ]
+    fake_conn = _CreateParameterConnection(capability_rows)
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+
+    with pytest.raises(ValueError, match="manual GLOBAL parameter spans multiple current values"):
+        inp_service.create_optimization_parameter(
+            project_id=101,
+            quantity_code="H",
+            lower=0.001,
+            upper=0.004,
+            selection_mode="GLOBAL",
+            parameter_name="T_GLOBAL_AUTO",
+            element_labels=[101, 102],
+        )
 
 
 def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch):

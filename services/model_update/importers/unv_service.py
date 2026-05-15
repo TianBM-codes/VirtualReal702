@@ -6,6 +6,7 @@ import numpy as np
 from db import get_connection, ensure_tables_exist, clear_unv_tables
 from FemToolsUNVParser import parse_unv
 from src.l3.core.errors import NotFoundError, ValidationError
+from services.model_update.analysis.console_log_service import safe_write_console_event
 from services.model_update.analysis.project_config_service import save_test_data_mode, save_test_model_dimensions
 
 
@@ -496,7 +497,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
 
         conn.commit()
 
-        return {
+        result = {
             "file_path": file_path,
             "result_kind": result_kind,
             "cleared_before_insert": clear_before_insert,
@@ -507,6 +508,19 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
             "test_static_result_count": static_result_count,
             "project_config": project_config,
         }
+        safe_write_console_event(
+            int(project_id),
+            "UNV导入完成",
+            [
+                f"文件: {file_path}",
+                f"结果类型: {result_kind}",
+                f"测点数: {len(test_nodes)}",
+                f"测点表记录数: {measuring_point_count}",
+                f"单元数: {len(test_elements)}",
+                f"模态/结果数: {len(test_modes)}",
+            ],
+        )
+        return result
 
     except Exception:
         conn.rollback()
