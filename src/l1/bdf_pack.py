@@ -35,42 +35,99 @@ from src.l1.manifest_schema import MANIFEST_SCHEMA
 
 # Nastran card → (Abaqus etype name, n_corner_nodes, n_faces_per_elem)
 # None entries are dispatched by node count via SOLID_BY_NNODE below.
+# n_corner_nodes for high-order elements is the corner-node count only;
+# mid-nodes beyond that are discarded (L2 only needs corner geometry).
 NASTRAN_TO_ABAQUS = {
-    'CQUAD4': ('S4R',  4, 1),
-    'CTRIA3': ('S3',   3, 1),
+    # Shells — linear
+    'CQUAD4': ('S4R',    4, 1),
+    'CQUADR': ('S4R',    4, 1),   # rotational-DOF variant, same geometry
+    'CSHEAR': ('S4R',    4, 1),   # shear panel, rendered as quad shell
+    'CTRIA3': ('S3',     3, 1),
+    'CTRIAR': ('S3',     3, 1),   # rotational-DOF variant
+    # Shells — high-order (conn stores corner nodes only)
+    'CQUAD8': ('S8R',    4, 1),
+    'CTRIA6': ('STRI65', 3, 1),
+    # Beams / rods / tubes
+    'CBAR':   ('B31',    2, 0),
+    'CBEAM':  ('B31',    2, 0),
+    'CBEND':  ('B31',    2, 0),
+    'CROD':   ('B31',    2, 0),
+    'CONROD': ('B31',    2, 0),   # inline material/section, no pid
+    'CTUBE':  ('B31',    2, 0),
+    # Springs / connectors
+    'CBUSH':  ('SPRING', 2, 0),
+    'CBUSH1D':('SPRING', 2, 0),
+    'CELAS1': ('SPRING', 2, 0),
+    'CELAS2': ('SPRING', 2, 0),   # inline stiffness, no pid
+    # Dampers
+    'CDAMP1': ('DASHPOT',2, 0),
+    'CDAMP2': ('DASHPOT',2, 0),   # inline damping, no pid
+    # Concentrated masses (1-node; only G1 is stored in conn)
+    'CONM1':  ('MASS',   1, 0),
+    'CONM2':  ('MASS',   1, 0),
+    'CMASS1': ('MASS',   1, 0),
+    'CMASS2': ('MASS',   1, 0),   # inline mass, no pid
+    # Solids — dispatched by node count via SOLID_BY_NNODE
     'CHEXA':  None,
     'CPENTA': None,
     'CTETRA': None,
-    'CBAR':   ('B31',  2, 0),
-    'CBEAM':  ('B31',  2, 0),
 }
 
 SOLID_BY_NNODE = {
-    ('CHEXA',  8): ('C3D8R', 8, 6),
-    ('CPENTA', 6): ('C3D6',  6, 5),
-    ('CTETRA', 4): ('C3D4',  4, 4),
+    # Linear solids
+    ('CHEXA',  8):  ('C3D8R', 8, 6),
+    ('CPENTA', 6):  ('C3D6',  6, 5),
+    ('CTETRA', 4):  ('C3D4',  4, 4),
+    # High-order solids (n_corner = corner nodes only; mid-nodes discarded)
+    ('CHEXA',  20): ('C3D20', 8, 6),
+    ('CPENTA', 15): ('C3D15', 6, 5),
+    ('CTETRA', 10): ('C3D10', 4, 4),
 }
 
-# High-order shells not supported in Phase 1 — skip with warning.
-HIGH_ORDER_SKIP = {'CQUAD8', 'CTRIA6', 'CQUAD6'}
+# Cards with no GRID-point connectivity (scalar points) or degenerate geometry —
+# silently skipped; a warning is printed for any other unrecognised card.
+_UNSUPPORTED_SKIP = {'CELAS4', 'CMASS4', 'CQUAD6'}
 
 FACE_DEFS = {
-    'S4R':   [[0, 1, 2, 3]],
-    'S3':    [[0, 1, 2]],
-    'C3D8R': [
+    # Linear shells
+    'S4R':    [[0, 1, 2, 3]],
+    'S3':     [[0, 1, 2]],
+    # High-order shells (face uses corner indices 0..n_corner-1)
+    'S8R':    [[0, 1, 2, 3]],
+    'STRI65': [[0, 1, 2]],
+    # Linear solids
+    'C3D8R':  [
         [0, 1, 2, 3], [4, 5, 6, 7],
         [0, 1, 5, 4], [1, 2, 6, 5],
         [2, 3, 7, 6], [3, 0, 4, 7],
     ],
-    'C3D6':  [
+    'C3D6':   [
         [0, 1, 2], [3, 4, 5],
         [0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5],
     ],
-    'C3D4':  [
+    'C3D4':   [
         [0, 1, 2], [0, 1, 3],
         [0, 2, 3], [1, 2, 3],
     ],
-    'B31':   [],
+    # High-order solids (same face topology as their linear counterparts)
+    'C3D20':  [
+        [0, 1, 2, 3], [4, 5, 6, 7],
+        [0, 1, 5, 4], [1, 2, 6, 5],
+        [2, 3, 7, 6], [3, 0, 4, 7],
+    ],
+    'C3D15':  [
+        [0, 1, 2], [3, 4, 5],
+        [0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5],
+    ],
+    'C3D10':  [
+        [0, 1, 2], [0, 1, 3],
+        [0, 2, 3], [1, 2, 3],
+    ],
+    # No-face types
+    'B31':    [],
+    'SPRING': [],
+    'DASHPOT':[],
+    'MASS':   [],
 }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -278,14 +335,15 @@ def _pack_model(model, inst_name, workspace):
     # ── Classify and group elements ───────────────────────────────────────────
     print('  Classifying elements ...')
     t0 = time.time()
-    # abaqus_etype → {labels, conn_gids, pids, n_faces}
+    # abaqus_etype → {labels, conn_gids, pids, n_faces, n_corner}
     etype_groups = {}
     skipped_counts = {}
+    node_label_set = set(node_labels.tolist())  # for GRID-point validation
 
     for eid, elem in model.elements.items():
         card = elem.type
 
-        if card in HIGH_ORDER_SKIP:
+        if card in _UNSUPPORTED_SKIP:
             skipped_counts[card] = skipped_counts.get(card, 0) + 1
             continue
 
@@ -306,12 +364,34 @@ def _pack_model(model, inst_name, workspace):
         else:
             abaqus_name, n_corner, n_faces = entry
 
-        nids = list(elem.node_ids)[:n_corner]
-        pid  = getattr(elem, 'pid', -1) or -1
+        # Extract up to n_corner GRID node IDs.
+        # For MASS elements (n_corner=1) use only the first valid GRID node.
+        # For elements with inline properties (CONROD, CELAS2, CDAMP2, CONM*, CMASS2)
+        # node_ids may contain None or 0 for absent second nodes — filter those out.
+        try:
+            raw_nids = [n for n in elem.node_ids if n and n > 0 and n in node_label_set]
+        except Exception:
+            skipped_counts[card + '_node_err'] = skipped_counts.get(card + '_node_err', 0) + 1
+            continue
+
+        nids = raw_nids[:n_corner]
+        if len(nids) < n_corner:
+            # Not enough valid GRID nodes (e.g. grounded spring, scalar-point ref)
+            skipped_counts[card + '_no_grid'] = skipped_counts.get(card + '_no_grid', 0) + 1
+            continue
+
+        pid = getattr(elem, 'pid', -1)
+        try:
+            pid = int(pid) if pid is not None else -1
+        except (TypeError, ValueError):
+            pid = -1
+        if pid == 0:
+            pid = -1
 
         if abaqus_name not in etype_groups:
             etype_groups[abaqus_name] = {
-                'labels': [], 'conn_gids': [], 'pids': [], 'n_faces': n_faces,
+                'labels': [], 'conn_gids': [], 'pids': [],
+                'n_faces': n_faces, 'n_corner': n_corner,
             }
         g = etype_groups[abaqus_name]
         g['labels'].append(eid)
@@ -319,7 +399,7 @@ def _pack_model(model, inst_name, workspace):
         g['pids'].append(pid)
 
     for card, cnt in sorted(skipped_counts.items()):
-        print('  WARNING: skipped {} {} element(s) (Phase 1 unsupported)'.format(cnt, card))
+        print('  WARNING: skipped {} {} element(s)'.format(cnt, card))
     print('  {} etype group(s). ({})'.format(len(etype_groups), _fmt_t(time.time() - t0)))
 
     # ── 4. Global PID → section_id mapping ───────────────────────────────────
@@ -347,12 +427,24 @@ def _pack_model(model, inst_name, workspace):
             first_mid = (mids[0] if mids and len(mids) > 0 else None)
             sid_to_mat[sid] = _unwrap_mid(first_mid)
             sid_to_sty[sid] = 'SHELL'
+        elif ptype == 'PSHEAR':
+            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
+            sid_to_sty[sid] = 'SHEAR'
         elif ptype == 'PSOLID':
             sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
             sid_to_sty[sid] = 'SOLID'
-        elif ptype in ('PBAR', 'PBEAM', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
+        elif ptype in ('PBAR', 'PBEAM', 'PBEND', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
             sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
             sid_to_sty[sid] = 'BEAM'
+        elif ptype in ('PBUSH', 'PBUSH1D', 'PELAS'):
+            sid_to_mat[sid] = ''
+            sid_to_sty[sid] = 'SPRING'
+        elif ptype == 'PDAMP':
+            sid_to_mat[sid] = ''
+            sid_to_sty[sid] = 'DAMPER'
+        elif ptype == 'PMASS':
+            sid_to_mat[sid] = ''
+            sid_to_sty[sid] = 'MASS'
         else:
             sid_to_mat[sid] = ''
             sid_to_sty[sid] = ptype
@@ -488,10 +580,26 @@ def _pack_model(model, inst_name, workspace):
                 sg.attrs['type']          = 'SOLID'
                 sg.attrs['thickness']     = float('nan')
                 sg.attrs['material_name'] = _unwrap_mid(mid_raw)
-            elif ptype in ('PBAR', 'PBEAM', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
+            elif ptype == 'PSHEAR':
+                sg.attrs['type']          = 'SHEAR'
+                sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
+                sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
+            elif ptype in ('PBAR', 'PBEAM', 'PBEND', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
                 sg.attrs['type']          = 'BEAM'
                 sg.attrs['thickness']     = float('nan')
                 sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
+            elif ptype in ('PBUSH', 'PBUSH1D', 'PELAS'):
+                sg.attrs['type']          = 'SPRING'
+                sg.attrs['thickness']     = float('nan')
+                sg.attrs['material_name'] = ''
+            elif ptype == 'PDAMP':
+                sg.attrs['type']          = 'DAMPER'
+                sg.attrs['thickness']     = float('nan')
+                sg.attrs['material_name'] = ''
+            elif ptype == 'PMASS':
+                sg.attrs['type']          = 'MASS'
+                sg.attrs['thickness']     = float('nan')
+                sg.attrs['material_name'] = ''
             else:
                 sg.attrs['type']          = ptype
                 sg.attrs['thickness']     = float('nan')
