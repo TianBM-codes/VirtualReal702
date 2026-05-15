@@ -38,6 +38,7 @@ from src.l3.core.errors import AppError, ValidationError
 from ..background_jobs import get_background_task, submit_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
+    AbaqusInpPathRunRequest,
     AbaqusInpRunAndUploadResultRequest,
     AbaqusAdjointRunRequest,
     AbaqusSensitivityRunRequest,
@@ -113,6 +114,11 @@ def _parse_optional_int_text(value: Optional[str]) -> Optional[int]:
     if not text:
         return None
     return int(text)
+
+
+def _is_json_request(request: Request) -> bool:
+    content_type = str(request.headers.get("content-type") or "").lower()
+    return "application/json" in content_type
 
 
 def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
@@ -367,6 +373,58 @@ async def run_abaqus_inp_and_upload_result_api(request: Request, body: AbaqusInp
 @router.post("/solver/abaqus/inp/upload_and_run")
 async def upload_and_run_abaqus_inp_api(request: Request):
     try:
+        if _is_json_request(request):
+            body = AbaqusInpPathRunRequest(**(await request.json()))
+            input_inp = str(body.input_inp or body.file_name or "").strip()
+            if not input_inp:
+                raise ValidationError(
+                    "input_inp is required",
+                    {"input_inp": body.input_inp, "file_name": body.file_name},
+                )
+            payload = {
+                "project_id": body.project_id,
+                "input_mode": "server_path",
+                "input_inp": input_inp,
+                "output_dir": body.output_dir,
+                "abaqus": body.abaqus,
+                "job_name": body.job_name,
+                "cpus": body.cpus,
+                "interactive": body.interactive,
+                "timeout_sec": body.timeout_sec,
+                "extra_args": body.extra_args,
+                "async_submit": body.async_submit,
+            }
+            await log_request(request, payload)
+            kwargs = {
+                "input_inp": input_inp,
+                "output_dir": body.output_dir,
+                "abaqus": body.abaqus,
+                "job_name": body.job_name,
+                "cpus": body.cpus,
+                "interactive": body.interactive,
+                "run_solver": True,
+                "timeout_sec": body.timeout_sec,
+                "extra_args": body.extra_args,
+            }
+            if body.async_submit:
+                data = submit_background_task(
+                    task_type="solver.abaqus.inp.path_run",
+                    fn=run_abaqus_job,
+                    kwargs=kwargs,
+                    request_payload=payload,
+                )
+                return success_response(data, "Abaqus inp path-run task submitted")
+            data = run_abaqus_job(**kwargs)
+            odb_path = ((data.get("solver") or {}).get("artifacts") or {}).get("odb")
+            if odb_path:
+                data["odb_path"] = os.path.abspath(str(odb_path))
+            data["uploaded_inp"] = None
+            data["source_inp"] = {
+                "mode": "server_path",
+                "path": os.path.abspath(input_inp),
+            }
+            return success_response(data, "Abaqus inp path solved successfully")
+
         raw_body = await request.body()
         if not raw_body:
             raise ValidationError("uploaded inp body is empty", {"path": str(request.url.path)})

@@ -542,6 +542,20 @@ class AbaqusInpRunAndUploadResultRequest(BaseModel):
     async_submit: bool = False
 
 
+class AbaqusInpPathRunRequest(BaseModel):
+    project_id: Optional[int] = None
+    file_name: Optional[str] = None
+    input_inp: Optional[str] = None
+    output_dir: Optional[str] = None
+    abaqus: Optional[str] = None
+    job_name: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    async_submit: bool = False
+
+
 class NastranParameterRequest(BaseModel):
     name: str
     type: str
