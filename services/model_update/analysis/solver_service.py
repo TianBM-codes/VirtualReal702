@@ -12,7 +12,6 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from tools.odb_client import ODBClient, ODBClientError
 
 from ..importers.op2_service import build_modal_import_payload
-from .inp_service import import_fe_modal_results
 from .model_update_meta_service import resolve_abaqus_command, resolve_nastran_command
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import (
@@ -891,6 +890,10 @@ def run_nastran_sol103_and_store_modal_results(
     instance_name: Optional[str] = None,
     part_name: Optional[str] = None,
 ) -> dict:
+    # Delay this import to avoid the startup cycle:
+    # inp_service -> sensitivity_service -> solver_service -> inp_service.
+    from .inp_service import import_fe_modal_results
+
     solver_payload = run_nastran_sol103_job(
         input_bdf=input_bdf,
         output_bdf=output_bdf,

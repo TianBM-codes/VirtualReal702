@@ -8,6 +8,7 @@ from fastapi import Request
 from src.l3.main import app
 
 from webapi.routes import router as model_update_router
+from webapi.common import success_response
 from src.modal_service.routes import router as modal_router
 from services.model_update.analysis.inp_service import (
     build_fe_response_catalog,
@@ -112,14 +113,14 @@ async def match_dofs_api(request: Request):
         overwrite=bool(body.get("overwrite", True)),
         min_match_score=body.get("min_match_score"),
     )
-    return {"ok": True, "message": "dof match success", "data": result}
+    return success_response(result, "dof match success")
 
 
 @app.post("/match/dofs/query")
 async def get_dofs_api(request: Request):
     body = await request.json()
     result = get_dof_matches(int(body["project_id"]))
-    return {"ok": True, "message": "dof match query success", "data": result}
+    return success_response(result, "dof match query success")
 
 
 @app.post("/catalog/response/build")
@@ -131,14 +132,14 @@ async def build_response_catalog_api(request: Request):
         include_test_modes=bool(body.get("include_test_modes", True)),
         include_node_dofs=bool(body.get("include_node_dofs", True)),
     )
-    return {"ok": True, "message": "response catalog build success", "data": result}
+    return success_response(result, "response catalog build success")
 
 
 @app.post("/catalog/response")
 async def get_response_catalog_api(request: Request):
     body = await request.json()
     result = get_fe_response_catalog(int(body["project_id"]))
-    return {"ok": True, "message": "response catalog query success", "data": result}
+    return success_response(result, "response catalog query success")
 
 
 @app.post("/import/fem/modal")
@@ -150,14 +151,14 @@ async def import_fem_modal_api(request: Request):
         file_path=body.get("file_path"),
         modes=body.get("modes"),
     )
-    return {"ok": True, "message": "fem modal import success", "data": result}
+    return success_response(result, "fem modal import success")
 
 
 @app.post("/import/fem/modal/query")
 async def get_fem_modal_api(request: Request):
     body = await request.json()
     result = get_fe_modal_results(int(body["project_id"]))
-    return {"ok": True, "message": "fem modal query success", "data": result}
+    return success_response(result, "fem modal query success")
 
 
 @app.post("/import/fem/static")
@@ -172,7 +173,7 @@ async def import_fem_static_api(request: Request):
         instance_name=body.get("instance_name"),
         part_name=body.get("part_name"),
     )
-    return {"ok": True, "message": "fem static import success", "data": result}
+    return success_response(result, "fem static import success")
 
 
 @app.post("/import/fem/static/query")
@@ -182,7 +183,7 @@ async def get_fem_static_api(request: Request):
         int(body["project_id"]),
         load_case_no=body.get("load_case_no"),
     )
-    return {"ok": True, "message": "fem static query success", "data": result}
+    return success_response(result, "fem static query success")
 
 
 @app.post("/correlation/modal/compute")
@@ -192,28 +193,28 @@ async def compute_modal_correlation_api(request: Request):
         project_id=int(body["project_id"]),
         overwrite=bool(body.get("overwrite", True)),
     )
-    return {"ok": True, "message": "modal correlation success", "data": result}
+    return success_response(result, "modal correlation success")
 
 
 @app.post("/correlation/modal")
 async def get_modal_correlation_api(request: Request):
     body = await request.json()
     result = get_modal_correlation_matrix_payload(int(body["project_id"]))
-    return {"ok": True, "message": "modal correlation matrix query success", "data": result}
+    return success_response(result, "modal correlation matrix query success")
 
 
 @app.post("/correlation/modal/matrix")
 async def get_modal_correlation_matrix_api(request: Request):
     body = await request.json()
     result = get_modal_correlation_matrix_payload(int(body["project_id"]))
-    return {"ok": True, "message": "modal correlation matrix query success", "data": result}
+    return success_response(result, "modal correlation matrix query success")
 
 
 @app.post("/correlation/modal/table")
 async def get_modal_correlation_table_api(request: Request):
     body = await request.json()
     result = get_modal_correlation_table_payload(int(body["project_id"]))
-    return {"ok": True, "message": "modal correlation table query success", "data": result}
+    return success_response(result, "modal correlation table query success")
 
 
 @app.post("/correlation/static/compute")
@@ -226,7 +227,7 @@ async def compute_static_correlation_api(request: Request):
         components=body.get("components"),
         include_rotations=bool(body.get("include_rotations", False)),
     )
-    return {"ok": True, "message": "static correlation success", "data": result}
+    return success_response(result, "static correlation success")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,9 @@
+import json
+import os
+import re
+import time
+import uuid
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Request
@@ -5,6 +11,7 @@ from fastapi import APIRouter, Request
 from services.model_update.analysis.solver_service import (
     generate_nastran_sol103_job,
     preview_nastran_sol103_job,
+    run_abaqus_job,
     run_abaqus_inp_and_upload_project_result,
     run_abaqus_adjoint_job,
     run_abaqus_sensitivity_job,
@@ -25,7 +32,8 @@ from services.model_update.importers.op2_service import (
     preview_op2_modal,
 )
 from services.model_update.analysis.inp_service import import_fe_modal_results
-from src.l3.core.errors import AppError
+from src.l3.core.config import settings
+from src.l3.core.errors import AppError, ValidationError
 
 from ..background_jobs import get_background_task, submit_background_task
 from ..common import error_response, server_error, success_response
@@ -51,6 +59,60 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["solver"])
+
+
+def _parse_upload_extra_args(extra_args_json: Optional[str]) -> list[str]:
+    text = str(extra_args_json or "").strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return [text]
+    if isinstance(data, list):
+        return [str(item) for item in data if str(item).strip()]
+    return [str(data)]
+
+
+def _safe_uploaded_filename(filename: Optional[str]) -> str:
+    raw_name = Path(str(filename or "uploaded.inp")).name or "uploaded.inp"
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(raw_name).stem).strip("._-") or "uploaded"
+    suffix = Path(raw_name).suffix or ".inp"
+    return f"{stem}{suffix}"
+
+
+def _default_uploaded_inp_output_dir(filename: str) -> str:
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._-") or "uploaded"
+    job_token = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_stem}"
+    return str((Path(settings.data_root).resolve() / "uploaded_inp_jobs" / job_token).resolve())
+
+
+def _header_or_query(request: Request, key: str, default: Optional[str] = None) -> Optional[str]:
+    query_value = request.query_params.get(key)
+    if query_value is not None and str(query_value).strip():
+        return str(query_value)
+    header_value = request.headers.get(key)
+    if header_value is not None and str(header_value).strip():
+        return str(header_value)
+    return default
+
+
+def _parse_bool_text(value: Optional[str], default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _parse_optional_int_text(value: Optional[str]) -> Optional[int]:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return None
+    return int(text)
 
 
 def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
@@ -295,6 +357,81 @@ async def run_abaqus_inp_and_upload_result_api(request: Request, body: AbaqusInp
             return success_response(data, "Abaqus 求解并上传结果任务已提交")
         data = run_abaqus_inp_and_upload_project_result(**kwargs)
         return success_response(data, "Abaqus 求解并上传结果成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/abaqus/inp/upload_and_run")
+async def upload_and_run_abaqus_inp_api(request: Request):
+    try:
+        raw_body = await request.body()
+        if not raw_body:
+            raise ValidationError("uploaded inp body is empty", {"path": str(request.url.path)})
+
+        original_filename = _header_or_query(request, "filename", "uploaded.inp")
+        output_dir = _header_or_query(request, "output_dir")
+        abaqus = _header_or_query(request, "abaqus")
+        job_name = _header_or_query(request, "job_name")
+        cpus = _parse_optional_int_text(_header_or_query(request, "cpus"))
+        interactive = _parse_bool_text(_header_or_query(request, "interactive"), True)
+        timeout_sec = _parse_optional_int_text(_header_or_query(request, "timeout_sec"))
+        extra_args_json = _header_or_query(request, "extra_args_json")
+        async_submit = _parse_bool_text(_header_or_query(request, "async_submit"), False)
+
+        resolved_filename = _safe_uploaded_filename(original_filename)
+        resolved_output_dir = os.path.abspath(output_dir or _default_uploaded_inp_output_dir(resolved_filename))
+        os.makedirs(resolved_output_dir, exist_ok=True)
+        saved_inp_path = os.path.abspath(os.path.join(resolved_output_dir, resolved_filename))
+
+        with open(saved_inp_path, "wb") as buffer:
+            buffer.write(raw_body)
+
+        payload = {
+            "filename": original_filename,
+            "saved_inp_path": saved_inp_path,
+            "output_dir": resolved_output_dir,
+            "abaqus": abaqus,
+            "job_name": job_name,
+            "cpus": cpus,
+            "interactive": interactive,
+            "timeout_sec": timeout_sec,
+            "extra_args_json": extra_args_json,
+            "async_submit": async_submit,
+        }
+        await log_request(request, payload)
+
+        kwargs = {
+            "input_inp": saved_inp_path,
+            "output_dir": resolved_output_dir,
+            "abaqus": abaqus,
+            "job_name": job_name,
+            "cpus": cpus,
+            "interactive": interactive,
+            "run_solver": True,
+            "timeout_sec": timeout_sec,
+            "extra_args": _parse_upload_extra_args(extra_args_json),
+        }
+        if async_submit:
+            data = submit_background_task(
+                task_type="solver.abaqus.inp.upload_and_run",
+                fn=run_abaqus_job,
+                kwargs=kwargs,
+                request_payload=payload,
+            )
+            return success_response(data, "Abaqus inp upload-and-run task submitted")
+        data = run_abaqus_job(**kwargs)
+        odb_path = ((data.get("solver") or {}).get("artifacts") or {}).get("odb")
+        if odb_path:
+            data["odb_path"] = os.path.abspath(str(odb_path))
+        data["uploaded_inp"] = {
+            "original_filename": str(original_filename or resolved_filename),
+            "saved_path": saved_inp_path,
+            "size_bytes": len(raw_body),
+        }
+        return success_response(data, "Abaqus inp uploaded and solved successfully")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
