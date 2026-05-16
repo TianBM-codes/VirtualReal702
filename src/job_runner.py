@@ -1046,7 +1046,7 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
     except Exception as exc:
         _log_job(project_id, "warn",
                  f"{_ws('model_update BDF 导入失败（非致命）')}：{_esc(str(exc))}",
-                 stage="mu_import_bdf")
+                 stage="mu_import_bdf", percent=100)
         logger.warning("[%s] model_update BDF import failed: %s", project_id, exc)
 
     return True
@@ -1143,7 +1143,11 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
             source_file=os.path.basename(op2_path),
             parse_options=None,
         )
-    return _run_op2_result_group(project_id, rg_name, op2_path, workspace)
+    ok = _run_op2_result_group(project_id, rg_name, op2_path, workspace)
+    if ok:
+        _log_job(project_id, "step", _good("解析全部完成，已就绪"),
+                 stage="l2_done", percent=100)
+    return ok
 
 
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
