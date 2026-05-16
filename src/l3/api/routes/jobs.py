@@ -179,7 +179,8 @@ async def get_job_logs(
     rows = repo.get_job_logs(odb_id, since_id=since_id, limit=limit)
     items = [dict(r) for r in rows]
     next_since = items[-1]["id"] if items else since_id
-    return ok({"logs": items, "next_since_id": next_since})
+    current_percent = repo.get_current_percent(odb_id)
+    return ok({"logs": items, "next_since_id": next_since, "current_percent": current_percent})
 
 
 @router.post("/{odb_id}/retry")
