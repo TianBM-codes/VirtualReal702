@@ -22,7 +22,9 @@ from services.model_update.analysis.inp_service import (
     get_modal_correlation_table_payload,
     import_fe_modal_results,
     import_fe_static_results,
+    match_modal_modes,
     match_test_dofs,
+    preview_modal_match,
 )
 
 app.include_router(model_update_router)
@@ -214,6 +216,36 @@ async def get_modal_correlation_table_api(request: Request):
     body = await request.json()
     result = get_modal_correlation_table_payload(int(body["project_id"]))
     return {"ok": True, "message": "modal correlation table query success", "data": result}
+
+
+@app.post("/correlation/modal/match/preview")
+async def preview_modal_match_api(request: Request):
+    body = await request.json()
+    result = preview_modal_match(
+        int(body["project_id"]),
+        mac_threshold=float(body.get("mac_threshold", 0.7)),
+        max_candidates_per_mode=int(body.get("max_candidates_per_mode", 3)),
+        max_freq_error_ratio=(
+            None if body.get("max_freq_error_ratio") is None
+            else float(body.get("max_freq_error_ratio"))
+        ),
+    )
+    return {"ok": True, "message": "modal match preview success", "data": result}
+
+
+@app.post("/correlation/modal/match")
+async def match_modal_api(request: Request):
+    body = await request.json()
+    result = match_modal_modes(
+        int(body["project_id"]),
+        mac_threshold=float(body.get("mac_threshold", 0.7)),
+        max_freq_error_ratio=(
+            None if body.get("max_freq_error_ratio") is None
+            else float(body.get("max_freq_error_ratio"))
+        ),
+        method=str(body.get("method", "greedy")),
+    )
+    return {"ok": True, "message": "modal match success", "data": result}
 
 
 @app.post("/correlation/static/compute")
