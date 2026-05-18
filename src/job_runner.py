@@ -133,7 +133,8 @@ CREATE TABLE IF NOT EXISTS job_logs (
     ts      TEXT    NOT NULL,
     level   TEXT    NOT NULL DEFAULT 'info',
     stage   TEXT,
-    message TEXT    NOT NULL
+    message TEXT    NOT NULL,
+    percent INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_job_logs_odb ON job_logs(odb_id, id);
 """
@@ -144,20 +145,73 @@ def _ensure_job_logs_schema() -> None:
     try:
         with _connect() as conn:
             conn.executescript(_JOB_LOGS_DDL)
+            try:
+                conn.execute("ALTER TABLE job_logs ADD COLUMN percent INTEGER")
+            except Exception:
+                pass
     except Exception:
         pass
 
 
-def _log_job(odb_id: str, level: str, message: str, stage: str = None) -> None:
+def _log_job(odb_id: str, level: str, message: str,
+             stage: str = None, percent: int = None) -> None:
     """Persist one log line to job_logs. Never raises — logging must not break the pipeline."""
     try:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO job_logs (odb_id, ts, level, stage, message) VALUES (?,?,?,?,?)",
-                (odb_id, _now_iso(), level, stage, message),
+                "INSERT INTO job_logs (odb_id, ts, level, stage, message, percent)"
+                " VALUES (?,?,?,?,?,?)",
+                (odb_id, _now_iso(), level, stage, message, percent),
             )
     except Exception:
         pass
+
+
+# ── HTML span helpers for styled terminal log output ──────────────────────────
+
+def _esc(s) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def _kw(text: str) -> str:   return f'<span class="kw">{text}</span>'
+def _num(text: str) -> str:  return f'<span class="num">{text}</span>'
+def _good(text: str) -> str: return f'<span class="good">{text}</span>'
+def _ws(text: str) -> str:   return f'<span class="warn">{text}</span>'
+def _bad(text: str) -> str:  return f'<span class="bad">{text}</span>'
+
+
+def _log_elem_type_summary(entity_id: str, workspace: str, source_type: str,
+                            filename: str, stage: str) -> None:
+    """读取 manifest.db 元素类型分布，写入一条多行 HTML 摘要日志。"""
+    manifest_path = os.path.join(workspace, "manifest.db")
+    try:
+        with sqlite3.connect(manifest_path, timeout=5.0) as conn:
+            elem_rows = conn.execute(
+                "SELECT elem_type, SUM(count) as total"
+                " FROM element_type_dist GROUP BY elem_type ORDER BY total DESC"
+            ).fetchall()
+    except Exception:
+        return
+    if not elem_rows:
+        return
+
+    node_count, instance_count = _read_l1_stats(workspace)
+
+    lines = [
+        f'{_kw("READING")} : FEM',
+        f'{_kw("FORMAT")}  : {_esc(source_type.upper())}',
+        f'{_kw("FILE")}    : {_esc(filename)}',
+        "",
+        f'{_kw("ELEMENT TYPES")} :',
+        "",
+    ]
+    for row in elem_rows:
+        lines.append(f"  {row[0]:<10}: {_num(f'{int(row[1]):>8,}')}")
+    lines += [
+        "",
+        f"{_kw('TOTAL NODE COUNT')}      : {_num(f'{node_count:,}')}",
+        f"{_kw('TOTAL INSTANCE COUNT')}  : {_num(str(instance_count))}",
+    ]
+    _log_job(entity_id, "info", "\n".join(lines), stage=stage)
 
 
 # ── Timestamp helper ──────────────────────────────────────────────────────────
@@ -400,7 +454,9 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     in-place and abaqus_dump.py is retried once.
     """
     logger.info("[%s] L1 phase 1: abaqus_dump.py", odb_id)
-    _log_job(odb_id, "step", "L1 阶段 1：Abaqus 导出（abaqus_dump.py）启动", stage="l1_dump")
+    _log_job(odb_id, "step",
+             f"{_kw('L1 阶段 1')}：Abaqus 导出（abaqus_dump.py）启动",
+             stage="l1_dump", percent=5)
     dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
@@ -408,16 +464,21 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
-        _log_job(odb_id, "warn", "ODB 版本不匹配，正在升级 ODB 文件…", stage="l1_dump")
+        _log_job(odb_id, "warn",
+                 _ws("ODB 版本不匹配，正在升级 ODB 文件…"), stage="l1_dump")
         ok, upgraded_path, upgrade_tail = _upgrade_odb(odb_path, odb_id)
         if not ok:
             _update_status(odb_id, "error",
                            error_msg="ODB upgrade failed: " + upgrade_tail)
-            _log_job(odb_id, "error", "ODB 升级失败：" + upgrade_tail[-500:], stage="l1_dump")
+            _log_job(odb_id, "error",
+                     f"{_bad('ODB 升级失败')}：" + _esc(upgrade_tail[-500:]),
+                     stage="l1_dump")
             return False
         logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
                     odb_id, upgraded_path)
-        _log_job(odb_id, "step", "ODB 升级完成，重试 abaqus_dump.py", stage="l1_dump")
+        _log_job(odb_id, "step",
+                 f"{_good('ODB 升级完成')}，重试 abaqus_dump.py",
+                 stage="l1_dump", percent=5)
         retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
@@ -429,11 +490,15 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
         log_hint = "\n[Check {}/abaqus.log for full Abaqus output]".format(workspace)
         err = "abaqus_dump failed: " + tail1 + log_hint
         _update_status(odb_id, "error", error_msg=err)
-        _log_job(odb_id, "error", f"L1 阶段 1 失败 (rc={rc1})：" + tail1[-500:], stage="l1_dump")
+        _log_job(odb_id, "error",
+                 f"{_bad('L1 阶段 1 失败')} (rc={rc1})：" + _esc(tail1[-500:]),
+                 stage="l1_dump")
         logger.error("[%s] L1 phase 1 failed (rc=%d)", odb_id, rc1)
         return False
 
-    _log_job(odb_id, "step", "L1 阶段 1 完成，开始打包 HDF5（l1_pack.py）", stage="l1_pack")
+    _log_job(odb_id, "step",
+             f"{_kw('L1 阶段 1 完成')}，开始打包 HDF5（l1_pack.py）",
+             stage="l1_pack", percent=40)
     logger.info("[%s] L1 phase 2: l1_pack.py", odb_id)
     rc2, tail2 = _run_streaming(
         [sys.executable, str(PACK_SCRIPT), "--workspace", workspace],
@@ -441,10 +506,13 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     )
     if rc2 != 0:
         _update_status(odb_id, "error", error_msg="l1_pack failed: " + tail2)
-        _log_job(odb_id, "error", f"L1 阶段 2 失败 (rc={rc2})：" + tail2[-500:], stage="l1_pack")
+        _log_job(odb_id, "error",
+                 f"{_bad('L1 阶段 2 失败')} (rc={rc2})：" + _esc(tail2[-500:]),
+                 stage="l1_pack")
         logger.error("[%s] L1 phase 2 failed (rc=%d)", odb_id, rc2)
         return False
 
+    _log_elem_type_summary(odb_id, workspace, "ODB", os.path.basename(odb_path), "l1_pack")
     return True
 
 
@@ -454,7 +522,9 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
     No Abaqus license required.
     """
     logger.info("[%s] L1 (INP): parsing %s", odb_id, inp_path)
-    _log_job(odb_id, "step", f"L1（INP）：解析 {os.path.basename(inp_path)}", stage="l1_inp")
+    _log_job(odb_id, "step",
+             f"{_kw('L1')}（INP）：解析 {_esc(os.path.basename(inp_path))}",
+             stage="l1_inp", percent=5)
     try:
         from src.inp import parse_inp
         from src.inp.exporter import export_l1
@@ -462,10 +532,14 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
         export_l1(model, workspace)
     except Exception as exc:
         _update_status(odb_id, "error", error_msg=f"INP parse/export failed: {exc}")
-        _log_job(odb_id, "error", f"INP 解析失败：{exc}", stage="l1_inp")
+        _log_job(odb_id, "error",
+                 f"{_bad('INP 解析失败')}：{_esc(str(exc))}", stage="l1_inp")
         logger.exception("[%s] INP L1 failed", odb_id)
         return False
-    _log_job(odb_id, "step", "L1（INP）解析完成", stage="l1_inp")
+    _log_elem_type_summary(odb_id, workspace, "INP", os.path.basename(inp_path), "l1_inp")
+    _log_job(odb_id, "step",
+             f"{_kw('L1')}（INP）{_good('解析完成')}",
+             stage="l1_inp", percent=30)
     logger.info("[%s] L1 (INP) done", odb_id)
     return True
 
@@ -493,8 +567,8 @@ def _run_l1(odb_id: str, source_path: str, workspace: str) -> bool:
         instance_count=instance_count,
     )
     _log_job(odb_id, "step",
-             f"L1 完成（节点数 {node_count:,}，实例数 {instance_count}），开始 L2 预处理",
-             stage="l1_done")
+             f"{_kw('L1 完成')}（节点数 {_num(f'{node_count:,}')}，实例数 {_num(str(instance_count))}），开始 L2 预处理",
+             stage="l1_done", percent=60)
     logger.info("[%s] L1 done (nodes=%d, instances=%d)", odb_id, node_count, instance_count)
     return True
 
@@ -509,13 +583,17 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     """
     if not INGEST_SCRIPT.exists():
         logger.info("[%s] L2 script not found, skipping L2 — marking ready", odb_id)
-        _log_job(odb_id, "warn", "L2 脚本不存在，跳过 L2，直接标记就绪", stage="l2_ingest")
+        _log_job(odb_id, "warn",
+                 _ws("L2 脚本不存在，跳过 L2，直接标记就绪"),
+                 stage="l2_ingest", percent=100)
         _update_status(odb_id, "ready", l2_done_at=_now_iso())
         return True
 
     _update_status(odb_id, "l2_running", l2_started_at=_now_iso())
     logger.info("[%s] L2: ingest.py", odb_id)
-    _log_job(odb_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…", stage="l2_ingest")
+    _log_job(odb_id, "step",
+             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=65)
 
     rc, tail = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
@@ -523,12 +601,14 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     )
     if rc != 0:
         _update_status(odb_id, "error", error_msg="[L2] ingest failed: " + tail[-2000:])
-        _log_job(odb_id, "error", f"L2 预处理失败 (rc={rc})：" + tail[-500:], stage="l2_ingest")
+        _log_job(odb_id, "error",
+                 f"{_bad('L2 预处理失败')} (rc={rc})：" + _esc(tail[-500:]),
+                 stage="l2_ingest")
         logger.error("[%s] L2 failed (rc=%d)", odb_id, rc)
         return False
 
     _update_status(odb_id, "ready", l2_done_at=_now_iso())
-    _log_job(odb_id, "step", "解析全部完成，已就绪", stage="l2_done")
+    _log_job(odb_id, "step", _good("解析全部完成，已就绪"), stage="l2_done", percent=100)
     logger.info("[%s] ready", odb_id)
     return True
 
@@ -564,8 +644,8 @@ def _run_l2_rerun(project_id: str, workspace: str) -> None:
     """Run ingest.py for an L2 rerun request. Updates project geom_status when done."""
     logger.info("[%s] L2 rerun: ingest.py", project_id)
     _log_job(project_id, "step",
-             "L2 重新预处理（rerun-l2）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest")
+             f"{_kw('L2 重新预处理')}（rerun-l2）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=5)
 
     rc, tail = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
@@ -577,13 +657,15 @@ def _run_l2_rerun(project_id: str, workspace: str) -> None:
             "[L2 rerun] ingest failed: " + tail[-2000:],
         )
         _log_job(project_id, "error",
-                 "L2 重新预处理失败 (rc={})：".format(rc) + tail[-500:],
+                 f"{_bad('L2 重新预处理失败')} (rc={rc})：" + _esc(tail[-500:]),
                  stage="l2_ingest")
         logger.error("[%s] L2 rerun failed (rc=%d)", project_id, rc)
         return
 
     _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step", "L2 重新预处理完成，已就绪", stage="l2_done")
+    _log_job(project_id, "step",
+             _good("L2 重新预处理完成，已就绪"),
+             stage="l2_done", percent=100)
     logger.info("[%s] L2 rerun done → ready", project_id)
 
 
@@ -645,8 +727,8 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
     # --- L1: parse INP once, export geometry HDF5 + run catalog import ---
     logger.info("[%s] Geom: parsing INP %s", project_id, inp_path)
     _log_job(project_id, "step",
-             "几何解析开始：解析 INP 文件 {}".format(os.path.basename(inp_path)),
-             stage="l1_inp")
+             f"{_kw('几何解析开始')}：解析 INP 文件 {_esc(os.path.basename(inp_path))}",
+             stage="l1_inp", percent=5)
     try:
         import json as _json
         from src.inp import parse_inp
@@ -662,29 +744,40 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         msg = "INP parse/export failed: {}".format(exc)
         logger.exception("[%s] %s", project_id, msg)
         _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error", "INP 解析失败：{}".format(exc), stage="l1_inp")
+        _log_job(project_id, "error",
+                 f"{_bad('INP 解析失败')}：{_esc(str(exc))}", stage="l1_inp")
         return False
 
-    _log_job(project_id, "step", "INP 解析完成，导出几何 HDF5", stage="l1_inp")
+    _log_elem_type_summary(project_id, workspace, "INP", os.path.basename(inp_path), "l1_inp")
+    _log_job(project_id, "step",
+             f"{_kw('INP 解析完成')}，导出几何 HDF5",
+             stage="l1_inp", percent=30)
 
     # --- Catalog import (optional: only available in combined deployment) ---
     try:
         from services.model_update.analysis.inp_service import import_inp_catalog
         logger.info("[%s] Geom: importing INP catalog", project_id)
-        _log_job(project_id, "step", "导入 INP catalog（测点/参数信息）", stage="catalog")
+        _log_job(project_id, "step",
+                 f"{_kw('导入 INP catalog')}（测点/参数信息）",
+                 stage="catalog", percent=35)
         import_inp_catalog(inp_path, project_id, model=model)
         logger.info("[%s] Geom: catalog import done", project_id)
-        _log_job(project_id, "step", "INP catalog 导入完成", stage="catalog")
+        _log_job(project_id, "step",
+                 f"{_good('INP catalog 导入完成')}",
+                 stage="catalog", percent=40)
     except ImportError:
         logger.info("[%s] Geom: inp_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] Catalog import failed (non-fatal): %s", project_id, exc)
-        _log_job(project_id, "warn", "catalog 导入失败（非致命）：{}".format(exc), stage="catalog")
+        _log_job(project_id, "warn",
+                 f"{_ws('catalog 导入失败（非致命）')}：{_esc(str(exc))}",
+                 stage="catalog")
 
     # --- L2: ingest (subprocess, keeps numpy/HDF5 isolated) ---
     logger.info("[%s] Geom: ingest.py (L2)", project_id)
-    _log_job(project_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest")
+    _log_job(project_id, "step",
+             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=45)
     rc_l2, tail_l2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
         project_id, "l2_ingest",
@@ -693,13 +786,15 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
         msg = "ingest failed: " + tail_l2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
-                 "L2 预处理失败 (rc={})：{}".format(rc_l2, tail_l2[-500:]),
+                 f"{_bad('L2 预处理失败')} (rc={rc_l2})：{_esc(tail_l2[-500:])}",
                  stage="l2_ingest")
         logger.error("[%s] L2 failed (rc=%d)", project_id, rc_l2)
         return False
 
     _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step", "几何解析完成，已就绪", stage="l2_done")
+    _log_job(project_id, "step",
+             _good("几何解析完成，已就绪"),
+             stage="l2_done", percent=100)
     logger.info("[%s] Geom ready", project_id)
     return True
 
@@ -717,7 +812,9 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         return False
 
     logger.info("[%s] Project ODB: abaqus_dump.py", project_id)
-    _log_job(project_id, "step", "L1 阶段 1：Abaqus 导出（abaqus_dump.py）启动", stage="l1_dump")
+    _log_job(project_id, "step",
+             f"{_kw('L1 阶段 1')}：Abaqus 导出（abaqus_dump.py）启动",
+             stage="l1_dump", percent=5)
     dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
@@ -725,16 +822,21 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
     logger.info("[%s] project_abaqus_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
-        _log_job(project_id, "warn", "ODB 版本不匹配，正在升级 ODB 文件…", stage="l1_dump")
+        _log_job(project_id, "warn",
+                 _ws("ODB 版本不匹配，正在升级 ODB 文件…"), stage="l1_dump")
         ok, upgraded_path, upgrade_tail = _upgrade_odb(odb_path, project_id)
         if not ok:
             msg = "ODB upgrade failed: " + upgrade_tail
             _update_project_geom_status(project_id, "error", msg)
-            _log_job(project_id, "error", "ODB 升级失败：" + upgrade_tail[-500:], stage="l1_dump")
+            _log_job(project_id, "error",
+                     f"{_bad('ODB 升级失败')}：{_esc(upgrade_tail[-500:])}",
+                     stage="l1_dump")
             return False
         logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
                     project_id, upgraded_path)
-        _log_job(project_id, "step", "ODB 升级完成，重试 abaqus_dump.py", stage="l1_dump")
+        _log_job(project_id, "step",
+                 f"{_good('ODB 升级完成')}，重试 abaqus_dump.py",
+                 stage="l1_dump", percent=5)
         retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
@@ -746,11 +848,14 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         msg = "abaqus_dump failed: " + tail1
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
-                 "L1 阶段 1 失败 (rc={})：{}".format(rc1, tail1[-500:]), stage="l1_dump")
+                 f"{_bad('L1 阶段 1 失败')} (rc={rc1})：{_esc(tail1[-500:])}",
+                 stage="l1_dump")
         logger.error("[%s] Project ODB phase 1 failed (rc=%d)", project_id, rc1)
         return False
 
-    _log_job(project_id, "step", "L1 阶段 1 完成，开始打包 HDF5（l1_pack.py）", stage="l1_pack")
+    _log_job(project_id, "step",
+             f"{_kw('L1 阶段 1 完成')}，开始打包 HDF5（l1_pack.py）",
+             stage="l1_pack", percent=40)
     logger.info("[%s] Project ODB: l1_pack.py", project_id)
     rc2, tail2 = _run_streaming(
         [sys.executable, str(PACK_SCRIPT), "--workspace", workspace],
@@ -760,31 +865,42 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         msg = "l1_pack failed: " + tail2
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
-                 "L1 阶段 2 失败 (rc={})：{}".format(rc2, tail2[-500:]), stage="l1_pack")
+                 f"{_bad('L1 阶段 2 失败')} (rc={rc2})：{_esc(tail2[-500:])}",
+                 stage="l1_pack")
         logger.error("[%s] Project ODB phase 2 failed (rc=%d)", project_id, rc2)
         return False
 
-    _log_job(project_id, "step", "L1 完成，开始 L2 预处理", stage="l1_done")
+    _log_elem_type_summary(project_id, workspace, "ODB", os.path.basename(odb_path), "l1_pack")
+    _log_job(project_id, "step",
+             f"{_kw('L1 完成')}，开始 L2 预处理",
+             stage="l1_done", percent=62)
 
     # --- Catalog import (optional: only available in combined deployment) ---
     try:
         from services.model_update.analysis.inp_service import import_inp_catalog
         from src.l1.odb_model import load_as_inp_model
         logger.info("[%s] Project ODB: importing catalog (via inp_service)", project_id)
-        _log_job(project_id, "step", "导入 ODB catalog（测点/参数信息）", stage="catalog")
+        _log_job(project_id, "step",
+                 f"{_kw('导入 ODB catalog')}（测点/参数信息）",
+                 stage="catalog", percent=65)
         inp_model = load_as_inp_model(workspace)
         import_inp_catalog(odb_path, project_id, model=inp_model)
         logger.info("[%s] Project ODB: catalog import done", project_id)
-        _log_job(project_id, "step", "ODB catalog 导入完成", stage="catalog")
+        _log_job(project_id, "step",
+                 _good("ODB catalog 导入完成"),
+                 stage="catalog", percent=67)
     except ImportError:
         logger.info("[%s] Project ODB: inp_service not available — skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
-        _log_job(project_id, "warn", "catalog 导入失败（非致命）：{}".format(exc), stage="catalog")
+        _log_job(project_id, "warn",
+                 f"{_ws('catalog 导入失败（非致命）')}：{_esc(str(exc))}",
+                 stage="catalog")
 
     logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
-    _log_job(project_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest")
+    _log_job(project_id, "step",
+             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=70)
     rc_l2, tail_l2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
         project_id, "l2_ingest",
@@ -793,13 +909,15 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         msg = "ingest failed: " + tail_l2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
-                 "L2 预处理失败 (rc={})：{}".format(rc_l2, tail_l2[-500:]),
+                 f"{_bad('L2 预处理失败')} (rc={rc_l2})：{_esc(tail_l2[-500:])}",
                  stage="l2_ingest")
         logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, rc_l2)
         return False
 
     _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step", "ODB 解析全部完成，已就绪", stage="l2_done")
+    _log_job(project_id, "step",
+             _good("ODB 解析全部完成，已就绪"),
+             stage="l2_done", percent=100)
     logger.info("[%s] Project ODB ready", project_id)
     _adopt_odb_result_group(project_id, odb_path, workspace)
     return True
@@ -871,7 +989,8 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
 
     logger.info("[%s] BDF project: bdf_pack.py", project_id)
     _log_job(project_id, "step",
-             "L1 解析：BDF 几何提取（bdf_pack.py）启动", stage="l1_bdf")
+             f"{_kw('L1 解析')}：BDF 几何提取（bdf_pack.py）启动",
+             stage="l1_bdf", percent=5)
     rc1, tail1 = _run_streaming(
         [sys.executable, str(BDF_PACK_SCRIPT), "--bdf", bdf_path, "--workspace", workspace],
         project_id, "l1_bdf",
@@ -880,15 +999,20 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
         msg = "bdf_pack failed: " + tail1
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
-                 "BDF 解析失败 (rc={})：{}".format(rc1, tail1[-500:]), stage="l1_bdf")
+                 f"{_bad('BDF 解析失败')} (rc={rc1})：{_esc(tail1[-500:])}",
+                 stage="l1_bdf")
         logger.error("[%s] BDF project phase 1 failed (rc=%d)", project_id, rc1)
         return False
 
-    _log_job(project_id, "step", "BDF 解析完成，开始 L2 预处理", stage="l1_done")
+    _log_elem_type_summary(project_id, workspace, "BDF", os.path.basename(bdf_path), "l1_bdf")
+    _log_job(project_id, "step",
+             f"{_kw('BDF 解析完成')}，开始 L2 预处理",
+             stage="l1_done", percent=50)
 
     logger.info("[%s] BDF project: ingest.py (L2)", project_id)
-    _log_job(project_id, "step", "L2 预处理（ingest.py）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest")
+    _log_job(project_id, "step",
+             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=55)
     rc2, tail2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
         project_id, "l2_ingest",
@@ -897,26 +1021,32 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
         msg = "ingest failed: " + tail2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
-                 "L2 预处理失败 (rc={})：{}".format(rc2, tail2[-500:]),
+                 f"{_bad('L2 预处理失败')} (rc={rc2})：{_esc(tail2[-500:])}",
                  stage="l2_ingest")
         logger.error("[%s] BDF project L2 failed (rc=%d)", project_id, rc2)
         return False
 
     _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step", "BDF 几何解析完成，已就绪", stage="l2_done")
+    _log_job(project_id, "step",
+             _good("BDF 几何解析完成，已就绪"),
+             stage="l2_done", percent=85)
     logger.info("[%s] BDF project ready", project_id)
 
     # ── Auto model-update BDF import ──────────────────────────────────────────
-    _log_job(project_id, "step", "自动导入 BDF 到 model_update", stage="mu_import_bdf")
+    _log_job(project_id, "step",
+             f"{_kw('自动导入 BDF')} 到 model_update",
+             stage="mu_import_bdf", percent=90)
     try:
         from services.model_update.importers.bdf_service import import_bdf_data
         import_bdf_data(bdf_path, int(project_id), clear_before_insert=True)
-        _log_job(project_id, "step", "BDF 导入 model_update 完成", stage="mu_import_bdf")
+        _log_job(project_id, "step",
+                 _good("BDF 导入 model_update 完成"),
+                 stage="mu_import_bdf", percent=100)
         logger.info("[%s] model_update BDF import done", project_id)
     except Exception as exc:
-        _log_job(project_id, "warning",
-                 "model_update BDF 导入失败（非致命）：{}".format(exc),
-                 stage="mu_import_bdf")
+        _log_job(project_id, "warn",
+                 f"{_ws('model_update BDF 导入失败（非致命）')}：{_esc(str(exc))}",
+                 stage="mu_import_bdf", percent=100)
         logger.warning("[%s] model_update BDF import failed: %s", project_id, exc)
 
     return True
@@ -949,7 +1079,8 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
     if _op2_has_geom_tables(op2_path):
         logger.info("[%s] OP2 has embedded geometry — using op2_geom_pack", project_id)
         _log_job(project_id, "step",
-                 "OP2 含嵌入几何（GEOM1/GEOM2），直接提取几何", stage="l1_geom")
+                 f"{_kw('OP2 含嵌入几何')}（GEOM1/GEOM2），直接提取几何",
+                 stage="l1_geom", percent=5)
         geom_cmd = [sys.executable, str(OP2_GEOM_PACK_SCRIPT),
                     "--op2", op2_path, "--workspace", workspace]
     else:
@@ -957,7 +1088,7 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
                "请先用对应的 BDF 文件创建项目，再通过「追加结果组」上传此 OP2。")
         logger.error("[%s] %s", project_id, msg)
         _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error", msg, stage="l1_geom")
+        _log_job(project_id, "error", _bad(msg), stage="l1_geom")
         return False
 
     # ── Phase 1: geometry extraction ──────────────────────────────────────────
@@ -965,13 +1096,21 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
     if rc1 != 0:
         msg = "geometry extraction failed: " + tail1[-500:]
         _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error", msg, stage="l1_geom")
+        _log_job(project_id, "error",
+                 f"{_bad('几何提取失败')}：{_esc(tail1[-500:])}",
+                 stage="l1_geom")
         logger.error("[%s] OP2 project geometry phase failed (rc=%d)", project_id, rc1)
         return False
 
-    _log_job(project_id, "step", "几何提取完成，开始 L2 预处理", stage="l1_done")
+    _log_elem_type_summary(project_id, workspace, "OP2", os.path.basename(op2_path), "l1_geom")
+    _log_job(project_id, "step",
+             f"{_kw('几何提取完成')}，开始 L2 预处理",
+             stage="l1_done", percent=50)
 
     # ── Phase 2: L2 ingest ────────────────────────────────────────────────────
+    _log_job(project_id, "step",
+             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=55)
     rc2, tail2 = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
         project_id, "l2_ingest",
@@ -979,12 +1118,16 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
     if rc2 != 0:
         msg = "ingest failed: " + tail2[-500:]
         _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error", msg, stage="l2_ingest")
+        _log_job(project_id, "error",
+                 f"{_bad('L2 预处理失败')}：{_esc(tail2[-500:])}",
+                 stage="l2_ingest")
         logger.error("[%s] OP2 project L2 failed (rc=%d)", project_id, rc2)
         return False
 
     _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step", "几何就绪，自动追加 OP2 结果组", stage="l2_done")
+    _log_job(project_id, "step",
+             f"{_good('几何就绪')}，自动追加 OP2 结果组",
+             stage="l2_done", percent=75)
 
     # ── Phase 3: results (auto result-group named after OP2 stem) ────────────
     rg_name = os.path.splitext(os.path.basename(op2_path))[0]
@@ -1000,7 +1143,11 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
             source_file=os.path.basename(op2_path),
             parse_options=None,
         )
-    return _run_op2_result_group(project_id, rg_name, op2_path, workspace)
+    ok = _run_op2_result_group(project_id, rg_name, op2_path, workspace)
+    if ok:
+        _log_job(project_id, "step", _good("解析全部完成，已就绪"),
+                 stage="l2_done", percent=100)
+    return ok
 
 
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
@@ -1082,7 +1229,7 @@ def _run_op2_result_group(project_id: str, result_group: str,
                           parse_options_json: str = None) -> bool:
     label = "{}/{}".format(project_id, result_group)
     _log_job(project_id, "step",
-             "[{}] OP2 结果打包启动".format(result_group), stage="rg_op2")
+             f"[{_kw(result_group)}] OP2 结果打包启动", stage="rg_op2")
     rc, tail = _run_streaming(
         [sys.executable, str(OP2_PACK_SCRIPT),
          "--op2", op2_path,
@@ -1094,14 +1241,14 @@ def _run_op2_result_group(project_id: str, result_group: str,
         msg = "op2_pack failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)
         _log_job(project_id, "error",
-                 "[{}] OP2 打包失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
+                 f"[{_kw(result_group)}] {_bad('OP2 打包失败')} (rc={rc})：{_esc(tail[-500:])}",
                  stage="rg_op2")
         logger.error("[%s] OP2 result_group '%s' failed (rc=%d)", project_id, result_group, rc)
         return False
 
     _update_result_group_status(project_id, result_group, "ready")
     _log_job(project_id, "step",
-             "[{}] OP2 结果打包完成".format(result_group), stage="rg_op2")
+             f"[{_kw(result_group)}] {_good('OP2 结果打包完成')}", stage="rg_op2")
     logger.info("[%s] OP2 result_group '%s' ready", project_id, result_group)
 
     # ── Auto model-update OP2 modal import ────────────────────────────────────
@@ -1114,7 +1261,7 @@ def _run_op2_result_group(project_id: str, result_group: str,
     modal_cfg = parse_opts.get("modal_import")
     if modal_cfg is not None:
         _log_job(project_id, "step",
-                 "[{}] 自动导入 OP2 模态到 model_update".format(result_group),
+                 f"[{_kw(result_group)}] 自动导入 OP2 模态到 model_update",
                  stage="mu_import_op2_modal")
         try:
             # bdf_path: modal_cfg 里可显式指定，否则从 projects.inp_path 取
@@ -1152,19 +1299,19 @@ def _run_op2_result_group(project_id: str, result_group: str,
                     kwargs={},
                 )
                 _log_job(project_id, "step",
-                         "[{}] OP2 模态导入已异步提交".format(result_group),
+                         f"[{_kw(result_group)}] {_good('OP2 模态导入已异步提交')}",
                          stage="mu_import_op2_modal")
             else:
                 payload = _do_import()
                 _log_job(project_id, "step",
-                         "[{}] OP2 模态导入 model_update 完成：{}阶".format(
-                             result_group, len(payload.get("modes") or [])),
+                         f"[{_kw(result_group)}] {_good('OP2 模态导入 model_update 完成')}："
+                         f"{_num(str(len(payload.get('modes') or [])))}阶",
                          stage="mu_import_op2_modal")
                 logger.info("[%s] model_update OP2 modal import done (modes=%d)",
                             project_id, len(payload.get("modes") or []))
         except Exception as exc:
-            _log_job(project_id, "warning",
-                     "[{}] model_update OP2 模态导入失败（非致命）：{}".format(result_group, exc),
+            _log_job(project_id, "warn",
+                     f"[{_kw(result_group)}] {_ws('model_update OP2 模态导入失败（非致命）')}：{_esc(str(exc))}",
                      stage="mu_import_op2_modal")
             logger.warning("[%s] model_update OP2 modal import failed: %s", project_id, exc)
 
@@ -1179,7 +1326,8 @@ def _run_result_group(project_id: str, result_group: str,
         msg = "source file not found: {}".format(source_path)
         logger.error("[%s] %s", label, msg)
         _update_result_group_status(project_id, result_group, "error", msg)
-        _log_job(project_id, "error", "[{}] 源文件不存在：{}".format(result_group, source_path),
+        _log_job(project_id, "error",
+                 f"[{_kw(result_group)}] {_bad('源文件不存在')}：{_esc(str(source_path))}",
                  stage="rg_preflight")
         return False
 
@@ -1201,7 +1349,7 @@ def _run_result_group(project_id: str, result_group: str,
     # Step 1: extract results (consistency check is now inline at start of extract)
     logger.info("[%s] extract (check-mode=%s)", label, check_mode)
     _log_job(project_id, "step",
-             "[{}] 结果组解析：一致性校验 + 提取（abaqus_dump extract）".format(result_group),
+             f"[{_kw(result_group)}] 结果组解析：一致性校验 + 提取（abaqus_dump extract）",
              stage="rg_extract")
     inv_mode = parse_opts.get("invariants", INVARIANTS_MODE)
     extract_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
@@ -1221,21 +1369,21 @@ def _run_result_group(project_id: str, result_group: str,
         msg = "consistency check failed: " + tail[-500:]
         _update_result_group_status(project_id, result_group, "error", msg)
         _log_job(project_id, "error",
-                 "[{}] 一致性校验失败（ODB 与几何不匹配）".format(result_group),
+                 f"[{_kw(result_group)}] {_bad('一致性校验失败')}（ODB 与几何不匹配）",
                  stage="rg_extract")
         return False
     if rc != 0:
         msg = "extract failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)
         _log_job(project_id, "error",
-                 "[{}] 结果提取失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
+                 f"[{_kw(result_group)}] {_bad('结果提取失败')} (rc={rc})：{_esc(tail[-500:])}",
                  stage="rg_extract")
         return False
 
     # Step 3: pack into HDF5
     logger.info("[%s] l1_pack (result_group)", label)
     _log_job(project_id, "step",
-             "[{}] 打包结果 HDF5（l1_pack）".format(result_group),
+             f"[{_kw(result_group)}] 打包结果 HDF5（l1_pack）",
              stage="rg_l1_pack")
     rc, tail = _run_streaming(
         [sys.executable, str(PACK_SCRIPT),
@@ -1250,7 +1398,7 @@ def _run_result_group(project_id: str, result_group: str,
         msg = "l1_pack (result_group) failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)
         _log_job(project_id, "error",
-                 "[{}] 打包 HDF5 失败 (rc={})：{}".format(result_group, rc, tail[-500:]),
+                 f"[{_kw(result_group)}] {_bad('打包 HDF5 失败')} (rc={rc})：{_esc(tail[-500:])}",
                  stage="rg_l1_pack")
         return False
 
@@ -1263,7 +1411,7 @@ def _run_result_group(project_id: str, result_group: str,
         except Exception:
             pass
         _log_job(project_id, "step",
-                 "[{}] 截面数据已补入几何，重跑 L2 重建平均域…".format(result_group),
+                 f"[{_kw(result_group)}] 截面数据已补入几何，重跑 L2 重建平均域…",
                  stage="rg_rerun_l2")
         logger.info("[%s] sections patched — re-running L2", label)
         rc_l2r, tail_l2r = _run_streaming(
@@ -1272,14 +1420,13 @@ def _run_result_group(project_id: str, result_group: str,
         )
         if rc_l2r != 0:
             _log_job(project_id, "warn",
-                     "[{}] L2 重跑失败（非致命，平均域可能不完整）：{}".format(
-                         result_group, tail_l2r[-300:]),
+                     f"[{_kw(result_group)}] {_ws('L2 重跑失败（非致命，平均域可能不完整）')}：{_esc(tail_l2r[-300:])}",
                      stage="rg_rerun_l2")
             logger.warning("[%s] L2 re-run failed (rc=%d), averaging domains may be incomplete",
                            label, rc_l2r)
         else:
             _log_job(project_id, "step",
-                     "[{}] L2 重跑完成，平均域已更新".format(result_group),
+                     f"[{_kw(result_group)}] {_good('L2 重跑完成，平均域已更新')}",
                      stage="rg_rerun_l2")
             logger.info("[%s] L2 re-run complete", label)
             # Signal L3 registry to reload render data on next GET request.
@@ -1293,7 +1440,7 @@ def _run_result_group(project_id: str, result_group: str,
 
     _update_result_group_status(project_id, result_group, "ready")
     _log_job(project_id, "step",
-             "[{}] 结果组解析完成，已就绪".format(result_group),
+             f"[{_kw(result_group)}] {_good('结果组解析完成，已就绪')}",
              stage="rg_done")
     logger.info("[%s] ready", label)
     return True

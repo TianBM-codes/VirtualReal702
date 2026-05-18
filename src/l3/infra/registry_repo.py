@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS job_logs (
     ts      TEXT    NOT NULL,
     level   TEXT    NOT NULL DEFAULT 'info',
     stage   TEXT,
-    message TEXT    NOT NULL
+    message TEXT    NOT NULL,
+    percent INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_job_logs_odb ON job_logs(odb_id, id);
 
@@ -95,12 +96,14 @@ class RegistryRepo:
         """Create odb_jobs table if it does not exist."""
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
-            try:
-                conn.execute(
-                    "ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'inp'"
-                )
-            except Exception:
-                pass
+            for migration in [
+                "ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'inp'",
+                "ALTER TABLE job_logs ADD COLUMN percent INTEGER",
+            ]:
+                try:
+                    conn.execute(migration)
+                except Exception:
+                    pass
 
     # ── write ────────────────────────────────────────────────────────────────
 
@@ -150,13 +153,13 @@ class RegistryRepo:
     # ── job_logs ─────────────────────────────────────────────────────────────
 
     def append_job_log(self, odb_id: str, level: str, message: str,
-                       stage: str = None) -> None:
+                       stage: str = None, percent: Optional[int] = None) -> None:
         try:
             with self._connect() as conn:
                 conn.execute(
-                    "INSERT INTO job_logs (odb_id, ts, level, stage, message)"
-                    " VALUES (?,?,?,?,?)",
-                    (odb_id, _now_iso(), level, stage, message),
+                    "INSERT INTO job_logs (odb_id, ts, level, stage, message, percent)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (odb_id, _now_iso(), level, stage, message, percent),
                 )
         except Exception:
             pass
@@ -171,10 +174,20 @@ class RegistryRepo:
                      limit: int = 500) -> list:
         with self._connect() as conn:
             return conn.execute(
-                "SELECT id, ts, level, stage, message FROM job_logs"
+                "SELECT id, ts, level, stage, message, percent FROM job_logs"
                 " WHERE odb_id=? AND id>? ORDER BY id LIMIT ?",
                 (odb_id, since_id, limit),
             ).fetchall()
+
+    def get_current_percent(self, odb_id: str) -> Optional[int]:
+        """返回该 job/project 最新一条非 null 的 percent 值，用于进度条。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT percent FROM job_logs"
+                " WHERE odb_id=? AND percent IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (odb_id,),
+            ).fetchone()
+        return row["percent"] if row else None
 
     def mark_stuck_jobs_as_error(self, timeout_minutes: int = 10) -> int:
         """

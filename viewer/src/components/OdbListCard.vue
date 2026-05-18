@@ -62,6 +62,7 @@
             </span>
             <span class="odb-name">{{ proj.project_id.slice(0, 12) }}…</span>
             <span class="odb-status" :class="proj.geom_status">{{ proj.geom_status }}</span>
+            <button class="icon-btn" @click.stop="openLogs(proj.project_id)" title="查看解析日志">≡</button>
             <button class="icon-btn danger" @click.stop="onDeleteProject(proj.project_id)" title="删除 project">✕</button>
           </div>
 
@@ -161,12 +162,15 @@
       @change="onLocalDirectoryPicked"
     />
   </div>
+
+  <LogDialog :project-id="logProjectId" @close="logProjectId = null" />
 </template>
 
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { useViewerStore } from '../store/viewer'
 import { useOdbApi } from '../composables/useOdbApi'
+import LogDialog from './LogDialog.vue'
 
 const props = defineProps({ visible: Boolean })
 const emit = defineEmits(['odbSelected'])
@@ -194,6 +198,11 @@ const addRgDisplay = ref('')
 const renamingKey = ref(null)
 const renamingRg = ref(null)
 const renameValue = ref('')
+const logProjectId = ref(null)
+
+function openLogs(projectId) {
+  logProjectId.value = projectId
+}
 const filePickerRef = ref(null)
 const directoryPickerRef = ref(null)
 const pickerContext = ref(null)

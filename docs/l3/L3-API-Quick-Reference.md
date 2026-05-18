@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-13（新增 GET /results/modal-shape 和 GET /results/modal-animation，用于 FREQUENCY step 谐波动画）
+更新时间：2026-05-16（日志接口新增 percent/current_percent 进度字段，message 改为 HTML 片段格式）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -288,24 +288,28 @@ project_id + result_group
         "ts": "2026-05-07T10:00:01.123456+00:00",
         "level": "step",
         "stage": "l1_dump",
-        "message": "L1 阶段 1：Abaqus 导出（abaqus_dump.py）启动"
+        "message": "<span class=\"kw\">L1 阶段 1</span>：Abaqus 导出（abaqus_dump.py）启动",
+        "percent": 5
       },
       {
         "id": 2,
         "ts": "2026-05-07T10:00:01.456789+00:00",
         "level": "info",
         "stage": "l1_dump",
-        "message": "=== Layer 1 Phase 1: ODB → npy (full) ==="
+        "message": "=== Layer 1 Phase 1: ODB → npy (full) ===",
+        "percent": null
       },
       {
         "id": 3,
         "ts": "2026-05-07T10:00:04.789012+00:00",
-        "level": "info",
-        "stage": "l1_dump",
-        "message": "  Geom: PART-1-1 ..."
+        "level": "step",
+        "stage": "l1_pack",
+        "message": "<span class=\"kw\">L1 阶段 1 完成</span>，开始打包 HDF5（l1_pack.py）",
+        "percent": 40
       }
     ],
-    "next_since_id": 3
+    "next_since_id": 3,
+    "current_percent": 40
   },
   "message": ""
 }
@@ -313,12 +317,23 @@ project_id + result_group
 
 `level` 取值说明：
 
-| level | 含义 |
-|---|---|
-| `step` | 流水线阶段切换，如"L1 完成，开始 L2" |
-| `info` | 子进程普通输出（Abaqus / l1_pack / ingest 的每一行） |
-| `warn` | 警告，如 ODB 版本不匹配触发自动升级 |
-| `error` | 失败行 |
+| level | 含义 | 建议渲染颜色 |
+|---|---|---|
+| `step` | 流水线阶段切换，消息含 HTML span | — |
+| `info` | 子进程原始输出（纯文本） | 默认 |
+| `warn` | 警告，消息含 HTML span | — |
+| `error` | 失败行，消息含 HTML span | — |
+
+`message` 格式说明：
+
+- `step` / `warn` / `error` 级别的消息是 **HTML 片段**，含 `<span class="kw/num/good/warn/bad">` 标签，前端需用 `v-html` 渲染在 `<pre>` 内。
+- `info` 级别的消息是**纯文本**（来自 Abaqus、l1_pack、ingest 等子进程的原始输出），直接显示即可。
+- 元素类型摘要块（INP/ODB/BDF/OP2 L1 完成后自动写入）是一条含换行的 `info` 消息，含 HTML span，同样需 `v-html` 渲染。
+
+`percent` 字段说明：
+
+- 每条日志行的 `percent`：`step` 级别的关键节点写入进度值（0–100），其余行为 `null`。
+- 顶层 `current_percent`：该 job 所有日志中最新一条非 null 的 `percent`，用于进度条，不受 `since_id` 限制（始终返回全局最新值）。
 
 `stage` 取值说明：
 
@@ -340,6 +355,9 @@ async function pollLogs(odbId) {
   while (true) {
     const res = await fetch(`/api/jobs/${odbId}/logs?since_id=${sinceId}&limit=200`);
     const { data } = await res.json();
+    // data.current_percent → 进度条（0-100，null 表示尚未开始）
+    updateProgressBar(data.current_percent);
+    // message 含 HTML span，用 v-html 渲染在 <pre> 内
     data.logs.forEach(row => appendToUI(row));
     sinceId = data.next_since_id;
 
@@ -354,7 +372,6 @@ async function pollLogs(odbId) {
 注意事项：
 - `job_logs` 在删除作业时级联清除（`DELETE /api/jobs/{odb_id}`）。
 - 作业完成后日志永久保留，可随时查询历史。
-- 日志只属于 legacy ODB jobs（`/api/jobs`），project 流水线暂不支持。
 
 ## 4. Projects
 
@@ -642,9 +659,9 @@ async function pollLogs(odbId) {
 
 ### `GET /api/projects/{project_id}/logs`
 
-查询 project 解析进度日志，支持增量轮询。与 `GET /api/jobs/{odb_id}/logs` 格式完全相同。
+查询 project 解析进度日志，支持增量轮询。`message` 格式、`percent`/`current_percent` 字段含义与 `GET /api/jobs/{odb_id}/logs` 完全一致，参见上节。
 
-**覆盖范围**：几何管道（INP 解析或 ODB L1+L2）+ 所有结果组（result_group）的解析日志，统一按 `project_id` 索引。
+**覆盖范围**：几何管道（INP/ODB/BDF/OP2 L1+L2）+ 所有结果组（result_group）的解析日志，统一按 `project_id` 索引。
 
 查询参数：
 
@@ -653,21 +670,22 @@ async function pollLogs(odbId) {
 | `since_id` | `0` | 只返回 `id > since_id` 的行 |
 | `limit` | `200` | 最多返回行数，上限 1000 |
 
-响应格式同 `GET /api/jobs/{odb_id}/logs`：
+响应示例：
 
 ```json
 {
   "code": 200,
   "data": {
     "logs": [
-      {"id": 1,  "ts": "...", "level": "step", "stage": "l1_dump",    "message": "L1 阶段 1：Abaqus 导出启动"},
-      {"id": 2,  "ts": "...", "level": "info", "stage": "l1_dump",    "message": "  ODB opened. (0.3s)"},
-      {"id": 15, "ts": "...", "level": "step", "stage": "l2_done",    "message": "ODB 解析全部完成，已就绪"},
-      {"id": 16, "ts": "...", "level": "step", "stage": "rg_preflight", "message": "[case1] 结果组解析开始：一致性校验"},
-      {"id": 17, "ts": "...", "level": "info", "stage": "rg_extract",   "message": "  Step 'Step-1': 10 frames"},
-      {"id": 30, "ts": "...", "level": "step", "stage": "rg_done",      "message": "[case1] 结果组解析完成，已就绪"}
+      {"id": 1,  "ts": "...", "level": "step", "stage": "l1_inp",       "message": "<span class=\"kw\">几何解析开始</span>：解析 INP 文件 model.inp", "percent": 5},
+      {"id": 2,  "ts": "...", "level": "info", "stage": "l1_inp",       "message": "<span class=\"kw\">READING</span> : FEM\n...",                      "percent": null},
+      {"id": 10, "ts": "...", "level": "step", "stage": "l1_inp",       "message": "<span class=\"kw\">INP 解析完成</span>，导出几何 HDF5",             "percent": 30},
+      {"id": 20, "ts": "...", "level": "step", "stage": "l2_done",      "message": "<span class=\"good\">几何解析完成，已就绪</span>",                   "percent": 100},
+      {"id": 21, "ts": "...", "level": "step", "stage": "rg_extract",   "message": "[<span class=\"kw\">case1</span>] 结果组解析：一致性校验 + 提取",     "percent": null},
+      {"id": 35, "ts": "...", "level": "step", "stage": "rg_done",      "message": "[<span class=\"kw\">case1</span>] <span class=\"good\">结果组解析完成，已就绪</span>", "percent": null}
     ],
-    "next_since_id": 30
+    "next_since_id": 35,
+    "current_percent": 100
   },
   "message": ""
 }
@@ -675,23 +693,30 @@ async function pollLogs(odbId) {
 
 `stage` 取值说明（Project 模式）：
 
-| stage | 对应阶段 |
-|---|---|
-| `l1_inp` | INP 路径：解析 INP + 导出几何 HDF5 |
-| `l1_dump` | ODB 路径：`abaqus_dump.py` 导出 npy |
-| `l1_pack` | ODB 路径：`l1_pack.py` 打包 HDF5 |
-| `l1_done` | L1 完成汇总 |
-| `catalog` | INP/ODB catalog 导入（测点/参数，非致命） |
-| `l2_ingest` | `ingest.py`：三角面提取、特征边、Octree |
-| `l2_done` | 几何管道完成 |
-| `rg_preflight` | 结果组一致性校验 |
-| `rg_extract` | 结果组数据提取 |
-| `rg_l1_pack` | 结果组打包 HDF5 |
-| `rg_done` | 结果组解析完成 |
+| stage | 对应阶段 | percent |
+|---|---|---|
+| `l1_inp` | INP 路径：解析 INP + 导出几何 HDF5 | 5 → 30 |
+| `l1_bdf` | BDF 路径：`bdf_pack.py` 提取几何 | 5 → 50 |
+| `l1_geom` | OP2 路径：`op2_geom_pack.py` 提取几何 | 5 → 50 |
+| `l1_dump` | ODB 路径：`abaqus_dump.py` 导出 npy | 5 → 40 |
+| `l1_pack` | ODB 路径：`l1_pack.py` 打包 HDF5 | 40 → 62 |
+| `l1_done` | L1 完成汇总（节点数、实例数） | 60–62 |
+| `catalog` | INP/ODB catalog 导入（测点/参数，非致命） | 35–67 |
+| `l2_ingest` | `ingest.py`：三角面提取、特征边、Octree | 45–70 |
+| `l2_done` | 几何管道完成，状态置 `ready` | 75–100 |
+| `mu_import_bdf` | BDF 自动导入 model_update | 90 → 100 |
+| `rg_preflight` | 结果组文件检查 | null |
+| `rg_extract` | 结果组数据提取（abaqus_dump） | null |
+| `rg_l1_pack` | 结果组打包 HDF5 | null |
+| `rg_op2` | OP2 结果组打包 | null |
+| `rg_rerun_l2` | 结果组完成后重跑 L2 重建平均域 | null |
+| `rg_done` | 结果组解析完成 | null |
+| `mu_import_op2_modal` | OP2 模态结果自动导入 model_update | null |
 
 注意事项：
 - 几何管道和所有结果组的日志都写入同一个 `project_id` 下，不需要分别查询。
-- result_group 相关行的 `message` 中包含结果组名称（如 `[case1] ...`），可按此过滤。
+- 结果组相关行的 `message` 中包含 `[<span class="kw">结果组名</span>]` 前缀，可按此过滤。
+- 几何管道完成（`l2_done`）后 `current_percent` 固定为 100，结果组解析期间不更新进度。
 - 删除 project 时日志随 `job_logs` 记录一并删除。
 
 ## 5. Metadata
