@@ -5085,3 +5085,207 @@ def get_modal_correlation_table_payload(project_id):
             "point_count": len(row_mode_order) * len(column_mode_order),
         },
     }
+
+
+def _load_modal_correlation_rows(project_id: int) -> List[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac,
+                   freq_test, freq_fem, freq_error_ratio
+            FROM t_mt_py_fem_modal_correlation
+            WHERE pid = %s
+            ORDER BY fem_mode_no, test_mode_no
+        """, (int(project_id),))
+        rows = cursor.fetchall() or []
+        return [dict(row) for row in rows]
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _passes_modal_match_filters(
+        row: dict,
+        *,
+        mac_threshold: float,
+        max_freq_error_ratio: Optional[float],
+) -> bool:
+    mac = row.get("mac")
+    if mac is None or float(mac) < float(mac_threshold):
+        return False
+    if max_freq_error_ratio is None:
+        return True
+    freq_error_ratio = row.get("freq_error_ratio")
+    if freq_error_ratio is None:
+        return True
+    return abs(float(freq_error_ratio)) <= float(max_freq_error_ratio)
+
+
+def _build_modal_match_row(row: dict, *, status: str, recommended: bool, rank: Optional[int] = None) -> dict:
+    return {
+        "fem_mode_no": int(row["fem_mode_no"]),
+        "test_mode_no": int(row["test_mode_no"]),
+        "mac": float(row["mac"]) if row.get("mac") is not None else None,
+        "dac": float(row["dac"]) if row.get("dac") is not None else None,
+        "dsf": float(row["dsf"]) if row.get("dsf") is not None else None,
+        "fem_frequency": float(row["freq_fem"]) if row.get("freq_fem") is not None else None,
+        "test_frequency": float(row["freq_test"]) if row.get("freq_test") is not None else None,
+        "freq_error_ratio": float(row["freq_error_ratio"]) if row.get("freq_error_ratio") is not None else None,
+        "dof_pair_count": int(row["dof_pair_count"]) if row.get("dof_pair_count") is not None else None,
+        "status": str(status),
+        "recommended": bool(recommended),
+        "rank": int(rank) if rank is not None else None,
+    }
+
+
+def preview_modal_match(project_id: int, *, mac_threshold: float = 0.7,
+                        max_candidates_per_mode: int = 3,
+                        max_freq_error_ratio: Optional[float] = 0.2) -> dict:
+    rows = _load_modal_correlation_rows(project_id)
+    if not rows:
+        raise ValueError("未找到模态相关性结果，请先完成 MAC 计算")
+
+    candidate_rows_by_fem: Dict[int, List[dict]] = {}
+    all_fem_modes = sorted({int(row["fem_mode_no"]) for row in rows})
+    all_test_modes = sorted({int(row["test_mode_no"]) for row in rows})
+
+    for row in rows:
+        if not _passes_modal_match_filters(
+                row,
+                mac_threshold=mac_threshold,
+                max_freq_error_ratio=max_freq_error_ratio,
+        ):
+            continue
+        candidate_rows_by_fem.setdefault(int(row["fem_mode_no"]), []).append(row)
+
+    preview_rows: List[dict] = []
+    unmatched_fem_modes: List[int] = []
+    for fem_mode_no in all_fem_modes:
+        candidates = list(candidate_rows_by_fem.get(fem_mode_no, []))
+        candidates.sort(
+            key=lambda item: (
+                -(float(item["mac"]) if item.get("mac") is not None else -1.0),
+                abs(float(item["freq_error_ratio"])) if item.get("freq_error_ratio") is not None else math.inf,
+                int(item["test_mode_no"]),
+            )
+        )
+        limited = candidates[:max(int(max_candidates_per_mode), 1)]
+        if not limited:
+            unmatched_fem_modes.append(int(fem_mode_no))
+            continue
+        for rank, item in enumerate(limited, start=1):
+            preview_rows.append(
+                _build_modal_match_row(
+                    item,
+                    status="candidate",
+                    recommended=(rank == 1),
+                    rank=rank,
+                )
+            )
+
+    matched_test_modes = sorted({int(row["test_mode_no"]) for row in preview_rows})
+    unmatched_test_modes = [mode_no for mode_no in all_test_modes if mode_no not in matched_test_modes]
+
+    return {
+        "project_id": int(project_id),
+        "method": "candidate_preview",
+        "mac_threshold": float(mac_threshold),
+        "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
+        "max_candidates_per_mode": max(int(max_candidates_per_mode), 1),
+        "rows": preview_rows,
+        "summary": {
+            "fem_mode_count": len(all_fem_modes),
+            "test_mode_count": len(all_test_modes),
+            "candidate_count": len(preview_rows),
+            "matched_fem_mode_count": len(all_fem_modes) - len(unmatched_fem_modes),
+            "unmatched_fem_mode_count": len(unmatched_fem_modes),
+            "unmatched_test_mode_count": len(unmatched_test_modes),
+        },
+        "unmatched_fem_modes": unmatched_fem_modes,
+        "unmatched_test_modes": unmatched_test_modes,
+    }
+
+
+def match_modal_modes(project_id: int, *, mac_threshold: float = 0.7,
+                      max_freq_error_ratio: Optional[float] = 0.2,
+                      method: str = "greedy") -> dict:
+    resolved_method = str(method or "greedy").strip().lower()
+    if resolved_method != "greedy":
+        raise ValidationError(
+            "unsupported modal matching method",
+            {"method": method, "allowed": ["greedy"]},
+        )
+
+    rows = _load_modal_correlation_rows(project_id)
+    if not rows:
+        raise ValueError("未找到模态相关性结果，请先完成 MAC 计算")
+
+    all_fem_modes = sorted({int(row["fem_mode_no"]) for row in rows})
+    all_test_modes = sorted({int(row["test_mode_no"]) for row in rows})
+    candidates = [
+        row for row in rows
+        if _passes_modal_match_filters(
+            row,
+            mac_threshold=mac_threshold,
+            max_freq_error_ratio=max_freq_error_ratio,
+        )
+    ]
+    candidates.sort(
+        key=lambda item: (
+            -(float(item["mac"]) if item.get("mac") is not None else -1.0),
+            abs(float(item["freq_error_ratio"])) if item.get("freq_error_ratio") is not None else math.inf,
+            int(item["fem_mode_no"]),
+            int(item["test_mode_no"]),
+        )
+    )
+
+    used_fem = set()
+    used_test = set()
+    matched_rows: List[dict] = []
+    rejected_rows: List[dict] = []
+
+    for item in candidates:
+        fem_mode_no = int(item["fem_mode_no"])
+        test_mode_no = int(item["test_mode_no"])
+        if fem_mode_no in used_fem or test_mode_no in used_test:
+            rejected_rows.append(
+                _build_modal_match_row(
+                    item,
+                    status="candidate_conflict",
+                    recommended=False,
+                )
+            )
+            continue
+        used_fem.add(fem_mode_no)
+        used_test.add(test_mode_no)
+        matched_rows.append(
+            _build_modal_match_row(
+                item,
+                status="matched",
+                recommended=True,
+            )
+        )
+
+    matched_rows.sort(key=lambda item: item["fem_mode_no"])
+    unmatched_fem_modes = [mode_no for mode_no in all_fem_modes if mode_no not in used_fem]
+    unmatched_test_modes = [mode_no for mode_no in all_test_modes if mode_no not in used_test]
+
+    return {
+        "project_id": int(project_id),
+        "method": resolved_method,
+        "mac_threshold": float(mac_threshold),
+        "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
+        "rows": matched_rows,
+        "rejected_candidates": rejected_rows,
+        "summary": {
+            "fem_mode_count": len(all_fem_modes),
+            "test_mode_count": len(all_test_modes),
+            "matched_pair_count": len(matched_rows),
+            "candidate_conflict_count": len(rejected_rows),
+            "unmatched_fem_mode_count": len(unmatched_fem_modes),
+            "unmatched_test_mode_count": len(unmatched_test_modes),
+        },
+        "unmatched_fem_modes": unmatched_fem_modes,
+        "unmatched_test_modes": unmatched_test_modes,
+    }
