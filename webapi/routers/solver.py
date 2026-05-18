@@ -326,6 +326,7 @@ async def preview_nastran_sol200_api(request: Request, body: NastranSol200Previe
     await log_request(request, model_to_dict(body))
     try:
         data = preview_sol200_workflow(
+            project_id=body.project_id,
             input_bdf=body.input_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
             parameter_preset=model_to_dict(body.parameter_preset) if body.parameter_preset else None,

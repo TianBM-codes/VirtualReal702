@@ -17,6 +17,14 @@ from services.model_update.analysis.inp_service import (
     create_optimization_parameter,
     list_design_response_catalog_entries,
 )
+from services.model_update.analysis.nastran_sol200_service import (
+    clear_sol200_parameter_config_entries,
+    clear_sol200_response_config_entries,
+    create_sol200_parameter_config_entry,
+    create_sol200_response_config_entry,
+    list_sol200_parameter_config_entries,
+    list_sol200_response_config_entries,
+)
 from src.l3.core.errors import AppError, ValidationError
 
 from ..background_jobs import get_background_task, submit_background_task, update_background_task
@@ -27,7 +35,10 @@ from ..models import (
     BayesianTextCheckRequest,
     CreateDesignResponseRequest,
     CreateOptimizationParameterRequest,
+    CreateSol200ParameterConfigRequest,
+    CreateSol200ResponseConfigRequest,
     DesignResponseCatalogRequest,
+    Sol200ConfigCatalogRequest,
 )
 from ..utils import log_request, model_to_dict
 
@@ -320,6 +331,101 @@ async def clear_design_response_api(request: Request, body: DesignResponseCatalo
     try:
         data = clear_design_response_catalog_entries(body.project_id)
         return success_response(data, "设计响应已清空")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/sol200/parameter/create")
+async def create_sol200_parameter_api(request: Request, body: CreateSol200ParameterConfigRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = create_sol200_parameter_config_entry(
+            project_id=body.project_id,
+            parameter_name=body.parameter_name,
+            parameter_type=body.parameter_type,
+            initial=body.initial,
+            lower=body.lower,
+            upper=body.upper,
+            property_id=body.property_id,
+            material_id=body.material_id,
+            element_id=body.element_id,
+            extra_json=body.extra_json,
+        )
+        return success_response(data, "SOL200 参数配置创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/sol200/parameter")
+async def list_sol200_parameter_api(request: Request, body: Sol200ConfigCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = list_sol200_parameter_config_entries(body.project_id)
+        return success_response(data, "SOL200 参数配置加载成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/sol200/parameter/clear")
+async def clear_sol200_parameter_api(request: Request, body: Sol200ConfigCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = clear_sol200_parameter_config_entries(body.project_id)
+        return success_response(data, "SOL200 参数配置已清空")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/sol200/response/create")
+async def create_sol200_response_api(request: Request, body: CreateSol200ResponseConfigRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = create_sol200_response_config_entry(
+            project_id=body.project_id,
+            response_name=body.response_name,
+            response_type=body.response_type,
+            mode_number=body.mode_number,
+            extra_json=body.extra_json,
+        )
+        return success_response(data, "SOL200 响应配置创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/sol200/response")
+async def list_sol200_response_api(request: Request, body: Sol200ConfigCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = list_sol200_response_config_entries(body.project_id)
+        return success_response(data, "SOL200 响应配置加载成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/sol200/response/clear")
+async def clear_sol200_response_api(request: Request, body: Sol200ConfigCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = clear_sol200_response_config_entries(body.project_id)
+        return success_response(data, "SOL200 响应配置已清空")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

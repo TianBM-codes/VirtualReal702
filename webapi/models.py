@@ -114,6 +114,31 @@ class DesignResponseCatalogRequest(BaseModel):
     project_id: int
 
 
+class Sol200ConfigCatalogRequest(BaseModel):
+    project_id: int
+
+
+class CreateSol200ParameterConfigRequest(BaseModel):
+    project_id: int
+    parameter_name: str
+    parameter_type: str
+    initial: float
+    lower: Optional[float] = None
+    upper: Optional[float] = None
+    property_id: Optional[int] = None
+    material_id: Optional[int] = None
+    element_id: Optional[int] = None
+    extra_json: Optional[Dict[str, Any]] = None
+
+
+class CreateSol200ResponseConfigRequest(BaseModel):
+    project_id: int
+    response_name: str
+    response_type: str
+    mode_number: Optional[int] = None
+    extra_json: Optional[Dict[str, Any]] = None
+
+
 class BayesianModelUpdateRequest(BaseModel):
     project_id: int
     batch_no: int = Field(default=1, ge=1)
@@ -547,6 +572,7 @@ class NastranParameterRequest(BaseModel):
     type: str
     property_id: Optional[int] = None
     material_id: Optional[int] = None
+    element_id: Optional[int] = None
     initial: float
     lower: Optional[float] = None
     upper: Optional[float] = None
@@ -568,10 +594,11 @@ class NastranSol200ParameterPresetRequest(BaseModel):
 
 
 class NastranSol200PreviewRequest(BaseModel):
+    project_id: Optional[int] = None
     input_bdf: str
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
     parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
-    responses: List[NastranResponseRequest]
+    responses: List[NastranResponseRequest] = Field(default_factory=list)
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -583,7 +610,7 @@ class NastranSol200GenerateRequest(BaseModel):
     output_bdf: Optional[str] = None
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
     parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
-    responses: List[NastranResponseRequest]
+    responses: List[NastranResponseRequest] = Field(default_factory=list)
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -595,7 +622,7 @@ class NastranSol200RunRequest(BaseModel):
     output_bdf: Optional[str] = None
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
     parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
-    responses: List[NastranResponseRequest]
+    responses: List[NastranResponseRequest] = Field(default_factory=list)
     settings: Dict[str, Any] = Field(default_factory=dict)
     nastran: Optional[str] = None
     run_solver: bool = True

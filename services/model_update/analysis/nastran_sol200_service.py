@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pyNastran.bdf.bdf import BDF
+from db import ensure_tables_exist, get_connection
 from src.l3.core.errors import ValidationError
 
 from ..importers.op2_service import (
@@ -16,12 +17,386 @@ from .solver_service import (
     preview_nastran_sol200_job,
     run_nastran_sol200_job,
 )
+from .console_log_service import safe_write_console_event
 
 
 # This module is the dedicated orchestration layer for the phase-1 Nastran
 # SOL200 workflow. The lower layers still own card generation, solver launch,
 # and matrix parsing; this service keeps the public SOL200 path centralized so
 # future phase-2/3 work can extend one place instead of scattering logic.
+
+
+def _json_dumps(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _normalize_sol200_parameter_type(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    mapping = {
+        "T": "H",
+        "H": "H",
+        "E": "E",
+        "RHO": "RHO",
+    }
+    resolved = mapping.get(token)
+    if not resolved:
+        raise ValidationError(
+            "unsupported SOL200 parameter type",
+            {"parameter_type": value, "allowed": ["E", "RHO", "H", "T"]},
+        )
+    return resolved
+
+
+def _normalize_sol200_response_type(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    if token != "FREQ":
+        raise ValidationError(
+            "unsupported SOL200 response type",
+            {"response_type": value, "allowed": ["FREQ"]},
+        )
+    return token
+
+
+def create_sol200_parameter_config_entry(
+    *,
+    project_id: int,
+    parameter_name: str,
+    parameter_type: str,
+    initial: float,
+    lower: Optional[float] = None,
+    upper: Optional[float] = None,
+    property_id: Optional[int] = None,
+    material_id: Optional[int] = None,
+    element_id: Optional[int] = None,
+    extra_json: Optional[Dict[str, Any]] = None,
+) -> dict:
+    ensure_tables_exist()
+    resolved_name = str(parameter_name or "").strip()
+    if not resolved_name:
+        raise ValidationError("parameter_name is required", {"parameter_name": parameter_name})
+    resolved_type = _normalize_sol200_parameter_type(parameter_type)
+    resolved_initial = float(initial)
+    resolved_lower = resolved_initial if lower is None else float(lower)
+    resolved_upper = resolved_initial if upper is None else float(upper)
+    if resolved_lower > resolved_upper:
+        raise ValidationError(
+            "lower must be less than or equal to upper",
+            {"lower": resolved_lower, "upper": resolved_upper},
+        )
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT COALESCE(MAX(parameter_no), 0) AS max_no
+            FROM t_mt_py_fem_sol200_parameter_config
+            WHERE pid = %s
+            """,
+            (int(project_id),),
+        )
+        parameter_no = int((cursor.fetchone() or {}).get("max_no") or 0) + 1
+        cursor.execute(
+            """
+            INSERT INTO t_mt_py_fem_sol200_parameter_config
+            (pid, parameter_no, parameter_name, parameter_type, property_id, material_id, element_id,
+             initial_value, lower_bound, upper_bound, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(project_id),
+                int(parameter_no),
+                resolved_name,
+                resolved_type,
+                int(property_id) if property_id is not None else None,
+                int(material_id) if material_id is not None else None,
+                int(element_id) if element_id is not None else None,
+                resolved_initial,
+                resolved_lower,
+                resolved_upper,
+                _json_dumps(dict(extra_json or {})),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    safe_write_console_event(
+        int(project_id),
+        "SOL200 参数配置创建完成",
+        [
+            f"参数名: {resolved_name}",
+            f"参数类型: {resolved_type}",
+            f"初始值: {resolved_initial}",
+            f"范围: [{resolved_lower}, {resolved_upper}]",
+        ],
+    )
+    return {
+        "project_id": int(project_id),
+        "parameter_no": int(parameter_no),
+        "parameter_name": resolved_name,
+        "parameter_type": resolved_type,
+        "property_id": int(property_id) if property_id is not None else None,
+        "material_id": int(material_id) if material_id is not None else None,
+        "element_id": int(element_id) if element_id is not None else None,
+        "initial": resolved_initial,
+        "lower": resolved_lower,
+        "upper": resolved_upper,
+        "extra_json": dict(extra_json or {}),
+    }
+
+
+def list_sol200_parameter_config_entries(project_id: int) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT parameter_no, parameter_name, parameter_type, property_id, material_id, element_id,
+                   initial_value, lower_bound, upper_bound, extra_json
+            FROM t_mt_py_fem_sol200_parameter_config
+            WHERE pid = %s
+            ORDER BY parameter_no ASC
+            """,
+            (int(project_id),),
+        )
+        rows = []
+        for row in cursor.fetchall() or []:
+            extra_json = row.get("extra_json")
+            if isinstance(extra_json, str):
+                try:
+                    extra_json = json.loads(extra_json)
+                except Exception:
+                    extra_json = {}
+            rows.append({
+                "parameter_no": int(row["parameter_no"]),
+                "parameter_name": str(row["parameter_name"]),
+                "parameter_type": str(row["parameter_type"]),
+                "property_id": int(row["property_id"]) if row.get("property_id") is not None else None,
+                "material_id": int(row["material_id"]) if row.get("material_id") is not None else None,
+                "element_id": int(row["element_id"]) if row.get("element_id") is not None else None,
+                "initial": float(row["initial_value"]),
+                "lower": float(row["lower_bound"]) if row.get("lower_bound") is not None else None,
+                "upper": float(row["upper_bound"]) if row.get("upper_bound") is not None else None,
+                "extra_json": extra_json or {},
+            })
+        return {
+            "project_id": int(project_id),
+            "parameter_count": len(rows),
+            "parameters": rows,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def clear_sol200_parameter_config_entries(project_id: int) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM t_mt_py_fem_sol200_parameter_config WHERE pid = %s",
+            (int(project_id),),
+        )
+        deleted_count = int(cursor.rowcount or 0)
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "deleted_count": deleted_count,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def create_sol200_response_config_entry(
+    *,
+    project_id: int,
+    response_name: str,
+    response_type: str,
+    mode_number: Optional[int] = None,
+    extra_json: Optional[Dict[str, Any]] = None,
+) -> dict:
+    ensure_tables_exist()
+    resolved_name = str(response_name or "").strip()
+    if not resolved_name:
+        raise ValidationError("response_name is required", {"response_name": response_name})
+    resolved_type = _normalize_sol200_response_type(response_type)
+    resolved_mode_number = int(mode_number) if mode_number is not None else None
+    if resolved_type == "FREQ" and resolved_mode_number is None:
+        raise ValidationError(
+            "mode_number is required for SOL200 FREQ response",
+            {"response_type": resolved_type, "mode_number": mode_number},
+        )
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT COALESCE(MAX(response_no), 0) AS max_no
+            FROM t_mt_py_fem_sol200_response_config
+            WHERE pid = %s
+            """,
+            (int(project_id),),
+        )
+        response_no = int((cursor.fetchone() or {}).get("max_no") or 0) + 1
+        cursor.execute(
+            """
+            INSERT INTO t_mt_py_fem_sol200_response_config
+            (pid, response_no, response_name, response_type, mode_number, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(project_id),
+                int(response_no),
+                resolved_name,
+                resolved_type,
+                resolved_mode_number,
+                _json_dumps(dict(extra_json or {})),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    safe_write_console_event(
+        int(project_id),
+        "SOL200 响应配置创建完成",
+        [
+            f"响应名: {resolved_name}",
+            f"响应类型: {resolved_type}",
+            f"模态阶次: {resolved_mode_number if resolved_mode_number is not None else '-'}",
+        ],
+    )
+    return {
+        "project_id": int(project_id),
+        "response_no": int(response_no),
+        "response_name": resolved_name,
+        "response_type": resolved_type,
+        "mode_number": resolved_mode_number,
+        "extra_json": dict(extra_json or {}),
+    }
+
+
+def list_sol200_response_config_entries(project_id: int) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT response_no, response_name, response_type, mode_number, extra_json
+            FROM t_mt_py_fem_sol200_response_config
+            WHERE pid = %s
+            ORDER BY response_no ASC
+            """,
+            (int(project_id),),
+        )
+        rows = []
+        for row in cursor.fetchall() or []:
+            extra_json = row.get("extra_json")
+            if isinstance(extra_json, str):
+                try:
+                    extra_json = json.loads(extra_json)
+                except Exception:
+                    extra_json = {}
+            rows.append({
+                "response_no": int(row["response_no"]),
+                "response_name": str(row["response_name"]),
+                "response_type": str(row["response_type"]),
+                "mode_number": int(row["mode_number"]) if row.get("mode_number") is not None else None,
+                "extra_json": extra_json or {},
+            })
+        return {
+            "project_id": int(project_id),
+            "response_count": len(rows),
+            "responses": rows,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def clear_sol200_response_config_entries(project_id: int) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM t_mt_py_fem_sol200_response_config WHERE pid = %s",
+            (int(project_id),),
+        )
+        deleted_count = int(cursor.rowcount or 0)
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "deleted_count": deleted_count,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _load_project_sol200_parameters(project_id: int) -> List[Dict[str, Any]]:
+    payload = list_sol200_parameter_config_entries(project_id)
+    return [
+        {
+            "name": item["parameter_name"],
+            "type": item["parameter_type"],
+            "property_id": item.get("property_id"),
+            "material_id": item.get("material_id"),
+            "element_id": item.get("element_id"),
+            "initial": item["initial"],
+            "lower": item.get("lower"),
+            "upper": item.get("upper"),
+        }
+        for item in list(payload.get("parameters") or [])
+    ]
+
+
+def _load_project_sol200_responses(project_id: int) -> List[Dict[str, Any]]:
+    payload = list_sol200_response_config_entries(project_id)
+    return [
+        {
+            "name": item["response_name"],
+            "type": item["response_type"],
+            "mode_number": item.get("mode_number"),
+        }
+        for item in list(payload.get("responses") or [])
+    ]
+
+
+def _resolve_sol200_config_sources(
+    *,
+    project_id: Optional[int],
+    parameters: Optional[List[Dict[str, Any]]],
+    parameter_preset: Optional[Dict[str, Any]],
+    responses: Optional[List[Dict[str, Any]]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    resolved_parameters = [dict(item) for item in (parameters or [])]
+    resolved_responses = [dict(item) for item in (responses or [])]
+    if project_id is not None and not resolved_parameters and not parameter_preset:
+        resolved_parameters = _load_project_sol200_parameters(int(project_id))
+    if project_id is not None and not resolved_responses:
+        resolved_responses = _load_project_sol200_responses(int(project_id))
+    return resolved_parameters, resolved_responses
 
 
 def _load_bdf_model(input_bdf: str) -> BDF:
@@ -338,12 +713,19 @@ def _resolve_phase1_input_and_parameters(
 
 def preview_sol200_workflow(
     *,
+    project_id: Optional[int] = None,
     input_bdf: str,
     parameters: Optional[List[Dict[str, Any]]] = None,
     parameter_preset: Optional[Dict[str, Any]] = None,
-    responses: List[Dict[str, Any]],
+    responses: Optional[List[Dict[str, Any]]] = None,
     settings: Optional[Dict[str, Any]] = None,
     ) -> dict:
+    resolved_input_parameters, resolved_responses = _resolve_sol200_config_sources(
+        project_id=project_id,
+        parameters=parameters,
+        parameter_preset=parameter_preset,
+        responses=responses,
+    )
     preset_name = str((parameter_preset or {}).get("preset") or "").strip().lower()
     if preset_name == "all_elements_e":
         localized_preview_path = str(
@@ -359,24 +741,27 @@ def preview_sol200_workflow(
         payload = preview_nastran_sol200_job(
             input_bdf=localized_input_bdf,
             parameters=resolved_parameters,
-            responses=list(responses or []),
+            responses=list(resolved_responses or []),
             settings=dict(settings or {}),
         )
         payload["input_bdf"] = str(Path(input_bdf).expanduser().resolve())
         payload["parameter_preset_info"] = info
+        payload["config_source"] = "database" if project_id is not None and not list(responses or []) else "request"
         return payload
 
     resolved_parameters = _resolve_phase1_parameters(
         input_bdf=input_bdf,
-        parameters=parameters,
+        parameters=resolved_input_parameters,
         parameter_preset=parameter_preset,
     )
-    return preview_nastran_sol200_job(
+    payload = preview_nastran_sol200_job(
         input_bdf=input_bdf,
         parameters=resolved_parameters,
-        responses=list(responses or []),
+        responses=list(resolved_responses or []),
         settings=dict(settings or {}),
     )
+    payload["config_source"] = "database" if project_id is not None and not list(responses or []) and not list(parameters or []) and not parameter_preset else "request"
+    return payload
 
 
 def generate_sol200_workflow(
@@ -391,17 +776,23 @@ def generate_sol200_workflow(
     responses: Optional[List[Dict[str, Any]]] = None,
     settings: Optional[Dict[str, Any]] = None,
 ) -> dict:
+    resolved_input_parameters, resolved_responses = _resolve_sol200_config_sources(
+        project_id=project_id,
+        parameters=parameters,
+        parameter_preset=parameter_preset,
+        responses=responses,
+    )
     localized_input_bdf, resolved_parameters, preset_info = _resolve_phase1_input_and_parameters(
         input_bdf=input_bdf,
         output_bdf=output_bdf,
-        parameters=parameters,
+        parameters=resolved_input_parameters,
         parameter_preset=parameter_preset,
     )
     payload = generate_nastran_sol200_job(
         input_bdf=localized_input_bdf,
         output_bdf=output_bdf,
         parameters=resolved_parameters,
-        responses=list(responses or []),
+        responses=list(resolved_responses or []),
         settings=dict(settings or {}),
     )
     payload["input_bdf"] = str(Path(input_bdf).expanduser().resolve())
@@ -415,6 +806,7 @@ def generate_sol200_workflow(
             metadata["localized_input_bdf"] = localized_input_bdf
             metadata["parameter_preset_info"] = preset_info
             Path(metadata_json).write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload["config_source"] = "database" if project_id is not None and not list(responses or []) and not list(parameters or []) and not parameter_preset else "request"
     if project_id is not None:
         from . import sensitivity_service as _sens
 
@@ -426,7 +818,7 @@ def generate_sol200_workflow(
                 "response_name": item.get("name"),
                 "response_type": item.get("type"),
                 "mode_number": item.get("mode_number"),
-            } for item in list(responses or [])],
+            } for item in list(resolved_responses or [])],
             parameter_columns=[dict(item) for item in resolved_parameters],
             source={
                 "source_kind": "sol200_metadata",
@@ -453,17 +845,23 @@ def run_sol200_workflow(
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
 ) -> dict:
+    resolved_input_parameters, resolved_responses = _resolve_sol200_config_sources(
+        project_id=project_id,
+        parameters=parameters,
+        parameter_preset=parameter_preset,
+        responses=responses,
+    )
     localized_input_bdf, resolved_parameters, preset_info = _resolve_phase1_input_and_parameters(
         input_bdf=input_bdf,
         output_bdf=output_bdf,
-        parameters=parameters,
+        parameters=resolved_input_parameters,
         parameter_preset=parameter_preset,
     )
     payload = run_nastran_sol200_job(
         input_bdf=localized_input_bdf,
         output_bdf=output_bdf,
         parameters=resolved_parameters,
-        responses=list(responses or []),
+        responses=list(resolved_responses or []),
         settings=dict(settings or {}),
         nastran=nastran,
         run_solver=run_solver,
@@ -482,6 +880,7 @@ def run_sol200_workflow(
             metadata["localized_input_bdf"] = localized_input_bdf
             metadata["parameter_preset_info"] = preset_info
             Path(metadata_json).write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload["config_source"] = "database" if project_id is not None and not list(responses or []) and not list(parameters or []) and not parameter_preset else "request"
     if project_id is not None:
         from . import sensitivity_service as _sens
 
@@ -493,7 +892,7 @@ def run_sol200_workflow(
                 "response_name": item.get("name"),
                 "response_type": item.get("type"),
                 "mode_number": item.get("mode_number"),
-            } for item in list(responses or [])],
+            } for item in list(resolved_responses or [])],
             parameter_columns=[dict(item) for item in resolved_parameters],
             source={
                 "source_kind": "sol200_metadata",
