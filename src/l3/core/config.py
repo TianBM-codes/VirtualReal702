@@ -78,6 +78,11 @@ class Settings:
         # Abaqus executable — override if `abaqus` is not on PATH
         self.abaqus_cmd = _get(cfg, "APP_ABAQUS_CMD", "abaqus")
 
+        # Force-replace host:port in all http:// download URLs.
+        # Set to "ip:port" (e.g. "192.168.1.10:8080") to override whatever
+        # the caller sends; leave blank to use the URL as-is.
+        self.download_host_override = _get(cfg, "APP_DOWNLOAD_HOST_OVERRIDE", "")
+
         # How often the embedded runner polls for new jobs (seconds)
         self.runner_poll_interval = int(_get(cfg, "JOB_RUNNER_POLL_INTERVAL", "10"))
 

@@ -27,6 +27,23 @@ def is_http_url(s: str) -> bool:
     return s.startswith("http://") or s.startswith("https://")
 
 
+def _apply_host_override(url: str) -> str:
+    """若 APP_DOWNLOAD_HOST_OVERRIDE 已配置，替换 http:// URL 的 host:port 部分。"""
+    try:
+        from src.l3.core.config import settings
+        override = settings.download_host_override.strip()
+    except Exception:
+        return url
+    if not override or not url.startswith("http://"):
+        return url
+    parsed = urllib.parse.urlparse(url)
+    rewritten = parsed._replace(netloc=override)
+    new_url = urllib.parse.urlunparse(rewritten)
+    if new_url != url:
+        logger.info("file_fetch: host override %s → %s", parsed.netloc, override)
+    return new_url
+
+
 def _default_dest_dir() -> str:
     """读取 service_config.json 中的 APP_DATA_ROOT 作为默认下载目录。
     懒加载，避免在模块导入时就触发 settings 初始化。"""
@@ -58,6 +75,8 @@ def download_if_url(
     """
     if not is_http_url(url_or_path):
         return url_or_path
+
+    url_or_path = _apply_host_override(url_or_path)
 
     if dest_dir is None:
         dest_dir = _default_dest_dir()
