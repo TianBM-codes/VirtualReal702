@@ -37,3 +37,25 @@ def test_compute_dac_dsf_returns_expected_identity_metrics():
     assert metrics["dac"] == 100.0
     assert metrics["dsf"] == 1.0
     assert metrics["residual_norm"] == 0.0
+
+
+def test_compute_dac_dsf_complex_mac_returns_identity_for_same_complex_vector():
+    test_vec = np.array([1.0 + 2.0j, -3.0 + 0.5j, 0.25 - 0.75j], dtype=np.complex128)
+    fem_vec = np.array([1.0 + 2.0j, -3.0 + 0.5j, 0.25 - 0.75j], dtype=np.complex128)
+
+    metrics = _compute_dac_dsf(test_vec, fem_vec, mac_mode="complex")
+
+    assert metrics["mac"] == 100.0
+    assert metrics["dac"] == 100.0
+    assert metrics["mac_mode"] == "complex"
+
+
+def test_compute_dac_dsf_complex_mac_is_phase_invariant():
+    test_vec = np.array([1.0 + 2.0j, -3.0 + 0.5j, 0.25 - 0.75j], dtype=np.complex128)
+    fem_vec = 1j * test_vec
+
+    metrics = _compute_dac_dsf(test_vec, fem_vec, mac_mode="complex")
+
+    assert round(metrics["mac"], 10) == 100.0
+    assert round(metrics["dac"], 10) == 100.0
+    assert metrics["mac_mode"] == "complex"

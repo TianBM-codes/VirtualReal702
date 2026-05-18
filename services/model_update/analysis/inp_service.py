@@ -4785,18 +4785,71 @@ def _load_test_modal_frequencies(cursor, project_id: int) -> Dict[int, float]:
     return {int(row["mode_no"]): _safe_float(row["frequency"]) for row in cursor.fetchall()}
 
 
-def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
+def _get_project_test_modal_data_type(cursor, project_id: int) -> Optional[str]:
+    cursor.execute("""
+        SELECT test_modal_data_type
+        FROM t_mt_work_condition_project
+        WHERE project_id = %s
+        LIMIT 1
+    """, (int(project_id),))
+    row = cursor.fetchone() or {}
+    value = row.get("test_modal_data_type")
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    return text or None
+
+
+def _has_nonzero_imaginary_test_modes(test_modes: Dict[int, Dict[str, np.ndarray]]) -> bool:
+    for mode_map in test_modes.values():
+        for vec in mode_map.values():
+            arr = np.asarray(vec, dtype=np.complex128)
+            if np.any(np.abs(arr.imag) > 1e-12):
+                return True
+    return False
+
+
+def _resolve_modal_mac_mode(cursor, project_id: int, test_modes: Dict[int, Dict[str, np.ndarray]]) -> str:
+    test_modal_data_type = _get_project_test_modal_data_type(cursor, int(project_id))
+    if test_modal_data_type == "IMAG":
+        return "complex"
+    if test_modal_data_type == "REAL":
+        return "real"
+    return "complex" if _has_nonzero_imaginary_test_modes(test_modes) else "real"
+
+
+def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray, *, mac_mode: str = "real") -> dict:
+    resolved_mac_mode = str(mac_mode or "real").strip().lower()
+    if resolved_mac_mode not in {"real", "complex"}:
+        raise ValidationError(
+            "unsupported modal mac mode",
+            {"mac_mode": mac_mode, "allowed": ["real", "complex"]},
+        )
+
     test_energy = float(np.vdot(test_vec, test_vec).real)
     fem_energy = float(np.vdot(fem_vec, fem_vec).real)
     if test_energy <= 1e-18 or fem_energy <= 1e-18:
         raise ValueError("向量能量为 0")
 
     cross = np.vdot(test_vec, fem_vec)
+    cross_t = np.dot(test_vec, fem_vec)
+    self_test_h = np.vdot(test_vec, test_vec)
+    self_test_t = np.dot(test_vec, test_vec)
+    self_fem_h = np.vdot(fem_vec, fem_vec)
+    self_fem_t = np.dot(fem_vec, fem_vec)
     scale = np.vdot(fem_vec, test_vec) / np.vdot(test_vec, test_vec)
     residual = test_vec - scale * fem_vec
+    if resolved_mac_mode == "complex":
+        mac_numerator = (abs(cross) + abs(cross_t)) ** 2
+        mac_denominator = (abs(self_test_h) + abs(self_test_t)) * (abs(self_fem_h) + abs(self_fem_t))
+    else:
+        mac_numerator = abs(cross) ** 2
+        mac_denominator = test_energy * fem_energy
+
+    mac_value = float(100.0 * mac_numerator / mac_denominator)
     return {
-        "dac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),
-        "mac": float(100.0 * (abs(cross) ** 2) / (test_energy * fem_energy)),
+        "dac": mac_value,
+        "mac": mac_value,
         "dsf": float(abs(scale)),
         "scale_real": float(scale.real),
         "scale_imag": float(scale.imag),
@@ -4804,6 +4857,13 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray) -> dict:
         "test_norm": float(math.sqrt(test_energy)),
         "fem_norm": float(math.sqrt(fem_energy)),
         "residual_norm": float(np.sqrt(np.vdot(residual, residual).real)),
+        "mac_mode": resolved_mac_mode,
+        "cross_h_abs": float(abs(cross)),
+        "cross_t_abs": float(abs(cross_t)),
+        "self_test_h_abs": float(abs(self_test_h)),
+        "self_test_t_abs": float(abs(self_test_t)),
+        "self_fem_h_abs": float(abs(self_fem_h)),
+        "self_fem_t_abs": float(abs(self_fem_t)),
     }
 
 
@@ -4833,6 +4893,7 @@ def compute_modal_correlation(project_id, overwrite=True):
         test_modes = _load_test_mode_vectors(cursor, project_id)
         if not test_modes:
             raise ValueError("未找到试验模态振型数据")
+        mac_mode = _resolve_modal_mac_mode(cursor, int(project_id), test_modes)
 
         test_freqs = _load_test_modal_frequencies(cursor, project_id)
         fem_modes, fem_freqs = _load_fem_mode_vectors(cursor, project_id)
@@ -4907,6 +4968,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                 metrics = _compute_dac_dsf(
                     np.asarray(test_values, dtype=np.complex128),
                     np.asarray(fem_values, dtype=np.complex128),
+                    mac_mode=mac_mode,
                 )
                 freq_test = test_freqs.get(test_mode_no)
                 freq_fem = fem_freqs.get(fem_mode_no)
@@ -4931,6 +4993,15 @@ def compute_modal_correlation(project_id, overwrite=True):
                         "test_norm": metrics["test_norm"],
                         "fem_norm": metrics["fem_norm"],
                         "residual_norm": metrics["residual_norm"],
+                        "mac_mode": metrics["mac_mode"],
+                        "test_mode_kind": "complex" if mac_mode == "complex" else "real",
+                        "fem_mode_kind": "real",
+                        "cross_h_abs": metrics["cross_h_abs"],
+                        "cross_t_abs": metrics["cross_t_abs"],
+                        "self_test_h_abs": metrics["self_test_h_abs"],
+                        "self_test_t_abs": metrics["self_test_t_abs"],
+                        "self_fem_h_abs": metrics["self_fem_h_abs"],
+                        "self_fem_t_abs": metrics["self_fem_t_abs"],
                         "anchors_preview": anchors,
                     },
                 }
@@ -4982,6 +5053,7 @@ def compute_modal_correlation(project_id, overwrite=True):
 
         return {
             "project_id": project_id,
+            "mac_mode": mac_mode,
             "comparison_count": len(results),
             "best_pairs_by_test_mode": [best_by_test_mode[key] for key in sorted(best_by_test_mode)],
             "results_preview": results[:20],
