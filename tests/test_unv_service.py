@@ -231,7 +231,7 @@ def test_import_unv_data_saves_test_model_dimensions(monkeypatch):
 
 
 class _QueryCursor:
-    def __init__(self, measuring_rows=None, static_rows=None, error_rows=None):
+    def __init__(self, measuring_rows=None, static_rows=None, error_rows=None, test_node_rows=None):
         self.last_sql = ""
         self.last_params = None
         self.measuring_rows = measuring_rows or [
@@ -262,6 +262,10 @@ class _QueryCursor:
             }
         ]
         self.error_rows = error_rows or []
+        self.test_node_rows = test_node_rows or [
+            {"test_node_id": "1001", "x_position": 1.0, "y_position": 2.0, "z_position": 3.0},
+            {"test_node_id": "1002", "x_position": 4.0, "y_position": 5.0, "z_position": 6.0},
+        ]
 
     def execute(self, sql, params=None):
         self.last_sql = " ".join(sql.split())
@@ -270,6 +274,8 @@ class _QueryCursor:
     def fetchall(self):
         sql = self.last_sql
         params = self.last_params
+        if "FROM t_mt_py_test_node" in sql and "ORDER BY nid" in sql:
+            return list(self.test_node_rows)
         if "FROM t_mt_measuring_point_info" in sql and "ORDER BY id" in sql:
             return list(self.measuring_rows)
         if "FROM t_mt_py_test_static_result" in sql and "WHERE pid = %s AND id = %s" in sql:
@@ -294,11 +300,12 @@ class _QueryCursor:
 
 
 class _QueryConnection:
-    def __init__(self, measuring_rows=None, static_rows=None, error_rows=None):
+    def __init__(self, measuring_rows=None, static_rows=None, error_rows=None, test_node_rows=None):
         self.cursor_obj = _QueryCursor(
             measuring_rows=measuring_rows,
             static_rows=static_rows,
             error_rows=error_rows,
+            test_node_rows=test_node_rows,
         )
 
     def cursor(self, dictionary=False):
@@ -316,6 +323,18 @@ def test_get_sensor_positions_returns_expected_shape(monkeypatch):
     assert result == [
         {"sensor_label": "WY1", "sensor_type": "位移", "sensor_pos": [1.0, 2.0, 3.0]},
         {"sensor_label": "WY2", "sensor_type": "位移", "sensor_pos": [4.0, 5.0, 6.0]},
+    ]
+
+
+def test_get_sensor_positions_uses_test_nodes_for_modal_projects(monkeypatch):
+    monkeypatch.setattr(unv_service, "get_connection", lambda: _QueryConnection())
+    monkeypatch.setattr(unv_service, "get_test_data_mode", lambda project_id, cursor=None: "modal_unv")
+
+    result = unv_service.get_sensor_positions(101)
+
+    assert result == [
+        {"sensor_label": "1001", "sensor_type": "浣嶇Щ", "sensor_pos": [1.0, 2.0, 3.0]},
+        {"sensor_label": "1002", "sensor_type": "浣嶇Щ", "sensor_pos": [4.0, 5.0, 6.0]},
     ]
 
 

@@ -7,7 +7,11 @@ from db import get_connection, ensure_tables_exist, clear_unv_tables
 from FemToolsUNVParser import parse_unv
 from src.l3.core.errors import NotFoundError, ValidationError
 from services.model_update.analysis.console_log_service import safe_write_console_event
-from services.model_update.analysis.project_config_service import save_test_data_mode, save_test_model_dimensions
+from services.model_update.analysis.project_config_service import (
+    get_test_data_mode,
+    save_test_data_mode,
+    save_test_model_dimensions,
+)
 
 
 def _to_builtin(value):
@@ -247,6 +251,18 @@ def _sensor_position_item(row):
     return {
         "sensor_label": str(row["measuring_point_name"]),
         "sensor_type": "位移",
+        "sensor_pos": [
+            _safe_float(row["x_position"]),
+            _safe_float(row["y_position"]),
+            _safe_float(row["z_position"]),
+        ],
+    }
+
+
+def _sensor_position_item_from_test_node(row):
+    return {
+        "sensor_label": str(row["test_node_id"]),
+        "sensor_type": "浣嶇Щ",
         "sensor_pos": [
             _safe_float(row["x_position"]),
             _safe_float(row["y_position"]),
@@ -665,6 +681,20 @@ def get_sensor_positions(project_id):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        test_data_mode = str(get_test_data_mode(int(project_id), cursor=cursor) or "").strip().lower()
+        if test_data_mode == "modal_unv":
+            cursor.execute(
+                """
+                SELECT CAST(nid AS CHAR) AS test_node_id, x AS x_position, y AS y_position, z AS z_position
+                FROM t_mt_py_test_node
+                WHERE pid = %s
+                ORDER BY nid
+                """,
+                (project_id,),
+            )
+            rows = cursor.fetchall()
+            return [_sensor_position_item_from_test_node(row) for row in rows]
+
         cursor.execute(
             """
             SELECT id, measuring_point_name, sensor_type_id, x_position, y_position, z_position
