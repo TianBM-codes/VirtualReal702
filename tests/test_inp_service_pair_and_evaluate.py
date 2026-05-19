@@ -83,6 +83,33 @@ class _QueryConnection:
         return None
 
 
+class _ModalQueryCursor(_QueryCursor):
+    def fetchall(self):
+        sql = self.last_sql
+        if "SELECT CAST(nid AS CHAR) AS test_node_id, x AS x_position, y AS y_position, z AS z_position FROM t_mt_py_test_node" in sql:
+            return [
+                {"test_node_id": "1001", "x_position": 1.0, "y_position": 2.0, "z_position": 3.0},
+                {"test_node_id": "1002", "x_position": 4.0, "y_position": 5.0, "z_position": 6.0},
+            ]
+        if "SELECT id, test_node_id, instance_name, fem_node_label FROM t_mt_py_fem_node_match" in sql:
+            return [
+                {"id": 10, "test_node_id": "1001", "instance_name": "PART-1-1", "fem_node_label": 501},
+                {"id": 11, "test_node_id": "1002", "instance_name": "PART-1-1", "fem_node_label": 502},
+            ]
+        return super().fetchall()
+
+
+class _ModalQueryConnection:
+    def __init__(self):
+        self.cursor_obj = _ModalQueryCursor()
+
+    def cursor(self, dictionary=False):
+        return self.cursor_obj
+
+    def close(self):
+        return None
+
+
 class _NodeMatchCursor(_WriteCursor):
     def __init__(self):
         super().__init__()
@@ -499,6 +526,36 @@ def test_get_pair_node_point_result_keeps_sensor_and_node_order(monkeypatch):
 
     assert result == {
         "sensor_name": ["WY1", "WY2"],
+        "node_xyz": [[0.1, 0.2, 0.3], [0.5, 0.3, 0.5]],
+    }
+
+
+def test_get_pair_node_point_result_uses_test_nodes_for_modal_projects(monkeypatch):
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: _ModalQueryConnection())
+    monkeypatch.setattr(inp_service, "get_test_data_mode", lambda project_id, cursor=None: "modal_unv")
+    monkeypatch.setattr(
+        inp_service,
+        "_get_latest_octree_meta",
+        lambda cursor, project_id: {"cache_file_path": "fake_cache.npz"},
+    )
+    monkeypatch.setattr(
+        inp_service,
+        "_load_octree_cache",
+        lambda path: {
+            "point_instances": ["PART-1-1", "PART-1-1"],
+            "point_labels": [501, 502],
+            "point_coords": [
+                [0.1, 0.2, 0.3],
+                [0.5, 0.3, 0.5],
+            ],
+        },
+    )
+
+    result = inp_service.get_pair_node_point_result(101)
+
+    assert result == {
+        "sensor_name": ["1001", "1002"],
         "node_xyz": [[0.1, 0.2, 0.3], [0.5, 0.3, 0.5]],
     }
 

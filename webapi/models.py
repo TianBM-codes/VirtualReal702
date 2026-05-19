@@ -581,6 +581,26 @@ class AbaqusInpPathRunRequest(BaseModel):
     async_submit: bool = False
 
 
+class PBSSolverRunRequest(BaseModel):
+    env: Optional[str] = None
+    input_file: str
+    job_name: Optional[str] = None
+    output_dir: Optional[str] = None
+    wait: bool = True
+    download_results: bool = True
+    poll_interval_sec: float = 10.0
+    wait_timeout_sec: int = 3600
+    timeout_sec: int = 60
+    submit_overrides: Dict[str, Any] = Field(default_factory=dict)
+    async_submit: bool = False
+
+
+class PBSJobStatusRequest(BaseModel):
+    env: Optional[str] = None
+    job_id: str
+    timeout_sec: int = 60
+
+
 class NastranParameterRequest(BaseModel):
     name: str
     type: str

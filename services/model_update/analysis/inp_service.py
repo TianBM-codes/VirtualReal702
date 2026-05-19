@@ -2623,18 +2623,32 @@ def get_pair_node_point_result(project_id):
                 interface_key="pair_node_point_result",
             )
 
-        cursor.execute("""
-            SELECT id, measuring_point_name, x_position, y_position, z_position
-            FROM t_mt_measuring_point_info
-            WHERE project_id = %s
-            ORDER BY id
-        """, (project_id,))
-        measuring_rows = cursor.fetchall()
-        test_node_lookup = {
-            str(row["measuring_point_name"]): _coord_key([row["x_position"], row["y_position"], row["z_position"]])
-            for row in measuring_rows
-            if row.get("measuring_point_name") not in (None, "")
-        }
+        if _is_modal_unv_project(int(project_id), cursor=cursor):
+            cursor.execute("""
+                SELECT CAST(nid AS CHAR) AS test_node_id, x AS x_position, y AS y_position, z AS z_position
+                FROM t_mt_py_test_node
+                WHERE pid = %s
+                ORDER BY nid
+            """, (project_id,))
+            test_node_rows = cursor.fetchall()
+            test_node_lookup = {
+                str(row["test_node_id"]): _coord_key([row["x_position"], row["y_position"], row["z_position"]])
+                for row in test_node_rows
+                if row.get("test_node_id") not in (None, "")
+            }
+        else:
+            cursor.execute("""
+                SELECT id, measuring_point_name, x_position, y_position, z_position
+                FROM t_mt_measuring_point_info
+                WHERE project_id = %s
+                ORDER BY id
+            """, (project_id,))
+            measuring_rows = cursor.fetchall()
+            test_node_lookup = {
+                str(row["measuring_point_name"]): _coord_key([row["x_position"], row["y_position"], row["z_position"]])
+                for row in measuring_rows
+                if row.get("measuring_point_name") not in (None, "")
+            }
 
         fem_coord_lookup = {}
         for inst_name, label, coord in zip(cache["point_instances"], cache["point_labels"], cache["point_coords"]):
