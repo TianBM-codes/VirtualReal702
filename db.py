@@ -406,6 +406,43 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='已选修正参数表';
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_sol200_parameter_config (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        parameter_no INT NOT NULL COMMENT '参数序号',
+        parameter_name VARCHAR(200) NOT NULL COMMENT '参数名称',
+        parameter_type VARCHAR(32) NOT NULL COMMENT '参数类型',
+        property_id BIGINT NULL COMMENT '属性ID',
+        material_id BIGINT NULL COMMENT '材料ID',
+        element_id BIGINT NULL COMMENT '单元ID',
+        initial_value DOUBLE NOT NULL COMMENT '初始值',
+        lower_bound DOUBLE NULL COMMENT '下界',
+        upper_bound DOUBLE NULL COMMENT '上界',
+        extra_json JSON NULL COMMENT '扩展信息',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_sol200_parameter_name (pid, parameter_name),
+        UNIQUE KEY uk_pid_sol200_parameter_no (pid, parameter_no),
+        KEY idx_pid_sol200_parameter_type (pid, parameter_type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SOL200 参数配置表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_sol200_response_config (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        response_no INT NOT NULL COMMENT '响应序号',
+        response_name VARCHAR(200) NOT NULL COMMENT '响应名称',
+        response_type VARCHAR(32) NOT NULL COMMENT '响应类型',
+        mode_number INT NULL COMMENT '模态阶次',
+        extra_json JSON NULL COMMENT '扩展信息',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_sol200_response_name (pid, response_name),
+        UNIQUE KEY uk_pid_sol200_response_no (pid, response_no),
+        KEY idx_pid_sol200_response_type (pid, response_type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SOL200 响应配置表';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_definition (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
@@ -1183,9 +1220,11 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_static_shape_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_quantity_set_capability WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_selected_parameter WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_sol200_parameter_config WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_target WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_sol200_response_config WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_octree_cache WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_match WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_match WHERE pid = {pid}")
