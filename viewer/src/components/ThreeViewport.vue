@@ -2072,14 +2072,22 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
 }
 
 function stopModalAnim() {
+  // 必须在 _stopModalAnim() 之前保存状态：
+  // _stopModalAnim() 会把 _modalPreAnimPositions 重置为 {}，之后就读不到快照了
+  const wasActive = _modalAnimActive
+  const snapshot  = _modalPreAnimPositions   // JS 引用，_stopModalAnim 重赋值后此引用仍指向旧对象
   _stopModalAnim()
-  // 恢复动画启动前的坐标状态（可能是 Apply 后的变形，或未变形的原始状态）
+
+  // 如果根本没在跑模态动画，不碰坐标——避免把静力帧动画 stop 后的变形状态错误地还原掉
+  if (!wasActive) return
+
+  // 恢复动画启动前的坐标快照（可能是 Apply 后的变形状态，或未变形的原始状态）
   // shader 模式：step2 把 chunk position 重置为 origPositions，shader 只在 GPU 侧位移
   //             恢复快照到 globalPositions 即可（chunk position 本来就是 origPositions，不用动）
   // precompute 模式：loop 直接修改了 chunk position，必须显式散射快照坐标回去
   for (const inst of Object.keys(store.instanceMeshes)) {
     const im      = store.instanceMeshes[inst]
-    const restore = _modalPreAnimPositions[inst] ?? origPositions[inst]
+    const restore = snapshot[inst] ?? origPositions[inst]
     if (!im || !restore) continue
     im.globalPositions.set(restore)
     for (const c of im.chunks) {
