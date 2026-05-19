@@ -2074,7 +2074,8 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
 function stopModalAnim() {
   // 必须在 _stopModalAnim() 之前保存状态：
   // _stopModalAnim() 会把 _modalPreAnimPositions 重置为 {}，之后就读不到快照了
-  const wasActive = _modalAnimActive
+  // shader 模式用 _modalAnimRafId 标志运行中；precompute 模式用 _modalAnimActive
+  const wasActive = _modalAnimActive || _modalAnimRafId !== null
   const snapshot  = _modalPreAnimPositions   // JS 引用，_stopModalAnim 重赋值后此引用仍指向旧对象
   _stopModalAnim()
 
