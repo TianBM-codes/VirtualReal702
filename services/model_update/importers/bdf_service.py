@@ -302,7 +302,7 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
         # 9. 分层属性表（PCOMP / Layered）
         layered_sql = """
             INSERT INTO t_mt_py_fem_layered_property
-            (Id, pid, Offset, Theta, GE, NSM, Layers)
+            (Id, pid, Offset_L, Theta, GE, NSM, Layers)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             """
         for prop_id, offset, theta, ge, nsm, layers in bdf_info.get("layered_properties", []):

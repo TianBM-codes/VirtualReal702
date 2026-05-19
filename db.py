@@ -252,7 +252,7 @@ CREATE_TABLE_SQL_LIST = [
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_layered_property (
         Id INT NOT NULL COMMENT 'primary key',
         pid BIGINT NOT NULL COMMENT 'project id',
-        Offset DOUBLE NULL COMMENT 'Offset',
+        Offset_L DOUBLE NULL COMMENT 'Offset',
         Theta DOUBLE NULL COMMENT 'Theta',
         GE DOUBLE NULL COMMENT 'GE',
         NSM DOUBLE NULL COMMENT 'NSM',
@@ -1174,6 +1174,37 @@ def ensure_tables_exist():
             "upper_bound",
             "upper_bound DOUBLE NULL COMMENT '上界'",
         )
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            LIMIT 1
+            """,
+            (DB_CONFIG["database"], "t_mt_py_fem_layered_property", "Offset"),
+        )
+        layered_offset_exists = cursor.fetchone() is not None
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            LIMIT 1
+            """,
+            (DB_CONFIG["database"], "t_mt_py_fem_layered_property", "Offset_L"),
+        )
+        layered_offset_l_exists = cursor.fetchone() is not None
+        if layered_offset_exists and not layered_offset_l_exists:
+            cursor.execute(
+                """
+                ALTER TABLE t_mt_py_fem_layered_property
+                CHANGE COLUMN `Offset` Offset_L DOUBLE NULL COMMENT 'Offset'
+                """
+            )
         conn.commit()
         _tables_ensured = True
     except Exception:

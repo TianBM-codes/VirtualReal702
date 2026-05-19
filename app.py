@@ -8,8 +8,9 @@ from fastapi import Request
 from src.l3.main import app
 
 from webapi.routes import router as model_update_router
-from webapi.common import success_response
+from webapi.common import error_response, server_error, success_response
 from src.modal_service.routes import router as modal_router
+from src.l3.core.errors import AppError
 from services.model_update.analysis.inp_service import (
     build_fe_response_catalog,
     compute_modal_correlation,
@@ -107,159 +108,211 @@ async def log_request_timing(request: Request, call_next):
     return response
 
 
+def _legacy_error_response(exc: Exception):
+    if isinstance(exc, AppError):
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    app_exc = server_error(exc)
+    return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
 @app.post("/match/dofs")
 async def match_dofs_api(request: Request):
-    body = await request.json()
-    result = match_test_dofs(
-        project_id=int(body["project_id"]),
-        overwrite=bool(body.get("overwrite", True)),
-        min_match_score=body.get("min_match_score"),
-    )
-    return success_response(result, "dof match success")
+    try:
+        body = await request.json()
+        result = match_test_dofs(
+            project_id=int(body["project_id"]),
+            overwrite=bool(body.get("overwrite", True)),
+            min_match_score=body.get("min_match_score"),
+        )
+        return success_response(result, "dof match success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/match/dofs/query")
 async def get_dofs_api(request: Request):
-    body = await request.json()
-    result = get_dof_matches(int(body["project_id"]))
-    return success_response(result, "dof match query success")
+    try:
+        body = await request.json()
+        result = get_dof_matches(int(body["project_id"]))
+        return success_response(result, "dof match query success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/catalog/response/build")
 async def build_response_catalog_api(request: Request):
-    body = await request.json()
-    result = build_fe_response_catalog(
-        project_id=int(body["project_id"]),
-        overwrite=bool(body.get("overwrite", True)),
-        include_test_modes=bool(body.get("include_test_modes", True)),
-        include_node_dofs=bool(body.get("include_node_dofs", True)),
-    )
-    return success_response(result, "response catalog build success")
+    try:
+        body = await request.json()
+        result = build_fe_response_catalog(
+            project_id=int(body["project_id"]),
+            overwrite=bool(body.get("overwrite", True)),
+            include_test_modes=bool(body.get("include_test_modes", True)),
+            include_node_dofs=bool(body.get("include_node_dofs", True)),
+        )
+        return success_response(result, "response catalog build success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/catalog/response")
 async def get_response_catalog_api(request: Request):
-    body = await request.json()
-    result = get_fe_response_catalog(int(body["project_id"]))
-    return success_response(result, "response catalog query success")
+    try:
+        body = await request.json()
+        result = get_fe_response_catalog(int(body["project_id"]))
+        return success_response(result, "response catalog query success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/import/fem/modal")
 async def import_fem_modal_api(request: Request):
-    body = await request.json()
-    result = import_fe_modal_results(
-        project_id=int(body["project_id"]),
-        overwrite=bool(body.get("overwrite", True)),
-        file_path=body.get("file_path"),
-        modes=body.get("modes"),
-    )
-    return success_response(result, "fem modal import success")
+    try:
+        body = await request.json()
+        result = import_fe_modal_results(
+            project_id=int(body["project_id"]),
+            overwrite=bool(body.get("overwrite", True)),
+            file_path=body.get("file_path"),
+            modes=body.get("modes"),
+        )
+        return success_response(result, "fem modal import success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/import/fem/modal/query")
 async def get_fem_modal_api(request: Request):
-    body = await request.json()
-    result = get_fe_modal_results(int(body["project_id"]))
-    return success_response(result, "fem modal query success")
+    try:
+        body = await request.json()
+        result = get_fe_modal_results(int(body["project_id"]))
+        return success_response(result, "fem modal query success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/import/fem/static")
 async def import_fem_static_api(request: Request):
-    body = await request.json()
-    result = import_fe_static_results(
-        project_id=int(body["project_id"]),
-        overwrite=bool(body.get("overwrite", True)),
-        file_path=body.get("file_path"),
-        rows=body.get("rows"),
-        load_case_no=int(body.get("load_case_no", 1)),
-        instance_name=body.get("instance_name"),
-        part_name=body.get("part_name"),
-    )
-    return success_response(result, "fem static import success")
+    try:
+        body = await request.json()
+        result = import_fe_static_results(
+            project_id=int(body["project_id"]),
+            overwrite=bool(body.get("overwrite", True)),
+            file_path=body.get("file_path"),
+            rows=body.get("rows"),
+            load_case_no=int(body.get("load_case_no", 1)),
+            instance_name=body.get("instance_name"),
+            part_name=body.get("part_name"),
+        )
+        return success_response(result, "fem static import success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/import/fem/static/query")
 async def get_fem_static_api(request: Request):
-    body = await request.json()
-    result = get_fe_static_results(
-        int(body["project_id"]),
-        load_case_no=body.get("load_case_no"),
-    )
-    return success_response(result, "fem static query success")
+    try:
+        body = await request.json()
+        result = get_fe_static_results(
+            int(body["project_id"]),
+            load_case_no=body.get("load_case_no"),
+        )
+        return success_response(result, "fem static query success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/correlation/modal/compute")
 async def compute_modal_correlation_api(request: Request):
-    body = await request.json()
-    result = compute_modal_correlation(
-        project_id=int(body["project_id"]),
-        overwrite=bool(body.get("overwrite", True)),
-    )
-    return success_response(result, "modal correlation success")
+    try:
+        body = await request.json()
+        result = compute_modal_correlation(
+            project_id=int(body["project_id"]),
+            overwrite=bool(body.get("overwrite", True)),
+        )
+        return success_response(result, "modal correlation success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/correlation/modal")
 async def get_modal_correlation_api(request: Request):
-    body = await request.json()
-    result = get_modal_correlation_matrix_payload(int(body["project_id"]))
-    return success_response(result, "modal correlation matrix query success")
+    try:
+        body = await request.json()
+        result = get_modal_correlation_matrix_payload(int(body["project_id"]))
+        return success_response(result, "modal correlation matrix query success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/correlation/modal/matrix")
 async def get_modal_correlation_matrix_api(request: Request):
-    body = await request.json()
-    result = get_modal_correlation_matrix_payload(int(body["project_id"]))
-    return success_response(result, "modal correlation matrix query success")
+    try:
+        body = await request.json()
+        result = get_modal_correlation_matrix_payload(int(body["project_id"]))
+        return success_response(result, "modal correlation matrix query success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/correlation/modal/table")
 async def get_modal_correlation_table_api(request: Request):
-    body = await request.json()
-    result = get_modal_correlation_table_payload(int(body["project_id"]))
-    return success_response(result, "modal correlation table query success")
+    try:
+        body = await request.json()
+        result = get_modal_correlation_table_payload(int(body["project_id"]))
+        return success_response(result, "modal correlation table query success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/correlation/modal/match/preview")
 async def preview_modal_match_api(request: Request):
-    body = await request.json()
-    result = preview_modal_match(
-        int(body["project_id"]),
-        mac_threshold=float(body.get("mac_threshold", 0.7)),
-        max_candidates_per_mode=int(body.get("max_candidates_per_mode", 3)),
-        max_freq_error_ratio=(
-            None if body.get("max_freq_error_ratio") is None
-            else float(body.get("max_freq_error_ratio"))
-        ),
-    )
-    return {"ok": True, "message": "modal match preview success", "data": result}
+    try:
+        body = await request.json()
+        result = preview_modal_match(
+            int(body["project_id"]),
+            mac_threshold=float(body.get("mac_threshold", 0.7)),
+            max_candidates_per_mode=int(body.get("max_candidates_per_mode", 3)),
+            max_freq_error_ratio=(
+                None if body.get("max_freq_error_ratio") is None
+                else float(body.get("max_freq_error_ratio"))
+            ),
+        )
+        return success_response(result, "modal match preview success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/correlation/modal/match")
 async def match_modal_api(request: Request):
-    body = await request.json()
-    result = match_modal_modes(
-        int(body["project_id"]),
-        mac_threshold=float(body.get("mac_threshold", 0.7)),
-        max_freq_error_ratio=(
-            None if body.get("max_freq_error_ratio") is None
-            else float(body.get("max_freq_error_ratio"))
-        ),
-        method=str(body.get("method", "greedy")),
-    )
-    return {"ok": True, "message": "modal match success", "data": result}
+    try:
+        body = await request.json()
+        result = match_modal_modes(
+            int(body["project_id"]),
+            mac_threshold=float(body.get("mac_threshold", 0.7)),
+            max_freq_error_ratio=(
+                None if body.get("max_freq_error_ratio") is None
+                else float(body.get("max_freq_error_ratio"))
+            ),
+            method=str(body.get("method", "greedy")),
+        )
+        return success_response(result, "modal match success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 @app.post("/correlation/static/compute")
 async def compute_static_correlation_api(request: Request):
-    body = await request.json()
-    result = evaluate_static_correlation(
-        project_id=int(body["project_id"]),
-        load_case_no=body.get("load_case_no"),
-        result_no=body.get("result_no"),
-        components=body.get("components"),
-        include_rotations=bool(body.get("include_rotations", False)),
-    )
-    return success_response(result, "static correlation success")
+    try:
+        body = await request.json()
+        result = evaluate_static_correlation(
+            project_id=int(body["project_id"]),
+            load_case_no=body.get("load_case_no"),
+            result_no=body.get("result_no"),
+            components=body.get("components"),
+            include_rotations=bool(body.get("include_rotations", False)),
+        )
+        return success_response(result, "static correlation success")
+    except Exception as exc:
+        return _legacy_error_response(exc)
 
 
 if __name__ == "__main__":

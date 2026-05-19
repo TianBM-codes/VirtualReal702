@@ -149,20 +149,25 @@ def error_response(
     error_code: str = "INTERNAL_ERROR",
     details: dict = None,
 ):
-    # Use JSONResponse so FastAPI preserves the requested HTTP status code
-    # together with the shared error payload structure.
+    # Model-update APIs now expose only two business codes:
+    # 200 for success and 500 for any failure. Keep the original status_code
+    # only in details if callers still need to inspect the original cause.
     resolved_message = _translate_error_message(message)
+    resolved_details = dict(details or {})
+    original_status_code = int(status_code)
+    if original_status_code != 500:
+        resolved_details.setdefault("original_status_code", original_status_code)
     return JSONResponse(
-        status_code=int(status_code),
+        status_code=500,
         content={
             "ok": False,
-            "code": int(status_code),
+            "code": 500,
             "message": resolved_message,
             "data": None,
             "error": {
                 "code": str(error_code),
                 "message": resolved_message,
-                "details": details or {},
+                "details": resolved_details,
             },
         },
     )
