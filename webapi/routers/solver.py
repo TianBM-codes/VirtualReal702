@@ -675,6 +675,26 @@ async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
             mode_numbers=body.mode_numbers,
             preview_node_limit=body.preview_node_limit,
         )
+        if body.project_id is not None:
+            store_kwargs = {
+                "project_id": body.project_id,
+                "op2_path": body.op2_path,
+                "bdf_path": body.bdf_path,
+                "subcase_id": body.subcase_id,
+                "mode_numbers": body.mode_numbers,
+                "overwrite": body.overwrite,
+                "instance_name": body.instance_name,
+                "part_name": body.part_name,
+            }
+            if body.async_submit:
+                data["store"] = submit_background_task(
+                    task_type="import.op2.modal.store",
+                    fn=_store_op2_modal_job,
+                    kwargs=store_kwargs,
+                    request_payload=model_to_dict(body),
+                )
+            else:
+                data["store"] = _store_op2_modal_job(**store_kwargs)
         return success_response(data, "OP2 模态预览成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)

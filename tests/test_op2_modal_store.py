@@ -1,7 +1,7 @@
 import numpy as np
+import pytest
 
 from services.model_update.importers import op2_service
-from webapi.routers import solver
 
 
 class _FakeEigenData:
@@ -58,6 +58,9 @@ def test_build_modal_import_payload_keeps_single_subcase_default(monkeypatch):
 
 
 def test_store_job_uses_all_subcases_when_subcase_id_is_omitted(monkeypatch):
+    pytest.importorskip("fastapi")
+    from webapi.routers import solver
+
     captured = {}
 
     def fake_build_modal_import_payload(**kwargs):
@@ -87,3 +90,67 @@ def test_store_job_uses_all_subcases_when_subcase_id_is_omitted(monkeypatch):
     )
 
     assert captured["all_subcases"] is True
+
+
+def test_preview_route_auto_stores_modal_results_when_project_id_is_provided(monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from webapi.routers import solver
+
+    preview_calls = {}
+    store_calls = {}
+
+    def fake_preview_op2_modal(**kwargs):
+        preview_calls.update(kwargs)
+        return {
+            "workflow": "op2_modal_preview",
+            "source": {"op2_path": kwargs["op2_path"]},
+            "subcases": [],
+            "warnings": [],
+        }
+
+    def fake_store_op2_modal_job(**kwargs):
+        store_calls.update(kwargs)
+        return {
+            "project_id": kwargs["project_id"],
+            "mode_count": 8,
+            "row_count": 1600,
+        }
+
+    monkeypatch.setattr(solver, "preview_op2_modal", fake_preview_op2_modal)
+    monkeypatch.setattr(solver, "_store_op2_modal_job", fake_store_op2_modal_job)
+
+    app = FastAPI()
+    app.include_router(solver.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/import/op2/modal/preview",
+        json={
+            "project_id": 101,
+            "op2_path": "D:/demo/model.op2",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["code"] == 200
+    assert payload["data"]["workflow"] == "op2_modal_preview"
+    assert payload["data"]["store"] == {
+        "project_id": 101,
+        "mode_count": 8,
+        "row_count": 1600,
+    }
+    assert preview_calls["op2_path"] == "D:/demo/model.op2"
+    assert preview_calls["mode_numbers"] is None
+    assert store_calls == {
+        "project_id": 101,
+        "op2_path": "D:/demo/model.op2",
+        "bdf_path": None,
+        "subcase_id": None,
+        "mode_numbers": None,
+        "overwrite": True,
+        "instance_name": None,
+        "part_name": None,
+    }

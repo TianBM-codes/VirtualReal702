@@ -666,11 +666,16 @@ class NastranSol200RunRequest(BaseModel):
 
 
 class Op2ModalPreviewRequest(BaseModel):
+    project_id: Optional[int] = None
     op2_path: str
     bdf_path: Optional[str] = None
     subcase_id: Optional[int] = None
     mode_numbers: Optional[List[int]] = None
     preview_node_limit: int = 5
+    overwrite: bool = True
+    instance_name: Optional[str] = None
+    part_name: Optional[str] = None
+    async_submit: bool = False
 
 
 class Op2ModalStoreRequest(BaseModel):
