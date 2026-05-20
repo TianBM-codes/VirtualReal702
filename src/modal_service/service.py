@@ -211,7 +211,7 @@ def get_box_max_scalar_size(position):
 
 # ── 对外接口（被 router 调用）────────────────────────────────────────────
 
-def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficient: float, component: str="usum", animation: bool=False) -> dict:
+def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficient: float, component: str="usum", animation: bool=False, flip: bool=False) -> dict:
     """
     模型接口: 返回原始/变形后坐标 + 选定分量幅值 + 云图数据（如果 animation=True）。
     """
@@ -230,6 +230,9 @@ def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficien
     db_shape = _db_node_shapes(project_id, ids, order)
     real = db_shape["real"] if db_shape is not None else []
     imag = db_shape["imag"] if db_shape is not None else []
+    if flip and real:
+        real = [-v for v in real]
+        imag = [-v for v in imag]
 
     max_scalar_size = get_box_max_scalar_size(pos)
     obj = {
@@ -275,7 +278,7 @@ def get_modes_select(model_id: str) -> list:
     return _db_frequency(model_id)
 
 
-def get_animation(project_id: str, order: int) -> dict:
+def get_animation(project_id: str, order: int, flip: bool=False) -> dict:
     """
     #5 动画数据。order=0 返回全零数组（无位移）。
     返回实部和虚部 flat 数组，前端自行做 cos(ωt)/sin(ωt) 动画。
@@ -294,11 +297,16 @@ def get_animation(project_id: str, order: int) -> dict:
     db_shape = _db_node_shapes(project_id, ids, order)
     if db_shape is None:
         return {"real": [], "imag": []}
-    return {"real": db_shape["real"], "imag": db_shape["imag"]}
+    real = db_shape["real"]
+    imag = db_shape["imag"]
+    if flip and real:
+        real = [-v for v in real]
+        imag = [-v for v in imag]
+    return {"real": real, "imag": imag}
 
 
 def get_colormap(model_id: str, order: int, component: str,
-                 max_scalar_size: float, coefficient: float) -> dict:
+                 max_scalar_size: float, coefficient: float, flip: bool=False) -> dict:
     """
     #6 云图数据。
 
@@ -316,4 +324,4 @@ def get_colormap(model_id: str, order: int, component: str,
     }
     comp = _comp_map.get(component, "usum")
 
-    return get_geometry(model_id, order, max_scalar_size, coefficient, component=comp, animation=False)
+    return get_geometry(model_id, order, max_scalar_size, coefficient, component=comp, animation=False, flip=flip)

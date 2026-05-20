@@ -36,6 +36,7 @@ class ModelSelectRequest(_ProjectRequest):
 
 class AnimationRequest(_ProjectRequest):
     order: Optional[int] = 0
+    flip: bool = False
 
     @field_validator("order", mode="before")
     @classmethod
@@ -70,6 +71,7 @@ async def mesh_geometry(req: GeometryRequest):
             req.coefficient,
             req.component,
             req.animation,
+            req.flip,
         )
     )
 
@@ -83,7 +85,7 @@ async def get_modes(req: ModelSelectRequest):
 @router.post("/animation")
 async def get_animation(req: AnimationRequest):
     """返回实部/虚部 flat 数组，前端可据此做动画。"""
-    return ok(service.get_animation(req.project_id, req.order))
+    return ok(service.get_animation(req.project_id, req.order, req.flip))
 
 
 @router.post("/colormap")
@@ -96,5 +98,6 @@ async def get_colormap(req: ColormapRequest):
             req.component,
             req.max_scalar_size,
             req.coefficient,
+            req.flip,
         )
     )
