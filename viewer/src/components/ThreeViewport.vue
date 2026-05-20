@@ -1338,7 +1338,7 @@ async function loadRegionHighlight(scheme, regions, types) {
     const threeColor = new THREE.Color(r, g, b)
 
     for (const type of typeList) {
-      const { endpoint, linesMap, opacity } = TYPE_CFG[type] ?? {}
+      const { endpoint, linesMap, vtxIdxs, opacity } = TYPE_CFG[type] ?? {}
       if (!endpoint) continue
 
       await Promise.all(instNames.map(async instName => {
