@@ -49,8 +49,10 @@ const meshEdgeVtxIdxs    = {}  // instName → Uint32Array [E*2]  vertex indices
 const featureEdgeVtxIdxs = {}
 
 // ── Region highlight lines (separate from global edge lines) ──────────────
-const regionMeshEdgesLines = {}   // instName → LineSegments
-const regionOutlineLines   = {}   // instName → LineSegments
+const regionMeshEdgesLines  = {}   // `${instName}__${region}` → LineSegments
+const regionOutlineLines    = {}   // `${instName}__${region}` → LineSegments
+const regionMeshEdgeVtxIdxs = {}   // `${instName}__${region}` → Uint32Array  for deform sync
+const regionOutlineVtxIdxs  = {}   // `${instName}__${region}` → Uint32Array  for deform sync
 
 // ── Line elements (beam / truss) ──────────────────────────────────────────
 const lineMeshes     = {}   // instName → LineSegments (beam/truss)
@@ -877,8 +879,8 @@ async function loadGeometry(instances) {
   // Dispose old
   for (const [k, l] of Object.entries(meshEdgesLines))    { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete meshEdgesLines[k];    delete meshEdgeVtxIdxs[k] }
   for (const [k, l] of Object.entries(featureEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete featureEdgesLines[k]; delete featureEdgeVtxIdxs[k] }
-  for (const [k, l] of Object.entries(regionMeshEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionMeshEdgesLines[k] }
-  for (const [k, l] of Object.entries(regionOutlineLines))   { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionOutlineLines[k] }
+  for (const [k, l] of Object.entries(regionMeshEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionMeshEdgesLines[k]; delete regionMeshEdgeVtxIdxs[k] }
+  for (const [k, l] of Object.entries(regionOutlineLines))   { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionOutlineLines[k];   delete regionOutlineVtxIdxs[k] }
   for (const [k, l] of Object.entries(lineMeshes))           { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete lineMeshes[k] }
   for (const [k, p] of Object.entries(pointMeshes))          { modelGroup.remove(p); p.geometry.dispose(); p.material.dispose(); delete pointMeshes[k] }
   for (const [k, l] of Object.entries(couplingMeshes))       { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete couplingMeshes[k] }
@@ -1081,6 +1083,24 @@ function _syncEdgesForInst(instName, edgeLines, edgeVtxIdxs) {
     dst[i*3]=src[vi*3]; dst[i*3+1]=src[vi*3+1]; dst[i*3+2]=src[vi*3+2]
   }
   line.geometry.attributes.position.needsUpdate = true
+}
+
+// Sync region highlight lines for one instance (keys are `${instName}__${region}`).
+function _syncRegionEdgesForInst(instName, edgeLines, edgeVtxIdxs) {
+  const im = store.instanceMeshes[instName]; if (!im) return
+  const prefix = instName + '__'
+  for (const key of Object.keys(edgeLines)) {
+    if (!key.startsWith(prefix)) continue
+    const line = edgeLines[key]; if (!line) continue
+    const idxs = edgeVtxIdxs[key]; if (!idxs) continue
+    const src = im.globalPositions
+    const dst = line.geometry.attributes.position.array
+    for (let i = 0; i < idxs.length; i++) {
+      const vi = idxs[i]
+      dst[i*3]=src[vi*3]; dst[i*3+1]=src[vi*3+1]; dst[i*3+2]=src[vi*3+2]
+    }
+    line.geometry.attributes.position.needsUpdate = true
+  }
 }
 
 // ── Load Edges ────────────────────────────────────────────────────────────
@@ -1293,14 +1313,15 @@ async function loadRegionHighlight(scheme, regions, types) {
   if (instNames.length === 0) { store.setStatus('Load geometry first', 'err'); return }
 
   const TYPE_CFG = {
-    mesh:    { endpoint: 'region-mesh-edges', linesMap: regionMeshEdgesLines, opacity: 0.55 },
-    outline: { endpoint: 'region-outline',    linesMap: regionOutlineLines,   opacity: 1.0  },
+    mesh:    { endpoint: 'region-mesh-edges', linesMap: regionMeshEdgesLines, vtxIdxs: regionMeshEdgeVtxIdxs, opacity: 0.55 },
+    outline: { endpoint: 'region-outline',    linesMap: regionOutlineLines,   vtxIdxs: regionOutlineVtxIdxs,  opacity: 1.0  },
   }
 
   // Clear all previous region highlights
   for (const cfg of Object.values(TYPE_CFG)) {
     for (const [k, l] of Object.entries(cfg.linesMap)) {
-      modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete cfg.linesMap[k]
+      modelGroup.remove(l); l.geometry.dispose(); l.material.dispose()
+      delete cfg.linesMap[k]; delete cfg.vtxIdxs[k]
     }
   }
 
@@ -1341,7 +1362,11 @@ async function loadRegionHighlight(scheme, regions, types) {
           const line = new THREE.LineSegments(geo, mat)
           line.renderOrder = 1
           modelGroup.add(line)
-          linesMap[`${instName}__${region}`] = line
+          const key = `${instName}__${region}`
+          linesMap[key] = line
+          // Build vertex index so these lines can follow deformation
+          const im = store.instanceMeshes[instName]
+          if (im) vtxIdxs[key] = _buildEdgeVtxIndex(edgePosArr, im.globalPositions)
           totalEdges += edgePosArr.length / 6
         } catch { /* instance has no data for this region */ }
       }))
@@ -1353,9 +1378,10 @@ async function loadRegionHighlight(scheme, regions, types) {
 }
 
 function clearRegionHighlight() {
-  for (const linesMap of [regionMeshEdgesLines, regionOutlineLines]) {
+  for (const [linesMap, idxsMap] of [[regionMeshEdgesLines, regionMeshEdgeVtxIdxs], [regionOutlineLines, regionOutlineVtxIdxs]]) {
     for (const [k, l] of Object.entries(linesMap)) {
-      modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete linesMap[k]
+      modelGroup.remove(l); l.geometry.dispose(); l.material.dispose()
+      delete linesMap[k]; delete idxsMap[k]
     }
   }
   store.setStatus('Region highlight cleared', 'ok')
@@ -1766,6 +1792,8 @@ async function _applyDeformPositions(step, frameIdx, scale) {
 
     _syncEdgesForInst(instName, meshEdgesLines, meshEdgeVtxIdxs)
     _syncEdgesForInst(instName, featureEdgesLines, featureEdgeVtxIdxs)
+    _syncRegionEdgesForInst(instName, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
+    _syncRegionEdgesForInst(instName, regionOutlineLines, regionOutlineVtxIdxs)
   }))
   requestRender()
 }
@@ -1816,6 +1844,8 @@ function resetDeform() {
     }
     _syncEdgesForInst(instName, meshEdgesLines, meshEdgeVtxIdxs)
     _syncEdgesForInst(instName, featureEdgesLines, featureEdgeVtxIdxs)
+    _syncRegionEdgesForInst(instName, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
+    _syncRegionEdgesForInst(instName, regionOutlineLines, regionOutlineVtxIdxs)
   }
   _rebuildBvhAll()
   store.deformScale = 1.0
@@ -2003,6 +2033,8 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
         for (let i = 0; i < Nv3; i++) im.globalPositions[i] = orig[i] + disp[i] * s
         _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
         _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+        _syncRegionEdgesForInst(inst, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
+        _syncRegionEdgesForInst(inst, regionOutlineLines, regionOutlineVtxIdxs)
       }
 
       requestRender()
@@ -2062,6 +2094,8 @@ async function startModalAnim({ step, frameIdx, scale, mode, nFrames, speed }) {
         }
         _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
         _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+        _syncRegionEdgesForInst(inst, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
+        _syncRegionEdgesForInst(inst, regionOutlineLines, regionOutlineVtxIdxs)
       }
       requestRender()
       framePtr++
@@ -2105,6 +2139,8 @@ function stopModalAnim() {
     }
     _syncEdgesForInst(inst, meshEdgesLines, meshEdgeVtxIdxs)
     _syncEdgesForInst(inst, featureEdgesLines, featureEdgeVtxIdxs)
+    _syncRegionEdgesForInst(inst, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
+    _syncRegionEdgesForInst(inst, regionOutlineLines, regionOutlineVtxIdxs)
   }
   _rebuildBvhAll()
   requestRender()
