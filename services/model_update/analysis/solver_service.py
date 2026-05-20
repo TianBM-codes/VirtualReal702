@@ -926,7 +926,7 @@ def run_nastran_sol103_and_store_modal_results(
     resolved_op2_path = os.path.abspath(str(op2_files[0]))
     payload = build_modal_import_payload(
         op2_path=resolved_op2_path,
-        bdf_path=input_bdf,
+        bdf_path=solver_payload.get("output_bdf") or input_bdf,
         subcase_id=subcase_id,
         mode_numbers=mode_numbers,
         instance_name=instance_name,

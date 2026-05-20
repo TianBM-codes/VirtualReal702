@@ -5,6 +5,7 @@ from services.model_update.analysis.solver_service import (
     _build_nastran_command,
     run_abaqus_adjoint_job,
     run_abaqus_sensitivity_job,
+    run_nastran_sol103_and_store_modal_results,
     run_nastran_sol103_job,
 )
 
@@ -165,3 +166,41 @@ def test_build_nastran_command_keeps_relative_bdf_name():
         "scr=yes",
         "old=no",
     ]
+
+
+def test_run_nastran_sol103_and_store_modal_results_uses_generated_bdf_for_op2_import(monkeypatch):
+    from services.model_update.analysis import solver_service
+
+    captured = {}
+
+    monkeypatch.setattr(
+        solver_service,
+        "run_nastran_sol103_job",
+        lambda **kwargs: {
+            "input_bdf": kwargs["input_bdf"],
+            "output_bdf": "D:/demo/model_sol103.bdf",
+            "solver": {
+                "ok": True,
+                "artifacts_summary": {"op2_files": ["D:/demo/model_sol103.op2"]},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "build_modal_import_payload",
+        lambda **kwargs: captured.update(kwargs) or {"modes": [], "warnings": []},
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.inp_service.import_fe_modal_results",
+        lambda project_id, overwrite, modes: {"project_id": project_id, "overwrite": overwrite, "mode_count": len(modes)},
+    )
+
+    result = run_nastran_sol103_and_store_modal_results(
+        project_id=9,
+        input_bdf="D:/demo/model.bdf",
+        output_bdf="D:/demo/model_sol103.bdf",
+    )
+
+    assert captured["op2_path"] == "D:/demo/model_sol103.op2"
+    assert captured["bdf_path"] == "D:/demo/model_sol103.bdf"
+    assert result["op2_path"] == "D:/demo/model_sol103.op2"

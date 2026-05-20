@@ -4924,8 +4924,8 @@ def compute_modal_correlation(project_id, overwrite=True):
 
         insert_sql = """
         INSERT INTO t_mt_py_fem_modal_correlation
-        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac, freq_test, freq_fem, freq_error_ratio, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac, freq_test, freq_fem, freq_error_ratio, flip, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             dof_pair_count = VALUES(dof_pair_count),
             dac = VALUES(dac),
@@ -4934,6 +4934,7 @@ def compute_modal_correlation(project_id, overwrite=True):
             freq_test = VALUES(freq_test),
             freq_fem = VALUES(freq_fem),
             freq_error_ratio = VALUES(freq_error_ratio),
+            flip = VALUES(flip),
             extra_json = VALUES(extra_json),
             created_at = CURRENT_TIMESTAMP
         """
@@ -4990,6 +4991,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                 if freq_test is not None and abs(freq_test) > 1e-18 and freq_fem is not None:
                     freq_error_ratio = float((freq_fem - freq_test) / freq_test)
 
+                flip = bool(metrics["scale_real"] < 0.0)
                 item = {
                     "test_mode_no": int(test_mode_no),
                     "fem_mode_no": int(fem_mode_no),
@@ -5000,6 +5002,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                     "freq_test": freq_test,
                     "freq_fem": freq_fem,
                     "freq_error_ratio": freq_error_ratio,
+                    "flip": flip,
                     "extra_json": {
                         "scale_real": metrics["scale_real"],
                         "scale_imag": metrics["scale_imag"],
@@ -5031,6 +5034,7 @@ def compute_modal_correlation(project_id, overwrite=True):
                     item["freq_test"],
                     item["freq_fem"],
                     item["freq_error_ratio"],
+                    item["flip"],
                     _json_dumps(item["extra_json"]),
                 ))
 
@@ -5179,7 +5183,7 @@ def _load_modal_correlation_rows(project_id: int) -> List[dict]:
     try:
         cursor.execute("""
             SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac,
-                   freq_test, freq_fem, freq_error_ratio
+                   freq_test, freq_fem, freq_error_ratio, flip
             FROM t_mt_py_fem_modal_correlation
             WHERE pid = %s
             ORDER BY fem_mode_no, test_mode_no
@@ -5209,18 +5213,33 @@ def _passes_modal_match_filters(
 
 
 def _build_modal_match_row(row: dict, *, status: str, recommended: bool, rank: Optional[int] = None, subcase_name=None) -> dict:
-    if len(subcase_name) == 0:
+    if not subcase_name or len(subcase_name) == 0:
         step_name = "SUBCASE_1_TBM"
     else:
         step_name = subcase_name[-1]
     fem_mode_no = int(row["fem_mode_no"])
     test_mode_no = int(row["test_mode_no"])
-    mac = float(row["mac"]) if row.get("mac") is not None else None,
-    fem_frequency = float(row["freq_fem"]) if row.get("freq_fem") is not None else None,
-    test_frequency = float(row["freq_test"]) if row.get("freq_test") is not None else None,
+    mac = float(row["mac"]) if row.get("mac") is not None else None
+    fem_frequency = float(row["freq_fem"]) if row.get("freq_fem") is not None else None
+    test_frequency = float(row["freq_test"]) if row.get("freq_test") is not None else None
+    freq_error_ratio = float(row["freq_error_ratio"]) if row.get("freq_error_ratio") is not None else None
+    flip = bool(row.get("flip", False))
+    mac_text = f"{mac:.3f}" if mac is not None else "N/A"
+    fem_frequency_text = f"{fem_frequency:.4f}" if fem_frequency is not None else "N/A"
+    test_frequency_text = f"{test_frequency:.4f}" if test_frequency is not None else "N/A"
     return {
+        "status": status,
+        "recommended": bool(recommended),
+        "rank": int(rank) if rank is not None else None,
+        "fem_mode_no": fem_mode_no,
+        "test_mode_no": test_mode_no,
+        "mac": mac,
+        "freq_fem": fem_frequency,
+        "freq_test": test_frequency,
+        "freq_error_ratio": freq_error_ratio,
+        "flip": flip,
         "fem_step": step_name,
-        "title": f"FEA {fem_mode_no} - {fem_frequency:.4f}Hz, EMA {test_mode_no} - {test_frequency:.4f} MAC:{mac:.3f}",
+        "title": f"FEA {fem_mode_no} - {fem_frequency_text}Hz, EMA {test_mode_no} - {test_frequency_text} MAC:{mac_text}",
         "fem_frame": fem_mode_no - 1,
         "fem_field": "U",
         "fem_mode": "smooth",

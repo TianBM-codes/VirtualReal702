@@ -3,6 +3,7 @@ import numpy as np
 from services.model_update.analysis.inp_service import (
     _apply_transform,
     _best_fit_rigid_transform,
+    _build_modal_match_row,
     _compute_dac_dsf,
     _rotation_to_matrix,
 )
@@ -59,3 +60,34 @@ def test_compute_dac_dsf_complex_mac_is_phase_invariant():
     assert round(metrics["mac"], 10) == 100.0
     assert round(metrics["dac"], 10) == 100.0
     assert metrics["mac_mode"] == "complex"
+
+
+def test_build_modal_match_row_exposes_flip_and_scalar_fields():
+    row = _build_modal_match_row(
+        {
+            "fem_mode_no": 4,
+            "test_mode_no": 2,
+            "mac": 98.765,
+            "freq_fem": 12.5,
+            "freq_test": 12.0,
+            "freq_error_ratio": 0.0416667,
+            "flip": True,
+        },
+        status="matched",
+        recommended=True,
+        rank=1,
+        subcase_name=["SUBCASE_1", "SUBCASE_2"],
+    )
+
+    assert row["status"] == "matched"
+    assert row["recommended"] is True
+    assert row["rank"] == 1
+    assert row["fem_mode_no"] == 4
+    assert row["test_mode_no"] == 2
+    assert row["flip"] is True
+    assert row["mac"] == 98.765
+    assert row["freq_fem"] == 12.5
+    assert row["freq_test"] == 12.0
+    assert row["fem_step"] == "SUBCASE_2"
+    assert row["fem_frame"] == 3
+    assert "MAC:98.765" in row["title"]

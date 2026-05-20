@@ -628,6 +628,7 @@ CREATE_TABLE_SQL_LIST = [
         freq_test DOUBLE NULL COMMENT '试验频率',
         freq_fem DOUBLE NULL COMMENT '有限元频率',
         freq_error_ratio DOUBLE NULL COMMENT '频率误差比',
+        flip BOOLEAN NOT NULL DEFAULT FALSE COMMENT '是否需要相位翻转',
         extra_json JSON NULL COMMENT '扩展信息',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         PRIMARY KEY (id),
@@ -1094,6 +1095,11 @@ def ensure_tables_exist():
                 ADD COLUMN element_set VARCHAR(255) NULL COMMENT '单元集名称'
                 """
             )
+        _ensure_column(
+            "t_mt_py_fem_modal_correlation",
+            "flip",
+            "flip BOOLEAN NOT NULL DEFAULT FALSE COMMENT '是否需要相位翻转'",
+        )
         _ensure_column(
             "t_mt_py_fem_analysis_run",
             "source_kind",
