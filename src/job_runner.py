@@ -1523,10 +1523,7 @@ def main() -> None:
                 try:
                     _cleanup_result_group(ws, rg)
                     if is_http_url(src):
-                        rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
-                        ext = os.path.splitext(src.split("?")[0])[1] or ".odb"
-                        src = download_if_url(src, ws,
-                                               dest_name="{}_source{}".format(rg_safe, ext))
+                        src = download_if_url(src, ws)
                     _run_result_group(project_id, rg, src, parse_opts, ws)
                 except Exception:
                     logger.exception("Error in result_group %s", label)

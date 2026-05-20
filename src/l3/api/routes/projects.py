@@ -334,8 +334,8 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
     """
     向已有 project 追加一个 ODB 结果组。
     - 若 project 不存在 → 404
-    - 若同名 result_group 已存在且 status=error → 重置为 pending（重试）
-    - 若同名 result_group 已存在且 status=ready/running → 409
+    - 若同名 result_group 正在处理中（running）→ 409
+    - 其余情况（首次/error/ready）均允许提交，覆盖旧结果
     """
     repo = _repo()
 
@@ -349,18 +349,25 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
     display_name = body.display_name or body.result_group
     parse_options_json = json.dumps(body.parse_options) if body.parse_options else None
 
-    # Check for existing result_group
-    existing = repo.get_result_group(project_id, body.result_group)
-    if existing is not None:
-        if existing["status"] in ("ready", "running"):
-            raise ConflictError(
-                f"result_group '{body.result_group}' already exists "
-                f"with status='{existing['status']}'"
-            )
-        # status == 'error' → reset for retry
-        repo.reset_result_group_for_retry(project_id, body.result_group)
+    # 从 URL 或本地路径中提取干净的文件名（URL 需先剥离 query string）
+    if _is_http_url(body.source_path):
+        source_file = os.path.basename(urlparse(body.source_path).path) or "download"
     else:
         source_file = os.path.basename(body.source_path)
+
+    existing = repo.get_result_group(project_id, body.result_group)
+    if existing is not None:
+        if existing["status"] == "running":
+            raise ConflictError(
+                f"result_group '{body.result_group}' is currently being processed"
+            )
+        # error 或 ready → 允许覆盖重新解析
+        repo.reset_result_group_for_resubmit(
+            project_id, body.result_group,
+            body.source_path, source_file,
+            display_name, parse_options_json,
+        )
+    else:
         repo.create_result_group(
             project_id=project_id,
             result_group=body.result_group,
