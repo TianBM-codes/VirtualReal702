@@ -2880,9 +2880,9 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
                 part_name = part_lookup.get((inst_name, fem_node_label))
                 transform_payload = _json_loads(row["transform_json"]) or {}
                 for test_dof, fem_dof, direction in (
-                    ("UX", "U1", np.array([1.0, 0.0, 0.0], dtype=np.float64)),
-                    ("UY", "U2", np.array([0.0, 1.0, 0.0], dtype=np.float64)),
-                    ("UZ", "U3", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
+                        ("UX", "U1", np.array([1.0, 0.0, 0.0], dtype=np.float64)),
+                        ("UY", "U2", np.array([0.0, 1.0, 0.0], dtype=np.float64)),
+                        ("UZ", "U3", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
                 ):
                     match_score = float(dof_scores.get((test_node_id, test_dof), 0.0))
                     if match_score < score_threshold:
@@ -2978,7 +2978,7 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
         displacement_channels = [
             row for row in channel_rows
             if row.get("measure_point_id") is not None
-            and int(row["measure_point_id"]) in displacement_sensor_by_id
+               and int(row["measure_point_id"]) in displacement_sensor_by_id
         ]
         if not displacement_channels:
             raise ValueError("未找到位移传感器对应的通道方向配置")
@@ -4327,13 +4327,13 @@ def _load_measuring_point_sensor_type_map(cursor, project_id: int) -> Dict[str, 
 
 
 def _build_static_analysis_error_rows(
-    *,
-    aligned_rows,
-    component_names,
-    load_case_no: int,
-    result_no: int,
-    value_prefix: str,
-    sensor_type_map: Optional[Dict[str, Optional[int]]] = None,
+        *,
+        aligned_rows,
+        component_names,
+        load_case_no: int,
+        result_no: int,
+        value_prefix: str,
+        sensor_type_map: Optional[Dict[str, Optional[int]]] = None,
 ) -> List[dict]:
     rows: List[dict] = []
     for test_row, fem_row, _match in aligned_rows:
@@ -4351,9 +4351,9 @@ def _build_static_analysis_error_rows(
             node_value = float(node_value)
             point_value = float(point_value)
             if not _should_store_static_analysis_error_row(
-                sensor_type_id=sensor_type_id,
-                component_name=str(component_name),
-                point_value=point_value,
+                    sensor_type_id=sensor_type_id,
+                    component_name=str(component_name),
+                    point_value=point_value,
             ):
                 continue
             rows.append(
@@ -4410,13 +4410,13 @@ def _upsert_analysis_error_rows(cursor, project_id: int, rows: Sequence[dict], *
 
 
 def store_updated_static_analysis_error(
-    *,
-    project_id: int,
-    fem_rows: Sequence[dict],
-    load_case_no=None,
-    result_no=None,
-    components=None,
-    include_rotations: bool = False,
+        *,
+        project_id: int,
+        fem_rows: Sequence[dict],
+        load_case_no=None,
+        result_no=None,
+        components=None,
+        include_rotations: bool = False,
 ):
     ensure_tables_exist()
     conn = get_connection()
@@ -4502,11 +4502,11 @@ def store_updated_static_analysis_error(
 
 
 def compute_static_correlation(
-    project_id,
-    load_case_no=None,
-    result_no=None,
-    components=None,
-    include_rotations=False,
+        project_id,
+        load_case_no=None,
+        result_no=None,
+        components=None,
+        include_rotations=False,
 ):
     # Static correlation compares one chosen test static result against one FE
     # load case after resolving node alignment and the requested components.
@@ -4574,9 +4574,9 @@ def compute_static_correlation(
                 component_counts[comp_name] += 1
                 sensor_type_id = sensor_type_map.get(str(test_row["point"]))
                 if _should_store_static_analysis_error_row(
-                    sensor_type_id=sensor_type_id,
-                    component_name=str(comp_name),
-                    point_value=float(test_val),
+                        sensor_type_id=sensor_type_id,
+                        component_name=str(comp_name),
+                        point_value=float(test_val),
                 ):
                     analysis_error_rows.append(
                         {
@@ -4666,11 +4666,11 @@ def _ensure_static_node_matches(project_id: int) -> bool:
 
 
 def evaluate_static_correlation(
-    project_id,
-    load_case_no=None,
-    result_no=None,
-    components=None,
-    include_rotations=False,
+        project_id,
+        load_case_no=None,
+        result_no=None,
+        components=None,
+        include_rotations=False,
 ):
     _ensure_static_node_matches(int(project_id))
     result = compute_static_correlation(
@@ -5208,20 +5208,25 @@ def _passes_modal_match_filters(
     return abs(float(freq_error_ratio)) <= float(max_freq_error_ratio)
 
 
-def _build_modal_match_row(row: dict, *, status: str, recommended: bool, rank: Optional[int] = None) -> dict:
+def _build_modal_match_row(row: dict, *, status: str, recommended: bool, rank: Optional[int] = None, subcase_name=None) -> dict:
+    if len(subcase_name) == 0:
+        step_name = "SUBCASE_1_TBM"
+    else:
+        step_name = subcase_name[-1]
+    fem_mode_no = int(row["fem_mode_no"])
+    test_mode_no = int(row["test_mode_no"])
+    mac = float(row["mac"]) if row.get("mac") is not None else None,
+    fem_frequency = float(row["freq_fem"]) if row.get("freq_fem") is not None else None,
+    test_frequency = float(row["freq_test"]) if row.get("freq_test") is not None else None,
     return {
-        "fem_mode_no": int(row["fem_mode_no"]),
-        "test_mode_no": int(row["test_mode_no"]),
-        "mac": float(row["mac"]) if row.get("mac") is not None else None,
-        "dac": float(row["dac"]) if row.get("dac") is not None else None,
-        "dsf": float(row["dsf"]) if row.get("dsf") is not None else None,
-        "fem_frequency": float(row["freq_fem"]) if row.get("freq_fem") is not None else None,
-        "test_frequency": float(row["freq_test"]) if row.get("freq_test") is not None else None,
-        "freq_error_ratio": float(row["freq_error_ratio"]) if row.get("freq_error_ratio") is not None else None,
-        "dof_pair_count": int(row["dof_pair_count"]) if row.get("dof_pair_count") is not None else None,
-        "status": str(status),
-        "recommended": bool(recommended),
-        "rank": int(rank) if rank is not None else None,
+        "fem_step": step_name,
+        "title": f"FEA {fem_mode_no} - {fem_frequency:.4f}Hz, EMA {test_mode_no} - {test_frequency:.4f} MAC:{mac:.3f}",
+        "fem_frame": fem_mode_no - 1,
+        "fem_field": "U",
+        "fem_mode": "smooth",
+        "fem_component_idx": 2,
+        "test_component": "usum",
+        "test_order": test_mode_no
     }
 
 
@@ -5295,7 +5300,8 @@ def preview_modal_match(project_id: int, *, mac_threshold: float = 0.7,
 
 def match_modal_modes(project_id: int, *, mac_threshold: float = 0.7,
                       max_freq_error_ratio: Optional[float] = 0.2,
-                      method: str = "greedy") -> dict:
+                      method: str = "greedy",
+                      subcase_name="SUBCASE_1") -> dict:
     resolved_method = str(method or "greedy").strip().lower()
     if resolved_method != "greedy":
         raise ValidationError(
@@ -5350,6 +5356,7 @@ def match_modal_modes(project_id: int, *, mac_threshold: float = 0.7,
                 item,
                 status="matched",
                 recommended=True,
+                subcase_name=subcase_name
             )
         )
 

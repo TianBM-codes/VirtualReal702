@@ -301,6 +301,7 @@ async def preview_modal_match_api(request: Request):
 async def match_modal_api(request: Request):
     try:
         body = await request.json()
+        subcase_name = await _get_step_names_from_src(int(body["project_id"]))
         result = match_modal_modes(
             int(body["project_id"]),
             mac_threshold=float(body.get("mac_threshold", 0.7)),
@@ -309,8 +310,8 @@ async def match_modal_api(request: Request):
                 else float(body.get("max_freq_error_ratio"))
             ),
             method=str(body.get("method", "greedy")),
+            subcase_name=subcase_name
         )
-        result["step_names"] = await _get_step_names_from_src(int(body["project_id"]))
         return success_response(result, "模态匹配成功")
     except Exception as exc:
         return _legacy_error_response(exc)
