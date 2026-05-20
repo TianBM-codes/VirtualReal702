@@ -1364,13 +1364,20 @@ async function loadRegionHighlight(scheme, regions, types) {
           modelGroup.add(line)
           const key = `${instName}__${region}`
           linesMap[key] = line
-          // Build vertex index so these lines can follow deformation
+          // Always build index against original (undeformed) positions so the
+          // lookup succeeds regardless of whether deformation is currently active.
           const im = store.instanceMeshes[instName]
-          if (im) vtxIdxs[key] = _buildEdgeVtxIndex(edgePosArr, im.globalPositions)
+          if (im) vtxIdxs[key] = _buildEdgeVtxIndex(edgePosArr, origPositions[instName] ?? im.globalPositions)
           totalEdges += edgePosArr.length / 6
         } catch { /* instance has no data for this region */ }
       }))
     }
+  }
+
+  // Sync to current deformed state immediately (handles highlight-after-deform case).
+  for (const instName of instNames) {
+    _syncRegionEdgesForInst(instName, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
+    _syncRegionEdgesForInst(instName, regionOutlineLines, regionOutlineVtxIdxs)
   }
 
   store.setStatus(`Region highlight loaded: ${totalEdges} edges`, 'ok')
