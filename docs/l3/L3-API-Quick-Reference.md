@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-20（补充 BDF/OP2 project 创建、OP2 结果组 modal_import、重复上传行为变更）
+更新时间：2026-05-20（补充 BDF/OP2 project 创建、OP2 结果组 modal_import、重复上传行为变更；重写第 13 节 testMesh 接口，补充 flip 参数）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1896,17 +1896,140 @@ node mode 响应字段：
 }
 ```
 
-## 13. Modal
+## 13. 试验模态网格（testMesh）
+
+> 接口前缀：`/api/model/testMesh`。数据来源：MySQL `t_mt_py_test_*` 表（通过其他接口写入）。
+
+### 接口总览
 
 | Method | Path | 说明 |
 |---|---|---|
-| POST | `/api/modal/load` | 注册 modal JSON 文件 |
-| GET | `/api/modal/{model_id}/geometry` | 几何 |
-| GET | `/api/modal/{model_id}/modes` | 模态列表 |
-| GET | `/api/modal/{model_id}/components` | 分量列表 |
-| GET | `/api/modal/{model_id}/deformed` | 单阶变形 |
-| GET | `/api/modal/{model_id}/animation` | 实部/虚部动画数据 |
-| GET | `/api/modal/{model_id}/colormap` | 模态云图 |
+| POST | `/api/model/testMesh/geometry` | 节点坐标、单元索引、变形位置、云图数据 |
+| POST | `/api/model/testMesh/modelSelect` | 模态阶次下拉列表 |
+| POST | `/api/model/testMesh/animation` | 实部/虚部 flat 数组（供前端做谐波动画） |
+| POST | `/api/model/testMesh/colormap` | 指定分量的云图数据 |
+
+### 公共请求字段
+
+所有接口均接受 JSON 请求体，`project_id`（int 或 str）为必填，兼容旧字段名 `project`。
+
+### `POST /api/model/testMesh/geometry`
+
+请求：
+
+```json
+{
+  "project_id": 1,
+  "order": 1,
+  "max_scalar_size": 1.0,
+  "coefficient": 1.0,
+  "component": "usum",
+  "animation": false,
+  "flip": false
+}
+```
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `order` | int | `0` | 模态阶次；0 = 未变形 |
+| `max_scalar_size` | float | `1.0` | 变形幅度参考尺寸（后端自动覆盖为包围盒最大尺寸） |
+| `coefficient` | float | `1.0` | 用户放大系数 |
+| `component` | string | `"usum"` | `usum` \| `ux` \| `uy` \| `uz` |
+| `animation` | bool | `false` | `true` 时响应中附带 `real`/`imag` 数组（供动画使用） |
+| `flip` | bool | `false` | `true` 时对实部/虚部取反，翻转振型符号 |
+
+响应 `data`：
+
+```json
+{
+  "ids":           [1, 2, 3],
+  "componentData": [0.0, 0.12, 0.08],
+  "maxValue":      0.12,
+  "minValue":      0.0,
+  "scaleFactor":   45.3,
+  "originPos":     [0,0,0, 1,0,0, ...],
+  "newPos":        [0,0,0.1, 1,0,0.2, ...],
+  "elementsIndex": [0,1, 1,2, ...],
+  "real":          [],
+  "imag":          []
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `ids` | 节点 ID 列表 |
+| `componentData` | 每节点选定分量幅值（云图数据） |
+| `scaleFactor` | 后端计算的变形放大系数 = `包围盒尺寸 / coefficient / max_amplitude` |
+| `originPos` | 原始坐标 flat 数组（`[x0,y0,z0, x1,y1,z1, ...]`） |
+| `newPos` | 变形后坐标 flat 数组（`originPos + real * scaleFactor`） |
+| `elementsIndex` | 线单元连接索引 flat 数组（两节点一对） |
+| `real` / `imag` | 仅 `animation=true` 时非空，振型实部/虚部 flat 数组 |
+
+`order=0` 时返回原始未变形坐标，`componentData` 全零。
+
+### `POST /api/model/testMesh/modelSelect`
+
+请求：
+
+```json
+{ "project_id": 1 }
+```
+
+响应 `data`（下拉列表数组）：
+
+```json
+[
+  { "label": "Undeformed",      "value": 0, "show_name": "" },
+  { "label": "EMA 1 - 12.3 Hz", "value": 1, "show_name": "Mode 1" },
+  { "label": "EMA 2 - 25.7 Hz", "value": 2, "show_name": "Mode 2" }
+]
+```
+
+### `POST /api/model/testMesh/animation`
+
+返回振型实部/虚部 flat 数组，前端自行做 `cos(ωt)·real + sin(ωt)·imag` 谐波动画。
+
+请求：
+
+```json
+{
+  "project_id": 1,
+  "order": 1,
+  "flip": false
+}
+```
+
+响应 `data`：
+
+```json
+{
+  "real": [0.0, 0.01, -0.02, ...],
+  "imag": [0.0, 0.0,  0.0,  ...]
+}
+```
+
+`order=0` 时返回全零数组。`flip=true` 时实部/虚部均取反。
+
+### `POST /api/model/testMesh/colormap`
+
+请求：
+
+```json
+{
+  "project_id": 1,
+  "order": 1,
+  "component": "usum",
+  "max_scalar_size": 1.0,
+  "coefficient": 1.0,
+  "flip": false
+}
+```
+
+响应结构与 `/geometry` 完全相同，但不含 `newPos`（`animation` 固定为 `false`）。云图分量可单独指定，不影响变形方向。
+
+---
+
+> **`flip` 参数说明**：振型（特征向量）符号任意，乘以 −1 仍是有效振型。`flip=true` 对 `real`/`imag` 取反，使变形方向与 FEM 侧一致。符号是否需要翻转由上层计算逻辑决定后由前端传入，默认不传（`false`）时行为不变。
 
 ## 14. Simright Compatibility
 
