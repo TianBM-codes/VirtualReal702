@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-16（日志接口新增 percent/current_percent 进度字段，message 改为 HTML 片段格式）
+更新时间：2026-05-20（补充 BDF/OP2 project 创建、OP2 结果组 modal_import、重复上传行为变更）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -409,14 +409,29 @@ async function pollLogs(odbId) {
 ```json
 {
   "project_id": "proj-001",
-  "source_path": "/data/model.inp"
+  "source_path": "http://内网地址/files/model.bdf",
+  "source_type": "bdf"
 }
 ```
 
-`source_path` 支持本地路径或内网 HTTP URL（同 `POST /api/jobs`），并按扩展名识别 source type：
+`source_path` 支持本地路径或内网 HTTP URL，`source_type` 可显式指定，也可由扩展名自动推断：
 
-- `.inp`：走 project 几何解析链路，保留原有 INP 解析行为。
-- `.odb`：走 `abaqus_dump -> l1_pack -> ingest` 的全量解析链路，仅保证模型与结果可查看，不触发 INP catalog / model-update 导入。
+| source_type | 触发流程 | 说明 |
+|---|---|---|
+| `inp` | INP 几何解析 → L2 | 保留原有 INP 解析行为，同时触发 INP catalog / model-update 导入 |
+| `odb` | `abaqus_dump → l1_pack → ingest` | 全量 ODB 解析，不触发 model-update 导入 |
+| `bdf` | `bdf_pack → ingest → model_update BDF 导入` | Nastran BDF 几何，解析完自动导入 model_update |
+| `op2` | `op2_geom_pack → ingest`（仅含几何 OP2）或 `op2_geom_pack → ingest → op2_pack`（含几何+结果）| 自动检测 OP2 是否含 GEOM1/GEOM2；不含几何时拒绝，应改用追加结果组接口 |
+
+**BDF+OP2 典型流程：**
+
+1. 先用 BDF 建项目（几何）：`source_type: "bdf"`
+2. 轮询 `GET /api/projects/{project_id}` 直到 `geom_status: "ready"`
+3. 再通过 `POST /api/projects/{project_id}/results` 追加 OP2 结果组
+
+重复提交同一 `project_id`：
+- `geom_status` 为 `error` → 清空 workspace，重新解析
+- 其他状态（`pending`/`running`/`ready`）→ 409
 
 返回：
 
@@ -425,6 +440,7 @@ async function pollLogs(odbId) {
   "code": 200,
   "data": {
     "project_id": "proj-001",
+    "source_type": "bdf",
     "geom_status": "pending"
   },
   "message": ""
@@ -465,125 +481,107 @@ async function pollLogs(odbId) {
 
 ### `POST /api/projects/{project_id}/results`
 
-请求：
+给已有 project 追加结果组，支持 ODB 和 OP2 两种格式。
+
+**重复提交行为：**
+- `result_group` 同名且 `status` 为 `error` 或 `ready` → 允许覆盖，重新解析（旧数据清除）
+- `status` 为 `running`（正在处理中）→ 409
+
+#### ODB 结果组
 
 ```json
 {
-  "source_path": "/data/case1.odb",
-  "result_group": "case1",
-  "display_name": "工况一",
-  "parse_options": {
-    "consistency_check": "count-only"
+  “source_path”: “/data/case1.odb”,
+  “result_group”: “case1”,
+  “display_name”: “工况一”,
+  “parse_options”: {
+    “consistency_check”: “count-only”
   }
 }
 ```
 
-`source_path` 支持本地路径或内网 HTTP URL（同 `POST /api/jobs`）。
-
-用途说明：
-
-- 该接口用于给一个已存在的 `project` 追加新的 ODB 结果组。
-- 如果该 `project` 是先用 INP 创建的，则几何、节点/单元、L2 渲染数据都复用已有 project workspace，不会重新做几何解析或三角面片离散。
-- 默认行为仍是“全量结果解析”；只有显式传 `parse_options.steps`、`parse_options.frames`、`parse_options.field_prefix` 时，才会做按需结果提取。
-
-`parse_options` 字段说明：
+`parse_options` 字段说明（ODB）：
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `consistency_check` | string | `count-only` | INP 几何与 ODB 的一致性校验策略，可选 `count-only` / `label-only` |
+| `consistency_check` | string | `count-only` | 一致性校验策略，可选 `count-only` / `label-only` |
 | `steps` | string[] | `null` | 只解析这些 step；`null` 表示全部 |
-| `frames` | string \| int[] | `all` | 帧过滤；支持 `all`、`first_last`、或 0-based 帧号数组如 `[5]`、`[0, 3, 8]` |
-| `field_prefix` | string | `null` | 只解析字段名前缀匹配的结果，例如 `d_U_` 会匹配 `d_U_T1`、`d_U_T2` |
-| `invariants` | string | `none` | 是否额外提取 invariant；可选 `none` / `full` |
+| `frames` | string \| int[] | `all` | 帧过滤；支持 `all`、`first_last`、或 0-based 帧号数组如 `[0, 3, 8]` |
+| `field_prefix` | string | `null` | 只解析字段名前缀匹配的结果，例如 `d_U_` |
+| `invariants` | string | `none` | 是否提取 invariant；可选 `none` / `full` |
 
-注意：
-
-- `frames` 过滤只作用于当前新增的 `result_group`。
-- 为兼容现有查询链，筛选后的帧会在该 `result_group` 内重新编号为连续 `frame_idx`。
-  例如传 `frames: [5]` 时，最终该结果组只有 1 帧，查询时应使用 `frame_idx=0`。
+注意：`frames` 过滤后帧会在该结果组内重新编号为连续 `frame_idx`，例如传 `[5]` 时查询用 `frame_idx=0`。
 
 灵敏度结果场景示例：
 
 ```json
 {
-  "source_path": "/data/sensitivity/case_dU.odb",
-  "result_group": "sens-dU",
-  "display_name": "灵敏度 dU",
-  "parse_options": {
-    "consistency_check": "count-only",
-    "steps": ["Step-1"],
-    "frames": [5],
-    "field_prefix": "d_U_",
-    "invariants": "none"
+  “source_path”: “/data/sensitivity/case_dU.odb”,
+  “result_group”: “sens-dU”,
+  “display_name”: “灵敏度 dU”,
+  “parse_options”: {
+    “consistency_check”: “count-only”,
+    “steps”: [“Step-1”],
+    “frames”: [5],
+    “field_prefix”: “d_U_”
   }
 }
 ```
 
-上例适用于：
+#### OP2 结果组
 
-- project 已由原始 INP 创建完成
-- 新增 ODB 只需要提取灵敏度结果
-- 只解析指定 `step + frame`
-- 只解析 `field_prefix` 命中的字段
-- 不重新解析几何、不生成新的三角面片
+适用于已用 BDF 建好几何的 project，追加 Nastran OP2 结果。
+
+**最简调用（只解析，不导入模态）：**
+
+```json
+{
+  “source_path”: “http://内网地址/files/result.op2”,
+  “result_group”: “run_01”,
+  “display_name”: “工况一”
+}
+```
+
+**带模态自动导入（解析完同时写入 model_update 数据库）：**
+
+```json
+{
+  “source_path”: “http://内网地址/files/result.op2”,
+  “result_group”: “run_01”,
+  “display_name”: “工况一”,
+  “parse_options”: {
+    “modal_import”: {}
+  }
+}
+```
+
+`modal_import` 传空对象 `{}` 即可，BDF 路径自动取该 project 的 `inp_path`，OP2 路径使用当前上传的文件，无需再传。
+
+`parse_options.modal_import` 可选细化字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `subcase_id` | int | `null` | 指定 OP2 subcase 编号，不传取第一个 |
+| `mode_numbers` | int[] | `null` | 只导入指定阶次，不传则全导入 |
+| `instance_name` | string | `null` | 多实例模型时指定 instance |
+| `part_name` | string | `null` | 指定 part 名 |
+| `bdf_path` | string | 自动取 project inp_path | 显式指定 BDF 路径 |
+| `overwrite` | bool | `true` | 是否覆盖已有模态数据 |
+| `async_submit` | bool | `true` | 异步写库（不阻塞解析流程） |
 
 返回：
 
 ```json
 {
-  "code": 200,
-  "data": {
-    "project_id": "proj-001",
-    "result_group": "case1",
-    "status": "pending"
+  “code”: 200,
+  “data”: {
+    “project_id”: “proj-001”,
+    “result_group”: “run_01”,
+    “status”: “pending”
   },
-  "message": ""
+  “message”: “”
 }
 ```
-
-#### 按需解析补充说明
-
-当 `project` 已由原始 INP 创建完成时，`POST /api/projects/{project_id}/results` 追加 ODB 结果组会复用已有 project workspace 中的几何、节点/单元和 L2 渲染数据，不会重新做几何解析或三角面片离散。
-
-默认行为仍是“全量结果解析”。如果只想提取部分结果，可在 `parse_options` 中额外传以下字段：
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `steps` | string[] | `null` | 只解析这些 step；`null` 表示全部 |
-| `frames` | string \| int[] | `all` | 帧过滤；支持 `all`、`first_last`、或 0-based 帧号数组如 `[5]`、`[0, 3, 8]` |
-| `field_prefix` | string | `null` | 只解析字段名前缀匹配的结果，例如 `d_U_` 会匹配 `d_U_T1`、`d_U_T2` |
-| `invariants` | string | `none` | 是否额外提取 invariant；可选 `none` / `full` |
-
-注意：
-
-- `frames` 过滤只作用于当前新增的 `result_group`
-- 为兼容现有查询链，筛选后的帧会在该 `result_group` 内重新编号为连续 `frame_idx`
-- 例如传 `frames: [5]` 时，最终该结果组只有 1 帧，查询时应使用 `frame_idx=0`
-
-灵敏度结果场景示例：
-
-```json
-{
-  "source_path": "/data/sensitivity/case_dU.odb",
-  "result_group": "sens-dU",
-  "display_name": "灵敏度 dU",
-  "parse_options": {
-    "consistency_check": "count-only",
-    "steps": ["Step-1"],
-    "frames": [5],
-    "field_prefix": "d_U_",
-    "invariants": "none"
-  }
-}
-```
-
-上例适用于：
-
-- project 已由原始 INP 创建完成
-- 新增 ODB 只需要提取灵敏度结果
-- 只解析指定 `step + frame`
-- 只解析 `field_prefix` 命中的字段
-- 不重新解析几何、不生成新的三角面片
 
 ### `POST /api/projects/{project_id}/rerun-l2`
 
