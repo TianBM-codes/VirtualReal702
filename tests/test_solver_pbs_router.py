@@ -27,6 +27,7 @@ def test_pbs_abaqus_run_route(monkeypatch):
     response = client.post(
         "/solver/pbs/abaqus/run",
         json={
+            "project_id": 32,
             "env": "dev",
             "input_file": "D:/demo/model.inp",
             "job_name": "demo_job",
@@ -41,6 +42,7 @@ def test_pbs_abaqus_run_route(monkeypatch):
     assert payload["ok"] is True
     assert payload["code"] == 200
     assert payload["data"]["job_id"] == "12345"
+    assert captured["project_id"] == 32
     assert captured["application"] == "Abaqus"
     assert captured["env"] == "dev"
     assert captured["submit_overrides"] == {"CORES": 32}

@@ -210,6 +210,7 @@ def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
 
 def _pbs_solver_run_kwargs(body: PBSSolverRunRequest, application: str) -> dict:
     return {
+        "project_id": body.project_id,
         "application": application,
         "input_file": body.input_file,
         "env": body.env,

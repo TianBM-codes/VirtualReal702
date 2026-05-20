@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 
 import requests
 
+from db import get_connection
 from src.l3.core.errors import NotFoundError, ValidationError
 
 from .model_update_meta_service import _load_service_config
@@ -96,6 +97,82 @@ class PBSEnvironmentConfig:
     applications: Dict[str, Dict[str, Any]]
 
 
+def _load_project_pbs_settings(project_id: Optional[int]) -> Dict[str, Any]:
+    if project_id is None:
+        return {}
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT project_config
+            FROM t_mt_work_condition_project
+            WHERE project_id = %s
+            LIMIT 1
+            """,
+            (int(project_id),),
+        )
+        row = cursor.fetchone() or {}
+    finally:
+        cursor.close()
+        conn.close()
+
+    raw_config = row.get("project_config")
+    if not raw_config:
+        return {}
+    if isinstance(raw_config, dict):
+        project_config = raw_config
+    else:
+        try:
+            project_config = json.loads(raw_config)
+        except Exception as exc:
+            raise ValidationError(
+                "project_config is not valid json",
+                {"project_id": int(project_id), "error": str(exc)},
+            )
+    if not isinstance(project_config, dict):
+        return {}
+    pbs_config = project_config.get("pbs")
+    return dict(pbs_config) if isinstance(pbs_config, dict) else {}
+
+
+def _normalize_project_application_settings(application: str, pbs_settings: Dict[str, Any]) -> Dict[str, Any]:
+    app_name = str(application or "").strip()
+    nested = pbs_settings.get(app_name.lower())
+    if not isinstance(nested, dict):
+        nested = pbs_settings.get(app_name)
+    raw = dict(nested) if isinstance(nested, dict) else dict(pbs_settings)
+
+    mapping = {
+        "ApplicationId": "application_id",
+        "ApplicationName": "application_name",
+        "VERSION": "version",
+        "CORES": "cores",
+        "HOSTS": "hosts",
+        "MEMORY": "memory",
+        "PRECISION": "precision",
+        "PLATFORM": "platform",
+        "primary_file_exts": "primary_file_exts",
+        "result_exts": "result_exts",
+    }
+    normalized: Dict[str, Any] = {}
+    for source_key, target_key in mapping.items():
+        if source_key in raw and raw[source_key] is not None:
+            normalized[target_key] = raw[source_key]
+    return normalized
+
+
+def _resolve_project_pbs_env(env: Optional[str], pbs_settings: Dict[str, Any]) -> Optional[str]:
+    explicit = str(env or "").strip()
+    if explicit:
+        return explicit
+    configured = pbs_settings.get("env")
+    if configured is None:
+        return None
+    resolved = str(configured).strip()
+    return resolved or None
+
+
 def load_pbs_environment_config(env: Optional[str] = None) -> PBSEnvironmentConfig:
     payload = _load_service_config()
     pbs_root = payload.get("PBS") if isinstance(payload.get("PBS"), dict) else {}
@@ -144,6 +221,36 @@ def load_pbs_environment_config(env: Optional[str] = None) -> PBSEnvironmentConf
         password=str(raw_env.get("password") or "").strip(),
         verify_ssl=bool(raw_env.get("verify_ssl", True)),
         fallback_service_prefixes=[_normalize_slash_prefix(item) for item in fallback_prefixes if str(item or "").strip()],
+        applications=applications,
+    )
+
+
+def _apply_project_pbs_settings(
+    config: PBSEnvironmentConfig,
+    *,
+    application: str,
+    pbs_settings: Dict[str, Any],
+) -> PBSEnvironmentConfig:
+    override_app = _normalize_project_application_settings(application, pbs_settings)
+    if not override_app:
+        return config
+    applications = dict(config.applications)
+    merged_app = dict(applications.get(application, {}))
+    merged_app.update(override_app)
+    applications[application] = merged_app
+    return PBSEnvironmentConfig(
+        name=config.name,
+        base_url=config.base_url,
+        api_prefix=config.api_prefix,
+        service_prefix=config.service_prefix,
+        storage_prefix=config.storage_prefix,
+        auth_path=config.auth_path,
+        server_name=config.server_name,
+        stage_path_template=config.stage_path_template,
+        username=config.username,
+        password=config.password,
+        verify_ssl=config.verify_ssl,
+        fallback_service_prefixes=list(config.fallback_service_prefixes),
         applications=applications,
     )
 
@@ -618,6 +725,7 @@ class PBSClient:
 
 def run_pbs_solver_job(
     *,
+    project_id: Optional[int] = None,
     application: str,
     input_file: str,
     env: Optional[str] = None,
@@ -634,9 +742,16 @@ def run_pbs_solver_job(
     if not source_path.exists() or not source_path.is_file():
         raise NotFoundError("pbs local input file not found", {"input_file": str(source_path)})
 
-    config = load_pbs_environment_config(env)
-    client = PBSClient(config, timeout=timeout_sec)
+    project_pbs_settings = _load_project_pbs_settings(project_id)
+    resolved_env = _resolve_project_pbs_env(env, project_pbs_settings)
+    config = load_pbs_environment_config(resolved_env)
     resolved_application = str(application or "").strip()
+    config = _apply_project_pbs_settings(
+        config,
+        application=resolved_application,
+        pbs_settings=project_pbs_settings,
+    )
+    client = PBSClient(config, timeout=timeout_sec)
     resolved_job_name = str(job_name or source_path.stem).strip() or source_path.stem
     target_dir = Path(output_dir).expanduser().resolve() if output_dir else source_path.parent.resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -668,6 +783,7 @@ def run_pbs_solver_job(
     )
     result["input_file"] = str(source_path)
     result["output_dir"] = str(target_dir)
+    result["project_id"] = int(project_id) if project_id is not None else None
     result["workflow"] = f"pbs_{resolved_application.lower()}_run"
     return result
 
