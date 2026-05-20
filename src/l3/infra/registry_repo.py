@@ -591,6 +591,22 @@ class RegistryRepo:
                 (_now_iso(), project_id, result_group),
             )
 
+    def reset_result_group_for_resubmit(self, project_id: str, result_group: str,
+                                         source_path: str, source_file: str,
+                                         display_name: str,
+                                         parse_options: str) -> None:
+        """将非 running 状态的 result_group 重置为 pending，同时更新源文件信息。"""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE result_groups"
+                " SET status='pending', error_message=NULL,"
+                "     source_path=?, source_file=?, display_name=?, parse_options=?,"
+                "     updated_at=?"
+                " WHERE project_id=? AND result_group=? AND status != 'running'",
+                (source_path, source_file, display_name, parse_options,
+                 _now_iso(), project_id, result_group),
+            )
+
     def claim_pending_result_group(self, project_id: str) -> Optional[sqlite3.Row]:
         """
         原子认领 project 下一个 pending result_group → running。
