@@ -208,13 +208,23 @@ def _write_subcase_u(h5_abs, inst_name, step_name, bdf_node_labels, aligned_data
     n_frames, N_bdf, n_comp = aligned_data.shape
     components = ['U1', 'U2', 'U3']
 
+    # Append USUM = sqrt(U1²+U2²+U3²) as 4th component.
+    # NaN nodes (not covered by OP2) stay NaN.
+    usum = np.sqrt(np.nansum(aligned_data ** 2, axis=-1, keepdims=True)).astype(np.float32)
+    # nansum returns 0 where all inputs are NaN; restore NaN for those nodes
+    all_nan_mask = ~np.isfinite(aligned_data).any(axis=-1, keepdims=True)
+    usum[all_nan_mask] = np.nan
+    data_out = np.concatenate([aligned_data, usum], axis=-1)  # [n_frames, N_bdf, 4]
+    components_out = components + ['USUM']
+    n_comp_out = data_out.shape[-1]
+
     with h5py.File(h5_abs, 'w') as f:
         # meta
         mg = f.create_group('meta')
         mg.create_dataset('step_name',         data=step_name.encode())
         mg.create_dataset('field_name',        data=b'U')
         mg.create_dataset('field_description', data=b'')
-        str_ds(f, 'meta/components', components)
+        str_ds(f, 'meta/components', components_out)
         str_ds(f, 'meta/invariants', [])
 
         # frame_index
@@ -228,9 +238,9 @@ def _write_subcase_u(h5_abs, inst_name, step_name, bdf_node_labels, aligned_data
         ig.create_dataset('labels', data=bdf_node_labels)
         ig.create_dataset(
             'data',
-            data=aligned_data,
+            data=data_out,
             dtype='float32',
-            chunks=(1, min(N_bdf, 8192), n_comp),
+            chunks=(1, min(N_bdf, 8192), n_comp_out),
             compression='lzf',
         )
 
@@ -319,7 +329,7 @@ def pack(op2_path, workspace, result_group):
 
     # ── 5. Write manifest.db ──────────────────────────────────────────────────
     print('  Writing manifest.db ...')
-    components_json = json.dumps(['U1', 'U2', 'U3'])
+    components_json = json.dumps(['U1', 'U2', 'U3', 'USUM'])
     positions_json  = json.dumps(['NODAL'])
 
     for step_number, (step_name, procedure, n_frames, frame_values, frame_descs, mode_nums, h5_rel) \
