@@ -1296,7 +1296,7 @@ def frame_deformed_positions(
                 f"frame_idx {frame_idx} out of range [0, {num_frames})",
                 {"frame_idx": frame_idx},
             )
-        disp_node = ds[frame_idx].astype(np.float32)   # [N_nodes, 3]
+        disp_node = ds[frame_idx, :, :3].astype(np.float32)   # [N_nodes, 3] — UX/UY/UZ only
 
     if disp_node.ndim == 1:
         raise ValidationError(
@@ -1387,7 +1387,7 @@ def suggest_deform_scale(
             ds = f[ds_path]
             if frame_idx < 0 or frame_idx >= ds.shape[0]:
                 continue
-            disp_node = ds[frame_idx].astype(np.float64)   # [N_nodes, 3]
+            disp_node = ds[frame_idx, :, :3].astype(np.float64)   # [N_nodes, 3] — UX/UY/UZ only
             if disp_node.ndim != 2 or disp_node.shape[1] < 3:
                 continue
             inst_max = float(np.max(np.abs(disp_node)))
@@ -1446,7 +1446,7 @@ def _load_disp_vertex(
                 f"frame_idx {frame_idx} out of range [0, {num_frames})",
                 {"frame_idx": frame_idx},
             )
-        disp_node = ds[frame_idx].astype(np.float32)   # [N_nodes, 3]
+        disp_node = ds[frame_idx, :, :3].astype(np.float32)   # [N_nodes, 3] — UX/UY/UZ only
 
     if disp_node.ndim == 1:
         raise ValidationError("U field is scalar; expected 3-component vector", {"instance": instance})
