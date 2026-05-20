@@ -68,6 +68,17 @@ from ..utils import log_request, model_to_dict
 router = APIRouter(tags=["solver"])
 
 
+def _resolve_modal_op2_path(op2_path: Optional[str], project_id: Optional[int]) -> str:
+    text = str(op2_path or "").strip()
+    if text:
+        return text
+    if project_id is None:
+        raise ValidationError("op2_path is required when project_id is missing")
+    return os.path.abspath(
+        os.path.join(settings.data_root, str(int(project_id)), "default_result_source.op2")
+    )
+
+
 def _parse_upload_extra_args(extra_args_json: Optional[str]) -> list[str]:
     text = str(extra_args_json or "").strip()
     if not text:
@@ -668,8 +679,9 @@ async def run_nastran_sol200_api(request: Request, body: NastranSol200RunRequest
 async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
+        resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
         data = preview_op2_modal(
-            op2_path=body.op2_path,
+            op2_path=resolved_op2_path,
             bdf_path=body.bdf_path,
             subcase_id=body.subcase_id,
             mode_numbers=body.mode_numbers,
@@ -678,7 +690,7 @@ async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
         if body.project_id is not None:
             store_kwargs = {
                 "project_id": body.project_id,
-                "op2_path": body.op2_path,
+                "op2_path": resolved_op2_path,
                 "bdf_path": body.bdf_path,
                 "subcase_id": body.subcase_id,
                 "mode_numbers": body.mode_numbers,
@@ -736,9 +748,10 @@ def _store_op2_modal_job(
 async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
+        resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
         kwargs = {
             "project_id": body.project_id,
-            "op2_path": body.op2_path,
+            "op2_path": resolved_op2_path,
             "bdf_path": body.bdf_path,
             "subcase_id": body.subcase_id,
             "mode_numbers": body.mode_numbers,

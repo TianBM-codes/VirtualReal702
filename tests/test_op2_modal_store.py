@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 
@@ -154,3 +156,47 @@ def test_preview_route_auto_stores_modal_results_when_project_id_is_provided(mon
         "instance_name": None,
         "part_name": None,
     }
+
+
+def test_preview_route_uses_default_op2_under_project_data_root_when_op2_path_is_empty(monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from webapi.routers import solver
+
+    preview_calls = {}
+    store_calls = {}
+
+    def fake_preview_op2_modal(**kwargs):
+        preview_calls.update(kwargs)
+        return {
+            "workflow": "op2_modal_preview",
+            "source": {"op2_path": kwargs["op2_path"]},
+            "subcases": [],
+            "warnings": [],
+        }
+
+    def fake_store_op2_modal_job(**kwargs):
+        store_calls.update(kwargs)
+        return {"project_id": kwargs["project_id"]}
+
+    monkeypatch.setattr(solver, "preview_op2_modal", fake_preview_op2_modal)
+    monkeypatch.setattr(solver, "_store_op2_modal_job", fake_store_op2_modal_job)
+    monkeypatch.setattr(solver.settings, "data_root", "D:/app-data")
+
+    app = FastAPI()
+    app.include_router(solver.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/import/op2/modal/preview",
+        json={
+            "project_id": 32,
+            "op2_path": "",
+        },
+    )
+
+    expected_path = os.path.abspath("D:/app-data/32/default_result_source.op2")
+    assert response.status_code == 200
+    assert preview_calls["op2_path"] == expected_path
+    assert store_calls["op2_path"] == expected_path
