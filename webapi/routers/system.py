@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Request
 
 from db import ensure_tables_exist
@@ -11,14 +13,18 @@ from ..models import ProjectConfigRequest, ProjectConfigUpsertRequest
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/init")
 async def init_db():
     try:
+        logger.info("开始初始化数据库表")
         ensure_tables_exist()
-        return success_response(None, "database tables are ready")
+        logger.info("数据库表初始化成功")
+        return success_response(None, "数据库表初始化成功")
     except Exception as exc:
+        logger.exception("数据库表初始化失败")
         app_exc = server_error(exc)
         return error_response(
             app_exc.status_code,

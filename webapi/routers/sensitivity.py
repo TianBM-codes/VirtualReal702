@@ -163,9 +163,9 @@ async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaReque
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
             )
-            return success_response(data, "sensitivity results task submitted")
+            return success_response(data, "灵敏度结果入库任务已提交")
         data = store_dsa_sensitivity_results(**kwargs)
-        return success_response(data, "sensitivity results stored")
+        return success_response(data, "灵敏度结果入库成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -185,9 +185,9 @@ async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndSto
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
             )
-            return success_response(data, "sensitivity inp run and store task submitted")
+            return success_response(data, "灵敏度 INP 求解并入库任务已提交")
         data = run_sensitivity_inp_and_store(**kwargs)
-        return success_response(data, "sensitivity inp run and store completed")
+        return success_response(data, "灵敏度 INP 求解并入库成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -207,9 +207,9 @@ async def sensitivity_generate_run_and_store(request: Request, body: Sensitivity
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
             )
-            return success_response(data, "sensitivity inp generate-run-store task submitted")
+            return success_response(data, "灵敏度 INP 生成求解并入库任务已提交")
         data = generate_sensitivity_inp_and_store(**kwargs)
-        return success_response(data, "sensitivity inp generated, run, and store completed")
+        return success_response(data, "灵敏度 INP 生成求解并入库成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -224,11 +224,11 @@ async def sensitivity_task_status(task_id: str):
         if data is None:
             return error_response(
                 404,
-                f"sensitivity task '{task_id}' not found",
+                f"未找到灵敏度任务 '{task_id}'",
                 error_code="NOT_FOUND",
                 details={"task_id": str(task_id)},
             )
-        return success_response(data, "sensitivity task status loaded")
+        return success_response(data, "灵敏度任务状态获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -244,7 +244,7 @@ async def sensitivity_dsa_config_preview(request: Request, body: SensitivityDsaC
             project_id=body.project_id,
             value_mode=body.value_mode,
         )
-        return success_response(data, "sensitivity DSA config preview loaded")
+        return success_response(data, "灵敏度 DSA 配置预览获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -265,7 +265,7 @@ async def sensitivity_dsa_inp_generate(request: Request, body: SensitivityDsaInp
             include_file=body.include_file,
             config_file=body.config_file,
         )
-        return success_response(data, "sensitivity DSA inp generated")
+        return success_response(data, "灵敏度 DSA INP 生成成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

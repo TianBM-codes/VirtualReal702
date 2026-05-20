@@ -6,6 +6,7 @@ from config import APP_CONFIG
 from db import initialize_database_runtime
 from fastapi import Request
 from src.l3.main import app
+from src.l3.api.routes.meta import list_steps as list_src_steps
 
 from webapi.routes import router as model_update_router
 from webapi.common import error_response, server_error, success_response
@@ -115,6 +116,21 @@ def _legacy_error_response(exc: Exception):
     return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+async def _get_step_names_from_src(project_id: int) -> list[str]:
+    try:
+        payload = await list_src_steps(str(project_id))
+    except Exception:
+        return []
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [
+        str(item.get("step_name"))
+        for item in rows
+        if isinstance(item, dict) and item.get("step_name") is not None
+    ]
+
+
 @app.post("/match/dofs")
 async def match_dofs_api(request: Request):
     try:
@@ -124,7 +140,7 @@ async def match_dofs_api(request: Request):
             overwrite=bool(body.get("overwrite", True)),
             min_match_score=body.get("min_match_score"),
         )
-        return success_response(result, "dof match success")
+        return success_response(result, "自由度匹配成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -134,7 +150,7 @@ async def get_dofs_api(request: Request):
     try:
         body = await request.json()
         result = get_dof_matches(int(body["project_id"]))
-        return success_response(result, "dof match query success")
+        return success_response(result, "自由度匹配结果查询成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -149,7 +165,7 @@ async def build_response_catalog_api(request: Request):
             include_test_modes=bool(body.get("include_test_modes", True)),
             include_node_dofs=bool(body.get("include_node_dofs", True)),
         )
-        return success_response(result, "response catalog build success")
+        return success_response(result, "响应目录构建成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -159,7 +175,7 @@ async def get_response_catalog_api(request: Request):
     try:
         body = await request.json()
         result = get_fe_response_catalog(int(body["project_id"]))
-        return success_response(result, "response catalog query success")
+        return success_response(result, "响应目录查询成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -174,7 +190,7 @@ async def import_fem_modal_api(request: Request):
             file_path=body.get("file_path"),
             modes=body.get("modes"),
         )
-        return success_response(result, "fem modal import success")
+        return success_response(result, "有限元模态导入成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -184,7 +200,7 @@ async def get_fem_modal_api(request: Request):
     try:
         body = await request.json()
         result = get_fe_modal_results(int(body["project_id"]))
-        return success_response(result, "fem modal query success")
+        return success_response(result, "有限元模态查询成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -202,7 +218,7 @@ async def import_fem_static_api(request: Request):
             instance_name=body.get("instance_name"),
             part_name=body.get("part_name"),
         )
-        return success_response(result, "fem static import success")
+        return success_response(result, "有限元静态结果导入成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -215,7 +231,7 @@ async def get_fem_static_api(request: Request):
             int(body["project_id"]),
             load_case_no=body.get("load_case_no"),
         )
-        return success_response(result, "fem static query success")
+        return success_response(result, "有限元静态结果查询成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -228,7 +244,7 @@ async def compute_modal_correlation_api(request: Request):
             project_id=int(body["project_id"]),
             overwrite=bool(body.get("overwrite", True)),
         )
-        return success_response(result, "modal correlation success")
+        return success_response(result, "模态相关性计算成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -238,7 +254,7 @@ async def get_modal_correlation_api(request: Request):
     try:
         body = await request.json()
         result = get_modal_correlation_matrix_payload(int(body["project_id"]))
-        return success_response(result, "modal correlation matrix query success")
+        return success_response(result, "模态相关矩阵查询成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -248,7 +264,7 @@ async def get_modal_correlation_matrix_api(request: Request):
     try:
         body = await request.json()
         result = get_modal_correlation_matrix_payload(int(body["project_id"]))
-        return success_response(result, "modal correlation matrix query success")
+        return success_response(result, "模态相关矩阵查询成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -258,7 +274,7 @@ async def get_modal_correlation_table_api(request: Request):
     try:
         body = await request.json()
         result = get_modal_correlation_table_payload(int(body["project_id"]))
-        return success_response(result, "modal correlation table query success")
+        return success_response(result, "模态相关表格查询成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -276,7 +292,7 @@ async def preview_modal_match_api(request: Request):
                 else float(body.get("max_freq_error_ratio"))
             ),
         )
-        return success_response(result, "modal match preview success")
+        return success_response(result, "模态匹配预览成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -294,7 +310,8 @@ async def match_modal_api(request: Request):
             ),
             method=str(body.get("method", "greedy")),
         )
-        return success_response(result, "modal match success")
+        result["step_names"] = await _get_step_names_from_src(int(body["project_id"]))
+        return success_response(result, "模态匹配成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
@@ -310,7 +327,7 @@ async def compute_static_correlation_api(request: Request):
             components=body.get("components"),
             include_rotations=bool(body.get("include_rotations", False)),
         )
-        return success_response(result, "static correlation success")
+        return success_response(result, "静态相关性计算成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 

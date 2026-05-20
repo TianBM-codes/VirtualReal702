@@ -448,7 +448,7 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
                 request_payload=model_to_dict(body),
                 pass_task_id=True,
             )
-            return success_response(data, "Bayesian model update task submitted")
+            return success_response(data, "Bayesian 模型修正任务已提交")
         data = _run_bayesian_update_workflow_compact(**kwargs)
         return success_response(data, "Bayesian模型修正执行成功")
     except AppError as exc:
@@ -469,7 +469,7 @@ async def bayesian_task_status(task_id: str):
                 error_code="NOT_FOUND",
                 details={"task_id": str(task_id)},
             )
-        return success_response(data, "Bayesian task status loaded")
+        return success_response(data, "Bayesian 任务状态获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

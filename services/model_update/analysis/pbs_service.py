@@ -127,7 +127,7 @@ def _load_project_pbs_settings(project_id: Optional[int]) -> Dict[str, Any]:
             project_config = json.loads(raw_config)
         except Exception as exc:
             raise ValidationError(
-                "project_config is not valid json",
+                "project_config 不是合法的 JSON",
                 {"project_id": int(project_id), "error": str(exc)},
             )
     if not isinstance(project_config, dict):
@@ -206,7 +206,7 @@ def load_pbs_environment_config(env: Optional[str] = None) -> PBSEnvironmentConf
 
     base_url = str(raw_env.get("base_url") or "").strip().rstrip("/")
     if not base_url:
-        raise ValidationError("pbs base_url is required", {"env": selected_env})
+        raise ValidationError("PBS base_url 不能为空", {"env": selected_env})
 
     return PBSEnvironmentConfig(
         name=selected_env,
@@ -339,7 +339,7 @@ class PBSClient:
             break
 
         if last_response is None:
-            raise ValidationError("pbs request failed before sending", {"path_key": path_key})
+            raise ValidationError("PBS 请求在发送前失败", {"path_key": path_key})
         raise ValidationError(
             "pbs request failed",
             {
@@ -363,7 +363,7 @@ class PBSClient:
 
     def login(self) -> str:
         if not self.config.username or not self.config.password:
-            raise ValidationError("pbs username/password is required", {"env": self.config.name})
+            raise ValidationError("PBS 用户名或密码不能为空", {"env": self.config.name})
         response = self.request(
             "POST",
             "login",
@@ -381,14 +381,14 @@ class PBSClient:
         elif isinstance(payload, str):
             token = payload.strip()
         if not token:
-            raise ValidationError("pbs login did not return access_token", {"payload": payload})
+            raise ValidationError("PBS 登录未返回 access_token", {"payload": payload})
         self.access_token = str(token)
         return self.access_token
 
     def expand_stage_root(self, stage_path_template: Optional[str] = None) -> str:
         template = str(stage_path_template or self.config.stage_path_template or "").strip()
         if not template:
-            raise ValidationError("pbs stage_path_template is required", {"env": self.config.name})
+            raise ValidationError("PBS stage_path_template 不能为空", {"env": self.config.name})
         response = self.request(
             "POST",
             "expand_vars",
@@ -409,7 +409,7 @@ class PBSClient:
                     return str(value)
         if isinstance(payload, str) and payload:
             return payload
-        raise ValidationError("pbs expandvars returned empty stage_root", {"payload": payload})
+        raise ValidationError("PBS expandvars 返回的 stage_root 为空", {"payload": payload})
 
     def make_remote_job_dir(self, *, stage_root: str, application: str, job_name: str) -> str:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -428,7 +428,7 @@ class PBSClient:
     def upload_file(self, *, local_path: str, remote_dir: str) -> str:
         source_path = Path(local_path).expanduser().resolve()
         if not source_path.exists() or not source_path.is_file():
-            raise NotFoundError("pbs local input file not found", {"local_path": str(source_path)})
+            raise NotFoundError("未找到 PBS 本地输入文件", {"local_path": str(source_path)})
         with source_path.open("rb") as handle:
             response = self.request(
                 "POST",
@@ -533,7 +533,7 @@ class PBSClient:
                 return str(job_id)
         if isinstance(data, str) and data.strip():
             return data.strip()
-        raise ValidationError("pbs submit_job did not return jobId", {"payload": data})
+        raise ValidationError("PBS submit_job 未返回 jobId", {"payload": data})
 
     def get_job_status(self, job_id: str) -> Dict[str, Any]:
         response = self.request(
@@ -546,7 +546,7 @@ class PBSClient:
         payload = self._parse_json_or_text(response)
         if isinstance(payload, dict):
             return payload
-        raise ValidationError("pbs job status payload is not json object", {"payload": payload})
+        raise ValidationError("PBS 任务状态返回结果不是 JSON 对象", {"payload": payload})
 
     def wait_until_done(
         self,
@@ -603,7 +603,7 @@ class PBSClient:
                 value = payload.get(key)
                 if isinstance(value, list):
                     return [item for item in value if isinstance(item, dict)]
-        raise ValidationError("pbs list_files payload is invalid", {"payload": payload})
+        raise ValidationError("PBS list_files 返回结果无效", {"payload": payload})
 
     def download_file(self, *, remote_file: str, local_dir: str, job_id: str) -> str:
         local_root = Path(local_dir).expanduser().resolve()
@@ -740,7 +740,7 @@ def run_pbs_solver_job(
 ) -> Dict[str, Any]:
     source_path = Path(input_file).expanduser().resolve()
     if not source_path.exists() or not source_path.is_file():
-        raise NotFoundError("pbs local input file not found", {"input_file": str(source_path)})
+        raise NotFoundError("未找到 PBS 本地输入文件", {"input_file": str(source_path)})
 
     project_pbs_settings = _load_project_pbs_settings(project_id)
     resolved_env = _resolve_project_pbs_env(env, project_pbs_settings)

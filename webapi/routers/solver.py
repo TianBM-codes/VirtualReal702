@@ -73,7 +73,7 @@ def _resolve_modal_op2_path(op2_path: Optional[str], project_id: Optional[int]) 
     if text:
         return text
     if project_id is None:
-        raise ValidationError("op2_path is required when project_id is missing")
+        raise ValidationError("未提供 project_id 时，op2_path 不能为空")
     return os.path.abspath(
         os.path.join(settings.data_root, str(int(project_id)), "default_result_source.op2")
     )
@@ -508,7 +508,7 @@ async def upload_and_run_abaqus_inp_api(request: Request):
                     kwargs=kwargs,
                     request_payload=payload,
                 )
-                return success_response(data, "Abaqus inp path-run task submitted")
+                return success_response(data, "Abaqus INP 路径求解任务已提交")
             data = run_abaqus_job(**kwargs)
             odb_path = ((data.get("solver") or {}).get("artifacts") or {}).get("odb")
             if odb_path:
@@ -518,11 +518,11 @@ async def upload_and_run_abaqus_inp_api(request: Request):
                 "mode": "server_path",
                 "path": os.path.abspath(input_inp),
             }
-            return success_response(data, "Abaqus inp path solved successfully")
+            return success_response(data, "Abaqus INP 路径求解成功")
 
         raw_body = await request.body()
         if not raw_body:
-            raise ValidationError("uploaded inp body is empty", {"path": str(request.url.path)})
+            raise ValidationError("上传的 INP 请求体为空", {"path": str(request.url.path)})
 
         original_filename = _header_or_query(request, "filename", "uploaded.inp")
         output_dir = _header_or_query(request, "output_dir")
@@ -574,7 +574,7 @@ async def upload_and_run_abaqus_inp_api(request: Request):
                 kwargs=kwargs,
                 request_payload=payload,
             )
-            return success_response(data, "Abaqus inp upload-and-run task submitted")
+            return success_response(data, "Abaqus INP 上传并求解任务已提交")
         data = run_abaqus_job(**kwargs)
         odb_path = ((data.get("solver") or {}).get("artifacts") or {}).get("odb")
         if odb_path:
@@ -584,7 +584,7 @@ async def upload_and_run_abaqus_inp_api(request: Request):
             "saved_path": saved_inp_path,
             "size_bytes": len(raw_body),
         }
-        return success_response(data, "Abaqus inp uploaded and solved successfully")
+        return success_response(data, "Abaqus INP 上传并求解成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
