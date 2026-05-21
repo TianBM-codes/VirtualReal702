@@ -21,6 +21,7 @@ from services.model_update.analysis.inp_service import (
     get_fe_modal_results,
     get_fe_response_catalog,
     get_fe_static_results,
+    get_modal_match_frequency_scatter_payload,
     get_modal_correlation,
     get_modal_correlation_matrix_payload,
     get_modal_correlation_table_payload,
@@ -322,6 +323,27 @@ async def match_modal_api(request: Request):
             subcase_name=subcase_name
         )
         return success_response(result, "模态匹配成功")
+    except Exception as exc:
+        return _legacy_error_response(exc)
+
+
+@app.post("/correlation/modal/match/frequency_scatter")
+async def modal_match_frequency_scatter_api(request: Request):
+    try:
+        body = await request.json()
+        subcase_name = await _get_step_names_from_src(int(body["project_id"]))
+        result = get_modal_match_frequency_scatter_payload(
+            int(body["project_id"]),
+            mac_threshold=float(body.get("mac_threshold", 0.7)),
+            max_freq_error_ratio=(
+                None if body.get("max_freq_error_ratio") is None
+                else float(body.get("max_freq_error_ratio"))
+            ),
+            method=str(body.get("method", "greedy")),
+            subcase_name=subcase_name,
+        )
+        result["step_names"] = subcase_name
+        return success_response(result, "模态频率匹配散点图获取成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 

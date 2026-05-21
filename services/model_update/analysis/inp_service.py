@@ -5305,6 +5305,81 @@ def get_modal_correlation_table_payload(project_id):
     }
 
 
+def get_modal_match_frequency_scatter_payload(
+        project_id: int,
+        *,
+        mac_threshold: float = 0.7,
+        max_freq_error_ratio: Optional[float] = 0.2,
+        method: str = "greedy",
+        subcase_name="SUBCASE_1",
+) -> dict:
+    matched = match_modal_modes(
+        int(project_id),
+        mac_threshold=mac_threshold,
+        max_freq_error_ratio=max_freq_error_ratio,
+        method=method,
+        subcase_name=subcase_name,
+    )
+    rows = list(matched.get("rows") or [])
+
+    scatter_points = []
+    tooltip_points = []
+    xaxis = []
+    for row in rows:
+        freq_fem = row.get("freq_fem")
+        freq_test = row.get("freq_test")
+        if freq_fem is None or freq_test is None:
+            continue
+        x_value = float(freq_fem)
+        y_value = float(freq_test)
+        xaxis.append(str(x_value))
+        scatter_points.append([x_value, y_value])
+        tooltip_points.append(
+            {
+                "x": x_value,
+                "y": y_value,
+                "tooltip": {
+                    "title": row.get("title"),
+                    "fem_mode_no": int(row["fem_mode_no"]),
+                    "test_mode_no": int(row["test_mode_no"]),
+                    "freq_fem": x_value,
+                    "freq_test": y_value,
+                    "mac": row.get("mac"),
+                    "freq_error_ratio": row.get("freq_error_ratio"),
+                    "status": row.get("status"),
+                    "recommended": bool(row.get("recommended")),
+                    "flip": bool(row.get("flip")),
+                },
+            }
+        )
+
+    return {
+        "project_id": int(project_id),
+        "chart_type": "scatter",
+        "method": matched.get("method"),
+        "mac_threshold": matched.get("mac_threshold"),
+        "max_freq_error_ratio": matched.get("max_freq_error_ratio"),
+        "x_label": "calculated_modal_frequency",
+        "y_label": "test_modal_frequency",
+        "data": [
+            {
+                "label": "matched_modes",
+                "xaxis": xaxis,
+                "data": scatter_points,
+                "points": tooltip_points,
+            }
+        ],
+        "summary": {
+            **dict(matched.get("summary") or {}),
+            "point_count": len(scatter_points),
+            "tooltip_count": len(tooltip_points),
+        },
+        "rows": rows,
+        "unmatched_fem_modes": list(matched.get("unmatched_fem_modes") or []),
+        "unmatched_test_modes": list(matched.get("unmatched_test_modes") or []),
+    }
+
+
 def _load_modal_correlation_rows(project_id: int) -> List[dict]:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)

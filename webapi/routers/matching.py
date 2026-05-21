@@ -3,6 +3,7 @@ from fastapi import APIRouter, Request
 from services.model_update.analysis.inp_service import (
     evaluate_static_correlation,
     get_dof_matches,
+    get_modal_match_frequency_scatter_payload,
     get_pair_node_point_result,
     match_test_dofs,
     get_transform_auto_info,
@@ -20,6 +21,7 @@ from ..models import (
     MatchDofsRequest,
     MatchNodeParametersRequest,
     MatchNodesRequest,
+    ModalMatchScatterRequest,
     PairNodePointResultRequest,
     TransformAutoInfoRequest,
     TransformOperationRequest,
@@ -121,6 +123,24 @@ async def evaluate_correlation_api(request: Request, body: CorrelationEvaluateRe
             include_rotations=body.include_rotations,
         )
         return success_response(result, "一致性评价成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/correlation/modal/match/frequency_scatter")
+async def modal_match_frequency_scatter_api(request: Request, body: ModalMatchScatterRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_modal_match_frequency_scatter_payload(
+            project_id=body.project_id,
+            mac_threshold=body.mac_threshold,
+            max_freq_error_ratio=body.max_freq_error_ratio,
+            method=body.method,
+        )
+        return success_response(result, "模态频率匹配散点图获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
