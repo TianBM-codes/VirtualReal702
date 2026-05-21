@@ -9,7 +9,10 @@ from services.model_update.importers.unv_service import (
     import_unv_data,
     get_sensor_relative_error
 )
+from src.l3.core.config import settings
 from src.l3.core.errors import AppError
+from src.l3.infra.registry_repo import RegistryRepo
+from src.utils.file_fetch import download_if_url
 
 from ..common import error_response, server_error, success_response
 from ..models import (
@@ -25,12 +28,29 @@ from ..utils import log_request, model_to_dict
 router = APIRouter(tags=["model-update"])
 
 
+def _resolve_unv_download_dir(project_id: int = None) -> str:
+    if project_id is None:
+        return settings.data_root
+    try:
+        repo = RegistryRepo(settings.registry_db_path)
+        project_row = repo.get_project(str(int(project_id)))
+        if project_row is None:
+            return settings.data_root
+        return repo.resolve_workspace(project_row["workspace"], settings.data_root)
+    except Exception:
+        return settings.data_root
+
+
 @router.post("/import/unv")
 async def import_unv(request: Request, body: ImportUnvRequest):
     await log_request(request, model_to_dict(body))
     try:
-        result = import_unv_data(
+        resolved_file_path = download_if_url(
             body.file_path,
+            dest_dir=_resolve_unv_download_dir(body.project_id),
+        )
+        result = import_unv_data(
+            resolved_file_path,
             project_id=body.project_id,
             file_id=body.file_id,
             clear_before_insert=body.clear_before_insert,
