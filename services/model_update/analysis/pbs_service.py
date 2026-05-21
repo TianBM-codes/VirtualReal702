@@ -13,6 +13,7 @@ from db import get_connection
 from src.l3.core.errors import NotFoundError, ValidationError
 
 from .model_update_meta_service import _load_service_config
+from .project_log_service import log_project_error, log_project_info, log_project_step
 
 
 DEFAULT_PBS_APPLICATIONS = {
@@ -718,54 +719,119 @@ def run_pbs_solver_job(
     timeout_sec: int = 60,
     submit_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    source_path = Path(input_file).expanduser().resolve()
-    if not source_path.exists() or not source_path.is_file():
-        raise NotFoundError("未找到 PBS 本地输入文件", {"input_file": str(source_path)})
+    try:
+        if project_id is not None:
+            log_project_step(
+                int(project_id),
+                f"PBS {application} run started",
+                stage="pbs_run_started",
+                percent=0,
+            )
 
-    project_pbs_settings = _ensure_project_pbs_settings(project_id, _load_project_pbs_settings(project_id))
-    resolved_env = _resolve_project_pbs_env(env, project_pbs_settings)
-    config = load_pbs_environment_config(resolved_env)
-    resolved_application = str(application or "").strip()
-    config = _apply_project_pbs_settings(
-        config,
-        application=resolved_application,
-        pbs_settings=project_pbs_settings,
-    )
-    client = PBSClient(config, timeout=timeout_sec)
-    resolved_job_name = str(job_name or source_path.stem).strip() or source_path.stem
-    target_dir = Path(output_dir).expanduser().resolve() if output_dir else source_path.parent.resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
+        source_path = Path(input_file).expanduser().resolve()
+        if not source_path.exists() or not source_path.is_file():
+            raise NotFoundError("PBS local input file not found", {"input_file": str(source_path)})
+        if project_id is not None:
+            log_project_info(
+                int(project_id),
+                f"Resolved PBS input file: {source_path}",
+                stage="path_resolved",
+                percent=5,
+            )
 
-    primary_ext = source_path.suffix.lower()
-    app_config = client.get_application_config(resolved_application)
-    allowed_exts = {str(item).lower() for item in app_config.get("primary_file_exts", [])}
-    if allowed_exts and primary_ext not in allowed_exts:
-        raise ValidationError(
-            "pbs primary file extension is not supported for application",
-            {
-                "application": resolved_application,
-                "input_file": str(source_path),
-                "input_ext": primary_ext,
-                "allowed_exts": sorted(allowed_exts),
-            },
+        project_pbs_settings = _ensure_project_pbs_settings(project_id, _load_project_pbs_settings(project_id))
+        resolved_env = _resolve_project_pbs_env(env, project_pbs_settings)
+        config = load_pbs_environment_config(resolved_env)
+        resolved_application = str(application or "").strip()
+        config = _apply_project_pbs_settings(
+            config,
+            application=resolved_application,
+            pbs_settings=project_pbs_settings,
         )
+        if project_id is not None:
+            log_project_info(
+                int(project_id),
+                f"PBS config validated: env={config.name}, application={resolved_application}",
+                stage="pbs_config_ready",
+                percent=10,
+            )
 
-    result = client.run_job(
-        application=resolved_application,
-        local_primary_file=str(source_path),
-        job_name=resolved_job_name,
-        output_dir=str(target_dir),
-        wait=wait,
-        download_results=download_results,
-        poll_interval_sec=poll_interval_sec,
-        wait_timeout_sec=wait_timeout_sec,
-        submit_overrides=submit_overrides,
-    )
-    result["input_file"] = str(source_path)
-    result["output_dir"] = str(target_dir)
-    result["project_id"] = int(project_id) if project_id is not None else None
-    result["workflow"] = f"pbs_{resolved_application.lower()}_run"
-    return result
+        client = PBSClient(config, timeout=timeout_sec)
+        resolved_job_name = str(job_name or source_path.stem).strip() or source_path.stem
+        target_dir = Path(output_dir).expanduser().resolve() if output_dir else source_path.parent.resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        primary_ext = source_path.suffix.lower()
+        app_config = client.get_application_config(resolved_application)
+        allowed_exts = {str(item).lower() for item in app_config.get("primary_file_exts", [])}
+        if allowed_exts and primary_ext not in allowed_exts:
+            raise ValidationError(
+                "pbs primary file extension is not supported for application",
+                {
+                    "application": resolved_application,
+                    "input_file": str(source_path),
+                    "input_ext": primary_ext,
+                    "allowed_exts": sorted(allowed_exts),
+                },
+            )
+
+        if project_id is not None:
+            log_project_step(
+                int(project_id),
+                f"Submitting PBS job: {resolved_job_name}",
+                stage="pbs_submit",
+                percent=20,
+            )
+            if wait:
+                log_project_info(
+                    int(project_id),
+                    "PBS job will wait for completion and download outputs if requested",
+                    stage="pbs_wait",
+                    percent=30,
+                )
+
+        result = client.run_job(
+            application=resolved_application,
+            local_primary_file=str(source_path),
+            job_name=resolved_job_name,
+            output_dir=str(target_dir),
+            wait=wait,
+            download_results=download_results,
+            poll_interval_sec=poll_interval_sec,
+            wait_timeout_sec=wait_timeout_sec,
+            submit_overrides=submit_overrides,
+        )
+        result["input_file"] = str(source_path)
+        result["output_dir"] = str(target_dir)
+        result["project_id"] = int(project_id) if project_id is not None else None
+        result["workflow"] = f"pbs_{resolved_application.lower()}_run"
+
+        if project_id is not None:
+            job_id = result.get("job_id") or result.get("id") or ""
+            if wait:
+                downloaded_count = len(result.get("downloaded_files") or [])
+                log_project_step(
+                    int(project_id),
+                    f"PBS job finished: job_id={job_id}, downloaded_files={downloaded_count}",
+                    stage="pbs_finished",
+                    percent=100,
+                )
+            else:
+                log_project_step(
+                    int(project_id),
+                    f"PBS job submitted: job_id={job_id}",
+                    stage="pbs_submitted",
+                    percent=40,
+                )
+        return result
+    except Exception as exc:
+        if project_id is not None:
+            log_project_error(
+                int(project_id),
+                f"PBS {application} run failed: {exc}",
+                stage="failed",
+            )
+        raise
 
 
 def get_pbs_job_status(*, project_id: int, job_id: str, env: Optional[str] = None, timeout_sec: int = 60) -> Dict[str, Any]:

@@ -15,6 +15,11 @@ from tools.odb_client import ODBClient, ODBClientError
 
 from ..importers.op2_service import build_modal_import_payload
 from .model_update_meta_service import resolve_abaqus_command, resolve_nastran_command
+from .project_log_service import (
+    log_project_error,
+    log_project_info,
+    log_project_step,
+)
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import (
     build_sol103_controls,
@@ -1121,127 +1126,164 @@ def run_solver_and_parse_project_result(
     wait_timeout_sec: int = 3600,
     poll_interval_sec: float = 2.0,
 ) -> dict:
-    input_path = _resolve_project_file(project_id, input_file, "input_file")
-    source_type = input_path.suffix.lower()
-
-    if source_type == ".inp":
-        solver_payload = run_abaqus_job(
-            input_inp=str(input_path),
-            output_dir=output_dir,
-            abaqus=abaqus,
-            job_name=job_name,
-            cpus=cpus,
-            interactive=interactive,
-            run_solver=True,
-            timeout_sec=timeout_sec,
-            extra_args=extra_args,
+    log_project_step(int(project_id), "统一计算并解析开始", stage="solver_run_and_parse", percent=0)
+    try:
+        input_path = _resolve_project_file(project_id, input_file, "input_file")
+        source_type = input_path.suffix.lower()
+        log_project_info(
+            int(project_id),
+            f"已解析输入文件路径: {input_path.name}",
+            stage="path_resolved",
+            percent=5,
         )
-        solver = solver_payload.get("solver") or {}
-        if not solver.get("ok", False):
-            raise ValidationError(
-                "abaqus solve failed; project result upload was not started",
-                {"project_id": int(project_id), "solver": solver},
+
+        if source_type == ".inp":
+            log_project_step(int(project_id), "开始执行 Abaqus 求解", stage="solver_started", percent=15)
+            solver_payload = run_abaqus_job(
+                input_inp=str(input_path),
+                output_dir=output_dir,
+                abaqus=abaqus,
+                job_name=job_name,
+                cpus=cpus,
+                interactive=interactive,
+                run_solver=True,
+                timeout_sec=timeout_sec,
+                extra_args=extra_args,
             )
-        result_file = solver.get("artifacts", {}).get("odb")
-        if not result_file:
-            raise NotFoundError(
-                "odb file not found after Abaqus solve",
-                {
-                    "project_id": int(project_id),
-                    "artifacts": solver.get("artifacts") or {},
+            solver = solver_payload.get("solver") or {}
+            if not solver.get("ok", False):
+                raise ValidationError(
+                    "abaqus solve failed; project result upload was not started",
+                    {"project_id": int(project_id), "solver": solver},
+                )
+            result_file = solver.get("artifacts", {}).get("odb")
+            if not result_file:
+                raise NotFoundError(
+                    "odb file not found after Abaqus solve",
+                    {
+                        "project_id": int(project_id),
+                        "artifacts": solver.get("artifacts") or {},
+                    },
+                )
+            resolved_job_name = str(solver_payload.get("job_name") or job_name or input_path.stem)
+            log_project_step(
+                int(project_id),
+                f"Abaqus 求解完成，开始上传 ODB 结果组: {Path(result_file).name}",
+                stage="result_upload_started",
+                percent=70,
+            )
+            upload = _submit_project_result_group_and_wait(
+                project_id=project_id,
+                odb_path=result_file,
+                job_name=resolved_job_name,
+                result_group=result_group,
+                display_name=display_name,
+                base_url=base_url,
+                step=step,
+                frame=frame,
+                field_prefix=field_prefix,
+                timeout=upload_timeout,
+                wait_timeout_sec=wait_timeout_sec,
+                poll_interval_sec=poll_interval_sec,
+            )
+            log_project_step(
+                int(project_id),
+                f"结果组解析完成: {upload['result_group']}",
+                stage="result_upload_finished",
+                percent=100,
+            )
+            return {
+                "workflow": "run_and_parse",
+                "project_id": int(project_id),
+                "source_type": "inp",
+                "solver_type": "abaqus",
+                "project_status": "not_checked",
+                "job_name": resolved_job_name,
+                "result_group": upload["result_group"],
+                "result_group_status": upload["status"],
+                "artifacts": {
+                    "input_file": str(input_path),
+                    "result_file": os.path.abspath(str(result_file)),
                 },
-            )
-        resolved_job_name = str(solver_payload.get("job_name") or job_name or input_path.stem)
-        upload = _submit_project_result_group_and_wait(
-            project_id=project_id,
-            odb_path=result_file,
-            job_name=resolved_job_name,
-            result_group=result_group,
-            display_name=display_name,
-            base_url=base_url,
-            step=step,
-            frame=frame,
-            field_prefix=field_prefix,
-            timeout=upload_timeout,
-            wait_timeout_sec=wait_timeout_sec,
-            poll_interval_sec=poll_interval_sec,
-        )
-        return {
-            "workflow": "run_and_parse",
-            "project_id": int(project_id),
-            "source_type": "inp",
-            "solver_type": "abaqus",
-            "project_status": "not_checked",
-            "job_name": resolved_job_name,
-            "result_group": upload["result_group"],
-            "result_group_status": upload["status"],
-            "artifacts": {
-                "input_file": str(input_path),
-                "result_file": os.path.abspath(str(result_file)),
-            },
-            "solver": solver,
-            "upload": upload,
-        }
+                "solver": solver,
+                "upload": upload,
+            }
 
-    if source_type == ".bdf":
-        solver_payload = run_nastran_sol103_job(
-            input_bdf=str(input_path),
-            output_bdf=output_bdf,
-            settings=dict(settings or {}),
-            nastran=nastran,
-            run_solver=True,
-            timeout_sec=timeout_sec,
-            extra_args=extra_args,
-        )
-        solver = solver_payload.get("solver") or {}
-        if not solver.get("ok", False):
-            raise ValidationError(
-                "nastran SOL103 solve failed; project result upload was not started",
-                {"project_id": int(project_id), "solver": solver},
+        if source_type == ".bdf":
+            log_project_step(int(project_id), "开始执行 Nastran SOL103 求解", stage="solver_started", percent=15)
+            solver_payload = run_nastran_sol103_job(
+                input_bdf=str(input_path),
+                output_bdf=output_bdf,
+                settings=dict(settings or {}),
+                nastran=nastran,
+                run_solver=True,
+                timeout_sec=timeout_sec,
+                extra_args=extra_args,
             )
-        summary = solver.get("artifacts_summary") or {}
-        op2_files = list(summary.get("op2_files") or [])
-        if not op2_files:
-            raise NotFoundError(
-                "op2 file not found after SOL103 solve",
-                {
-                    "project_id": int(project_id),
-                    "artifacts_summary": summary,
+            solver = solver_payload.get("solver") or {}
+            if not solver.get("ok", False):
+                raise ValidationError(
+                    "nastran SOL103 solve failed; project result upload was not started",
+                    {"project_id": int(project_id), "solver": solver},
+                )
+            summary = solver.get("artifacts_summary") or {}
+            op2_files = list(summary.get("op2_files") or [])
+            if not op2_files:
+                raise NotFoundError(
+                    "op2 file not found after SOL103 solve",
+                    {
+                        "project_id": int(project_id),
+                        "artifacts_summary": summary,
+                    },
+                )
+            result_file = os.path.abspath(str(op2_files[0]))
+            resolved_job_name = str(job_name or Path(solver_payload.get("output_bdf") or input_path).stem)
+            log_project_step(
+                int(project_id),
+                f"Nastran 求解完成，开始上传 OP2 结果组: {Path(result_file).name}",
+                stage="result_upload_started",
+                percent=70,
+            )
+            upload = _submit_generic_project_result_group_and_wait(
+                project_id=project_id,
+                source_path=result_file,
+                job_name=resolved_job_name,
+                result_group=result_group,
+                display_name=display_name,
+                base_url=base_url,
+                parse_options=None,
+                timeout=upload_timeout,
+                wait_timeout_sec=wait_timeout_sec,
+                poll_interval_sec=poll_interval_sec,
+            )
+            log_project_step(
+                int(project_id),
+                f"结果组解析完成: {upload['result_group']}",
+                stage="result_upload_finished",
+                percent=100,
+            )
+            return {
+                "workflow": "run_and_parse",
+                "project_id": int(project_id),
+                "source_type": "bdf",
+                "solver_type": "nastran",
+                "project_status": "not_checked",
+                "job_name": resolved_job_name,
+                "result_group": upload["result_group"],
+                "result_group_status": upload["status"],
+                "artifacts": {
+                    "input_file": str(input_path),
+                    "result_file": result_file,
+                    "analysis_bdf": str(solver_payload.get("output_bdf")),
                 },
-            )
-        result_file = os.path.abspath(str(op2_files[0]))
-        resolved_job_name = str(job_name or Path(solver_payload.get("output_bdf") or input_path).stem)
-        upload = _submit_generic_project_result_group_and_wait(
-            project_id=project_id,
-            source_path=result_file,
-            job_name=resolved_job_name,
-            result_group=result_group,
-            display_name=display_name,
-            base_url=base_url,
-            parse_options=None,
-            timeout=upload_timeout,
-            wait_timeout_sec=wait_timeout_sec,
-            poll_interval_sec=poll_interval_sec,
-        )
-        return {
-            "workflow": "run_and_parse",
-            "project_id": int(project_id),
-            "source_type": "bdf",
-            "solver_type": "nastran",
-            "project_status": "not_checked",
-            "job_name": resolved_job_name,
-            "result_group": upload["result_group"],
-            "result_group_status": upload["status"],
-            "artifacts": {
-                "input_file": str(input_path),
-                "result_file": result_file,
-                "analysis_bdf": str(solver_payload.get("output_bdf")),
-            },
-            "solver": solver,
-            "upload": upload,
-        }
+                "solver": solver,
+                "upload": upload,
+            }
 
-    raise ValidationError(
-        "unsupported input file type; only .inp and .bdf are allowed",
-        {"input_file": str(input_path)},
-    )
+        raise ValidationError(
+            "unsupported input file type; only .inp and .bdf are allowed",
+            {"input_file": str(input_path)},
+        )
+    except Exception as exc:
+        log_project_error(int(project_id), f"统一计算并解析失败: {exc}", stage="failed")
+        raise

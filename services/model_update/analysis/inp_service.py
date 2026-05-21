@@ -19,6 +19,7 @@ from src.l3.infra.registry_repo import RegistryRepo
 
 from . import sensitivity_service as _sens
 from .console_log_service import safe_write_console_event
+from .project_log_service import log_project_error, log_project_info, log_project_step
 from .project_config_service import (
     get_test_data_mode,
     get_node_match_parameter_context,
@@ -2429,6 +2430,12 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        log_project_step(
+            int(project_id),
+            "开始执行节点匹配",
+            stage="node_match_started",
+            percent=0,
+        )
         octree_meta = _get_latest_octree_meta(cursor, project_id)
         cache_path = _ensure_octree_cache_file(cursor, int(project_id), octree_meta)
 
@@ -2516,6 +2523,12 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
         if overwrite:
             # Downstream tables depend on the node mapping, so they are cleared
             # together when the caller requests a fresh node alignment.
+            log_project_info(
+                int(project_id),
+                "节点匹配将覆盖旧结果，并清理相关自由度匹配与响应目录数据",
+                stage="node_match_overwrite",
+                percent=10,
+            )
             cursor.execute("DELETE FROM t_mt_py_fem_node_match WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_response_catalog WHERE pid = %s", (project_id,))
@@ -2575,6 +2588,12 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             space_match_status=1,
         )
         conn.commit()
+        log_project_step(
+            int(project_id),
+            f"节点匹配完成，已匹配 {len(matches)}/{len(test_nodes)} 个测点",
+            stage="node_match_finished",
+            percent=100,
+        )
 
         return {
             "project_id": project_id,
@@ -2588,8 +2607,13 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
             "octree_cache_path": cache_path,
             "test_node_source_table": test_node_source_table,
         }
-    except Exception:
+    except Exception as exc:
         conn.rollback()
+        log_project_error(
+            int(project_id),
+            f"节点匹配失败: {exc}",
+            stage="failed",
+        )
         raise
     finally:
         cursor.close()
@@ -2825,6 +2849,19 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        log_project_step(
+            int(project_id),
+            "开始执行自由度匹配",
+            stage="dof_match_started",
+            percent=0,
+        )
+        if auto_created_node_match:
+            log_project_info(
+                int(project_id),
+                "自由度匹配前自动补齐了节点匹配结果",
+                stage="dof_match_prepare",
+                percent=5,
+            )
         cursor.execute("""
             SELECT test_node_id, instance_name, fem_node_label, transform_json
             FROM t_mt_py_fem_node_match
@@ -2846,6 +2883,12 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
         modal_unv_mode = _is_modal_unv_project(int(project_id), cursor=cursor)
 
         if overwrite:
+            log_project_info(
+                int(project_id),
+                "自由度匹配将覆盖旧结果，并清理响应目录与模态相关性数据",
+                stage="dof_match_overwrite",
+                percent=10,
+            )
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_response_catalog WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
@@ -2921,6 +2964,12 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
                         _json_dumps(transform_payload),
                     ))
             conn.commit()
+            log_project_step(
+                int(project_id),
+                f"自由度匹配完成，已生成 {len(dof_matches)} 个自由度映射",
+                stage="dof_match_finished",
+                percent=100,
+            )
             return {
                 "project_id": project_id,
                 "node_match_auto_created": auto_created_node_match,
@@ -3031,6 +3080,12 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
 
         conn.commit()
         dof_matches = list(dof_matches_by_key.values())
+        log_project_step(
+            int(project_id),
+            f"自由度匹配完成，位移测点 {len(displacement_sensors)} 个，通道 {len(displacement_channels)} 个，匹配 {len(dof_matches)} 个自由度",
+            stage="dof_match_finished",
+            percent=100,
+        )
         return {
             "project_id": project_id,
             "node_match_auto_created": auto_created_node_match,
@@ -3040,8 +3095,13 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
             "dof_match_count": len(dof_matches),
             "dof_matches_preview": dof_matches[:20],
         }
-    except Exception:
+    except Exception as exc:
         conn.rollback()
+        log_project_error(
+            int(project_id),
+            f"自由度匹配失败: {exc}",
+            stage="failed",
+        )
         raise
     finally:
         cursor.close()
@@ -3246,7 +3306,19 @@ def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=No
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        log_project_step(
+            int(project_id),
+            "开始导入 FEM 模态结果",
+            stage="modal_store_started",
+            percent=0,
+        )
         if overwrite:
+            log_project_info(
+                int(project_id),
+                "将覆盖旧的 FEM 模态结果与模态相关性数据",
+                stage="modal_store_overwrite",
+                percent=10,
+            )
             cursor.execute("DELETE FROM t_mt_py_fem_modal_result WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
 
@@ -3313,6 +3385,12 @@ def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=No
                     preview.append(payload)
 
         conn.commit()
+        log_project_step(
+            int(project_id),
+            f"FEM 模态结果入库完成，模态 {len(modal_modes)} 阶，记录 {row_count} 条",
+            stage="modal_store_finished",
+            percent=100,
+        )
         return {
             "project_id": project_id,
             "mode_count": len(modal_modes),
@@ -3320,8 +3398,13 @@ def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=No
             "source_file_path": os.path.abspath(file_path) if file_path else None,
             "rows_preview": preview,
         }
-    except Exception:
+    except Exception as exc:
         conn.rollback()
+        log_project_error(
+            int(project_id),
+            f"FEM 模态结果入库失败: {exc}",
+            stage="failed",
+        )
         raise
     finally:
         cursor.close()
@@ -3738,7 +3821,19 @@ def import_fe_static_results(project_id, overwrite=True, file_path=None, rows=No
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        log_project_step(
+            int(project_id),
+            f"开始导入 FEM 静力结果，载荷工况 {int(load_case_no)}",
+            stage="static_store_started",
+            percent=0,
+        )
         if overwrite:
+            log_project_info(
+                int(project_id),
+                "将覆盖旧的 FEM 静力结果",
+                stage="static_store_overwrite",
+                percent=10,
+            )
             cursor.execute("DELETE FROM t_mt_py_fem_static_result WHERE pid = %s", (project_id,))
         source_file_path = os.path.abspath(file_path) if file_path else None
         result = _persist_fe_static_results(
@@ -3751,9 +3846,20 @@ def import_fe_static_results(project_id, overwrite=True, file_path=None, rows=No
             source_file_path=source_file_path,
         )
         conn.commit()
+        log_project_step(
+            int(project_id),
+            f"FEM 静力结果入库完成，载荷工况 {int(load_case_no)}，记录 {int(result['row_count'])} 条",
+            stage="static_store_finished",
+            percent=100,
+        )
         return result
-    except Exception:
+    except Exception as exc:
         conn.rollback()
+        log_project_error(
+            int(project_id),
+            f"FEM 静力结果入库失败: {exc}",
+            stage="failed",
+        )
         raise
     finally:
         cursor.close()
@@ -3771,27 +3877,38 @@ def import_fe_static_results_from_project_result(
         overwrite: bool = True,
 ):
     ensure_tables_exist()
-    static_payload = _collect_project_result_static_rows(
-        project_id=int(project_id),
-        result_group=str(result_group),
-        step=step,
-        frame=frame,
-        instances=instances,
-    )
-    static_rows = _load_static_result_payload(
-        rows=[
-            {
-                **row,
-                "load_case_no": int(load_case_no),
-            }
-            for row in static_payload["rows"]
-        ]
-    )
-
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        log_project_step(
+            int(project_id),
+            f"开始从结果组导入 FEM 静力结果，结果组 {result_group}，载荷工况 {int(load_case_no)}",
+            stage="project_result_store_started",
+            percent=0,
+        )
+        static_payload = _collect_project_result_static_rows(
+            project_id=int(project_id),
+            result_group=str(result_group),
+            step=step,
+            frame=frame,
+            instances=instances,
+        )
+        static_rows = _load_static_result_payload(
+            rows=[
+                {
+                    **row,
+                    "load_case_no": int(load_case_no),
+                }
+                for row in static_payload["rows"]
+            ]
+        )
         if overwrite:
+            log_project_info(
+                int(project_id),
+                f"将覆盖结果组 {result_group} 对应载荷工况 {int(load_case_no)} 的旧静力结果",
+                stage="project_result_store_overwrite",
+                percent=15,
+            )
             cursor.execute(
                 "DELETE FROM t_mt_py_fem_static_result WHERE pid = %s AND load_case_no = %s",
                 (int(project_id), int(load_case_no)),
@@ -3813,9 +3930,20 @@ def import_fe_static_results_from_project_result(
                 "overwrite": bool(overwrite),
             }
         )
+        log_project_step(
+            int(project_id),
+            f"结果组静力结果入库完成，结果组 {result_group}，记录 {int(result['row_count'])} 条",
+            stage="project_result_store_finished",
+            percent=100,
+        )
         return result
-    except Exception:
+    except Exception as exc:
         conn.rollback()
+        log_project_error(
+            int(project_id),
+            f"结果组静力结果入库失败: {exc}",
+            stage="failed",
+        )
         raise
     finally:
         cursor.close()
