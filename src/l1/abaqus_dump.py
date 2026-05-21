@@ -390,6 +390,18 @@ def compute_face_data(etype_code, conn_corner):
 
 # ─── INTEGRATION_POINT reshape ────────────────────────────────────────────────
 
+def _block_data_2d(block):
+    """Return block.data as a 2D float32 array [N, ncomp].
+
+    Scalar fields (e.g. STATUS) may return a 1D array [N] in some Abaqus
+    versions.  Always promote to [N, 1] so callers can use .shape[1] safely.
+    """
+    d = np.array(block.data, dtype=np.float32)
+    if d.ndim == 1:
+        d = d.reshape(-1, 1)
+    return d
+
+
 def reshape_ip_block(block):
     """
     Reshape flat IP block into structured arrays.
@@ -410,7 +422,7 @@ def reshape_ip_block(block):
     data_nd  [M, n_ip, ncomp]  float32
     """
     labels_flat = np.array(block.elementLabels, dtype=np.int32)
-    data_flat   = np.array(block.data,          dtype=np.float32)
+    data_flat   = _block_data_2d(block)
     ncomp       = data_flat.shape[1]
 
     # integrationPoints: per-row IP number array (correct attribute name)
@@ -443,7 +455,7 @@ def reshape_ip_block(block):
 def reshape_element_nodal_block(block):
     """flat ELEMENT_NODAL → (u_elems [M], data_nd [M, n_enodes, ncomp])"""
     labels_flat = np.array(block.elementLabels, dtype=np.int32)
-    data_flat   = np.array(block.data,          dtype=np.float32)
+    data_flat   = _block_data_2d(block)
     ncomp       = data_flat.shape[1]
 
     u_elems  = np.unique(labels_flat)
@@ -1493,7 +1505,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     continue  # already discovered
 
                 bd = get_block_dir(inst_name, position, elem_type, sp_num)
-                ncomp = np.array(block.data).shape[1]
+                ncomp = _block_data_2d(block).shape[1]
                 info  = {
                     'inst_name': inst_name,
                     'position':  position,
@@ -1563,7 +1575,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         if key in block_struct:
                             continue
                         bd = get_block_dir(inst_name, position, elem_type, sp_num)
-                        ncomp = np.array(block.data).shape[1]
+                        ncomp = _block_data_2d(block).shape[1]
                         u_elems, data_nd = reshape_element_nodal_block(block)
                         npsave(os.path.join(bd, 'labels.npy'), u_elems)
                         block_struct[key] = {
@@ -1609,32 +1621,57 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
 
                     if position == 'NODAL':
                         labels    = np.array(block.nodeLabels, dtype=np.int32)
-                        data_flat = np.array(block.data,       dtype=np.float32)
+                        data_flat = _block_data_2d(block)
                         canon     = np.load(os.path.join(bd, 'labels.npy'))
                         rows      = np.searchsorted(canon, labels)
-                        out       = np.zeros((len(canon), data_flat.shape[1]),
-                                            dtype=np.float32)
-                        out[rows] = data_flat
+                        # Guard: labels not in canon → searchsorted returns len(canon)
+                        valid = rows < len(canon)
+                        out   = np.zeros((len(canon), data_flat.shape[1]),
+                                         dtype=np.float32)
+                        out[rows[valid]] = data_flat[valid]
                         npsave(fr_path, out)
 
                     elif position == 'INTEGRATION_POINT':
-                        _, _, blk_sp_num, data_nd = reshape_ip_block(block)
+                        u_elems_fr, _, blk_sp_num, data_nd = reshape_ip_block(block)
                         if blk_sp_num is not None:
                             has_section = 1
-                        npsave(fr_path, data_nd)
+                        # Align to canonical labels so deleted elements get zero
+                        # and frame shapes stay constant (needed for l1_pack stacking)
+                        canon    = np.load(os.path.join(bd, 'labels.npy'))
+                        M_canon  = len(canon)
+                        if len(u_elems_fr) != M_canon:
+                            n_ip_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                            out  = np.zeros((M_canon, n_ip_d, ncomp_d), dtype=np.float32)
+                            rows = np.searchsorted(canon, u_elems_fr)
+                            valid = rows < M_canon
+                            out[rows[valid]] = data_nd[valid]
+                            npsave(fr_path, out)
+                        else:
+                            npsave(fr_path, data_nd)
 
                     elif position == 'ELEMENT_NODAL':
-                        _, data_nd = reshape_element_nodal_block(block)
-                        npsave(fr_path, data_nd)
+                        u_elems_fr, data_nd = reshape_element_nodal_block(block)
+                        canon    = np.load(os.path.join(bd, 'labels.npy'))
+                        M_canon  = len(canon)
+                        if len(u_elems_fr) != M_canon:
+                            n_en_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                            out  = np.zeros((M_canon, n_en_d, ncomp_d), dtype=np.float32)
+                            rows = np.searchsorted(canon, u_elems_fr)
+                            valid = rows < M_canon
+                            out[rows[valid]] = data_nd[valid]
+                            npsave(fr_path, out)
+                        else:
+                            npsave(fr_path, data_nd)
 
                     else:
                         raw_lbl  = np.array(block.elementLabels, dtype=np.int32)
-                        raw_data = np.array(block.data, dtype=np.float32)
+                        raw_data = _block_data_2d(block)
                         canon    = np.load(os.path.join(bd, 'labels.npy'))
                         rows     = np.searchsorted(canon, raw_lbl)
+                        valid    = rows < len(canon)
                         out      = np.zeros((len(canon), raw_data.shape[1]),
-                                           dtype=np.float32)
-                        out[rows] = raw_data
+                                            dtype=np.float32)
+                        out[rows[valid]] = raw_data[valid]
                         npsave(fr_path, out)
 
                 # ── Write extrapolated ELEMENT_NODAL data for this frame ──────
