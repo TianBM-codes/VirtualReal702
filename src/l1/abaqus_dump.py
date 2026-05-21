@@ -1624,10 +1624,9 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         data_flat = _block_data_2d(block)
                         canon     = np.load(os.path.join(bd, 'labels.npy'))
                         rows      = np.searchsorted(canon, labels)
-                        # Guard: labels not in canon → searchsorted returns len(canon)
-                        valid = rows < len(canon)
-                        out   = np.zeros((len(canon), data_flat.shape[1]),
-                                         dtype=np.float32)
+                        M_c       = len(canon)
+                        valid     = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == labels)
+                        out       = np.zeros((M_c, data_flat.shape[1]), dtype=np.float32)
                         out[rows[valid]] = data_flat[valid]
                         npsave(fr_path, out)
 
@@ -1636,14 +1635,18 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         if blk_sp_num is not None:
                             has_section = 1
                         # Align to canonical labels so deleted elements get zero
-                        # and frame shapes stay constant (needed for l1_pack stacking)
+                        # and frame shapes stay constant (needed for l1_pack stacking).
+                        # Equality check (canon[rows] == u_elems_fr) guards against
+                        # searchsorted returning a valid-range index that actually
+                        # belongs to a different element (happens when frame has labels
+                        # not present in canon, e.g. first frame missed an element).
                         canon    = np.load(os.path.join(bd, 'labels.npy'))
                         M_canon  = len(canon)
                         if len(u_elems_fr) != M_canon:
                             n_ip_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
                             out  = np.zeros((M_canon, n_ip_d, ncomp_d), dtype=np.float32)
                             rows = np.searchsorted(canon, u_elems_fr)
-                            valid = rows < M_canon
+                            valid = (rows < M_canon) & (canon[np.minimum(rows, M_canon - 1)] == u_elems_fr)
                             out[rows[valid]] = data_nd[valid]
                             npsave(fr_path, out)
                         else:
@@ -1657,7 +1660,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             n_en_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
                             out  = np.zeros((M_canon, n_en_d, ncomp_d), dtype=np.float32)
                             rows = np.searchsorted(canon, u_elems_fr)
-                            valid = rows < M_canon
+                            valid = (rows < M_canon) & (canon[np.minimum(rows, M_canon - 1)] == u_elems_fr)
                             out[rows[valid]] = data_nd[valid]
                             npsave(fr_path, out)
                         else:
@@ -1668,9 +1671,9 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         raw_data = _block_data_2d(block)
                         canon    = np.load(os.path.join(bd, 'labels.npy'))
                         rows     = np.searchsorted(canon, raw_lbl)
-                        valid    = rows < len(canon)
-                        out      = np.zeros((len(canon), raw_data.shape[1]),
-                                            dtype=np.float32)
+                        M_c      = len(canon)
+                        valid    = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == raw_lbl)
+                        out      = np.zeros((M_c, raw_data.shape[1]), dtype=np.float32)
                         out[rows[valid]] = raw_data[valid]
                         npsave(fr_path, out)
 
