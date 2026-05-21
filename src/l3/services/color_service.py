@@ -380,6 +380,55 @@ def _labels_from_elsets(
 
 
 # ---------------------------------------------------------------------------
+# L1 complete-value helpers (for legend completeness)
+# ---------------------------------------------------------------------------
+
+def _all_unique_vals_from_l1(idx: ModelIndex, instance: str, attr_name: str) -> List[str]:
+    """
+    Read *attr_name* (e.g. 'material_name', 'section_type') from ALL element
+    groups in the L1 geometry H5, returning every unique non-empty value.
+    Used to ensure the legend lists model-level values, not just surface-visible ones.
+    """
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    if not os.path.exists(geom_h5):
+        return []
+    vals: list = []
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            for etype_str in f.get("elements", {}):
+                grp = f[f"elements/{etype_str}"]
+                if attr_name not in grp:
+                    continue
+                for raw in grp[attr_name][:]:
+                    v = raw.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+                    if v:
+                        vals.append(v)
+    except Exception:
+        pass
+    # preserve order of first occurrence, deduplicate
+    seen: dict = {}
+    for v in vals:
+        seen.setdefault(v, None)
+    return list(seen)
+
+
+def _all_etypes_from_l1(idx: ModelIndex, instance: str) -> List[str]:
+    """Return every element-type group name present in the L1 geometry H5."""
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    if not os.path.exists(geom_h5):
+        return []
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            return sorted(f.get("elements", {}).keys())
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Shared labels + legend computation (used by get_color_code and get_legend)
 # ---------------------------------------------------------------------------
 
@@ -417,7 +466,22 @@ def _compute_labels_and_legend(
         present     = set(labels)
         unique_vals = [v for v in ordered if v in present]
     else:
+        # Surface-derived labels (in appearance order)
         unique_vals = list(dict.fromkeys(labels))
+        # For etype / material / section_type: append any values that only
+        # exist on interior (non-surface) elements so the legend is complete.
+        if scheme in ("etype", "material", "section_type"):
+            if scheme == "etype":
+                all_l1 = _all_etypes_from_l1(idx, instance)
+            else:
+                attr_name = "material_name" if scheme == "material" else "section_type"
+                all_l1 = _all_unique_vals_from_l1(idx, instance, attr_name)
+            surface_set = set(unique_vals)
+            for v in all_l1:
+                if v and v not in surface_set:
+                    unique_vals.append(v)
+                    surface_set.add(v)
+
     val_to_id = {v: i for i, v in enumerate(unique_vals)}
 
     from ..infra.manifest_repo import ManifestRepo
