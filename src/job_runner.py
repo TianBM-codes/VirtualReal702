@@ -1224,6 +1224,51 @@ def _cleanup_result_group(workspace: str, result_group: str) -> None:
                 )
 
 
+def _normalize_op2_modal_import_config(parse_options_json: str = None):
+    parse_opts = {}
+    if parse_options_json:
+        try:
+            parse_opts = json.loads(parse_options_json)
+        except Exception:
+            parse_opts = {}
+
+    modal_cfg_raw = parse_opts.get("modal_import")
+    if modal_cfg_raw is False:
+        return None
+
+    if isinstance(modal_cfg_raw, dict):
+        if modal_cfg_raw.get("enabled") is False:
+            return None
+        modal_cfg = dict(modal_cfg_raw)
+    else:
+        modal_cfg = {}
+
+    modal_cfg.setdefault("subcase_id", None)
+    modal_cfg.setdefault("mode_numbers", None)
+    modal_cfg.setdefault("instance_name", None)
+    modal_cfg.setdefault("part_name", None)
+    modal_cfg.setdefault("overwrite", True)
+    modal_cfg.setdefault("async_submit", True)
+    return modal_cfg
+
+
+def _resolve_model_update_bdf_path(raw_bdf_path: str, workspace: str):
+    raw_text = str(raw_bdf_path or "").strip()
+    if not raw_text:
+        return None
+
+    file_name = Path(raw_text).name
+    if file_name:
+        workspace_candidate = os.path.abspath(os.path.join(workspace, file_name))
+        if os.path.exists(workspace_candidate):
+            return workspace_candidate
+
+    absolute_raw = os.path.abspath(raw_text)
+    if os.path.exists(absolute_raw):
+        return absolute_raw
+    return None
+
+
 def _run_op2_result_group(project_id: str, result_group: str,
                           op2_path: str, workspace: str,
                           parse_options_json: str = None) -> bool:
@@ -1252,26 +1297,21 @@ def _run_op2_result_group(project_id: str, result_group: str,
     logger.info("[%s] OP2 result_group '%s' ready", project_id, result_group)
 
     # ── Auto model-update OP2 modal import ────────────────────────────────────
-    parse_opts = {}
-    if parse_options_json:
-        try:
-            parse_opts = json.loads(parse_options_json)
-        except Exception:
-            pass
-    modal_cfg = parse_opts.get("modal_import")
+    modal_cfg = _normalize_op2_modal_import_config(parse_options_json)
     if modal_cfg is not None:
         _log_job(project_id, "step",
                  f"[{_kw(result_group)}] 自动导入 OP2 模态到 model_update",
                  stage="mu_import_op2_modal")
         try:
             # bdf_path: modal_cfg 里可显式指定，否则从 projects.inp_path 取
-            bdf_path_mu = modal_cfg.get("bdf_path")
-            if not bdf_path_mu:
+            raw_bdf_path_mu = modal_cfg.get("bdf_path")
+            if not raw_bdf_path_mu:
                 with _connect() as _c:
                     _row = _c.execute(
                         "SELECT inp_path FROM projects WHERE project_id=?", (project_id,)
                     ).fetchone()
-                    bdf_path_mu = _row["inp_path"] if _row else None
+                    raw_bdf_path_mu = _row["inp_path"] if _row else None
+            bdf_path_mu = _resolve_model_update_bdf_path(raw_bdf_path_mu, workspace)
             from services.model_update.importers.op2_service import build_modal_import_payload
             from services.model_update.analysis.inp_service import import_fe_modal_results
             from webapi.background_jobs import submit_background_task
