@@ -426,7 +426,12 @@ async def get_project(project_id: str):
     repo = _repo()
     proj = repo.get_project(project_id)
     if proj is None:
-        raise NotFoundError(f"Project '{project_id}' not found")
+        return ok({
+            "project_id":    project_id,
+            "source_type":   "unknown",
+            "geom_status":   "not_found",
+            "result_groups": [],
+        })
     # Eagerly load into registry if ready but not yet in memory.
     # Closes the 10-second poll gap: frontend sees geom_status=ready here,
     # then immediately calls /meta/overview — registry must have the entry by then.
