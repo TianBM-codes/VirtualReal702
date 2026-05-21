@@ -1,5 +1,6 @@
 import json
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from config import APP_CONFIG
@@ -34,11 +35,19 @@ app.include_router(model_update_router)
 app.include_router(modal_router)
 
 
-@app.on_event("startup")
-async def initialize_model_update_runtime() -> None:
-    # Warm the DB pool before the first frontend request arrives. This moves
-    # the one-time handshake cost out of endpoints such as /get/sensor_position.
-    initialize_database_runtime(ensure_tables=True, warm_connection=True)
+_base_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def model_update_lifespan(application):
+    async with _base_lifespan(application):
+        # Warm the DB pool before the first frontend request arrives. This moves
+        # the one-time handshake cost out of endpoints such as /get/sensor_position.
+        initialize_database_runtime(ensure_tables=True, warm_connection=True)
+        yield
+
+
+app.router.lifespan_context = model_update_lifespan
 
 
 def _now_iso() -> str:

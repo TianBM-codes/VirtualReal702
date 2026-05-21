@@ -7,7 +7,9 @@ from services.model_update.analysis.solver_service import (
     run_abaqus_sensitivity_job,
     run_nastran_sol103_and_store_modal_results,
     run_nastran_sol103_job,
+    run_solver_and_parse_project_result,
 )
+from services.model_update.solver_prep.nastran_sol103 import build_sol103_controls
 
 
 def _write_text(path: Path, text: str) -> Path:
@@ -43,7 +45,7 @@ def test_run_abaqus_sensitivity_job_prepares_files_without_running_solver(tmp_pa
     assert Path(result["generated_files"]["design_parameter_inp"]).exists()
     assert Path(result["generated_files"]["analysis_inp"]).exists()
     assert result["solver"] is None
-    assert result["command_preview"][0] == "abaqus"
+    assert result["command_preview"][0].lower().endswith("abaqus.bat") or result["command_preview"][0] == "abaqus"
 
 
 def test_run_abaqus_adjoint_job_prepares_inp_without_running_solver(tmp_path: Path):
@@ -80,7 +82,7 @@ def test_run_abaqus_adjoint_job_prepares_inp_without_running_solver(tmp_path: Pa
     assert result["workflow"] == "abaqus_adjoint_shell"
     assert Path(result["generated_files"]["analysis_inp"]).exists()
     assert result["solver"] is None
-    assert result["command_preview"][0] == "abaqus"
+    assert result["command_preview"][0].lower().endswith("abaqus.bat") or result["command_preview"][0] == "abaqus"
 
 
 def test_run_nastran_sol103_job_converts_bdf_without_running_solver(tmp_path: Path):
@@ -101,11 +103,33 @@ ENDDATA
     )
 
     output_bdf = Path(result["output_bdf"])
-    assert result["workflow"] == "nastran_sol103"
+    assert result["workflow"] == "nastran_sol103_run"
     assert output_bdf.exists()
     assert "SOL 103" in output_bdf.read_text(encoding="utf-8")
     assert result["solver"] is None
-    assert result["command_preview"][0] == "nastran"
+    assert result["command_preview"][0].lower().endswith("nastran.exe") or result["command_preview"][0] == "nastran"
+
+
+def test_build_sol103_controls_embed_geometry_true_uses_post_minus_1():
+    controls, _ = build_sol103_controls(
+        {
+            "result.target": "OP2",
+            "embed_geometry": True,
+        }
+    )
+
+    assert "PARAM   POST          -1" in controls
+
+
+def test_build_sol103_controls_embed_geometry_false_uses_post_minus_2():
+    controls, _ = build_sol103_controls(
+        {
+            "result.target": "OP2",
+            "embed_geometry": False,
+        }
+    )
+
+    assert "PARAM   POST          -2" in controls
 
 
 def test_build_abaqus_command_uses_basename_and_runtime_flags():
@@ -201,6 +225,131 @@ def test_run_nastran_sol103_and_store_modal_results_uses_generated_bdf_for_op2_i
         output_bdf="D:/demo/model_sol103.bdf",
     )
 
-    assert captured["op2_path"] == "D:/demo/model_sol103.op2"
-    assert captured["bdf_path"] == "D:/demo/model_sol103.bdf"
-    assert result["op2_path"] == "D:/demo/model_sol103.op2"
+    assert Path(captured["op2_path"]) == Path("D:/demo/model_sol103.op2")
+    assert Path(captured["bdf_path"]) == Path("D:/demo/model_sol103.bdf")
+    assert Path(result["op2_path"]) == Path("D:/demo/model_sol103.op2")
+
+
+def test_run_solver_and_parse_project_result_for_inp_skips_project_creation(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import solver_service
+
+    captured = {}
+    project_dir = tmp_path / "1001"
+    project_dir.mkdir()
+    input_inp = _write_text(project_dir / "case_a.inp", "*Heading\n")
+
+    monkeypatch.setattr(
+        solver_service,
+        "run_abaqus_job",
+        lambda **kwargs: {
+            "job_name": kwargs.get("job_name") or "case_a",
+            "solver": {
+                "ok": True,
+                "artifacts": {"odb": "D:/demo/case_a.odb"},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "_submit_project_result_group_and_wait",
+        lambda **kwargs: captured.update(kwargs) or {
+            "result_group": "case_a_result",
+            "status": "ready",
+        },
+    )
+    monkeypatch.setattr(solver_service, "_project_workspace", lambda project_id: project_dir.resolve())
+
+    result = run_solver_and_parse_project_result(
+        project_id=1001,
+        input_file="case_a.inp",
+    )
+
+    assert result["workflow"] == "run_and_parse"
+    assert result["project_id"] == 1001
+    assert result["project_status"] == "not_checked"
+    assert captured["project_id"] == 1001
+    assert "result_group" in result
+
+
+def test_run_solver_and_parse_project_result_for_bdf_uploads_op2(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import solver_service
+
+    project_dir = tmp_path / "1002"
+    project_dir.mkdir()
+    input_bdf = _write_text(
+        project_dir / "demo.bdf",
+        """SOL 101
+CEND
+BEGIN BULK
+GRID,1,,0.,0.,0.
+ENDDATA
+""",
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        solver_service,
+        "run_nastran_sol103_job",
+        lambda **kwargs: {
+            "output_bdf": "D:/demo/demo_sol103.bdf",
+            "solver": {
+                "ok": True,
+                "artifacts_summary": {"op2_files": ["D:/demo/demo_sol103.op2"]},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "_submit_generic_project_result_group_and_wait",
+        lambda **kwargs: captured.update(kwargs) or {
+            "result_group": "demo_result",
+            "status": "ready",
+        },
+    )
+    monkeypatch.setattr(solver_service, "_project_workspace", lambda project_id: project_dir.resolve())
+
+    result = run_solver_and_parse_project_result(
+        project_id=1002,
+        input_file="demo.bdf",
+    )
+
+    assert result["source_type"] == "bdf"
+    assert result["solver_type"] == "nastran"
+    assert Path(result["artifacts"]["result_file"]) == Path("D:/demo/demo_sol103.op2")
+    assert captured["project_id"] == 1002
+    assert Path(captured["source_path"]) == Path("D:/demo/demo_sol103.op2")
+
+
+def test_run_solver_and_parse_project_result_accepts_absolute_path(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import solver_service
+
+    input_inp = _write_text(tmp_path / "absolute_case.inp", "*Heading\n")
+    captured = {}
+
+    monkeypatch.setattr(
+        solver_service,
+        "run_abaqus_job",
+        lambda **kwargs: {
+            "job_name": kwargs.get("job_name") or "absolute_case",
+            "solver": {
+                "ok": True,
+                "artifacts": {"odb": "D:/demo/absolute_case.odb"},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "_submit_project_result_group_and_wait",
+        lambda **kwargs: captured.update(kwargs) or {
+            "result_group": "absolute_case_result",
+            "status": "ready",
+        },
+    )
+
+    result = run_solver_and_parse_project_result(
+        project_id=1003,
+        input_file=str(input_inp),
+    )
+
+    assert result["source_type"] == "inp"
+    assert Path(result["artifacts"]["input_file"]) == input_inp.resolve()

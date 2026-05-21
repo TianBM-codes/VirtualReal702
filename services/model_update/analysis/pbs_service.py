@@ -17,41 +17,32 @@ from .model_update_meta_service import _load_service_config
 
 DEFAULT_PBS_APPLICATIONS = {
     "Abaqus": {
-        "application_id": "Abaqus",
-        "application_name": "Abaqus",
-        "version": "2022",
         "cores": 48,
         "hosts": 1,
         "precision": "off",
-        "platform": "",
         "primary_file_exts": [".inp"],
         "result_exts": [".odb", ".dat", ".msg", ".sta", ".log", ".prt"],
     },
     "Nastran": {
-        "application_id": "Nastran",
-        "application_name": "Nastran",
-        "version": "2019",
         "cores": 8,
-        "memory": 2048,
-        "platform": "",
         "primary_file_exts": [".bdf", ".dat", ".nas"],
         "result_exts": [".f06", ".op2", ".pch", ".xdb", ".log", ".out"],
     },
 }
 
-API_PATHS = {
-    "login": "{auth_path}",
-    "expand_vars": "{service_prefix}/pas/restservice/files/expandvars",
-    "create_dir": "{service_prefix}/pas/restservice/files/dir/create",
-    "upload_file": "{service_prefix}/pas/restservice/files/upload",
-    "file_exists": "{service_prefix}/pas/restservice/files/file/exists",
-    "submit_job": "{service_prefix}/pas/restservice/jpbs",
-    "job_status": "{storage_prefix}/jobs/{job_id}",
-    "list_files": "{service_prefix}/pas/restservice/files/file/list",
-    "download_file": "{service_prefix}/pas/restservice/files/download",
+DEFAULT_PBS_API_PATHS = {
+    "login": "/api/ams/aaservice/authn/oauth2/token",
+    "job_query": "/api/storage/jobs/query",
+    "dynamic_app_def": "/api/Service6/pas/restservice/applications/dynamicappdef",
+    "expand_vars": "/api/Service6/pas/restservice/files/expandvars",
+    "create_dir": "/api/Service6/pas/restservice/files/dir/create",
+    "upload_file": "/api/Service6/pas/restservice/files/upload",
+    "file_exists": "/api/Sservice6/pas/restservice/files/file/exists",
+    "submit_job": "/api/Service6/pas/restservice/jpbs",
+    "job_status": "/api/storage/jobs/{job_id}",
+    "list_files": "/api/Sservice6/pas/restservice/files/file/list",
+    "download_file": "/api/Service6/pas/restservice/files/download",
 }
-
-_SERVICE_PREFIX_KEYS = {"expand_vars", "create_dir", "upload_file", "file_exists", "submit_job", "list_files", "download_file"}
 _PBS_SUCCESS_VALUES = {True, "true", "True", "TRUE", 1, "1", "success", "SUCCESS"}
 _PBS_FINAL_STATES = {"C", "F"}
 
@@ -84,16 +75,12 @@ def _json_copy(value: Any) -> Any:
 class PBSEnvironmentConfig:
     name: str
     base_url: str
-    api_prefix: str
-    service_prefix: str
-    storage_prefix: str
-    auth_path: str
     server_name: str
     stage_path_template: str
     username: str
     password: str
     verify_ssl: bool
-    fallback_service_prefixes: List[str]
+    api_paths: Dict[str, str]
     applications: Dict[str, Dict[str, Any]]
 
 
@@ -136,11 +123,27 @@ def _load_project_pbs_settings(project_id: Optional[int]) -> Dict[str, Any]:
     return dict(pbs_config) if isinstance(pbs_config, dict) else {}
 
 
+def _ensure_project_pbs_settings(project_id: Optional[int], pbs_settings: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(pbs_settings, dict) and pbs_settings:
+        return pbs_settings
+    raise ValidationError(
+        "请先配置高性能集群计算配置",
+        {
+            "project_id": int(project_id) if project_id is not None else None,
+            "field": "project_config.pbs",
+        },
+    )
+
+
 def _normalize_project_application_settings(application: str, pbs_settings: Dict[str, Any]) -> Dict[str, Any]:
     app_name = str(application or "").strip()
     nested = pbs_settings.get(app_name.lower())
     if not isinstance(nested, dict):
         nested = pbs_settings.get(app_name)
+    if not isinstance(nested, dict):
+        apps = pbs_settings.get("applications")
+        if isinstance(apps, dict):
+            nested = apps.get(app_name) or apps.get(app_name.lower())
     raw = dict(nested) if isinstance(nested, dict) else dict(pbs_settings)
 
     mapping = {
@@ -149,7 +152,6 @@ def _normalize_project_application_settings(application: str, pbs_settings: Dict
         "VERSION": "version",
         "CORES": "cores",
         "HOSTS": "hosts",
-        "MEMORY": "memory",
         "PRECISION": "precision",
         "PLATFORM": "platform",
         "primary_file_exts": "primary_file_exts",
@@ -191,36 +193,36 @@ def load_pbs_environment_config(env: Optional[str] = None) -> PBSEnvironmentConf
         )
 
     raw_env = dict(environments[selected_env] or {})
-    fallback_prefixes = list(
-        pbs_root.get("fallback_service_prefixes")
-        or payload.get("PBS_FALLBACK_SERVICE_PREFIXES")
-        or []
-    )
-    applications = dict(DEFAULT_PBS_APPLICATIONS)
-    configured_apps = pbs_root.get("applications") if isinstance(pbs_root.get("applications"), dict) else {}
-    configured_apps.update(payload.get("PBS_APPLICATIONS") if isinstance(payload.get("PBS_APPLICATIONS"), dict) else {})
-    for app_name, base in configured_apps.items():
-        merged = dict(applications.get(app_name, {}))
-        merged.update(base or {})
-        applications[app_name] = merged
+    applications = {app_name: dict(base or {}) for app_name, base in DEFAULT_PBS_APPLICATIONS.items()}
 
     base_url = str(raw_env.get("base_url") or "").strip().rstrip("/")
     if not base_url:
         raise ValidationError("PBS base_url 不能为空", {"env": selected_env})
 
+    api_paths = dict(DEFAULT_PBS_API_PATHS)
+    root_api_paths = pbs_root.get("api_paths") if isinstance(pbs_root.get("api_paths"), dict) else {}
+    env_api_paths = raw_env.get("api_paths") if isinstance(raw_env.get("api_paths"), dict) else {}
+    for source in (root_api_paths, env_api_paths):
+        for key, value in source.items():
+            text = _normalize_slash_prefix(value)
+            if text:
+                api_paths[str(key)] = text
+
+    if not all(api_paths.get(key) for key in ("login", "expand_vars", "create_dir", "upload_file", "file_exists", "submit_job", "job_status", "list_files", "download_file")):
+        raise ValidationError(
+            "PBS 接口路径配置不完整",
+            {"env": selected_env, "api_paths": api_paths},
+        )
+
     return PBSEnvironmentConfig(
         name=selected_env,
         base_url=base_url,
-        api_prefix=_normalize_slash_prefix(raw_env.get("api_prefix")),
-        service_prefix=_normalize_slash_prefix(raw_env.get("service_prefix")),
-        storage_prefix=_normalize_slash_prefix(raw_env.get("storage_prefix")),
-        auth_path=_normalize_slash_prefix(raw_env.get("auth_path")),
         server_name=str(raw_env.get("server_name") or "").strip(),
         stage_path_template=str(raw_env.get("stage_path_template") or "").strip(),
         username=str(raw_env.get("username") or "").strip(),
         password=str(raw_env.get("password") or "").strip(),
         verify_ssl=bool(raw_env.get("verify_ssl", True)),
-        fallback_service_prefixes=[_normalize_slash_prefix(item) for item in fallback_prefixes if str(item or "").strip()],
+        api_paths=api_paths,
         applications=applications,
     )
 
@@ -241,16 +243,12 @@ def _apply_project_pbs_settings(
     return PBSEnvironmentConfig(
         name=config.name,
         base_url=config.base_url,
-        api_prefix=config.api_prefix,
-        service_prefix=config.service_prefix,
-        storage_prefix=config.storage_prefix,
-        auth_path=config.auth_path,
         server_name=config.server_name,
         stage_path_template=config.stage_path_template,
         username=config.username,
         password=config.password,
         verify_ssl=config.verify_ssl,
-        fallback_service_prefixes=list(config.fallback_service_prefixes),
+        api_paths=dict(config.api_paths),
         applications=applications,
     )
 
@@ -262,36 +260,17 @@ class PBSClient:
         self.session = requests.Session()
         self.access_token: Optional[str] = None
 
-    def _candidate_service_prefixes(self) -> List[str]:
-        prefixes = [self.config.service_prefix]
-        for item in self.config.fallback_service_prefixes:
-            if item and item not in prefixes:
-                prefixes.append(item)
-        return prefixes
-
-    def _build_path_candidates(self, path_key: str, **kwargs) -> List[str]:
-        template = API_PATHS[path_key]
-        if path_key not in _SERVICE_PREFIX_KEYS:
-            return [template.format(
-                auth_path=self.config.auth_path,
-                service_prefix=self.config.service_prefix,
-                storage_prefix=self.config.storage_prefix,
-                **kwargs,
-            )]
-
-        result = []
-        for service_prefix in self._candidate_service_prefixes():
-            result.append(template.format(
-                auth_path=self.config.auth_path,
-                service_prefix=service_prefix,
-                storage_prefix=self.config.storage_prefix,
-                **kwargs,
-            ))
-        return result
+    def _build_path(self, path_key: str, **kwargs) -> str:
+        template = self.config.api_paths.get(path_key)
+        if not template:
+            raise ValidationError(
+                "PBS 接口路径未配置",
+                {"path_key": path_key, "env": self.config.name},
+            )
+        return str(template).format(**kwargs)
 
     def _build_url(self, path: str) -> str:
-        combined = f"{self.config.api_prefix}{path}"
-        return f"{self.config.base_url}{combined}"
+        return f"{self.config.base_url}{path}"
 
     def _auth_headers(self) -> Dict[str, str]:
         headers = {}
@@ -316,30 +295,22 @@ class PBSClient:
     ) -> requests.Response:
         timeout_value = max(int(timeout or self.timeout), 1)
         expected = {int(item) for item in expected_statuses}
-        last_response = None
-        for path in self._build_path_candidates(path_key, **kwargs):
-            url = self._build_url(path)
-            response = self.session.request(
-                method=method.upper(),
-                url=url,
-                json=json_body,
-                data=data,
-                files=files,
-                params=params,
-                headers=self._auth_headers(),
-                timeout=timeout_value,
-                verify=self.config.verify_ssl,
-                stream=stream,
-            )
-            last_response = response
-            if response.status_code in expected:
-                return response
-            if response.status_code == 404:
-                continue
-            break
-
-        if last_response is None:
-            raise ValidationError("PBS 请求在发送前失败", {"path_key": path_key})
+        path = self._build_path(path_key, **kwargs)
+        url = self._build_url(path)
+        last_response = self.session.request(
+            method=method.upper(),
+            url=url,
+            json=json_body,
+            data=data,
+            files=files,
+            params=params,
+            headers=self._auth_headers(),
+            timeout=timeout_value,
+            verify=self.config.verify_ssl,
+            stream=stream,
+        )
+        if last_response.status_code in expected:
+            return last_response
         raise ValidationError(
             "pbs request failed",
             {
@@ -472,10 +443,20 @@ class PBSClient:
                 {"application": app_name, "applications": sorted(self.config.applications.keys())},
             )
         config = _json_copy(self.config.applications[app_name])
-        if not config.get("platform"):
+        missing_fields = [
+            field
+            for field in ("application_id", "application_name", "version", "platform")
+            if not str(config.get(field) or "").strip()
+        ]
+        if missing_fields:
             raise ValidationError(
-                "pbs application platform is required",
-                {"application": app_name, "env": self.config.name},
+                "PBS 应用配置不完整，请先在工程 project_config.pbs 中配置",
+                {
+                    "application": app_name,
+                    "env": self.config.name,
+                    "missing_fields": missing_fields,
+                    "field": "project_config.pbs",
+                },
             )
         return config
 
@@ -508,7 +489,6 @@ class PBSClient:
         elif application == "Nastran":
             payload.update({
                 "CORES": config.get("cores", 8),
-                "MEMORY": config.get("memory", 2048),
             })
         if overrides:
             payload.update({str(key): value for key, value in overrides.items()})
@@ -742,7 +722,7 @@ def run_pbs_solver_job(
     if not source_path.exists() or not source_path.is_file():
         raise NotFoundError("未找到 PBS 本地输入文件", {"input_file": str(source_path)})
 
-    project_pbs_settings = _load_project_pbs_settings(project_id)
+    project_pbs_settings = _ensure_project_pbs_settings(project_id, _load_project_pbs_settings(project_id))
     resolved_env = _resolve_project_pbs_env(env, project_pbs_settings)
     config = load_pbs_environment_config(resolved_env)
     resolved_application = str(application or "").strip()
@@ -788,13 +768,16 @@ def run_pbs_solver_job(
     return result
 
 
-def get_pbs_job_status(*, job_id: str, env: Optional[str] = None, timeout_sec: int = 60) -> Dict[str, Any]:
-    config = load_pbs_environment_config(env)
+def get_pbs_job_status(*, project_id: int, job_id: str, env: Optional[str] = None, timeout_sec: int = 60) -> Dict[str, Any]:
+    project_pbs_settings = _ensure_project_pbs_settings(project_id, _load_project_pbs_settings(project_id))
+    resolved_env = _resolve_project_pbs_env(env, project_pbs_settings)
+    config = load_pbs_environment_config(resolved_env)
     client = PBSClient(config, timeout=timeout_sec)
     client.login()
     payload = client.get_job_status(job_id)
     return {
         "env": config.name,
+        "project_id": int(project_id),
         "job_id": str(job_id),
         "job_status": payload,
         "resolved_job_state": client.extract_job_state(payload),

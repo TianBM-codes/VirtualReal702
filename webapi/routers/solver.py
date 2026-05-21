@@ -17,6 +17,7 @@ from services.model_update.analysis.solver_service import (
     run_abaqus_sensitivity_job,
     run_nastran_sol103_job,
     run_nastran_sol103_and_store_modal_results,
+    run_solver_and_parse_project_result,
 )
 from services.model_update.analysis.pbs_service import (
     get_pbs_job_status,
@@ -62,6 +63,7 @@ from ..models import (
     Op2SensitivityVtuExportRequest,
     PBSJobStatusRequest,
     PBSSolverRunRequest,
+    SolverRunAndParseRequest,
 )
 from ..utils import log_request, model_to_dict
 
@@ -190,6 +192,32 @@ def _abaqus_run_and_upload_result_kwargs(body: AbaqusInpRunAndUploadResultReques
     }
 
 
+def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
+    return {
+        "project_id": body.project_id,
+        "input_file": body.input_file,
+        "job_name": body.job_name,
+        "result_group": body.result_group,
+        "display_name": body.display_name,
+        "base_url": body.base_url,
+        "output_dir": body.output_dir,
+        "output_bdf": body.output_bdf,
+        "abaqus": body.abaqus,
+        "nastran": body.nastran,
+        "cpus": body.cpus,
+        "interactive": body.interactive,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
+        "settings": body.settings,
+        "step": body.step,
+        "frame": body.frame,
+        "field_prefix": body.field_prefix,
+        "upload_timeout": body.upload_timeout,
+        "wait_timeout_sec": body.wait_timeout_sec,
+        "poll_interval_sec": body.poll_interval_sec,
+    }
+
+
 def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
     return {
         "project_id": body.project_id,
@@ -304,6 +332,7 @@ async def get_pbs_job_status_api(request: Request, body: PBSJobStatusRequest):
     await log_request(request, model_to_dict(body))
     try:
         data = get_pbs_job_status(
+            project_id=body.project_id,
             env=body.env,
             job_id=body.job_id,
             timeout_sec=body.timeout_sec,
@@ -458,6 +487,28 @@ async def run_abaqus_inp_and_upload_result_api(request: Request, body: AbaqusInp
             return success_response(data, "Abaqus 求解并上传结果任务已提交")
         data = run_abaqus_inp_and_upload_project_result(**kwargs)
         return success_response(data, "Abaqus 求解并上传结果成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/run_and_parse")
+async def run_solver_and_parse_api(request: Request, body: SolverRunAndParseRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _solver_run_and_parse_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="solver.run_and_parse",
+                fn=run_solver_and_parse_project_result,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "统一计算并解析任务已提交")
+        data = run_solver_and_parse_project_result(**kwargs)
+        return success_response(data, "统一计算并解析成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

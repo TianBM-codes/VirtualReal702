@@ -116,3 +116,84 @@ def test_upload_and_run_abaqus_inp_route_accepts_json_server_path(monkeypatch, t
     assert captured["input_inp"] == str(source_inp)
     assert captured["job_name"] == "demo_job"
     assert captured["cpus"] == 2
+
+
+def test_solver_run_and_parse_route_for_inp(monkeypatch, tmp_path: Path):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import solver
+
+    captured = {}
+    monkeypatch.setattr(
+        solver,
+        "run_solver_and_parse_project_result",
+        lambda **kwargs: captured.update(kwargs) or {
+            "workflow": "run_and_parse",
+            "project_id": kwargs["project_id"],
+            "source_type": "inp",
+            "solver_type": "abaqus",
+            "result_group": "case_a_result",
+            "result_group_status": "ready",
+        },
+    )
+
+    app = FastAPI()
+    app.include_router(solver.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/solver/run_and_parse",
+        json={
+            "project_id": 1001,
+            "input_file": "case_a.inp",
+            "job_name": "case_a",
+            "result_group": "case_a_result",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["source_type"] == "inp"
+    assert captured["project_id"] == 1001
+    assert captured["input_file"] == "case_a.inp"
+
+
+def test_solver_run_and_parse_route_for_bdf_async(monkeypatch, tmp_path: Path):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import solver
+
+    monkeypatch.setattr(
+        solver,
+        "submit_background_task",
+        lambda **kwargs: {
+            "task_id": "task-1",
+            "status": "submitted",
+            "task_type": kwargs["task_type"],
+            "request": kwargs["request_payload"],
+        },
+    )
+
+    app = FastAPI()
+    app.include_router(solver.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/solver/run_and_parse",
+        json={
+            "project_id": 1002,
+            "input_file": "case_b.bdf",
+            "async_submit": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["task_type"] == "solver.run_and_parse"
+    assert payload["data"]["request"]["project_id"] == 1002

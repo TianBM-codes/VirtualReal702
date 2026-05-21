@@ -58,6 +58,7 @@ def test_pbs_job_status_route(monkeypatch):
     def fake_get_pbs_job_status(**kwargs):
         return {
             "env": kwargs["env"],
+            "project_id": kwargs["project_id"],
             "job_id": kwargs["job_id"],
             "resolved_job_state": "R",
         }
@@ -71,6 +72,7 @@ def test_pbs_job_status_route(monkeypatch):
     response = client.post(
         "/solver/pbs/job/status",
         json={
+            "project_id": 32,
             "env": "prod",
             "job_id": "job-001",
             "timeout_sec": 30,
@@ -83,6 +85,7 @@ def test_pbs_job_status_route(monkeypatch):
     assert payload["code"] == 200
     assert payload["data"] == {
         "env": "prod",
+        "project_id": 32,
         "job_id": "job-001",
         "resolved_job_state": "R",
     }

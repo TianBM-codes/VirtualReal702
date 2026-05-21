@@ -567,6 +567,31 @@ class AbaqusInpRunAndUploadResultRequest(BaseModel):
     async_submit: bool = False
 
 
+class SolverRunAndParseRequest(BaseModel):
+    project_id: int
+    input_file: str
+    job_name: Optional[str] = None
+    result_group: Optional[str] = None
+    display_name: Optional[str] = None
+    base_url: Optional[str] = None
+    output_dir: Optional[str] = None
+    output_bdf: Optional[str] = None
+    abaqus: Optional[str] = None
+    nastran: Optional[str] = None
+    cpus: Optional[int] = None
+    interactive: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    step: Optional[str] = None
+    frame: Optional[int] = None
+    field_prefix: Optional[str] = None
+    upload_timeout: int = 60
+    wait_timeout_sec: int = 3600
+    poll_interval_sec: float = 2.0
+    async_submit: bool = False
+
+
 class AbaqusInpPathRunRequest(BaseModel):
     project_id: Optional[int] = None
     file_name: Optional[str] = None
@@ -582,7 +607,7 @@ class AbaqusInpPathRunRequest(BaseModel):
 
 
 class PBSSolverRunRequest(BaseModel):
-    project_id: Optional[int] = None
+    project_id: int
     env: Optional[str] = None
     input_file: str
     job_name: Optional[str] = None
@@ -597,6 +622,7 @@ class PBSSolverRunRequest(BaseModel):
 
 
 class PBSJobStatusRequest(BaseModel):
+    project_id: int
     env: Optional[str] = None
     job_id: str
     timeout_sec: int = 60

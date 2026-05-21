@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from config import get_local_service_base_url
+from src.l3.core.config import settings
 from src.l3.core.errors import NotFoundError, ValidationError
+from src.l3.infra.registry_repo import RegistryRepo
 from tools.odb_client import ODBClient, ODBClientError
 
 from ..importers.op2_service import build_modal_import_payload
@@ -118,24 +120,22 @@ def _build_project_result_parse_options(
     return {key: value for key, value in parse_options.items() if value is not None}
 
 
-def _submit_project_result_group_and_wait(
+def _submit_generic_project_result_group_and_wait(
         *,
         project_id: int,
-        odb_path: str,
+        source_path: str,
         job_name: str,
         result_group: Optional[str],
         display_name: Optional[str],
         base_url: Optional[str],
-        step: Optional[str],
-        frame: Optional[int],
-        field_prefix: Optional[str],
+        parse_options: Optional[dict],
         timeout: int,
         wait_timeout_sec: int,
         poll_interval_sec: float,
 ) -> dict:
-    resolved_odb_path = os.path.abspath(str(odb_path))
-    if not os.path.exists(resolved_odb_path):
-        raise NotFoundError("odb file not found", {"odb_path": resolved_odb_path})
+    resolved_source_path = os.path.abspath(str(source_path))
+    if not os.path.exists(resolved_source_path):
+        raise NotFoundError("result file not found", {"source_path": resolved_source_path})
 
     resolved_result_group = _normalize_result_group_name(
         result_group or _default_solver_project_result_group(job_name)
@@ -144,17 +144,12 @@ def _submit_project_result_group_and_wait(
     resolved_timeout = max(int(timeout or 0), 60)
     resolved_wait_timeout_sec = max(int(wait_timeout_sec or 0), 1)
     resolved_poll_interval = max(float(poll_interval_sec or 0), 0.1)
-    parse_options = _build_project_result_parse_options(
-        step=step,
-        frame=frame,
-        field_prefix=field_prefix,
-    )
 
     client = ODBClient(base_url=resolved_base_url, timeout=resolved_timeout)
     try:
         submit_response = client.add_project_result_group(
             str(project_id),
-            source_path=resolved_odb_path,
+            source_path=resolved_source_path,
             result_group=resolved_result_group,
             display_name=display_name or resolved_result_group,
             parse_options=parse_options,
@@ -166,7 +161,7 @@ def _submit_project_result_group_and_wait(
             "base_url": resolved_base_url,
             "status_code": exc.status_code,
             "detail": exc.detail,
-            "odb_path": resolved_odb_path,
+            "source_path": resolved_source_path,
         }
         if exc.status_code == 404:
             raise NotFoundError("project result-group api target project was not found", details) from exc
@@ -205,8 +200,8 @@ def _submit_project_result_group_and_wait(
                     "status": last_status,
                     "project_id": int(project_id),
                     "base_url": resolved_base_url,
-                    "source_path": resolved_odb_path,
-                    "parse_options": parse_options,
+                    "source_path": resolved_source_path,
+                    "parse_options": parse_options or {},
                     "project_result_group": matched,
                 }
             if last_status in {"error", "failed"}:
@@ -233,6 +228,40 @@ def _submit_project_result_group_and_wait(
         time.sleep(resolved_poll_interval)
 
 
+def _submit_project_result_group_and_wait(
+        *,
+        project_id: int,
+        odb_path: str,
+        job_name: str,
+        result_group: Optional[str],
+        display_name: Optional[str],
+        base_url: Optional[str],
+        step: Optional[str],
+        frame: Optional[int],
+        field_prefix: Optional[str],
+        timeout: int,
+        wait_timeout_sec: int,
+        poll_interval_sec: float,
+) -> dict:
+    parse_options = _build_project_result_parse_options(
+        step=step,
+        frame=frame,
+        field_prefix=field_prefix,
+    )
+    return _submit_generic_project_result_group_and_wait(
+        project_id=project_id,
+        source_path=odb_path,
+        job_name=job_name,
+        result_group=result_group,
+        display_name=display_name,
+        base_url=base_url,
+        parse_options=parse_options,
+        timeout=timeout,
+        wait_timeout_sec=wait_timeout_sec,
+        poll_interval_sec=poll_interval_sec,
+    )
+
+
 def _abs_file(path: str, field_name: str) -> Path:
     file_path = Path(path).expanduser().resolve()
     if not file_path.exists():
@@ -240,6 +269,47 @@ def _abs_file(path: str, field_name: str) -> Path:
     if not file_path.is_file():
         raise ValidationError(f"{field_name} 必须是文件", {field_name: str(file_path)})
     return file_path
+
+
+def _project_workspace(project_id: int) -> Path:
+    repo = RegistryRepo(settings.registry_db_path)
+    row = repo.get_project(str(int(project_id)))
+    if row is not None:
+        stored_workspace = str(row["workspace"] or "").strip()
+        if stored_workspace:
+            return Path(
+                repo.resolve_workspace(stored_workspace, settings.data_root)
+            ).expanduser().resolve()
+    return (Path(settings.data_root).expanduser().resolve() / str(int(project_id))).resolve()
+
+
+def _resolve_project_file(project_id: int, path: str, field_name: str) -> Path:
+    raw = str(path or "").strip()
+    if not raw:
+        raise ValidationError(
+            f"{field_name} 涓嶈兘涓虹┖",
+            {"project_id": int(project_id), field_name: path},
+        )
+
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        return _abs_file(str(candidate), field_name)
+
+    workspace = _project_workspace(project_id)
+    resolved = (workspace / candidate).resolve()
+    try:
+        common = os.path.commonpath([str(workspace), str(resolved)])
+    except ValueError as exc:
+        raise ValidationError(
+            f"{field_name} 蹇呴』鍦?project workspace 鍐呴儴",
+            {"project_id": int(project_id), field_name: raw, "workspace": str(workspace)},
+        ) from exc
+    if common != str(workspace):
+        raise ValidationError(
+            f"{field_name} 蹇呴』鍦?project workspace 鍐呴儴",
+            {"project_id": int(project_id), field_name: raw, "workspace": str(workspace)},
+        )
+    return _abs_file(str(resolved), field_name)
 
 
 def _abs_dir(path: Optional[str], fallback: Path) -> Path:
@@ -1025,3 +1095,153 @@ def run_abaqus_inp_and_upload_project_result(
         "solver": solver,
         "upload": upload,
     }
+
+
+def run_solver_and_parse_project_result(
+    *,
+    project_id: int,
+    input_file: str,
+    job_name: Optional[str] = None,
+    result_group: Optional[str] = None,
+    display_name: Optional[str] = None,
+    base_url: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    output_bdf: Optional[str] = None,
+    abaqus: Optional[str] = None,
+    nastran: Optional[str] = None,
+    cpus: Optional[int] = None,
+    interactive: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+    settings: Optional[Dict[str, Any]] = None,
+    step: Optional[str] = None,
+    frame: Optional[int] = None,
+    field_prefix: Optional[str] = None,
+    upload_timeout: int = 60,
+    wait_timeout_sec: int = 3600,
+    poll_interval_sec: float = 2.0,
+) -> dict:
+    input_path = _resolve_project_file(project_id, input_file, "input_file")
+    source_type = input_path.suffix.lower()
+
+    if source_type == ".inp":
+        solver_payload = run_abaqus_job(
+            input_inp=str(input_path),
+            output_dir=output_dir,
+            abaqus=abaqus,
+            job_name=job_name,
+            cpus=cpus,
+            interactive=interactive,
+            run_solver=True,
+            timeout_sec=timeout_sec,
+            extra_args=extra_args,
+        )
+        solver = solver_payload.get("solver") or {}
+        if not solver.get("ok", False):
+            raise ValidationError(
+                "abaqus solve failed; project result upload was not started",
+                {"project_id": int(project_id), "solver": solver},
+            )
+        result_file = solver.get("artifacts", {}).get("odb")
+        if not result_file:
+            raise NotFoundError(
+                "odb file not found after Abaqus solve",
+                {
+                    "project_id": int(project_id),
+                    "artifacts": solver.get("artifacts") or {},
+                },
+            )
+        resolved_job_name = str(solver_payload.get("job_name") or job_name or input_path.stem)
+        upload = _submit_project_result_group_and_wait(
+            project_id=project_id,
+            odb_path=result_file,
+            job_name=resolved_job_name,
+            result_group=result_group,
+            display_name=display_name,
+            base_url=base_url,
+            step=step,
+            frame=frame,
+            field_prefix=field_prefix,
+            timeout=upload_timeout,
+            wait_timeout_sec=wait_timeout_sec,
+            poll_interval_sec=poll_interval_sec,
+        )
+        return {
+            "workflow": "run_and_parse",
+            "project_id": int(project_id),
+            "source_type": "inp",
+            "solver_type": "abaqus",
+            "project_status": "not_checked",
+            "job_name": resolved_job_name,
+            "result_group": upload["result_group"],
+            "result_group_status": upload["status"],
+            "artifacts": {
+                "input_file": str(input_path),
+                "result_file": os.path.abspath(str(result_file)),
+            },
+            "solver": solver,
+            "upload": upload,
+        }
+
+    if source_type == ".bdf":
+        solver_payload = run_nastran_sol103_job(
+            input_bdf=str(input_path),
+            output_bdf=output_bdf,
+            settings=dict(settings or {}),
+            nastran=nastran,
+            run_solver=True,
+            timeout_sec=timeout_sec,
+            extra_args=extra_args,
+        )
+        solver = solver_payload.get("solver") or {}
+        if not solver.get("ok", False):
+            raise ValidationError(
+                "nastran SOL103 solve failed; project result upload was not started",
+                {"project_id": int(project_id), "solver": solver},
+            )
+        summary = solver.get("artifacts_summary") or {}
+        op2_files = list(summary.get("op2_files") or [])
+        if not op2_files:
+            raise NotFoundError(
+                "op2 file not found after SOL103 solve",
+                {
+                    "project_id": int(project_id),
+                    "artifacts_summary": summary,
+                },
+            )
+        result_file = os.path.abspath(str(op2_files[0]))
+        resolved_job_name = str(job_name or Path(solver_payload.get("output_bdf") or input_path).stem)
+        upload = _submit_generic_project_result_group_and_wait(
+            project_id=project_id,
+            source_path=result_file,
+            job_name=resolved_job_name,
+            result_group=result_group,
+            display_name=display_name,
+            base_url=base_url,
+            parse_options=None,
+            timeout=upload_timeout,
+            wait_timeout_sec=wait_timeout_sec,
+            poll_interval_sec=poll_interval_sec,
+        )
+        return {
+            "workflow": "run_and_parse",
+            "project_id": int(project_id),
+            "source_type": "bdf",
+            "solver_type": "nastran",
+            "project_status": "not_checked",
+            "job_name": resolved_job_name,
+            "result_group": upload["result_group"],
+            "result_group_status": upload["status"],
+            "artifacts": {
+                "input_file": str(input_path),
+                "result_file": result_file,
+                "analysis_bdf": str(solver_payload.get("output_bdf")),
+            },
+            "solver": solver,
+            "upload": upload,
+        }
+
+    raise ValidationError(
+        "unsupported input file type; only .inp and .bdf are allowed",
+        {"input_file": str(input_path)},
+    )

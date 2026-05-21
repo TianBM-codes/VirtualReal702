@@ -119,6 +119,12 @@ def resolve_post_value(settings, result_target="OP2", default_post=None):
     if "post" in settings and settings.get("post") is not None:
         return int(settings.get("post"))
 
+    embed_geometry = settings.get("embed_geometry")
+    if embed_geometry is not None:
+        if str(result_target).upper() == "F06":
+            return -1
+        return -1 if bool(embed_geometry) else -2
+
     if default_post is not None:
         return int(default_post)
 
