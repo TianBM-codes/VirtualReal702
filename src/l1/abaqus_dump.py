@@ -1484,7 +1484,12 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 sp_obj = getattr(blk, 'sectionPoint', None)
                 return int(sp_obj.number) if sp_obj is not None else None
 
-            # Discover structure + write canonical labels from first frame
+            # ── Discover structure: group blocks by key, merge labels ────────
+            # Abaqus may split one (instance, elem_type, position, sp) group
+            # across multiple bulkDataBlocks (parallel chunking).  Collect
+            # ALL blocks per key first, then take the union of their labels
+            # so the canonical labels.npy is always the full superset.
+            key_to_disc_blocks = {}
             for block in first_field.bulkDataBlocks:
                 if block.instance is None:
                     continue
@@ -1492,20 +1497,19 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 position  = _pos_str(block.position)
                 elem_type = (getattr(block, 'elementType', None)
                              or getattr(block, 'baseElementType', None))
-                # Abaqus 2024 may return None for elementType; use ncomp+n_entities
-                # as a secondary discriminator so different-shaped blocks get separate keys
                 if elem_type is None:
                     _d = np.array(block.data)
                     _n = len(getattr(block, 'elementLabels',
                              getattr(block, 'nodeLabels', [])))
                     elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                sp_num    = _block_sp_num(block)   # None for solids, int for shell SPs
-                key       = (inst_name, position, elem_type, sp_num)
-                if key in block_struct:
-                    continue  # already discovered
+                sp_num = _block_sp_num(block)
+                key    = (inst_name, position, elem_type, sp_num)
+                key_to_disc_blocks.setdefault(key, []).append(block)
 
-                bd = get_block_dir(inst_name, position, elem_type, sp_num)
-                ncomp = _block_data_2d(block).shape[1]
+            for key, key_blocks in key_to_disc_blocks.items():
+                inst_name, position, elem_type, sp_num = key
+                bd    = get_block_dir(inst_name, position, elem_type, sp_num)
+                ncomp = _block_data_2d(key_blocks[0]).shape[1]
                 info  = {
                     'inst_name': inst_name,
                     'position':  position,
@@ -1514,31 +1518,52 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 }
 
                 if position == 'NODAL':
-                    labels = np.array(block.nodeLabels, dtype=np.int32)
+                    all_lbls = [np.array(b.nodeLabels, dtype=np.int32)
+                                for b in key_blocks]
+                    labels = np.unique(np.concatenate(all_lbls))
                     npsave(os.path.join(bd, 'labels.npy'), labels)
                     info['n_entities'] = len(labels)
 
                 elif position == 'INTEGRATION_POINT':
-                    u_elems, u_ips, blk_sp_num, _ = reshape_ip_block(block)
-                    sp_arr = (np.array([blk_sp_num], dtype=np.int32)
-                              if blk_sp_num is not None
-                              else np.array([], dtype=np.int32))
+                    all_u_elems = []
+                    all_u_ips   = []
+                    blk_sp_num  = None
+                    for b in key_blocks:
+                        u_e, u_i, sp, _ = reshape_ip_block(b)
+                        all_u_elems.append(u_e)
+                        all_u_ips.append(u_i)
+                        if sp is not None:
+                            blk_sp_num = sp
+                    u_elems = np.unique(np.concatenate(all_u_elems))
+                    u_ips   = np.unique(np.concatenate(all_u_ips))
+                    sp_arr  = (np.array([blk_sp_num], dtype=np.int32)
+                               if blk_sp_num is not None
+                               else np.array([], dtype=np.int32))
                     npsave(os.path.join(bd, 'labels.npy'),    u_elems)
                     npsave(os.path.join(bd, 'ip_labels.npy'), u_ips)
                     npsave(os.path.join(bd, 'sp_labels.npy'), sp_arr)
                     info['n_entities'] = len(u_elems)
                     info['n_ip']       = len(u_ips)
-                    info['n_sp']       = 0          # no SP axis in per-block data
-                    info['sp_num']     = blk_sp_num # None for solids, int for shells
+                    info['n_sp']       = 0
+                    info['sp_num']     = blk_sp_num
 
                 elif position == 'ELEMENT_NODAL':
-                    u_elems, data_nd = reshape_element_nodal_block(block)
+                    all_u_elems = []
+                    n_enodes    = None
+                    for b in key_blocks:
+                        u_e, d_nd = reshape_element_nodal_block(b)
+                        all_u_elems.append(u_e)
+                        if n_enodes is None:
+                            n_enodes = d_nd.shape[1]
+                    u_elems = np.unique(np.concatenate(all_u_elems))
                     npsave(os.path.join(bd, 'labels.npy'), u_elems)
                     info['n_entities'] = len(u_elems)
-                    info['n_enodes']   = data_nd.shape[1]
+                    info['n_enodes']   = n_enodes
 
                 else:
-                    labels = np.array(block.elementLabels, dtype=np.int32)
+                    all_lbls = [np.array(b.elementLabels, dtype=np.int32)
+                                for b in key_blocks]
+                    labels = np.unique(np.concatenate(all_lbls))
                     npsave(os.path.join(bd, 'labels.npy'), labels)
                     info['n_entities'] = len(labels)
 
@@ -1556,6 +1581,8 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             if _extrapolate_en:
                 try:
                     _en_first = first_field.getSubset(position=_ELEM_NODAL_CONST)
+                    # Group by key first so chunks from same elem_type are merged
+                    _en_disc_blocks = {}
                     for block in _en_first.bulkDataBlocks:
                         if block.instance is None:
                             continue
@@ -1574,9 +1601,19 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         key = (inst_name, position, elem_type, sp_num)
                         if key in block_struct:
                             continue
-                        bd = get_block_dir(inst_name, position, elem_type, sp_num)
-                        ncomp = _block_data_2d(block).shape[1]
-                        u_elems, data_nd = reshape_element_nodal_block(block)
+                        _en_disc_blocks.setdefault(key, []).append(block)
+                    for key, en_blocks in _en_disc_blocks.items():
+                        inst_name, position, elem_type, sp_num = key
+                        bd    = get_block_dir(inst_name, position, elem_type, sp_num)
+                        ncomp = _block_data_2d(en_blocks[0]).shape[1]
+                        all_u_elems = []
+                        n_enodes    = None
+                        for b in en_blocks:
+                            u_e, d_nd = reshape_element_nodal_block(b)
+                            all_u_elems.append(u_e)
+                            if n_enodes is None:
+                                n_enodes = d_nd.shape[1]
+                        u_elems = np.unique(np.concatenate(all_u_elems))
                         npsave(os.path.join(bd, 'labels.npy'), u_elems)
                         block_struct[key] = {
                             'inst_name':  inst_name,
@@ -1584,7 +1621,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             'elem_type':  elem_type,
                             'ncomp':      ncomp,
                             'n_entities': len(u_elems),
-                            'n_enodes':   data_nd.shape[1],
+                            'n_enodes':   n_enodes,
                         }
                     print("    [EN extrapolation] discovered {} EN block(s)".format(
                         len({k for k in block_struct if k[1] == 'ELEMENT_NODAL'}) - len(_en_insts)))
@@ -1592,13 +1629,18 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     print("    [warn] getSubset(ELEMENT_NODAL) structure failed: {}".format(_e))
                     _extrapolate_en = False
 
-            # Write per-frame data
+            # ── Per-frame data ────────────────────────────────────────────────
+            # Group blocks by key before writing so that multiple chunks for the
+            # same (instance, elem_type, position, sp) are merged into one array,
+            # and every frame file has exactly the same shape as labels.npy.
             has_section = 0
             for frame_idx, (_, frame) in enumerate(selected_frames):
                 if field_name not in frame.fieldOutputs:
                     continue
                 field_out = frame.fieldOutputs[field_name]
 
+                # Group this frame's blocks by key
+                key_to_fr_blocks = {}
                 for block in field_out.bulkDataBlocks:
                     if block.instance is None:
                         continue
@@ -1611,76 +1653,79 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         _n = len(getattr(block, 'elementLabels',
                                  getattr(block, 'nodeLabels', [])))
                         elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                    fr_sp_num = _block_sp_num(block)   # None for solids, int for shell SPs
+                    fr_sp_num = _block_sp_num(block)
                     key       = (inst_name, position, elem_type, fr_sp_num)
                     if key not in block_struct:
                         continue
+                    key_to_fr_blocks.setdefault(key, []).append(block)
 
-                    bd       = get_block_dir(inst_name, position, elem_type, fr_sp_num)
-                    fr_path  = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
+                # Merge + write once per key
+                for key, fr_blocks in key_to_fr_blocks.items():
+                    inst_name, position, elem_type, fr_sp_num = key
+                    bd      = get_block_dir(inst_name, position, elem_type, fr_sp_num)
+                    fr_path = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
+                    canon   = np.load(os.path.join(bd, 'labels.npy'))
+                    M_c     = len(canon)
 
                     if position == 'NODAL':
-                        labels    = np.array(block.nodeLabels, dtype=np.int32)
-                        data_flat = _block_data_2d(block)
-                        canon     = np.load(os.path.join(bd, 'labels.npy'))
-                        rows      = np.searchsorted(canon, labels)
-                        M_c       = len(canon)
-                        valid     = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == labels)
-                        out       = np.zeros((M_c, data_flat.shape[1]), dtype=np.float32)
-                        out[rows[valid]] = data_flat[valid]
+                        ncomp_d = _block_data_2d(fr_blocks[0]).shape[1]
+                        out = np.zeros((M_c, ncomp_d), dtype=np.float32)
+                        for b in fr_blocks:
+                            lbls  = np.array(b.nodeLabels, dtype=np.int32)
+                            dflat = _block_data_2d(b)
+                            rows  = np.searchsorted(canon, lbls)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == lbls)
+                            out[rows[valid]] = dflat[valid]
                         npsave(fr_path, out)
 
                     elif position == 'INTEGRATION_POINT':
-                        u_elems_fr, _, blk_sp_num, data_nd = reshape_ip_block(block)
-                        if blk_sp_num is not None:
-                            has_section = 1
-                        # Align to canonical labels so deleted elements get zero
-                        # and frame shapes stay constant (needed for l1_pack stacking).
-                        # Equality check (canon[rows] == u_elems_fr) guards against
-                        # searchsorted returning a valid-range index that actually
-                        # belongs to a different element (happens when frame has labels
-                        # not present in canon, e.g. first frame missed an element).
-                        canon    = np.load(os.path.join(bd, 'labels.npy'))
-                        M_canon  = len(canon)
-                        if len(u_elems_fr) != M_canon:
-                            n_ip_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
-                            out  = np.zeros((M_canon, n_ip_d, ncomp_d), dtype=np.float32)
-                            rows = np.searchsorted(canon, u_elems_fr)
-                            valid = (rows < M_canon) & (canon[np.minimum(rows, M_canon - 1)] == u_elems_fr)
+                        n_ip_d = ncomp_d = None
+                        pieces = []
+                        for b in fr_blocks:
+                            u_e, _, sp, data_nd = reshape_ip_block(b)
+                            if sp is not None:
+                                has_section = 1
+                            if n_ip_d is None:
+                                n_ip_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                            pieces.append((u_e, data_nd))
+                        out = np.zeros((M_c, n_ip_d, ncomp_d), dtype=np.float32)
+                        for u_e, data_nd in pieces:
+                            rows  = np.searchsorted(canon, u_e)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
                             out[rows[valid]] = data_nd[valid]
-                            npsave(fr_path, out)
-                        else:
-                            npsave(fr_path, data_nd)
+                        npsave(fr_path, out)
 
                     elif position == 'ELEMENT_NODAL':
-                        u_elems_fr, data_nd = reshape_element_nodal_block(block)
-                        canon    = np.load(os.path.join(bd, 'labels.npy'))
-                        M_canon  = len(canon)
-                        if len(u_elems_fr) != M_canon:
-                            n_en_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
-                            out  = np.zeros((M_canon, n_en_d, ncomp_d), dtype=np.float32)
-                            rows = np.searchsorted(canon, u_elems_fr)
-                            valid = (rows < M_canon) & (canon[np.minimum(rows, M_canon - 1)] == u_elems_fr)
+                        n_en_d = ncomp_d = None
+                        pieces = []
+                        for b in fr_blocks:
+                            u_e, data_nd = reshape_element_nodal_block(b)
+                            if n_en_d is None:
+                                n_en_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                            pieces.append((u_e, data_nd))
+                        out = np.zeros((M_c, n_en_d, ncomp_d), dtype=np.float32)
+                        for u_e, data_nd in pieces:
+                            rows  = np.searchsorted(canon, u_e)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
                             out[rows[valid]] = data_nd[valid]
-                            npsave(fr_path, out)
-                        else:
-                            npsave(fr_path, data_nd)
+                        npsave(fr_path, out)
 
-                    else:
-                        raw_lbl  = np.array(block.elementLabels, dtype=np.int32)
-                        raw_data = _block_data_2d(block)
-                        canon    = np.load(os.path.join(bd, 'labels.npy'))
-                        rows     = np.searchsorted(canon, raw_lbl)
-                        M_c      = len(canon)
-                        valid    = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == raw_lbl)
-                        out      = np.zeros((M_c, raw_data.shape[1]), dtype=np.float32)
-                        out[rows[valid]] = raw_data[valid]
+                    else:  # WHOLE_ELEMENT
+                        ncomp_d = _block_data_2d(fr_blocks[0]).shape[1]
+                        out = np.zeros((M_c, ncomp_d), dtype=np.float32)
+                        for b in fr_blocks:
+                            raw_lbl  = np.array(b.elementLabels, dtype=np.int32)
+                            raw_data = _block_data_2d(b)
+                            rows  = np.searchsorted(canon, raw_lbl)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == raw_lbl)
+                            out[rows[valid]] = raw_data[valid]
                         npsave(fr_path, out)
 
                 # ── Write extrapolated ELEMENT_NODAL data for this frame ──────
                 if _extrapolate_en:
                     try:
                         _en_out = field_out.getSubset(position=_ELEM_NODAL_CONST)
+                        key_to_en_fr_blocks = {}
                         for block in _en_out.bulkDataBlocks:
                             if block.instance is None:
                                 continue
@@ -1699,10 +1744,26 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             key = (inst_name, position, elem_type, sp_num)
                             if key not in block_struct:
                                 continue
+                            key_to_en_fr_blocks.setdefault(key, []).append(block)
+                        for key, en_blocks in key_to_en_fr_blocks.items():
+                            inst_name, position, elem_type, sp_num = key
                             bd      = get_block_dir(inst_name, position, elem_type, sp_num)
                             fr_path = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
-                            _, data_nd = reshape_element_nodal_block(block)
-                            npsave(fr_path, data_nd)
+                            canon   = np.load(os.path.join(bd, 'labels.npy'))
+                            M_c     = len(canon)
+                            n_en_d = ncomp_d = None
+                            pieces  = []
+                            for b in en_blocks:
+                                u_e, data_nd = reshape_element_nodal_block(b)
+                                if n_en_d is None:
+                                    n_en_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                                pieces.append((u_e, data_nd))
+                            out = np.zeros((M_c, n_en_d, ncomp_d), dtype=np.float32)
+                            for u_e, data_nd in pieces:
+                                rows  = np.searchsorted(canon, u_e)
+                                valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                                out[rows[valid]] = data_nd[valid]
+                            npsave(fr_path, out)
                     except Exception as _e:
                         pass  # per-frame EN extrapolation failure is non-fatal
 

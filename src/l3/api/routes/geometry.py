@@ -240,15 +240,25 @@ async def get_render_buffers_chunked(
       X-Chunk-Count: K
       X-Face-Count : total triangle count
     """
+    _empty_pos = np.zeros((0, 3), dtype=np.float32)
+    _empty_idx = np.zeros((0, 3), dtype=np.int32)
+
     idx = registry.get(odb_id)
     if idx is None:
-        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+        sections, K, Nt = _build_chunked_payload(_empty_pos, _empty_idx)
+        return Response(
+            content=l3be_build(sections),
+            media_type="application/octet-stream",
+            headers={"X-Chunk-Count": str(K), "X-Face-Count": str(Nt)},
+        )
 
     render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
     if not os.path.exists(render_h5):
-        raise NotFoundError(
-            f"Render data not found for instance '{instance}'",
-            {"instance": instance},
+        sections, K, Nt = _build_chunked_payload(_empty_pos, _empty_idx)
+        return Response(
+            content=l3be_build(sections),
+            media_type="application/octet-stream",
+            headers={"X-Chunk-Count": str(K), "X-Face-Count": str(Nt)},
         )
 
     with h5py.File(render_h5, "r") as f:
@@ -257,10 +267,7 @@ async def get_render_buffers_chunked(
                     if "render/indices" in f else None
 
     if indices is None:
-        sections, K, Nt = _build_chunked_payload(
-            np.zeros((0, 3), dtype=np.float32),
-            np.zeros((0, 3), dtype=np.int32),
-        )
+        sections, K, Nt = _build_chunked_payload(_empty_pos, _empty_idx)
         return Response(
             content=l3be_build(sections),
             media_type="application/octet-stream",
@@ -313,23 +320,28 @@ async def get_element_mesh_edges(odb_id: str, instance: str):
     Header:
       X-Edge-Count: number of edges E (pairs, not rows)
     """
+    _empty_edges = np.zeros((0, 3), dtype=np.float32)
+
     idx = registry.get(odb_id)
     if idx is None:
-        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+        return Response(
+            content=l3be_build([("edge_positions", _empty_edges)]),
+            media_type="application/octet-stream",
+            headers={"X-Edge-Count": "0"},
+        )
 
     surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
     if not os.path.exists(surface_h5):
-        raise NotFoundError(
-            f"Surface geometry not found for instance '{instance}'",
-            {"instance": instance},
+        return Response(
+            content=l3be_build([("edge_positions", _empty_edges)]),
+            media_type="application/octet-stream",
+            headers={"X-Edge-Count": "0"},
         )
 
     with h5py.File(surface_h5, "r") as f:
         if "element_mesh_edges/edge_nodes" not in f:
-            empty = np.zeros((0, 3), dtype=np.float32)
-            payload = l3be_build([("edge_positions", empty)])
             return Response(
-                content=payload,
+                content=l3be_build([("edge_positions", _empty_edges)]),
                 media_type="application/octet-stream",
                 headers={"X-Edge-Count": "0"},
             )
@@ -372,24 +384,29 @@ async def get_feature_edges(odb_id: str, instance: str):
     Header:
       X-Edge-Count: number of edges E (pairs, not rows)
     """
+    _empty_edges = np.zeros((0, 3), dtype=np.float32)
+
     idx = registry.get(odb_id)
     if idx is None:
-        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+        return Response(
+            content=l3be_build([("edge_positions", _empty_edges)]),
+            media_type="application/octet-stream",
+            headers={"X-Edge-Count": "0"},
+        )
 
     surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
     if not os.path.exists(surface_h5):
-        raise NotFoundError(
-            f"Surface geometry not found for instance '{instance}'",
-            {"instance": instance},
+        return Response(
+            content=l3be_build([("edge_positions", _empty_edges)]),
+            media_type="application/octet-stream",
+            headers={"X-Edge-Count": "0"},
         )
 
     with h5py.File(surface_h5, "r") as f:
         if "feature_edges/edge_nodes" not in f:
             # Instance has no feature edges (e.g. all-interior, or zero surface)
-            empty = np.zeros((0, 3), dtype=np.float32)
-            payload = l3be_build([("edge_positions", empty)])
             return Response(
-                content=payload,
+                content=l3be_build([("edge_positions", _empty_edges)]),
                 media_type="application/octet-stream",
                 headers={"X-Edge-Count": "0"},
             )
