@@ -419,7 +419,9 @@ def _pack_model(model, inst_name, workspace):
             continue
         ptype = prop.type
         if ptype == 'PSHELL':
-            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
+            # pyNastran uses mid1 for PSHELL, not mid
+            mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
+            sid_to_mat[sid] = _unwrap_mid(mid_raw)
             sid_to_sty[sid] = 'SHELL'
         elif ptype in ('PCOMP', 'PCOMPG'):
             # Layered composite shell — use first ply material as representative
@@ -428,7 +430,8 @@ def _pack_model(model, inst_name, workspace):
             sid_to_mat[sid] = _unwrap_mid(first_mid)
             sid_to_sty[sid] = 'SHELL'
         elif ptype == 'PSHEAR':
-            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
+            mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
+            sid_to_mat[sid] = _unwrap_mid(mid_raw)
             sid_to_sty[sid] = 'SHEAR'
         elif ptype == 'PSOLID':
             sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
@@ -552,9 +555,11 @@ def _pack_model(model, inst_name, workspace):
             sg = f.require_group('sections/{}'.format(pid))
             sg.attrs['element_set'] = 'P{}_ELEMS'.format(pid)
             if ptype == 'PSHELL':
+                # pyNastran uses mid1 for PSHELL, not mid
+                mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
                 sg.attrs['type']          = 'SHELL'
                 sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
-                sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
+                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
             elif ptype in ('PCOMP', 'PCOMPG'):
                 # Layered composite — report total thickness and first ply material
                 total_t = 0.0
@@ -581,9 +586,10 @@ def _pack_model(model, inst_name, workspace):
                 sg.attrs['thickness']     = float('nan')
                 sg.attrs['material_name'] = _unwrap_mid(mid_raw)
             elif ptype == 'PSHEAR':
+                mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
                 sg.attrs['type']          = 'SHEAR'
                 sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
-                sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
+                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
             elif ptype in ('PBAR', 'PBEAM', 'PBEND', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
                 sg.attrs['type']          = 'BEAM'
                 sg.attrs['thickness']     = float('nan')
