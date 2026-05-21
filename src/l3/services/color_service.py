@@ -580,6 +580,19 @@ def get_legend_entries(
         unique_vals = [v for v in ordered if v in present]
     else:
         unique_vals = list(dict.fromkeys(labels))
+        # Append values that only exist on interior (non-surface) elements so
+        # the legend editor table is complete (face_count will be 0 for these).
+        if scheme in ("etype", "material", "section_type"):
+            if scheme == "etype":
+                all_l1 = _all_etypes_from_l1(idx, instance)
+            else:
+                attr_name = "material_name" if scheme == "material" else "section_type"
+                all_l1 = _all_unique_vals_from_l1(idx, instance, attr_name)
+            surface_set = set(unique_vals)
+            for v in all_l1:
+                if v and v not in surface_set:
+                    unique_vals.append(v)
+                    surface_set.add(v)
 
     # Palette assignment (identical logic to get_color_code)
     palette_colors: Dict[str, Tuple[float, float, float]] = {}
