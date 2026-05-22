@@ -61,3 +61,4 @@ service_config.json
 # Frontend
 viewer/node_modules/
 viewer/dist/
+viewer/.npmrc
