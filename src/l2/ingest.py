@@ -486,7 +486,7 @@ def compute_section_ids(geom_h5, surf_global_elem_idx,
     for sec_name in geom_h5["sections"]:
         grp   = geom_h5["sections/{}".format(sec_name)]
         eset  = grp.attrs.get("element_set", "")
-        key   = "instance_sets/element_sets/{}".format(eset)
+        key   = "instance_sets/element_sets/{}".format(safe(eset))
         if not eset or key not in geom_h5:
             continue
         sid = len(section_names) + 1       # 1-based

@@ -729,6 +729,26 @@ def dump_geometry(odb, raw_dir, meta):
             if sname in _sec_region_names:
                 _isets_sec_labels[sname] = lbls
 
+        # isInternal=True element sets are absent from instance.elementSets, so
+        # the loop above misses them.  Fall back to sa.region.elements directly.
+        for _sa in instance.sectionAssignments:
+            _rname = getattr(getattr(_sa, 'region', None), 'name', '')
+            if not _rname or _rname in _isets_sec_labels:
+                continue
+            try:
+                _lbls = np.array(
+                    sorted([e.label for e in _sa.region.elements]),
+                    dtype=np.int32)
+                if len(_lbls) == 0:
+                    continue
+                isd = os.path.join(d, 'isets', 'elem_sets')
+                mkdirs(isd)
+                npsave(os.path.join(isd, safe(_rname) + '.npy'), _lbls)
+                isets_elem[_rname] = len(_lbls)
+                _isets_sec_labels[_rname] = _lbls
+            except Exception as _e:
+                print("    [warn] internal set '{}': {}".format(_rname, _e))
+
         # Build section_id per etype: each sectionAssignment is its own domain.
         # Two assignments with the same sectionName are still separate domains.
         # section_id = index of the assignment in sectionAssignments order.
