@@ -261,8 +261,8 @@ class ModalMatchScatterRequest(BaseModel):
 
 class TransformOperationRequest(BaseModel):
     project_id: int
-    type: str
-    matrix4: List[List[float]]
+    matrix4_fem: List[List[float]]
+    matrix4_test: List[List[float]]
 
 
 class TransformAutoInfoRequest(BaseModel):

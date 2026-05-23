@@ -2704,29 +2704,33 @@ def get_pair_node_point_result(project_id):
         conn.close()
 
 
-def save_transform_operation(project_id: int, transform_type: str, matrix4):
+def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
     ensure_tables_exist()
-    resolved_type = _normalize_transform_type(transform_type)
-    resolved_matrix4 = _normalize_matrix4(matrix4)
+    resolved_matrix4_fem = _normalize_matrix4(matrix4_fem)
+    resolved_matrix4_test = _normalize_matrix4(matrix4_test)
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """
-            INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                matrix4_json = VALUES(matrix4_json),
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (int(project_id), resolved_type, _json_dumps(resolved_matrix4)),
-        )
+        for transform_type, matrix4 in (
+            ("fem", resolved_matrix4_fem),
+            ("test", resolved_matrix4_test),
+        ):
+            cursor.execute(
+                """
+                INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    matrix4_json = VALUES(matrix4_json),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (int(project_id), transform_type, _json_dumps(matrix4)),
+            )
         conn.commit()
         return {
             "project_id": int(project_id),
-            "type": resolved_type,
-            "matrix4": resolved_matrix4,
+            "matrix4_fem": resolved_matrix4_fem,
+            "matrix4_test": resolved_matrix4_test,
         }
     except Exception:
         conn.rollback()
