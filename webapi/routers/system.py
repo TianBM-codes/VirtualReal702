@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 async def init_db():
     try:
         logger.info("开始初始化数据库表")
+        logger.info("如果删除表, 需要重新启动服务")
         ensure_tables_exist()
         logger.info("数据库表初始化成功")
         return success_response(None, "数据库表初始化成功")
