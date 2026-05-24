@@ -288,6 +288,95 @@ def _project_workspace(project_id: int) -> Path:
     return (Path(settings.data_root).expanduser().resolve() / str(int(project_id))).resolve()
 
 
+def _detect_project_source_type(input_path: Path) -> str:
+    suffix = str(input_path.suffix or "").strip().lower()
+    if suffix == ".inp":
+        return "inp"
+    if suffix == ".bdf":
+        return "bdf"
+    raise ValidationError(
+        "unsupported input file type; only .inp and .bdf are allowed",
+        {"input_file": str(input_path)},
+    )
+
+
+def _ensure_project_ready(
+    *,
+    project_id: int,
+    source_path: str,
+    source_type: str,
+    wait_timeout_sec: int,
+    poll_interval_sec: float,
+) -> dict:
+    repo = RegistryRepo(settings.registry_db_path)
+    project_key = str(int(project_id))
+    workspace = _project_workspace(int(project_id))
+    source_abs = os.path.abspath(str(source_path))
+    started_at = time.monotonic()
+    poll_interval = max(float(poll_interval_sec or 0), 0.1)
+    wait_timeout = max(int(wait_timeout_sec or 0), 1)
+
+    row = repo.get_project(project_key)
+    if row is None:
+        workspace.mkdir(parents=True, exist_ok=True)
+        repo.create_project(
+            project_id=project_key,
+            workspace=project_key,
+            inp_path=source_abs,
+            source_type=source_type,
+        )
+    else:
+        existing_source_type = str(row["source_type"] or "").strip().lower()
+        if existing_source_type and existing_source_type != source_type:
+            raise ValidationError(
+                "existing project source_type does not match input file type",
+                {
+                    "project_id": int(project_id),
+                    "existing_source_type": existing_source_type,
+                    "requested_source_type": source_type,
+                    "input_file": source_abs,
+                },
+            )
+
+    while True:
+        row = repo.get_project(project_key)
+        if row is None:
+            raise NotFoundError(
+                "project disappeared while waiting for geometry ready",
+                {"project_id": int(project_id)},
+            )
+
+        geom_status = str(row["geom_status"] or "").strip().lower()
+        if geom_status == "ready":
+            return {
+                "project_id": int(project_id),
+                "workspace": str(workspace),
+                "geom_status": geom_status,
+                "source_type": source_type,
+            }
+        if geom_status == "error":
+            raise ValidationError(
+                "project geometry parsing failed",
+                {
+                    "project_id": int(project_id),
+                    "geom_status": geom_status,
+                    "source_type": source_type,
+                },
+            )
+
+        if time.monotonic() - started_at >= wait_timeout:
+            raise ValidationError(
+                "waiting project geometry ready timed out",
+                {
+                    "project_id": int(project_id),
+                    "geom_status": geom_status,
+                    "wait_timeout_sec": wait_timeout,
+                    "source_type": source_type,
+                },
+            )
+        time.sleep(poll_interval)
+
+
 def _resolve_project_file(project_id: int, path: str, field_name: str) -> Path:
     raw = str(path or "").strip()
     if not raw:
@@ -1129,7 +1218,7 @@ def run_solver_and_parse_project_result(
     log_project_step(int(project_id), "统一计算并解析开始", stage="solver_run_and_parse", percent=0)
     try:
         input_path = _resolve_project_file(project_id, input_file, "input_file")
-        source_type = input_path.suffix.lower()
+        source_type = _detect_project_source_type(input_path)
         log_project_info(
             int(project_id),
             f"已解析输入文件路径: {input_path.name}",
@@ -1137,7 +1226,27 @@ def run_solver_and_parse_project_result(
             percent=5,
         )
 
-        if source_type == ".inp":
+        log_project_step(
+            int(project_id),
+            f"纭繚椤圭洰 {project_id} 鍑犱綍宸插氨缁? ({source_type})",
+            stage="project_prepare",
+            percent=10,
+        )
+        project_info = _ensure_project_ready(
+            project_id=int(project_id),
+            source_path=str(input_path),
+            source_type=source_type,
+            wait_timeout_sec=wait_timeout_sec,
+            poll_interval_sec=poll_interval_sec,
+        )
+        log_project_step(
+            int(project_id),
+            f"椤圭洰鍑犱綍灏辩华锛屽伐浣滅┖闂? {Path(project_info['workspace']).name}",
+            stage="project_ready",
+            percent=12,
+        )
+
+        if source_type == "inp":
             log_project_step(int(project_id), "开始执行 Abaqus 求解", stage="solver_started", percent=15)
             solver_payload = run_abaqus_job(
                 input_inp=str(input_path),
@@ -1209,7 +1318,7 @@ def run_solver_and_parse_project_result(
                 "upload": upload,
             }
 
-        if source_type == ".bdf":
+        if source_type == "bdf":
             log_project_step(int(project_id), "开始执行 Nastran SOL103 求解", stage="solver_started", percent=15)
             solver_payload = run_nastran_sol103_job(
                 input_bdf=str(input_path),

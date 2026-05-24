@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
 
 from services.model_update.analysis.solver_service import (
     generate_nastran_sol103_job,
@@ -507,7 +508,7 @@ async def run_solver_and_parse_api(request: Request, body: SolverRunAndParseRequ
                 request_payload=model_to_dict(body),
             )
             return success_response(data, "统一计算并解析任务已提交")
-        data = run_solver_and_parse_project_result(**kwargs)
+        data = await run_in_threadpool(run_solver_and_parse_project_result, **kwargs)
         return success_response(data, "统一计算并解析成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
