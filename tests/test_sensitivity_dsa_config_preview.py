@@ -242,3 +242,55 @@ def test_generate_project_dsa_inp_from_db_writes_include_and_main(monkeypatch, t
     include_text = include_file.read_text(encoding="utf-8")
     assert "T1=1.5" in include_text
     assert "*DESIGN PARAMETER" in include_text
+
+
+def test_generate_project_dsa_inp_from_db_resolves_project_paths_when_omitted(monkeypatch, tmp_path: Path):
+    source_inp = tmp_path / "model.inp"
+    source_inp.write_text("*Heading\n*Step, name=Step-1\n*Static\n1., 1.\n*End Step\n", encoding="utf-8")
+    project_workspace = tmp_path / "project_ws"
+
+    monkeypatch.setattr(sensitivity_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_resolve_inp_path_from_project",
+        lambda project_id: str(source_inp),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_project_sensitivity_output_dir",
+        lambda project_id: str(project_workspace / "sensitivity"),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "build_project_dsa_config_preview",
+        lambda project_id, value_mode="inherit": {
+            "value_mode": value_mode,
+            "config_json": {
+                "include_file": "include.inp",
+                "main_output": "model_dsa.inp",
+                "element_sets": [],
+                "node_sets": [],
+                "responses": [],
+            },
+            "parameter_count": 0,
+            "response_count": 0,
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "analyze_element_set_tasks",
+        lambda element_sets, parsed: ([], {}, []),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "build_include_text",
+        lambda config, enriched_tasks, parsed, mother_set_to_remainder_name: "*DESIGN PARAMETER\n",
+    )
+
+    result = sensitivity_service.generate_project_dsa_inp_from_db(project_id=1001)
+
+    assert result["input_inp"] == str(source_inp.resolve())
+    assert Path(result["analysis_inp"]).parent == (project_workspace / "sensitivity").resolve()
+    assert Path(result["include_file"]).exists()
+    assert Path(result["config_file"]).exists()

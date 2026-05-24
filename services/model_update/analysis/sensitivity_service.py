@@ -22,6 +22,7 @@ from src.l3.core.config import settings
 from src.l3.core.state import registry
 from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.manifest_repo import ManifestRepo
+from src.l3.infra.registry_repo import RegistryRepo
 from src.l3.services.node_table_service import get_instance_fields
 from tools.odb_client import ODBClient, ODBClientError, _select_component_values
 
@@ -1219,7 +1220,7 @@ def _resolve_output_file(path_value: Optional[str], *, output_dir: str, default_
 def generate_project_dsa_inp_from_db(
         *,
         project_id: int,
-        input_inp: str,
+        input_inp: Optional[str] = None,
         output_dir: Optional[str] = None,
         value_mode: str = "inherit",
         output_inp: Optional[str] = None,
@@ -1228,11 +1229,12 @@ def generate_project_dsa_inp_from_db(
 ) -> dict:
     ensure_tables_exist()
 
-    input_inp_abs = os.path.abspath(input_inp)
+    resolved_input_inp = str(input_inp or "").strip() or _resolve_inp_path_from_project(project_id)
+    input_inp_abs = os.path.abspath(resolved_input_inp)
     if not os.path.exists(input_inp_abs):
         raise NotFoundError("input_inp not found", {"input_inp": input_inp_abs})
 
-    output_dir_abs = os.path.abspath(output_dir or os.path.dirname(input_inp_abs))
+    output_dir_abs = os.path.abspath(output_dir or _project_sensitivity_output_dir(project_id))
     os.makedirs(output_dir_abs, exist_ok=True)
 
     include_name = str(include_file or DEFAULT_INCLUDE_FILE).strip() or DEFAULT_INCLUDE_FILE
@@ -1333,21 +1335,31 @@ def generate_project_dsa_inp_from_db(
 def _generate_sensitivity_inp_from_project_db(
         *,
         project_id: int,
-        input_inp: str,
+        input_inp: Optional[str],
         output_dir: str,
         parameter_rows: List[dict],
         design_response_rows: List[dict],
 ) -> dict:
-    raise ValidationError(
-        "project-driven sensitivity inp generator is not implemented yet",
-        {
-            "project_id": int(project_id),
-            "input_inp": os.path.abspath(input_inp),
-            "output_dir": os.path.abspath(output_dir),
-            "optimization_parameter_count": len(parameter_rows),
-            "design_response_count": len(design_response_rows),
-        },
+    generation_payload = generate_project_dsa_inp_from_db(
+        project_id=project_id,
+        input_inp=input_inp,
+        output_dir=output_dir,
+        value_mode="inherit",
     )
+    generation_payload["generated_files"] = {
+        key: os.path.abspath(str(value))
+        for key, value in {
+            "analysis_inp": generation_payload.get("analysis_inp"),
+            "include_file": generation_payload.get("include_file"),
+            "config_file": generation_payload.get("config_file"),
+        }.items()
+        if value
+    }
+    generation_payload["generation_summary"] = {
+        "optimization_parameter_count": len(parameter_rows),
+        "design_response_count": len(design_response_rows),
+    }
+    return generation_payload
 
 
 def _default_solver_workspace(output_dir: str, job_name: str) -> str:
@@ -1375,7 +1387,17 @@ def _default_project_result_group(batch_no: str, job_name: str) -> str:
 
 
 def _project_workspace_path(project_id: int) -> str:
+    repo = RegistryRepo(settings.registry_db_path)
+    row = repo.get_project(str(int(project_id)))
+    if row is not None:
+        stored_workspace = str(row["workspace"] or "").strip()
+        if stored_workspace:
+            return os.path.abspath(repo.resolve_workspace(stored_workspace, settings.data_root))
     return os.path.abspath(os.path.join(settings.data_root, str(project_id)))
+
+
+def _project_sensitivity_output_dir(project_id: int) -> str:
+    return os.path.abspath(os.path.join(_project_workspace_path(project_id), "sensitivity"))
 
 
 def _build_project_result_parse_options(
@@ -2654,8 +2676,8 @@ def generate_sensitivity_inp_and_store(
         *,
         project_id: int,
         batch_no: Optional[str] = None,
-        input_inp: str,
-        output_dir: str,
+        input_inp: Optional[str] = None,
+        output_dir: Optional[str] = None,
         step: str,
         instances: List[str],
         field_prefix: str,
@@ -2682,11 +2704,12 @@ def generate_sensitivity_inp_and_store(
 ) -> dict:
     ensure_tables_exist()
 
-    input_inp_abs = os.path.abspath(input_inp)
+    resolved_input_inp = str(input_inp or "").strip() or _resolve_inp_path_from_project(project_id)
+    input_inp_abs = os.path.abspath(resolved_input_inp)
     if not os.path.exists(input_inp_abs):
         raise NotFoundError("input_inp not found", {"input_inp": input_inp_abs})
 
-    output_dir_abs = os.path.abspath(output_dir)
+    output_dir_abs = os.path.abspath(output_dir or _project_sensitivity_output_dir(project_id))
     os.makedirs(output_dir_abs, exist_ok=True)
 
     def _run():

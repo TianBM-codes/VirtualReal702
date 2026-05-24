@@ -731,6 +731,78 @@ def test_generate_sensitivity_inp_and_store_loads_project_metadata_and_reuses_ru
     assert result["generated_files"]["design_parameter_inp"].endswith("designParameter.inp")
 
 
+def test_generate_sensitivity_inp_and_store_uses_project_defaults_when_paths_omitted(monkeypatch, tmp_path: Path):
+    original_inp = tmp_path / "model.inp"
+    original_inp.write_text("*Heading\n", encoding="utf-8")
+    default_output_dir = tmp_path / "project_ws" / "sensitivity"
+    generated_inp = default_output_dir / "generated_sensitivity.inp"
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_resolve_inp_path_from_project",
+        lambda project_id: str(original_inp),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_project_sensitivity_output_dir",
+        lambda project_id: str(default_output_dir),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [{"parameter_name": "T1"}],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_design_responses",
+        lambda project_id: [{"response_no": 1, "set_name": "SET-1"}],
+    )
+
+    generation_calls = {}
+    run_calls = {}
+
+    def fake_generate(**kwargs):
+        generation_calls.update(kwargs)
+        generated_inp.parent.mkdir(parents=True, exist_ok=True)
+        generated_inp.write_text("*Heading\n", encoding="utf-8")
+        return {
+            "analysis_inp": str(generated_inp),
+            "generated_files": {"config_file": str(default_output_dir / "dsa_config.json")},
+        }
+
+    def fake_run(**kwargs):
+        run_calls.update(kwargs)
+        return {
+            "analysis_run_id": 41,
+            "project_id": kwargs["project_id"],
+            "batch_no": kwargs["batch_no"],
+            "input_inp": kwargs["input_inp"],
+            "analysis_inp": kwargs["input_inp"],
+            "generated_files": {"analysis_inp": kwargs["input_inp"]},
+            "deleted_process_files": [],
+        }
+
+    monkeypatch.setattr(sensitivity_service, "_generate_sensitivity_inp_from_project_db", fake_generate)
+    monkeypatch.setattr(sensitivity_service, "run_sensitivity_inp_and_store", fake_run)
+
+    result = sensitivity_service.generate_sensitivity_inp_and_store(
+        project_id=9,
+        batch_no="4",
+        step="Step-1",
+        instances=["PART-1-1"],
+        field_prefix="d_U_",
+        response_component="U1",
+        position="NODAL",
+    )
+
+    assert generation_calls["input_inp"] == str(original_inp.resolve())
+    assert generation_calls["output_dir"] == str(default_output_dir.resolve())
+    assert run_calls["output_dir"] == str(default_output_dir.resolve())
+    assert run_calls["input_inp"] == str(generated_inp.resolve())
+    assert result["input_inp"] == str(original_inp.resolve())
+    assert result["analysis_inp"] == str(generated_inp.resolve())
+
+
 def test_write_sensitivity_cloud_result_rejects_non_finite_matrix_values(monkeypatch):
     class FakeClient:
         def __init__(self, base_url: str, timeout: int):

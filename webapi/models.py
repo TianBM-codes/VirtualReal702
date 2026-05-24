@@ -308,7 +308,7 @@ class SensitivityDsaConfigPreviewRequest(BaseModel):
 
 class SensitivityDsaInpGenerateRequest(BaseModel):
     project_id: int
-    input_inp: str
+    input_inp: Optional[str] = None
     output_dir: Optional[str] = None
     value_mode: str = "inherit"
     output_inp: Optional[str] = None
@@ -439,8 +439,8 @@ class SensitivityRunAndStoreRequest(BaseModel):
 class SensitivityGenerateRunAndStoreRequest(BaseModel):
     project_id: int
     batch_no: Optional[str] = "1"
-    input_inp: str
-    output_dir: str
+    input_inp: Optional[str] = None
+    output_dir: Optional[str] = None
     step: str
     instances: List[str]
     field_prefix: str
