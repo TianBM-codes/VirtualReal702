@@ -582,29 +582,39 @@ def test_get_latest_octree_meta_normalizes_quoted_paths():
     assert meta["cache_file_path"] == r"D:\import\code history\static.node_octree.npz"
 
 
-def test_save_transform_operation_upserts_matrix4(monkeypatch):
+def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
     fake_conn = _WriteConnection()
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
 
     result = inp_service.save_transform_operation(
         project_id=101,
-        transform_type="fem",
-        matrix4=[
+        matrix4_fem=[
             [1, 0, 0, 0],
             [0, 1, 0, 0],
             [0, 0, 1, 2],
+            [0, 0, 0, 1],
+        ],
+        matrix4_test=[
+            [1, 0, 0, 3],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
             [0, 0, 0, 1],
         ],
     )
 
     assert result == {
         "project_id": 101,
-        "type": "fem",
-        "matrix4": [
+        "matrix4_fem": [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 2.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "matrix4_test": [
+            [1.0, 0.0, 0.0, 3.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
     }
@@ -613,7 +623,11 @@ def test_save_transform_operation_upserts_matrix4(monkeypatch):
         (
             "INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE matrix4_json = VALUES(matrix4_json), updated_at = CURRENT_TIMESTAMP",
             (101, "fem", "[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 2.0], [0.0, 0.0, 0.0, 1.0]]"),
-        )
+        ),
+        (
+            "INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE matrix4_json = VALUES(matrix4_json), updated_at = CURRENT_TIMESTAMP",
+            (101, "test", "[[1.0, 0.0, 0.0, 3.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]"),
+        ),
     ]
 
 

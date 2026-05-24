@@ -154,8 +154,8 @@ async def save_transform_operation_api(request: Request, body: TransformOperatio
     try:
         result = save_transform_operation(
             project_id=body.project_id,
-            transform_type=body.type,
-            matrix4=body.matrix4,
+            matrix4_fem=body.matrix4_fem,
+            matrix4_test=body.matrix4_test,
         )
         return success_response(result, "空间变换保存成功")
     except AppError as exc:
