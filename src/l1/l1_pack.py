@@ -918,13 +918,17 @@ def patch_sections_into_geom(raw_dir, workspace):
         isets_elem_dir  = os.path.join(d, 'isets', 'elem_sets')
 
         print("  Patching sections → {}".format(inst_safe + '.h5'))
+        print("[DBG2] sections.json type={} len={}".format(
+            type(sec_data).__name__, len(sec_data) if sec_data else 0))
         with h5py.File(h5_path, 'a') as f:
             if isinstance(sec_data, list):
-                sec_items = [
-                    ('{}__{}'.format(i, safe(s.get('section_name', str(i)))), s)
-                    for i, s in enumerate(sec_data)
-                ]
+                sec_items = []
+                for i, s in enumerate(sec_data):
+                    print("[DBG2] item[{}] type={} val={}".format(i, type(s).__name__, repr(s)[:120]))
+                    grp_key = '{}__{}'.format(i, safe(s.get('section_name', str(i))))
+                    sec_items.append((grp_key, s))
             else:
+                print("[DBG2] dict keys={}".format(list(sec_data.keys())[:5]))
                 sec_items = list(sec_data.items())
             for grp_key, sinfo in sec_items:
                 sg = f.require_group('sections/{}'.format(grp_key))
