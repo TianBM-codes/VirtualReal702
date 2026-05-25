@@ -258,7 +258,7 @@ def _labels_from_section_id(
         return ["(none)"] * Rf
 
     unique_ids = sorted(set(int(v) for v in domain_per_face if v >= 0))
-    id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
+    id_to_label = {did: f"{instance}_Region {i + 1}" for i, did in enumerate(unique_ids)}
     return [id_to_label.get(int(v), "(none)") for v in domain_per_face]
 
 
