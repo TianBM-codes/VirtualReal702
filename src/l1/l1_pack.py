@@ -323,16 +323,23 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
             if os.path.exists(elems_raw):
                 # Build section-id → material_name / section_type lookup for color-code datasets
                 _sec_names_list = []
-                _sec_info_dict  = {}
+                _si_raw         = {}
                 _sn_path = os.path.join(d, 'section_names.json')
                 _si_path = os.path.join(d, 'sections.json')
                 if os.path.exists(_sn_path) and os.path.exists(_si_path):
                     _sec_names_list = load_json(_sn_path)
-                    _sec_info_dict  = load_json(_si_path)
-                _sid_to_mat = {i: _sec_info_dict.get(n, {}).get('material_name', '')
-                               for i, n in enumerate(_sec_names_list)}
-                _sid_to_sty = {i: _sec_info_dict.get(n, {}).get('type', '')
-                               for i, n in enumerate(_sec_names_list)}
+                    _si_raw         = load_json(_si_path)
+                # sections.json is a list (new) or dict (old) — handle both
+                if isinstance(_si_raw, list):
+                    _sid_to_mat = {i: _si_raw[i].get('material_name', '')
+                                   for i in range(min(len(_si_raw), len(_sec_names_list)))}
+                    _sid_to_sty = {i: _si_raw[i].get('type', '')
+                                   for i in range(min(len(_si_raw), len(_sec_names_list)))}
+                else:
+                    _sid_to_mat = {i: _si_raw.get(n, {}).get('material_name', '')
+                                   for i, n in enumerate(_sec_names_list)}
+                    _sid_to_sty = {i: _si_raw.get(n, {}).get('type', '')
+                                   for i, n in enumerate(_sec_names_list)}
 
                 for etype_safe in os.listdir(elems_raw):
                     td  = os.path.join(elems_raw, etype_safe)
@@ -364,8 +371,19 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
             # Sections
             sec_path = os.path.join(d, 'sections.json')
             if os.path.exists(sec_path):
-                for sname, sinfo in load_json(sec_path).items():
-                    sg = f.require_group('sections/{}'.format(sname))
+                sec_data = load_json(sec_path)
+                # sections.json is a list (new) or dict (old) — handle both.
+                # New: each entry is one sectionAssignment; key = "{i}__{safe(name)}"
+                # Old: keyed by sectionName (one entry per unique name).
+                if isinstance(sec_data, list):
+                    sec_items = [
+                        ('{}__{}'.format(i, safe(s.get('section_name', str(i)))), s)
+                        for i, s in enumerate(sec_data)
+                    ]
+                else:
+                    sec_items = list(sec_data.items())
+                for grp_key, sinfo in sec_items:
+                    sg = f.require_group('sections/{}'.format(grp_key))
                     sg.attrs['element_set']   = sinfo.get('element_set', '')
                     sg.attrs['material_name'] = sinfo.get('material_name', '')
                     sg.attrs['type']          = sinfo.get('type', '')
@@ -891,15 +909,22 @@ def patch_sections_into_geom(raw_dir, workspace):
             if 'sections' in _rf:
                 continue  # already present, skip
 
-        sections_info   = load_json(sec_path)
+        sec_data        = load_json(sec_path)
         snames_path     = os.path.join(d, 'section_names.json')
         section_names   = load_json(snames_path) if os.path.exists(snames_path) else []
         isets_elem_dir  = os.path.join(d, 'isets', 'elem_sets')
 
         print("  Patching sections → {}".format(inst_safe + '.h5'))
         with h5py.File(h5_path, 'a') as f:
-            for sname, sinfo in sections_info.items():
-                sg = f.require_group('sections/{}'.format(sname))
+            if isinstance(sec_data, list):
+                sec_items = [
+                    ('{}__{}'.format(i, safe(s.get('section_name', str(i)))), s)
+                    for i, s in enumerate(sec_data)
+                ]
+            else:
+                sec_items = list(sec_data.items())
+            for grp_key, sinfo in sec_items:
+                sg = f.require_group('sections/{}'.format(grp_key))
                 sg.attrs['element_set']   = sinfo.get('element_set', '')
                 sg.attrs['material_name'] = sinfo.get('material_name', '')
                 sg.attrs['type']          = sinfo.get('type', '')
