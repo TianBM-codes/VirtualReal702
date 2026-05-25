@@ -77,6 +77,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _now_log_ts() -> str:
+    """Human-readable Beijing time (UTC+8) for job_logs.ts column."""
+    from datetime import timedelta
+    tz_bj = timezone(timedelta(hours=8))
+    return datetime.now(tz_bj).strftime("%Y-%m-%d %H:%M:%S")
+
+
 class RegistryRepo:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -159,7 +166,7 @@ class RegistryRepo:
                 conn.execute(
                     "INSERT INTO job_logs (odb_id, ts, level, stage, message, percent)"
                     " VALUES (?,?,?,?,?,?)",
-                    (odb_id, _now_iso(), level, stage, message, percent),
+                    (odb_id, _now_log_ts(), level, stage, message, percent),
                 )
         except Exception:
             pass
@@ -443,6 +450,7 @@ class RegistryRepo:
                                 source_path: str, source_type: str) -> None:
         """将 error 状态的 project 重置为 pending（重新提交时调用），同时更新 source_path。"""
         with self._connect() as conn:
+            conn.execute("DELETE FROM job_logs WHERE odb_id=?", (project_id,))
             conn.execute(
                 "UPDATE projects SET geom_status='pending', inp_path=?, source_type=?,"
                 " updated_at=? WHERE project_id=? AND geom_status='error'",

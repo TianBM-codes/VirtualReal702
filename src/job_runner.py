@@ -161,10 +161,10 @@ def _log_job(odb_id: str, level: str, message: str,
             conn.execute(
                 "INSERT INTO job_logs (odb_id, ts, level, stage, message, percent)"
                 " VALUES (?,?,?,?,?,?)",
-                (odb_id, _now_iso(), level, stage, message, percent),
+                (odb_id, _now_log_ts(), level, stage, message, percent),
             )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning("_log_job failed (odb_id=%s): %s", odb_id, _e)
 
 
 # ── HTML span helpers for styled terminal log output ──────────────────────────
@@ -214,10 +214,17 @@ def _log_elem_type_summary(entity_id: str, workspace: str, source_type: str,
     _log_job(entity_id, "info", "\n".join(lines), stage=stage)
 
 
-# ── Timestamp helper ──────────────────────────────────────────────────────────
+# ── Timestamp helpers ─────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _now_log_ts() -> str:
+    """Human-readable Beijing time (UTC+8) for job_logs.ts column."""
+    from datetime import timedelta
+    tz_bj = timezone(timedelta(hours=8))
+    return datetime.now(tz_bj).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ── Registry helpers ──────────────────────────────────────────────────────────

@@ -584,7 +584,7 @@ def dump_assembly(odb, raw_dir, meta):
                         break
 
                 if e1 is None:
-                    print("WARNING: datumCsys '{}' — could not read axes. "
+                    print("WARNING: datumCsys '{}' - could not read axes. "
                           "Available attrs: {}".format(dc_name,
                           [a for a in dir(csys) if not a.startswith('_')]))
                     continue
@@ -1878,7 +1878,7 @@ def main():
         step_name   = args.step
         field_names = set(f.strip() for f in args.fields.split(',') if f.strip())
         field_filter = {step_name: field_names}
-        print("=== Worker {} — step='{}' fields={} ===".format(
+        print("=== Worker {} -- step='{}' fields={} ===".format(
             wid, step_name, sorted(field_names)))
         t0 = time.time()
         print("Opening ODB (readOnly) ...")
@@ -1898,7 +1898,7 @@ def main():
         return
 
     # full or preflight: print header and open ODB
-    print("=== Layer 1 Phase 1: ODB → npy ({}) ===".format(mode))
+    print("=== Layer 1 Phase 1: ODB -> npy ({}) ===".format(mode))
     print("  ODB:       {}".format(odb_path))
     print("  Workspace: {}".format(workspace))
 
