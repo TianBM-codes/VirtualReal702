@@ -28,7 +28,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="e in entries" :key="e.legend_key"
+            <tr v-for="(e, i) in entries" :key="e.legend_key + '|' + i"
                 :class="{ 'le-selected': selected.has(e.legend_key) }"
                 @click="toggleRow(e)">
               <td @click.stop>
@@ -168,7 +168,14 @@ async function loadEntries() {
   loading.value = true
   try {
     const res = await api.fetchLegendEntries(inst, props.scheme, props.setNames)
-    entries.value = (res?.data?.entries ?? []).map(e => ({
+    // Deduplicate by legend_key — backend should already do this, but guard here too
+    const seen = new Set()
+    const raw = (res?.data?.entries ?? []).filter(e => {
+      if (seen.has(e.legend_key)) return false
+      seen.add(e.legend_key)
+      return true
+    })
+    entries.value = raw.map(e => ({
       ...e,
       _name:  e.display_name ?? e.default_title ?? e.legend_key,
       _color: e.user_color
