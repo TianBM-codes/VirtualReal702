@@ -13,7 +13,6 @@ plus a legend list [{id, name, r, g, b}, ...].
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from typing import Dict, List, Optional, Tuple
@@ -58,9 +57,23 @@ _GREY      = (0.35, 0.35, 0.35)
 _HIGHLIGHT = (0.95, 0.55, 0.10)
 
 
-def _label_palette_idx(label: str) -> int:
-    """Hash label name to a stable palette index — same name always same colour."""
-    return int(hashlib.md5(label.encode("utf-8")).hexdigest()[:8], 16) % len(_PALETTE)
+def _build_global_section_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float, float, float]]:
+    """
+    Build a {region_label: (r,g,b)} map that mirrors Abaqus sequential assignment:
+    sort all instances alphabetically, then number their regions 1,2,3... and assign
+    palette colours in that global order.  Same label always gets the same colour
+    regardless of which instance's get_color_code / get_legend_entries is called.
+    """
+    color_map: Dict[str, Tuple[float, float, float]] = {}
+    palette_idx = 0
+    for inst in sorted(idx.averaging_data.keys()):
+        avd = idx.averaging_data[inst]
+        unique_ids = sorted(set(int(v) for v in avd["default_domain_id"] if v >= 0))
+        for i, _ in enumerate(unique_ids):
+            label = f"{inst}.Region_{i + 1}"
+            color_map[label] = _PALETTE[palette_idx % len(_PALETTE)]
+            palette_idx += 1
+    return color_map
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +531,8 @@ def _compute_labels_and_legend(
     from ..infra.manifest_repo import ManifestRepo
     overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
 
+    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
+
     legend: List[dict] = []
     palette_idx = 0
     for i, val in enumerate(unique_vals):
@@ -528,8 +543,7 @@ def _compute_labels_and_legend(
         elif not val or val in ("(none)", "(unknown)"):
             auto_rgb = _GREY
         elif scheme == "section":
-            # hash by name so different instances' regions never share a colour
-            auto_rgb = _PALETTE[_label_palette_idx(val)]
+            auto_rgb = global_sec_colors.get(val, _GREY)
         else:
             auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
             palette_idx += 1
@@ -630,6 +644,7 @@ def get_legend_entries(
                     surface_set.add(v)
 
     # Palette assignment (identical logic to get_color_code)
+    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
     palette_colors: Dict[str, Tuple[float, float, float]] = {}
     palette_idx = 0
     for val in unique_vals:
@@ -640,7 +655,7 @@ def get_legend_entries(
         elif not val or val in ("(none)", "(unknown)"):
             rgb = _GREY
         elif scheme == "section":
-            rgb = _PALETTE[_label_palette_idx(val)]
+            rgb = global_sec_colors.get(val, _GREY)
         else:
             rgb = _PALETTE[palette_idx % len(_PALETTE)]
             palette_idx += 1
