@@ -193,6 +193,12 @@ export function useOdbApi() {
     )
   }
 
+  function fetchAllLegendEntries(scheme, setNames) {
+    const params = new URLSearchParams({ scheme })
+    if (setNames && setNames.length) params.set('set_names', setNames.join(','))
+    return http.get(store.getApiUrl(`color-code/legend-entries?${params}`))
+  }
+
   function saveLegendEntries(instance, scheme, entries) {
     return http.post(
       store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?scheme=${scheme}`),
@@ -273,7 +279,7 @@ export function useOdbApi() {
     fetchNearestFace, fetchSurfacePatch,
     fetchSectionMesh,
     fetchColorSchemes, fetchColorCode,
-    fetchLegendEntries, saveLegendEntries, fetchLegend,
+    fetchLegendEntries, fetchAllLegendEntries, saveLegendEntries, fetchLegend,
     fetchRegionMeshEdges, fetchRegionOutline,
     fetchDeformedPositions, fetchDeformSuggestScale,
     fetchModalShape, fetchModalAnimationFrames,

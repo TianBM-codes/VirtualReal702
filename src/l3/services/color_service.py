@@ -720,7 +720,7 @@ def _default_titles_section(
         for fi in range(Rf)
     ], dtype=np.int32)
     unique_ids  = sorted(set(int(v) for v in domain_per_face if v >= 0))
-    id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
+    id_to_label = {did: f"{instance}.Region_{i + 1}" for i, did in enumerate(unique_ids)}
     label_to_id = {v: k for k, v in id_to_label.items()}
 
     # Look up material_name for each domain's representative element from geometry H5
