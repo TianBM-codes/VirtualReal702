@@ -570,9 +570,15 @@ def get_all_legend_entries(
     scheme: str,
     set_names: Optional[List[str]] = None,
 ) -> List[dict]:
-    """Return legend entries for all instances, each entry augmented with an 'instance' field."""
+    """Return legend entries for all instances.
+
+    For section scheme: each region label is unique per instance, returned as-is with
+    an 'instance' field on each entry.
+    For other schemes (etype/material/section_type): legend_key is shared across instances,
+    so entries are deduplicated by legend_key and face_count is summed.
+    """
     all_entries: List[dict] = []
-    for inst in idx.source_elem_etype.keys():
+    for inst in sorted(idx.source_elem_etype.keys()):
         try:
             entries = get_legend_entries(idx, inst, scheme, set_names)
             for e in entries:
@@ -580,6 +586,17 @@ def get_all_legend_entries(
             all_entries.extend(entries)
         except Exception:
             pass
+
+    # For schemes where labels are globally consistent, deduplicate by legend_key
+    if scheme not in ("section", "elset"):
+        merged: Dict[str, dict] = {}
+        for e in all_entries:
+            key = e["legend_key"]
+            if key not in merged:
+                merged[key] = dict(e)
+            else:
+                merged[key]["face_count"] = merged[key].get("face_count", 0) + e.get("face_count", 0)
+        all_entries = list(merged.values())
     return all_entries
 
 

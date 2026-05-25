@@ -124,16 +124,22 @@ async def post_legend_entries(
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     repo = ManifestRepo(idx.workspace)
     if all:
-        by_inst: dict = {}
-        for entry in body:
-            key = entry.get("legend_key", "")
-            # legend_key format: "{instance}.Region_N" — split on last ".Region_"
-            sep = ".Region_"
-            idx_sep = key.rfind(sep)
-            inst = key[:idx_sep] if idx_sep != -1 else instance
-            by_inst.setdefault(inst, []).append(entry)
-        for inst, entries in by_inst.items():
-            repo.set_legend_overrides(inst, scheme, entries)
+        if scheme == "section":
+            # legend_key format: "{instance}.Region_N" — route each entry to its instance
+            by_inst: dict = {}
+            for entry in body:
+                key = entry.get("legend_key", "")
+                sep = ".Region_"
+                idx_sep = key.rfind(sep)
+                inst = key[:idx_sep] if idx_sep != -1 else instance
+                by_inst.setdefault(inst, []).append(entry)
+            for inst, entries in by_inst.items():
+                repo.set_legend_overrides(inst, scheme, entries)
+        else:
+            # Shared labels (etype/material/section_type): write override to every instance
+            all_instances = list(idx.source_elem_etype.keys())
+            for inst in all_instances:
+                repo.set_legend_overrides(inst, scheme, body)
     else:
         repo.set_legend_overrides(instance, scheme, body)
     return ok({})
