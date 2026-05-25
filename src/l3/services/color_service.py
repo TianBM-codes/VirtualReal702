@@ -28,25 +28,52 @@ from ..core.state import ModelIndex
 # ---------------------------------------------------------------------------
 
 _PALETTE: List[Tuple[float, float, float]] = [
-    (0.27, 0.52, 0.95),  # blue
-    (0.95, 0.39, 0.27),  # coral
-    (0.27, 0.78, 0.44),  # green
-    (0.95, 0.78, 0.18),  # yellow
-    (0.63, 0.27, 0.95),  # purple
-    (0.18, 0.82, 0.90),  # cyan
-    (0.95, 0.55, 0.18),  # orange
-    (0.95, 0.27, 0.62),  # pink
-    (0.47, 0.78, 0.18),  # lime
-    (0.18, 0.47, 0.78),  # steel blue
-    (0.78, 0.27, 0.27),  # dark red
-    (0.18, 0.63, 0.63),  # teal
-    (0.78, 0.63, 0.18),  # gold
-    (0.55, 0.18, 0.47),  # mauve
-    (0.39, 0.63, 0.18),  # olive
-    (0.18, 0.27, 0.63),  # navy
+    (0.271, 0.545, 0.455),  # #458B74
+    (0.961, 0.961, 0.863),  # #F5F5DC
+    (0.733, 0.227, 0.227),  # #BB3A3A
+    (0.000, 0.369, 0.616),  # #005E9D
+    (0.757, 0.804, 0.804),  # #C1CDCD
+    (0.871, 0.722, 0.529),  # #DEB887
+    (0.694, 0.776, 0.929),  # #B1C6ED
+    (0.545, 0.533, 0.471),  # #8B8878
+    (0.914, 0.588, 0.478),  # #E9967A
+    (0.741, 0.718, 0.420),  # #BDB76B
+    (0.545, 0.039, 0.314),  # #8B0A50
+    (0.192, 0.227, 0.592),  # #313A97
+    (0.792, 0.851, 0.733),  # #CAD9BB
+    (0.933, 0.788, 0.000),  # #EEC900
+    (0.678, 0.847, 0.902),  # #ADD8E6
+    (0.431, 0.482, 0.545),  # #6E7B8B
+    (0.545, 0.278, 0.537),  # #8B4789
+    (0.933, 0.910, 0.667),  # #EEE8AA
+    (0.722, 0.808, 0.776),  # #B8CEC6
+    (0.722, 0.722, 0.859),  # #B8B8DB
+    (0.808, 0.643, 0.420),  # #CEA46B
+    (0.416, 0.353, 0.804),  # #6A5ACD
+    (0.933, 0.914, 0.914),  # #EEE9E9
+    (0.000, 0.200, 0.400),  # #003366
 ]
 _GREY      = (0.35, 0.35, 0.35)
 _HIGHLIGHT = (0.95, 0.55, 0.10)
+
+
+def _build_global_section_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float, float, float]]:
+    """
+    Build a {region_label: (r,g,b)} map that mirrors Abaqus sequential assignment:
+    sort all instances alphabetically, then number their regions 1,2,3... and assign
+    palette colours in that global order.  Same label always gets the same colour
+    regardless of which instance's get_color_code / get_legend_entries is called.
+    """
+    color_map: Dict[str, Tuple[float, float, float]] = {}
+    palette_idx = 0
+    for inst in sorted(idx.averaging_data.keys()):
+        avd = idx.averaging_data[inst]
+        unique_ids = sorted(set(int(v) for v in avd["default_domain_id"] if v >= 0))
+        for i, _ in enumerate(unique_ids):
+            label = f"{inst}.Region_{i + 1}"
+            color_map[label] = _PALETTE[palette_idx % len(_PALETTE)]
+            palette_idx += 1
+    return color_map
 
 
 # ---------------------------------------------------------------------------
@@ -95,11 +122,21 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
 
     elsets: List[str] = []
     sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
+    inst_safe = instance.replace('/', '__').replace('\\', '__').replace(' ', '_')
     if os.path.exists(sets_h5):
         with h5py.File(sets_h5, "r") as f:
+            # Instance-level element sets
             inst_grp = f.get(f"element_sets/{instance}")
             if inst_grp is not None:
-                elsets = sorted(inst_grp.keys())
+                elsets = list(inst_grp.keys())
+            # Assembly-level element sets that contain elements in this instance
+            asm_grp = f.get("assembly_sets")
+            if asm_grp is not None:
+                for set_safe in asm_grp.keys():
+                    if inst_safe in asm_grp[set_safe] and \
+                            "elem_labels" in asm_grp[set_safe][inst_safe]:
+                        elsets.append(set_safe)
+            elsets = sorted(set(elsets))
     # ODB-only fallback: instance sets live in geometry H5, not sets.h5
     if not elsets and os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
@@ -258,7 +295,7 @@ def _labels_from_section_id(
         return ["(none)"] * Rf
 
     unique_ids = sorted(set(int(v) for v in domain_per_face if v >= 0))
-    id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
+    id_to_label = {did: f"{instance}.Region_{i + 1}" for i, did in enumerate(unique_ids)}
     return [id_to_label.get(int(v), "(none)") for v in domain_per_face]
 
 
@@ -322,8 +359,10 @@ def _labels_from_elsets(
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
     # Load all requested sets' label arrays.
-    # Primary:  sets.h5 element_sets/{instance}/{sn}          (INP+ODB mode)
-    # Fallback: geometry H5 instance_sets/element_sets/{sn}   (ODB-only mode)
+    # Priority 1: sets.h5 element_sets/{instance}/{sn}          (instance sets, INP+ODB mode)
+    # Priority 2: sets.h5 assembly_sets/{sn}/{inst_safe}/elem_labels  (assembly sets)
+    # Priority 3: geometry H5 instance_sets/element_sets/{sn}   (ODB-only mode)
+    inst_safe = instance.replace('/', '__').replace('\\', '__').replace(' ', '_')
     slabels_dict: Dict[str, np.ndarray] = {}
     if os.path.exists(sets_h5):
         with h5py.File(sets_h5, "r") as f:
@@ -331,6 +370,11 @@ def _labels_from_elsets(
                 key = f"element_sets/{instance}/{sn}"
                 if key in f:
                     slabels_dict[sn] = f[key][:]
+                    continue
+                # Try assembly_sets (set_safe key may equal sn when sn has no special chars)
+                asm_key = f"assembly_sets/{sn}/{inst_safe}/elem_labels"
+                if asm_key in f:
+                    slabels_dict[sn] = f[asm_key][:]
     missing = [sn for sn in set_names if sn not in slabels_dict]
     if missing:
         if not os.path.exists(geom_h5):
@@ -487,16 +531,21 @@ def _compute_labels_and_legend(
     from ..infra.manifest_repo import ManifestRepo
     overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
 
+    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
+
     legend: List[dict] = []
     palette_idx = 0
     for i, val in enumerate(unique_vals):
         if scheme == "elset":
             auto_rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+            if auto_rgb != _GREY:
+                palette_idx += 1
         elif not val or val in ("(none)", "(unknown)"):
             auto_rgb = _GREY
+        elif scheme == "section":
+            auto_rgb = global_sec_colors.get(val, _GREY)
         else:
             auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
-        if auto_rgb != _GREY:
             palette_idx += 1
         ov  = overrides.get(val, {})
         rgb = (ov["color_r"], ov["color_g"], ov["color_b"]) if ov.get("color_r") is not None else auto_rgb
@@ -521,9 +570,15 @@ def get_all_legend_entries(
     scheme: str,
     set_names: Optional[List[str]] = None,
 ) -> List[dict]:
-    """Return legend entries for all instances, each entry augmented with an 'instance' field."""
+    """Return legend entries for all instances.
+
+    For section scheme: each region label is unique per instance, returned as-is with
+    an 'instance' field on each entry.
+    For other schemes (etype/material/section_type): legend_key is shared across instances,
+    so entries are deduplicated by legend_key and face_count is summed.
+    """
     all_entries: List[dict] = []
-    for inst in idx.source_elem_etype.keys():
+    for inst in sorted(idx.source_elem_etype.keys()):
         try:
             entries = get_legend_entries(idx, inst, scheme, set_names)
             for e in entries:
@@ -531,6 +586,17 @@ def get_all_legend_entries(
             all_entries.extend(entries)
         except Exception:
             pass
+
+    # For schemes where labels are globally consistent, deduplicate by legend_key
+    if scheme not in ("section", "elset"):
+        merged: Dict[str, dict] = {}
+        for e in all_entries:
+            key = e["legend_key"]
+            if key not in merged:
+                merged[key] = dict(e)
+            else:
+                merged[key]["face_count"] = merged[key].get("face_count", 0) + e.get("face_count", 0)
+        all_entries = list(merged.values())
     return all_entries
 
 
@@ -595,16 +661,20 @@ def get_legend_entries(
                     surface_set.add(v)
 
     # Palette assignment (identical logic to get_color_code)
+    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
     palette_colors: Dict[str, Tuple[float, float, float]] = {}
     palette_idx = 0
     for val in unique_vals:
         if scheme == "elset":
             rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+            if rgb != _GREY:
+                palette_idx += 1
         elif not val or val in ("(none)", "(unknown)"):
             rgb = _GREY
+        elif scheme == "section":
+            rgb = global_sec_colors.get(val, _GREY)
         else:
             rgb = _PALETTE[palette_idx % len(_PALETTE)]
-        if rgb != _GREY:
             palette_idx += 1
         palette_colors[val] = rgb
 
@@ -667,7 +737,7 @@ def _default_titles_section(
         for fi in range(Rf)
     ], dtype=np.int32)
     unique_ids  = sorted(set(int(v) for v in domain_per_face if v >= 0))
-    id_to_label = {did: f"Region {i + 1}" for i, did in enumerate(unique_ids)}
+    id_to_label = {did: f"{instance}.Region_{i + 1}" for i, did in enumerate(unique_ids)}
     label_to_id = {v: k for k, v in id_to_label.items()}
 
     # Look up material_name for each domain's representative element from geometry H5

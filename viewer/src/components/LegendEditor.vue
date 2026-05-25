@@ -152,16 +152,22 @@ function stopDrag() {
 
 
 // ── Load entries ─────────────────────────────────────────────────────────
+// For section scheme we fetch all instances, so any valid instance key works as URL placeholder.
+function anyInstance() {
+  return store.currentInstance || Object.keys(store.instanceMeshes)[0] || null
+}
+
 watch([() => props.visible, () => props.scheme, () => store.currentInstance], async ([vis]) => {
-  if (!vis || !props.scheme || !store.currentInstance) return
+  if (!vis || !props.scheme || !anyInstance()) return
   await loadEntries()
 }, { immediate: true })
 
 async function loadEntries() {
-  if (!props.scheme || !store.currentInstance) return
+  const inst = anyInstance()
+  if (!props.scheme || !inst) return
   loading.value = true
   try {
-    const res = await api.fetchLegendEntries(store.currentInstance, props.scheme, props.setNames)
+    const res = await api.fetchLegendEntries(inst, props.scheme, props.setNames)
     entries.value = (res?.data?.entries ?? []).map(e => ({
       ...e,
       _name:  e.display_name ?? e.default_title ?? e.legend_key,

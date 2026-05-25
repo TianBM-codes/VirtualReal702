@@ -185,17 +185,22 @@ export function useOdbApi() {
   }
 
   // ── Legend Entries ────────────────────────────────────────────────────────
+  const ALL_SCHEMES = new Set(['section', 'etype', 'material', 'section_type'])
+
   function fetchLegendEntries(instance, scheme, setNames) {
     const params = new URLSearchParams({ scheme })
     if (setNames && setNames.length) params.set('set_names', setNames.join(','))
+    if (ALL_SCHEMES.has(scheme)) params.set('all', 'true')
     return http.get(
       store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?${params}`)
     )
   }
 
   function saveLegendEntries(instance, scheme, entries) {
+    const params = new URLSearchParams({ scheme })
+    if (ALL_SCHEMES.has(scheme)) params.set('all', 'true')
     return http.post(
-      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?scheme=${scheme}`),
+      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?${params}`),
       entries
     )
   }

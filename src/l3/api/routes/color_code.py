@@ -84,18 +84,23 @@ async def get_legend_entries(
     instance: str,
     scheme: str = Query(..., description="etype | material | section_type | section | elset"),
     set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
+    all: bool = Query(False, description="Return entries for all instances instead of just this one"),
 ):
     """Return legend entries for the given scheme with face counts and user overrides.
 
     Each entry: {legend_key, default_title, display_name, color_r/g/b,
                  user_color, user_name, face_count}
     Used by the LegendEditor floating panel.
+    Pass all=true to get entries for all instances (each entry has an extra 'instance' field).
     """
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     parsed_sets = [s.strip() for s in set_names.split(",") if s.strip()]
-    entries = color_service.get_legend_entries(idx, instance, scheme, parsed_sets or None)
+    if all:
+        entries = color_service.get_all_legend_entries(idx, scheme, parsed_sets or None)
+    else:
+        entries = color_service.get_legend_entries(idx, instance, scheme, parsed_sets or None)
     return ok({"entries": entries})
 
 
@@ -105,16 +110,38 @@ async def post_legend_entries(
     instance: str,
     scheme: str = Query(..., description="etype | material | section_type | section | elset"),
     body: List[dict] = Body(..., description="[{legend_key, display_name?, color_r/g/b?}, ...]"),
+    all: bool = Query(False, description="Route each entry to its instance parsed from legend_key"),
 ):
     """Upsert display name and color overrides for legend entries.
 
     Each item: {legend_key (required), display_name (str|null), color_r/g/b (float|null)}.
     Pass null to clear an override.
+    With all=true: instance is parsed from each entry's legend_key (format '{inst}.Region_N'),
+    so entries from multiple instances can be saved in one call.
     """
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    ManifestRepo(idx.workspace).set_legend_overrides(instance, scheme, body)
+    repo = ManifestRepo(idx.workspace)
+    if all:
+        if scheme == "section":
+            # legend_key format: "{instance}.Region_N" — route each entry to its instance
+            by_inst: dict = {}
+            for entry in body:
+                key = entry.get("legend_key", "")
+                sep = ".Region_"
+                idx_sep = key.rfind(sep)
+                inst = key[:idx_sep] if idx_sep != -1 else instance
+                by_inst.setdefault(inst, []).append(entry)
+            for inst, entries in by_inst.items():
+                repo.set_legend_overrides(inst, scheme, entries)
+        else:
+            # Shared labels (etype/material/section_type): write override to every instance
+            all_instances = list(idx.source_elem_etype.keys())
+            for inst in all_instances:
+                repo.set_legend_overrides(inst, scheme, body)
+    else:
+        repo.set_legend_overrides(instance, scheme, body)
     return ok({})
 
 

@@ -793,12 +793,16 @@ def dump_geometry(odb, raw_dir, meta):
                 _sid_arr = np.full(len(_elblsrt), -1, dtype=np.int32)
             npsave(os.path.join(td, 'section_id.npy'), _sid_arr)
 
-        # Sections metadata (no element access, just names/types/thickness)
-        sections_info = {}
+        # Sections metadata (no element access, just names/types/thickness).
+        # Stored as a list — one entry per sectionAssignment — because the same
+        # sectionName can be assigned to multiple different element sets and a
+        # dict would silently overwrite earlier entries (last-wins).
+        sections_info = []
         try:
             for sa in instance.sectionAssignments:
                 sname = sa.sectionName
                 entry = {
+                    'section_name':  sname,
                     'element_set':   getattr(sa.region, 'name', ''),
                     'material_name': '',
                     'type':          '',
@@ -813,7 +817,7 @@ def dump_geometry(odb, raw_dir, meta):
                         entry['thickness'] = float(sec.thickness)
                 except Exception:
                     pass
-                sections_info[sname] = entry
+                sections_info.append(entry)
         except AttributeError:
             pass
 
@@ -1953,7 +1957,7 @@ def _extract_sections_to_dir(odb, out_dir):
 
         _sec_region_names = set()
         section_names_list = []
-        sections_info = {}
+        sections_info = []
         try:
             for sa in instance.sectionAssignments:
                 sname = sa.sectionName
@@ -1962,6 +1966,7 @@ def _extract_sections_to_dir(odb, out_dir):
                 if rname:
                     _sec_region_names.add(rname)
                 entry = {
+                    'section_name':  sname,
                     'element_set':   rname,
                     'material_name': '',
                     'type':          '',
@@ -1976,7 +1981,7 @@ def _extract_sections_to_dir(odb, out_dir):
                         entry['thickness'] = float(sec.thickness)
                 except Exception:
                     pass
-                sections_info[sname] = entry
+                sections_info.append(entry)
         except AttributeError:
             pass
 
