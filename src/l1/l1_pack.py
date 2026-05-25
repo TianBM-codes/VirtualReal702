@@ -379,10 +379,10 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                     type(sec_data).__name__, len(sec_data) if sec_data else 0))
                 if isinstance(sec_data, list):
                     sec_items = []
-                    for i, s in enumerate(sec_data):
-                        print("[DBG] item[{}] type={} val={}".format(i, type(s).__name__, repr(s)[:120]))
-                        grp_key = '{}__{}'.format(i, safe(s.get('section_name', str(i))))
-                        sec_items.append((grp_key, s))
+                    for i, se in enumerate(sec_data):
+                        print("[DBG] item[{}] type={} val={}".format(i, type(se).__name__, repr(se)[:120]))
+                        grp_key = '{}__{}'.format(i, safe(se.get('section_name', str(i))))
+                        sec_items.append((grp_key, se))
                 else:
                     sec_items = list(sec_data.items())
                 for grp_key, sinfo in sec_items:
