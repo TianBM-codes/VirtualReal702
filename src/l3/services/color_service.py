@@ -101,11 +101,21 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
 
     elsets: List[str] = []
     sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
+    inst_safe = instance.replace('/', '__').replace('\\', '__').replace(' ', '_')
     if os.path.exists(sets_h5):
         with h5py.File(sets_h5, "r") as f:
+            # Instance-level element sets
             inst_grp = f.get(f"element_sets/{instance}")
             if inst_grp is not None:
-                elsets = sorted(inst_grp.keys())
+                elsets = list(inst_grp.keys())
+            # Assembly-level element sets that contain elements in this instance
+            asm_grp = f.get("assembly_sets")
+            if asm_grp is not None:
+                for set_safe in asm_grp.keys():
+                    if inst_safe in asm_grp[set_safe] and \
+                            "elem_labels" in asm_grp[set_safe][inst_safe]:
+                        elsets.append(set_safe)
+            elsets = sorted(set(elsets))
     # ODB-only fallback: instance sets live in geometry H5, not sets.h5
     if not elsets and os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
@@ -328,8 +338,10 @@ def _labels_from_elsets(
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
     # Load all requested sets' label arrays.
-    # Primary:  sets.h5 element_sets/{instance}/{sn}          (INP+ODB mode)
-    # Fallback: geometry H5 instance_sets/element_sets/{sn}   (ODB-only mode)
+    # Priority 1: sets.h5 element_sets/{instance}/{sn}          (instance sets, INP+ODB mode)
+    # Priority 2: sets.h5 assembly_sets/{sn}/{inst_safe}/elem_labels  (assembly sets)
+    # Priority 3: geometry H5 instance_sets/element_sets/{sn}   (ODB-only mode)
+    inst_safe = instance.replace('/', '__').replace('\\', '__').replace(' ', '_')
     slabels_dict: Dict[str, np.ndarray] = {}
     if os.path.exists(sets_h5):
         with h5py.File(sets_h5, "r") as f:
@@ -337,6 +349,11 @@ def _labels_from_elsets(
                 key = f"element_sets/{instance}/{sn}"
                 if key in f:
                     slabels_dict[sn] = f[key][:]
+                    continue
+                # Try assembly_sets (set_safe key may equal sn when sn has no special chars)
+                asm_key = f"assembly_sets/{sn}/{inst_safe}/elem_labels"
+                if asm_key in f:
+                    slabels_dict[sn] = f[asm_key][:]
     missing = [sn for sn in set_names if sn not in slabels_dict]
     if missing:
         if not os.path.exists(geom_h5):
