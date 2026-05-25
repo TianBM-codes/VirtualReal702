@@ -13,6 +13,7 @@ plus a legend list [{id, name, r, g, b}, ...].
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Dict, List, Optional, Tuple
@@ -47,6 +48,11 @@ _PALETTE: List[Tuple[float, float, float]] = [
 ]
 _GREY      = (0.35, 0.35, 0.35)
 _HIGHLIGHT = (0.95, 0.55, 0.10)
+
+
+def _label_palette_idx(label: str) -> int:
+    """Hash label name to a stable palette index — same name always same colour."""
+    return int(hashlib.md5(label.encode("utf-8")).hexdigest()[:8], 16) % len(_PALETTE)
 
 
 # ---------------------------------------------------------------------------
@@ -492,11 +498,15 @@ def _compute_labels_and_legend(
     for i, val in enumerate(unique_vals):
         if scheme == "elset":
             auto_rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+            if auto_rgb != _GREY:
+                palette_idx += 1
         elif not val or val in ("(none)", "(unknown)"):
             auto_rgb = _GREY
+        elif scheme == "section":
+            # hash by name so different instances' regions never share a colour
+            auto_rgb = _PALETTE[_label_palette_idx(val)]
         else:
             auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
-        if auto_rgb != _GREY:
             palette_idx += 1
         ov  = overrides.get(val, {})
         rgb = (ov["color_r"], ov["color_g"], ov["color_b"]) if ov.get("color_r") is not None else auto_rgb
@@ -600,11 +610,14 @@ def get_legend_entries(
     for val in unique_vals:
         if scheme == "elset":
             rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
+            if rgb != _GREY:
+                palette_idx += 1
         elif not val or val in ("(none)", "(unknown)"):
             rgb = _GREY
+        elif scheme == "section":
+            rgb = _PALETTE[_label_palette_idx(val)]
         else:
             rgb = _PALETTE[palette_idx % len(_PALETTE)]
-        if rgb != _GREY:
             palette_idx += 1
         palette_colors[val] = rgb
 
