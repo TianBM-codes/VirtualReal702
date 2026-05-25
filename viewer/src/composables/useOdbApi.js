@@ -188,20 +188,17 @@ export function useOdbApi() {
   function fetchLegendEntries(instance, scheme, setNames) {
     const params = new URLSearchParams({ scheme })
     if (setNames && setNames.length) params.set('set_names', setNames.join(','))
+    if (scheme === 'section') params.set('all', 'true')
     return http.get(
       store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?${params}`)
     )
   }
 
-  function fetchAllLegendEntries(scheme, setNames) {
-    const params = new URLSearchParams({ scheme })
-    if (setNames && setNames.length) params.set('set_names', setNames.join(','))
-    return http.get(store.getApiUrl(`color-code/legend-entries?${params}`))
-  }
-
   function saveLegendEntries(instance, scheme, entries) {
+    const params = new URLSearchParams({ scheme })
+    if (scheme === 'section') params.set('all', 'true')
     return http.post(
-      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?scheme=${scheme}`),
+      store.getApiUrl(`color-code/${encodeURIComponent(instance)}/legend-entries?${params}`),
       entries
     )
   }
@@ -279,7 +276,7 @@ export function useOdbApi() {
     fetchNearestFace, fetchSurfacePatch,
     fetchSectionMesh,
     fetchColorSchemes, fetchColorCode,
-    fetchLegendEntries, fetchAllLegendEntries, saveLegendEntries, fetchLegend,
+    fetchLegendEntries, saveLegendEntries, fetchLegend,
     fetchRegionMeshEdges, fetchRegionOutline,
     fetchDeformedPositions, fetchDeformSuggestScale,
     fetchModalShape, fetchModalAnimationFrames,
