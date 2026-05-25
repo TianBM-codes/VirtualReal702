@@ -30,6 +30,11 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
+def safe(name):
+    return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
+
+
 FOLD_ANGLE_DEG = 30.0
 OCTREE_MAX_DEPTH = 8
 OCTREE_LEAF_THRESHOLD = 1000
