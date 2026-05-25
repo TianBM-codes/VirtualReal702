@@ -152,24 +152,23 @@ function stopDrag() {
 
 
 // ── Load entries ─────────────────────────────────────────────────────────
-// section scheme: fetch all instances at once so the table matches the merged legend panel
-const isAllInstances = computed(() => props.scheme === 'section')
+// For section scheme we fetch all instances, so any valid instance key works as URL placeholder.
+function anyInstance() {
+  return store.currentInstance || Object.keys(store.instanceMeshes)[0] || null
+}
 
 watch([() => props.visible, () => props.scheme, () => store.currentInstance], async ([vis]) => {
-  if (!vis || !props.scheme) return
-  if (!isAllInstances.value && !store.currentInstance) return
+  if (!vis || !props.scheme || !anyInstance()) return
   await loadEntries()
 }, { immediate: true })
 
 async function loadEntries() {
-  if (!props.scheme) return
+  const inst = anyInstance()
+  if (!props.scheme || !inst) return
   loading.value = true
   try {
-    const res = isAllInstances.value
-      ? await api.fetchAllLegendEntries(props.scheme, props.setNames)
-      : await api.fetchLegendEntries(store.currentInstance, props.scheme, props.setNames)
-    const raw = res?.data?.entries ?? []
-    entries.value = raw.map(e => ({
+    const res = await api.fetchLegendEntries(inst, props.scheme, props.setNames)
+    entries.value = (res?.data?.entries ?? []).map(e => ({
       ...e,
       _name:  e.display_name ?? e.default_title ?? e.legend_key,
       _color: e.user_color
@@ -213,10 +212,10 @@ function emitHighlight() {
 
 // ── Save ──────────────────────────────────────────────────────────────────
 async function save() {
-  if (!isAllInstances.value && !store.currentInstance) return
+  if (!store.currentInstance) return
   saving.value = true
   try {
-    const toPayload = e => {
+    const body = entries.value.map(e => {
       const nameDefault = e.default_title ?? e.legend_key
       const nameVal     = (e._name && e._name !== nameDefault && e._name !== e.legend_key)
         ? e._name : null
@@ -227,21 +226,8 @@ async function save() {
         color_g:      e._color ? e._color[1] / 255 : null,
         color_b:      e._color ? e._color[2] / 255 : null,
       }
-    }
-    if (isAllInstances.value) {
-      // Group by instance and POST each group separately
-      const byInst = new Map()
-      for (const e of entries.value) {
-        const inst = e.instance ?? store.currentInstance
-        if (!byInst.has(inst)) byInst.set(inst, [])
-        byInst.get(inst).push(toPayload(e))
-      }
-      await Promise.all([...byInst.entries()].map(([inst, body]) =>
-        api.saveLegendEntries(inst, props.scheme, body)
-      ))
-    } else {
-      await api.saveLegendEntries(store.currentInstance, props.scheme, entries.value.map(toPayload))
-    }
+    })
+    await api.saveLegendEntries(store.currentInstance, props.scheme, body)
     emit('saved')
     await loadEntries()
   } catch (err) {
