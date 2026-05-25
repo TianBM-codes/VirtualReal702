@@ -47,6 +47,17 @@ class _QueryCursor:
 
     def fetchall(self):
         sql = self.last_sql
+        if "FROM t_mt_py_fem_transform_operation" in sql:
+            return [
+                {
+                    "transform_type": "fem",
+                    "matrix4_json": "[[1,0,0,0],[0,1,0,0],[0,0,0,2],[0,0,0,1]]",
+                },
+                {
+                    "transform_type": "test",
+                    "matrix4_json": "[[1,0,0,3],[0,1,0,0],[0,0,1,0],[0,0,0,1]]",
+                },
+            ]
         if "SELECT id, measuring_point_name, x_position, y_position, z_position FROM t_mt_measuring_point_info" in sql:
             return [
                 {"id": 1, "measuring_point_name": "WY1", "x_position": 1.0, "y_position": 2.0, "z_position": 3.0},
@@ -631,18 +642,23 @@ def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
     ]
 
 
-def test_get_transform_auto_info_returns_matrix4(monkeypatch):
+def test_get_transform_auto_info_returns_both_matrix4(monkeypatch):
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: _QueryConnection())
 
-    result = inp_service.get_transform_auto_info(project_id=101, transform_type="fem")
+    result = inp_service.get_transform_auto_info(project_id=101)
 
     assert result == {
-        "type": "fem",
-        "matrix4": [
+        "matrix4_fem": [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 0.0, 2.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "matrix4_test": [
+            [1.0, 0.0, 0.0, 3.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
     }

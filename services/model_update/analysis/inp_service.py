@@ -2740,44 +2740,32 @@ def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
         conn.close()
 
 
-def get_transform_auto_info(project_id: int, transform_type: str = None):
+def get_transform_auto_info(project_id: int):
     ensure_tables_exist()
-    resolved_type = _normalize_transform_type(transform_type) if transform_type is not None else None
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        if resolved_type is None:
-            cursor.execute(
-                """
-                SELECT transform_type, matrix4_json
-                FROM t_mt_py_fem_transform_operation
-                WHERE pid = %s
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1
-                """,
-                (int(project_id),),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT transform_type, matrix4_json
-                FROM t_mt_py_fem_transform_operation
-                WHERE pid = %s AND transform_type = %s
-                LIMIT 1
-                """,
-                (int(project_id), resolved_type),
-            )
-        row = cursor.fetchone()
-        if not row:
-            # raise ValueError("未找到变换操作记录")
-            return {
-                "type": "fem",
-                "matrix4": np.eye(4, dtype=np.int32).tolist(),
-            }
+        cursor.execute(
+            """
+            SELECT transform_type, matrix4_json
+            FROM t_mt_py_fem_transform_operation
+            WHERE pid = %s
+            """,
+            (int(project_id),),
+        )
+        rows = cursor.fetchall() or []
+        matrix_by_type = {}
+        for row in rows:
+            transform_type = row.get("transform_type")
+            matrix4_json = row.get("matrix4_json")
+            if transform_type is None or matrix4_json is None:
+                continue
+            matrix_by_type[str(transform_type).strip().lower()] = _normalize_matrix4(_json_loads(matrix4_json))
+        identity = np.eye(4, dtype=np.int32).tolist()
         return {
-            "type": str(row["transform_type"]),
-            "matrix4": _normalize_matrix4(_json_loads(row["matrix4_json"])),
+            "matrix4_fem": matrix_by_type.get("fem", identity),
+            "matrix4_test": matrix_by_type.get("test", identity),
         }
     finally:
         cursor.close()

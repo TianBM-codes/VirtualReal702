@@ -267,7 +267,6 @@ class TransformOperationRequest(BaseModel):
 
 class TransformAutoInfoRequest(BaseModel):
     project_id: int
-    type: Optional[str] = None
 
 
 class ProjectConfigDimsRequest(BaseModel):

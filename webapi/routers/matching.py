@@ -171,7 +171,6 @@ async def get_transform_auto_info_api(request: Request, body: TransformAutoInfoR
     try:
         result = get_transform_auto_info(
             project_id=body.project_id,
-            transform_type=body.type,
         )
         return success_response(result, "空间变换获取成功")
     except AppError as exc:
