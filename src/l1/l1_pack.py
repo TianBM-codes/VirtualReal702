@@ -375,11 +375,14 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                 # sections.json is a list (new) or dict (old) — handle both.
                 # New: each entry is one sectionAssignment; key = "{i}__{safe(name)}"
                 # Old: keyed by sectionName (one entry per unique name).
+                print("[DBG] sections.json type={} len={}".format(
+                    type(sec_data).__name__, len(sec_data) if sec_data else 0))
                 if isinstance(sec_data, list):
-                    sec_items = [
-                        ('{}__{}'.format(i, safe(s.get('section_name', str(i)))), s)
-                        for i, s in enumerate(sec_data)
-                    ]
+                    sec_items = []
+                    for i, s in enumerate(sec_data):
+                        print("[DBG] item[{}] type={} val={}".format(i, type(s).__name__, repr(s)[:120]))
+                        grp_key = '{}__{}'.format(i, safe(s.get('section_name', str(i))))
+                        sec_items.append((grp_key, s))
                 else:
                     sec_items = list(sec_data.items())
                 for grp_key, sinfo in sec_items:
