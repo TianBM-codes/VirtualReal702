@@ -16,6 +16,10 @@ from src.l3.infra.registry_repo import RegistryRepo
 
 from .model_update_meta_service import _load_service_config
 from .project_log_service import log_project_error, log_project_info, log_project_step
+from .solver_service import (
+    _submit_generic_project_result_group_and_wait,
+    _submit_project_result_group_and_wait,
+)
 
 DEFAULT_PBS_APPLICATIONS = {
     "Abaqus": {
@@ -71,6 +75,15 @@ def _safe_posix_join(*parts: str) -> str:
 
 def _json_copy(value: Any) -> Any:
     return json.loads(json.dumps(value))
+
+
+def _pick_downloaded_result_file(paths: List[str], suffixes: tuple[str, ...]) -> Optional[str]:
+    wanted = {item.lower() for item in suffixes}
+    for path in paths:
+        suffix = Path(str(path)).suffix.lower()
+        if suffix in wanted and Path(str(path)).exists():
+            return os.path.abspath(str(path))
+    return None
 
 
 def _project_workspace(project_id: int) -> Path:
@@ -812,6 +825,13 @@ def run_pbs_solver_job(
     env: Optional[str] = None,
     job_name: Optional[str] = None,
     output_dir: Optional[str] = None,
+    result_group: Optional[str] = None,
+    display_name: Optional[str] = None,
+    base_url: Optional[str] = None,
+    step: Optional[str] = None,
+    frame: Optional[int] = None,
+    field_prefix: Optional[str] = None,
+    upload_timeout: int = 60,
     wait: bool = True,
     download_results: bool = True,
     poll_interval_sec: float = 10.0,
@@ -920,6 +940,44 @@ def run_pbs_solver_job(
         result["output_dir"] = str(target_dir)
         result["project_id"] = int(project_id) if project_id is not None else None
         result["workflow"] = f"pbs_{resolved_application.lower()}_run"
+        if wait and project_id is not None:
+            downloaded_files = list(result.get("downloaded_files") or [])
+            if resolved_application == "Abaqus":
+                odb_path = _pick_downloaded_result_file(downloaded_files, (".odb",))
+                if odb_path:
+                    upload = _submit_project_result_group_and_wait(
+                        project_id=int(project_id),
+                        odb_path=odb_path,
+                        job_name=resolved_job_name,
+                        result_group=result_group,
+                        display_name=display_name,
+                        base_url=base_url,
+                        step=step,
+                        frame=frame,
+                        field_prefix=field_prefix,
+                        timeout=upload_timeout,
+                        wait_timeout_sec=wait_timeout_sec,
+                        poll_interval_sec=poll_interval_sec,
+                    )
+                    result["upload"] = upload
+                    result["uploaded_result_file"] = odb_path
+            elif resolved_application == "Nastran":
+                op2_path = _pick_downloaded_result_file(downloaded_files, (".op2",))
+                if op2_path:
+                    upload = _submit_generic_project_result_group_and_wait(
+                        project_id=int(project_id),
+                        source_path=op2_path,
+                        job_name=resolved_job_name,
+                        result_group=result_group,
+                        display_name=display_name,
+                        base_url=base_url,
+                        parse_options=None,
+                        timeout=upload_timeout,
+                        wait_timeout_sec=wait_timeout_sec,
+                        poll_interval_sec=poll_interval_sec,
+                    )
+                    result["upload"] = upload
+                    result["uploaded_result_file"] = op2_path
 
         if project_id is not None:
             job_id = result.get("job_id") or result.get("id") or ""

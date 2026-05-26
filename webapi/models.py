@@ -620,6 +620,13 @@ class PBSSolverRunRequest(BaseModel):
     input_file_name: Optional[str] = None
     job_name: Optional[str] = None
     output_dir: Optional[str] = None
+    result_group: Optional[str] = None
+    display_name: Optional[str] = None
+    base_url: Optional[str] = None
+    step: Optional[str] = None
+    frame: Optional[int] = None
+    field_prefix: Optional[str] = None
+    upload_timeout: int = 60
     wait: bool = True
     download_results: bool = True
     poll_interval_sec: float = 10.0
