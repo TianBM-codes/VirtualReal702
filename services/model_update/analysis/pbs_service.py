@@ -10,7 +10,9 @@ from urllib.parse import urljoin
 import requests
 
 from db import get_connection
+from src.l3.core.config import settings
 from src.l3.core.errors import NotFoundError, ValidationError
+from src.l3.infra.registry_repo import RegistryRepo
 
 from .model_update_meta_service import _load_service_config
 from .project_log_service import log_project_error, log_project_info, log_project_step
@@ -69,6 +71,50 @@ def _safe_posix_join(*parts: str) -> str:
 
 def _json_copy(value: Any) -> Any:
     return json.loads(json.dumps(value))
+
+
+def _project_workspace(project_id: int) -> Path:
+    repo = RegistryRepo(settings.registry_db_path)
+    row = repo.get_project(str(int(project_id)))
+    if row is not None:
+        stored_workspace = str(row["workspace"] or "").strip()
+        if stored_workspace:
+            return Path(
+                repo.resolve_workspace(stored_workspace, settings.data_root)
+            ).expanduser().resolve()
+    return (Path(settings.data_root).expanduser().resolve() / str(int(project_id))).resolve()
+
+
+def _resolve_project_input_file(project_id: int, path: str, field_name: str) -> Path:
+    raw = str(path or "").strip()
+    if not raw:
+        raise ValidationError(
+            f"{field_name} cannot be empty",
+            {"project_id": int(project_id), field_name: path},
+        )
+
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        workspace = _project_workspace(project_id)
+        resolved = (workspace / candidate).resolve()
+        try:
+            common = os.path.commonpath([str(workspace), str(resolved)])
+        except ValueError as exc:
+            raise ValidationError(
+                f"{field_name} must stay inside project workspace",
+                {"project_id": int(project_id), field_name: raw, "workspace": str(workspace)},
+            ) from exc
+        if common != str(workspace):
+            raise ValidationError(
+                f"{field_name} must stay inside project workspace",
+                {"project_id": int(project_id), field_name: raw, "workspace": str(workspace)},
+            )
+
+    if not resolved.exists() or not resolved.is_file():
+        raise NotFoundError(field_name, {field_name: str(resolved), "project_id": int(project_id)})
+    return resolved
 
 
 @dataclass
@@ -626,7 +672,7 @@ class PBSClient:
             "POST",
             "list_files",
             expected_statuses=(200,),
-            params={"page":1, "size":100, "jobstatus":"undefined", "sortby": "ctime", "sortorder": "DSC"}
+            params={"page":1, "size":100, "jobstatus":"undefined", "sortby": "ctime", "sortorder": "DSC"},
             json_body={"includeHidden": False, "path": remote_job_dir},
         )
         payload = self._parse_json_or_text(response)
@@ -761,7 +807,8 @@ def run_pbs_solver_job(
     *,
     project_id: Optional[int] = None,
     application: str,
-    input_file: str,
+    input_file: Optional[str] = None,
+    input_file_name: Optional[str] = None,
     env: Optional[str] = None,
     job_name: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -781,9 +828,24 @@ def run_pbs_solver_job(
                 percent=0,
             )
 
-        source_path = Path(input_file).expanduser().resolve()
-        if not source_path.exists() or not source_path.is_file():
-            raise NotFoundError("PBS local input file not found", {"input_file": str(source_path)})
+        resolved_input = str(input_file or "").strip() or str(input_file_name or "").strip()
+        resolved_field_name = "input_file" if str(input_file or "").strip() else "input_file_name"
+        if not resolved_input:
+            raise ValidationError(
+                "input_file or input_file_name is required",
+                {
+                    "project_id": int(project_id) if project_id is not None else None,
+                    "input_file": input_file,
+                    "input_file_name": input_file_name,
+                },
+            )
+
+        if project_id is not None:
+            source_path = _resolve_project_input_file(int(project_id), resolved_input, resolved_field_name)
+        else:
+            source_path = Path(resolved_input).expanduser().resolve()
+            if not source_path.exists() or not source_path.is_file():
+                raise NotFoundError(resolved_field_name, {resolved_field_name: str(source_path)})
         if project_id is not None:
             log_project_info(
                 int(project_id),

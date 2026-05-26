@@ -616,7 +616,8 @@ class AbaqusInpPathRunRequest(BaseModel):
 class PBSSolverRunRequest(BaseModel):
     project_id: int
     env: Optional[str] = None
-    input_file: str
+    input_file: Optional[str] = None
+    input_file_name: Optional[str] = None
     job_name: Optional[str] = None
     output_dir: Optional[str] = None
     wait: bool = True

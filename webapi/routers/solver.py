@@ -243,6 +243,7 @@ def _pbs_solver_run_kwargs(body: PBSSolverRunRequest, application: str) -> dict:
         "project_id": body.project_id,
         "application": application,
         "input_file": body.input_file,
+        "input_file_name": body.input_file_name,
         "env": body.env,
         "job_name": body.job_name,
         "output_dir": body.output_dir,

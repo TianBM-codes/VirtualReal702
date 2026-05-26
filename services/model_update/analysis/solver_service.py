@@ -381,7 +381,7 @@ def _resolve_project_file(project_id: int, path: str, field_name: str) -> Path:
     raw = str(path or "").strip()
     if not raw:
         raise ValidationError(
-            f"{field_name} 涓嶈兘涓虹┖",
+            f"field name: {field_name}",
             {"project_id": int(project_id), field_name: path},
         )
 
@@ -1240,7 +1240,7 @@ def run_solver_and_parse_project_result(
 
         log_project_step(
             int(project_id),
-            f"纭繚椤圭洰 {project_id} 鍑犱綍宸插氨缁? ({source_type})",
+            f"工程项目id: {project_id} 输入计算文件格式后缀: ({source_type})",
             stage="project_prepare",
             percent=10,
         )
@@ -1253,7 +1253,7 @@ def run_solver_and_parse_project_result(
         )
         log_project_step(
             int(project_id),
-            f"椤圭洰鍑犱綍灏辩华锛屽伐浣滅┖闂? {Path(project_info['workspace']).name}",
+            f"workspace-name {Path(project_info['workspace']).name}",
             stage="project_ready",
             percent=12,
         )
