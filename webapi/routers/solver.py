@@ -197,6 +197,7 @@ def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
     return {
         "project_id": body.project_id,
         "input_file": body.input_file,
+        "input_file_name": body.input_file_name,
         "job_name": body.job_name,
         "result_group": body.result_group,
         "display_name": body.display_name,

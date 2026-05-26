@@ -15,7 +15,6 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from .model_update_meta_service import _load_service_config
 from .project_log_service import log_project_error, log_project_info, log_project_step
 
-
 DEFAULT_PBS_APPLICATIONS = {
     "Abaqus": {
         "cores": 48,
@@ -39,7 +38,7 @@ DEFAULT_PBS_API_PATHS = {
     "create_dir": "/api/Service6/pas/restservice/files/dir/create",
     "upload_file": "/api/Service6/pas/restservice/files/upload",
     "file_exists": "/api/Sservice6/pas/restservice/files/file/exists",
-    "submit_job": "/api/Service6/pas/restservice/jpbs",
+    "submit_job": "/api/Service6/pas/restservice/jobs",
     "job_status": "/api/storage/jobs/{job_id}",
     "list_files": "/api/Sservice6/pas/restservice/files/file/list",
     "download_file": "/api/Service6/pas/restservice/files/download",
@@ -209,7 +208,9 @@ def load_pbs_environment_config(env: Optional[str] = None) -> PBSEnvironmentConf
             if text:
                 api_paths[str(key)] = text
 
-    if not all(api_paths.get(key) for key in ("login", "expand_vars", "create_dir", "upload_file", "file_exists", "submit_job", "job_status", "list_files", "download_file")):
+    if not all(api_paths.get(key) for key in (
+        "login", "expand_vars", "create_dir", "upload_file", "file_exists", "submit_job", "job_status", 
+        "list_files", "download_file")):
         raise ValidationError(
             "PBS 接口路径配置不完整",
             {"env": selected_env, "api_paths": api_paths},
@@ -229,10 +230,10 @@ def load_pbs_environment_config(env: Optional[str] = None) -> PBSEnvironmentConf
 
 
 def _apply_project_pbs_settings(
-    config: PBSEnvironmentConfig,
-    *,
-    application: str,
-    pbs_settings: Dict[str, Any],
+        config: PBSEnvironmentConfig,
+        *,
+        application: str,
+        pbs_settings: Dict[str, Any],
 ) -> PBSEnvironmentConfig:
     override_app = _normalize_project_application_settings(application, pbs_settings)
     if not override_app:
@@ -274,7 +275,7 @@ class PBSClient:
         return f"{self.config.base_url}{path}"
 
     def _auth_headers(self) -> Dict[str, str]:
-        headers = {}
+        headers = {"content-type": "application/json"}
         if self.access_token:
             headers["access_token"] = self.access_token
             headers["Authorization"] = f"Bearer {self.access_token}"
@@ -292,20 +293,59 @@ class PBSClient:
         params: Optional[Dict[str, Any]] = None,
         stream: bool = False,
         timeout: Optional[int] = None,
+        headers=None,
         **kwargs,
     ) -> requests.Response:
         timeout_value = max(int(timeout or self.timeout), 1)
         expected = {int(item) for item in expected_statuses}
         path = self._build_path(path_key, **kwargs)
         url = self._build_url(path)
+        if json_body is None:
+            json_body = {}
+        if data is None:
+            data = {}
+        body = {**json_body, **data}
+        print("\n" + "=" * 80)
+        print(f"[PBS REQUEST] {method.upper()} {url}")
+        print(f"Path Key: {path_key}")
+        print(f"Timeout: {timeout_value}s")
+        print(f"Stream: {stream}")
+        print("-" * 80)
+        print("Headers:")
+        print(json.dumps(headers or {}, ensure_ascii=False, indent=2, default=str))
+        print("-" * 80)
+        print("Query Params:")
+        print(json.dumps(params or {}, ensure_ascii=False, indent=2, default=str))
+        print("-" * 80)
+        print("JSON Body:")
+        print(json.dumps(json_body, ensure_ascii=False, indent=2, default=str) if json_body is not None else "null")
+        print("-" * 80)
+        print("Form Data:")
+        print(json.dumps(data, ensure_ascii=False, indent=2, default=str) if data is not None else "null")
+        print("-" * 80)
+        print("Files:")
+        if isinstance(files, dict) and files:
+            file_debug = {}
+            for key, value in files.items():
+                if isinstance(value, (list, tuple)) and value:
+                    file_debug[key] = {
+                        "filename": value[0],
+                        "content_type": value[2] if len(value) > 2 else None,
+                    }
+                else:
+                    file_debug[key] = str(value)
+            print(json.dumps(file_debug, ensure_ascii=False, indent=2, default=str))
+        else:
+            print("{}")
+        print("=" * 80)
         last_response = self.session.request(
             method=method.upper(),
             url=url,
-            json=json_body,
-            data=data,
+            json=json.dumps(body) if len(body) != 0 else None,
+            data=json.dumps(body) if len(body) != 0 else None,
             files=files,
             params=params,
-            headers=self._auth_headers(),
+            headers=self._auth_headers() if headers is None else headers,
             timeout=timeout_value,
             verify=self.config.verify_ssl,
             stream=stream,
@@ -375,10 +415,10 @@ class PBSClient:
                 value = payload.get(key)
                 if isinstance(value, list) and value:
                     return str(value[0])
-            for key in ("path", "expanded_path", "stage_root"):
+            for key in ("path", "expandedPaths", "stage_root"):
                 value = payload.get(key)
                 if value:
-                    return str(value)
+                    return str(value[template])
         if isinstance(payload, str) and payload:
             return payload
         raise ValidationError("PBS expandvars 返回的 stage_root 为空", {"payload": payload})
@@ -401,15 +441,26 @@ class PBSClient:
         source_path = Path(local_path).expanduser().resolve()
         if not source_path.exists() or not source_path.is_file():
             raise NotFoundError("未找到 PBS 本地输入文件", {"local_path": str(source_path)})
+        if not self.access_token:
+            raise ValidationError("PBS 尚未登录，缺少 access_token", {"env": self.config.name})
         with source_path.open("rb") as handle:
             response = self.request(
                 "POST",
                 "upload_file",
                 expected_statuses=(200,),
-                data={"serversidefilepath": remote_dir},
+                params={
+                    "serversidefilepath": remote_dir,
+                    "access_token": self.access_token,
+                    "uid": self.config.username,
+                },
+                headers={"access_token": f"{self.access_token}"},
                 files={"attfile": (source_path.name, handle)},
             )
-        _ = self._parse_json_or_text(response)
+        result = self._parse_json_or_text(response)
+        if not result['success']:
+            raise ValidationError("pbs upload file failed", result)
+        else:
+            print("Upload Success _t")
         return _safe_posix_join(remote_dir, source_path.name)
 
     def file_exists(self, remote_path: str) -> bool:
@@ -509,7 +560,7 @@ class PBSClient:
         )
         data = self._parse_json_or_text(response)
         if isinstance(data, dict):
-            job_id = data.get("jobId") or data.get("id")
+            job_id = data.get("data").get("jobId") or data.get("id")
             if job_id:
                 return str(job_id)
         if isinstance(data, str) and data.strip():
@@ -547,6 +598,7 @@ class PBSClient:
             if state in _PBS_FINAL_STATES:
                 payload["resolved_job_state"] = state
                 return payload
+            
             if time.monotonic() - started_at >= timeout_sec:
                 raise ValidationError(
                     "pbs wait_until_done timed out",
@@ -574,6 +626,7 @@ class PBSClient:
             "POST",
             "list_files",
             expected_statuses=(200,),
+            params={"page":1, "size":100, "jobstatus":"undefined", "sortby": "ctime", "sortorder": "DSC"}
             json_body={"includeHidden": False, "path": remote_job_dir},
         )
         payload = self._parse_json_or_text(response)
@@ -581,7 +634,7 @@ class PBSClient:
             return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
             for key in ("data", "files", "result", "results"):
-                value = payload.get(key)
+                value = payload.get('data').get(key)
                 if isinstance(value, list):
                     return [item for item in value if isinstance(item, dict)]
         raise ValidationError("PBS list_files 返回结果无效", {"payload": payload})

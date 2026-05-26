@@ -92,7 +92,7 @@ API_PATHS = {
     "create_dir": "{service_prefix}/pas/restservice/files/dir/create",
     "upload_file": "{service_prefix}/pas/restservice/files/upload",
     "file_exists": "{service_prefix}/pas/restservice/files/file/exists",
-    "submit_job": "{service_prefix}/pas/restservice/jpbs",
+    "submit_job": "{service_prefix}/pas/restservice/jobs",
     "job_status": "{storage_prefix}/jobs/{job_id}",
     "list_files": "{service_prefix}/pas/restservice/files/file/list",
     "download_file": "{service_prefix}/pas/restservice/files/download"
@@ -265,7 +265,7 @@ POST {base_url}{api_prefix}{service_prefix}/pas/restservice/files/file/exists
 ### 8.1 Abaqus
 
 ```text
-POST {base_url}{api_prefix}{service_prefix}/pas/restservice/jpbs
+POST {base_url}{api_prefix}{service_prefix}/pas/restservice/jobs
 ?application_id=Abaqus&server_registered_name=<server_name>
 ```
 
@@ -294,7 +294,7 @@ POST {base_url}{api_prefix}{service_prefix}/pas/restservice/jpbs
 ### 8.2 Nastran
 
 ```text
-POST {base_url}{api_prefix}{service_prefix}/pas/restservice/jpbs
+POST {base_url}{api_prefix}{service_prefix}/pas/restservice/jobs
 ?application_id=Nastran&server_registered_name=<server_name>
 ```
 

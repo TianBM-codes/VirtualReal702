@@ -2642,7 +2642,7 @@ def get_pair_node_point_result(project_id):
         node_matches = cursor.fetchall()
         if not node_matches:
             raise _required_operation_error(
-                "未找到节点匹配结果，请先完成测点与有限元节点的空间匹配操作",
+                "未找到节点匹配结果，请选择模型修正=>节点测点匹配",
                 operation="完成测点与有限元节点的空间匹配",
                 interface_key="pair_node_point_result",
             )
@@ -2863,7 +2863,7 @@ def match_test_dofs(project_id, overwrite=True, min_match_score=None):
         node_matches = cursor.fetchall()
         if not node_matches:
             raise _required_operation_error(
-                "未找到节点匹配结果，请先完成测点与有限元节点的空间匹配操作",
+                "未找到节点匹配结果，请选择模型修正=>节点测点匹配",
                 operation="完成测点与有限元节点的空间匹配",
                 interface_key="match_nodes",
             )

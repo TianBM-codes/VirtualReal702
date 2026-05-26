@@ -63,7 +63,7 @@ DEFAULT_PBS_API_PATHS = {
     "create_dir": "/api/Service6/pas/restservice/files/dir/create",
     "upload_file": "/api/Service6/pas/restservice/files/upload",
     "file_exists": "/api/Sservice6/pas/restservice/files/file/exists",
-    "submit_job": "/api/Service6/pas/restservice/jpbs",
+    "submit_job": "/api/Service6/pas/restservice/jobs",
     "job_status": "/api/storage/jobs/{job_id}",
     "list_files": "/api/Sservice6/pas/restservice/files/file/list",
     "download_file": "/api/Service6/pas/restservice/files/download",

@@ -1194,7 +1194,8 @@ def run_abaqus_inp_and_upload_project_result(
 def run_solver_and_parse_project_result(
     *,
     project_id: int,
-    input_file: str,
+    input_file: Optional[str] = None,
+    input_file_name: Optional[str] = None,
     job_name: Optional[str] = None,
     result_group: Optional[str] = None,
     display_name: Optional[str] = None,
@@ -1217,7 +1218,18 @@ def run_solver_and_parse_project_result(
 ) -> dict:
     log_project_step(int(project_id), "统一计算并解析开始", stage="solver_run_and_parse", percent=0)
     try:
-        input_path = _resolve_project_file(project_id, input_file, "input_file")
+        resolved_input = str(input_file or "").strip() or str(input_file_name or "").strip()
+        resolved_field_name = "input_file" if str(input_file or "").strip() else "input_file_name"
+        if not resolved_input:
+            raise ValidationError(
+                "input_file or input_file_name is required",
+                {
+                    "project_id": int(project_id),
+                    "input_file": input_file,
+                    "input_file_name": input_file_name,
+                },
+            )
+        input_path = _resolve_project_file(project_id, resolved_input, resolved_field_name)
         source_type = _detect_project_source_type(input_path)
         log_project_info(
             int(project_id),

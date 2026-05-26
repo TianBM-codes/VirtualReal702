@@ -575,7 +575,8 @@ class AbaqusInpRunAndUploadResultRequest(BaseModel):
 
 class SolverRunAndParseRequest(BaseModel):
     project_id: int
-    input_file: str
+    input_file: Optional[str] = None
+    input_file_name: Optional[str] = None
     job_name: Optional[str] = None
     result_group: Optional[str] = None
     display_name: Optional[str] = None
