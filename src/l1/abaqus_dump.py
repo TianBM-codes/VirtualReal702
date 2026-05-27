@@ -967,6 +967,7 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
             'procedure':   procedure,
             'num_frames':  num_frames,
             'description': getattr(step, 'description', None),
+            'nlgeom':      int(bool(getattr(step, 'nlgeom', False))),
             'frames':      frames_meta,
         }
         field_list = sorted(all_field_names)
@@ -1444,6 +1445,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             'procedure':   procedure,
             'num_frames':  num_frames,
             'description': getattr(step, 'description', None),
+            'nlgeom':      int(bool(getattr(step, 'nlgeom', False))),
             'frames':      frames_meta,
         }
 

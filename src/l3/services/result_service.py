@@ -1345,6 +1345,11 @@ def suggest_deform_scale(
         raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
 
     manifest = ManifestRepo(idx.workspace)
+
+    step_info = manifest.get_step_info(step, result_group)
+    if step_info is not None and step_info.get("nlgeom"):
+        return 1.0
+
     all_instances = manifest.list_instances()
     if not all_instances:
         return 0.0

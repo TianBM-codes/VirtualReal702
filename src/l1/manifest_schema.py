@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS steps (
     procedure    TEXT,
     num_frames   INTEGER,
     description  TEXT,
+    nlgeom       INTEGER,
     PRIMARY KEY (result_group, step_name)
 );
 CREATE TABLE IF NOT EXISTS frames (
