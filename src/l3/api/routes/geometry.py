@@ -73,7 +73,8 @@ CHUNK_VERTEX_LIMIT = 60000
 FACES_PER_CHUNK    = CHUNK_VERTEX_LIMIT // 3   # = 20000
 
 
-def _build_render_chunks(positions: np.ndarray, indices: np.ndarray):
+def _build_render_chunks(positions: np.ndarray, indices: np.ndarray,
+                         faces_per_chunk: int = 0):
     """
     Split (positions, indices) into face_idx-contiguous chunks satisfying
     the WebGL1 uint16 limit. Returns list of dicts:
@@ -82,14 +83,16 @@ def _build_render_chunks(positions: np.ndarray, indices: np.ndarray):
           'vertex_global_id': int32  [Nv_k]      chunk-local → global vertex
           'face_idx_base':    int                global face_idx of local face 0 }
 
-    Per-chunk vertex count is upper-bounded by FACES_PER_CHUNK * 3 (≤ 60000).
+    faces_per_chunk=0 means no splitting (single chunk, for high-end clients).
+    Per-chunk vertex count is upper-bounded by faces_per_chunk * 3 (≤ 60000).
     Faces stay in their original render order, so global_face_idx =
     face_idx_base + local_face_idx is exact.
     """
     Nt = len(indices)
+    step = faces_per_chunk if faces_per_chunk > 0 else Nt or 1
     chunks = []
-    for start in range(0, Nt, FACES_PER_CHUNK):
-        end = min(start + FACES_PER_CHUNK, Nt)
+    for start in range(0, Nt, step):
+        end = min(start + step, Nt)
         sub_indices = indices[start:end]                                # [Nt_k, 3]
         unique_verts, remapped = np.unique(
             sub_indices.ravel(), return_inverse=True
@@ -217,6 +220,7 @@ async def get_render_buffers_chunked(
     odb_id: str,
     instance: str,
     set_name: Optional[str] = Query(default=None, alias="set", description="User set name to filter geometry"),
+    chunk_size: int = Query(default=0, ge=0, description="Max faces per chunk; 0 = single chunk (no split)"),
 ):
     """
     Return chunked render buffers for one instance as L3BE binary.
@@ -235,6 +239,16 @@ async def get_render_buffers_chunked(
       - "vertex_global_id":  int32   [ΣNv_k] chunk-local → global vertex map
 
     Optional ?set=<name>: filter to triangles in the named user set before chunking.
+    Optional ?chunk_size=N: override max faces per chunk (0 = no split, single chunk).
+      Default is FACES_PER_CHUNK (20000), suitable for low-end GPUs (uint16 limit).
+      High-end clients can pass chunk_size=0 to get the whole instance as one chunk,
+      reducing draw calls and CPU split overhead.
+
+    [前端适配说明]
+    若要启用性能开关，前端只需在调用此接口时追加 &chunk_size=0（高端模式）或省略参数（默认分块）。
+    建议将 chunkSize 存入 viewer store（如 store.chunkSize），拼 URL 时带上即可：
+      getApiUrl(`geometry/${inst}/render-buffers-chunked?chunk_size=${store.chunkSize}`)
+    POST /render-buffers-subset-chunked 接口同理，已同步支持 chunk_size 参数。
 
     Headers:
       X-Chunk-Count: K
@@ -290,7 +304,7 @@ async def get_render_buffers_chunked(
                 positions, indices, render_rows
             )
 
-    sections, K, Nt = _build_chunked_payload(positions, indices)
+    sections, K, Nt = _build_chunked_payload(positions, indices, chunk_size)
     return Response(
         content=l3be_build(sections),
         media_type="application/octet-stream",
@@ -624,12 +638,13 @@ async def get_render_buffers_subset(
     )
 
 
-def _build_chunked_payload(positions: np.ndarray, indices: np.ndarray):
+def _build_chunked_payload(positions: np.ndarray, indices: np.ndarray,
+                           faces_per_chunk: int = 0):
     """
     Helper shared by the GET and POST chunked endpoints. Returns
     (sections list, chunk_count, total_face_count) ready for l3be_build.
     """
-    chunks = _build_render_chunks(positions, indices)
+    chunks = _build_render_chunks(positions, indices, faces_per_chunk)
     K = len(chunks)
     if K == 0:
         positions_concat  = np.zeros((0, 3), dtype=np.float32)
@@ -666,12 +681,16 @@ async def get_render_buffers_subset_chunked(
     odb_id: str,
     instance: str,
     body: ElemSubsetRequest,
+    chunk_size: int = Query(default=0, ge=0, description="Max faces per chunk; 0 = single chunk (no split)"),
 ):
     """
     Chunked variant of POST /render-buffers-subset.
 
     Same body/semantics; output format mirrors GET /render-buffers-chunked
     (see docs/l3/Binary-Payload-Spec.md §18).
+
+    Optional ?chunk_size=N: same semantics as GET /render-buffers-chunked.
+    前端适配同 GET 接口，在 URL 后追加 ?chunk_size=0 即可启用单 chunk 模式。
     """
     idx = registry.get(odb_id)
     if idx is None:
@@ -697,10 +716,11 @@ async def get_render_buffers_subset_chunked(
         sections, K, Nt = _build_chunked_payload(
             np.zeros((0, 3), dtype=np.float32),
             np.zeros((0, 3), dtype=np.int32),
+            chunk_size,
         )
     else:
         positions, indices = _compact_by_render_rows(positions, indices, render_rows)
-        sections, K, Nt = _build_chunked_payload(positions, indices)
+        sections, K, Nt = _build_chunked_payload(positions, indices, chunk_size)
 
     return Response(
         content=l3be_build(sections),
