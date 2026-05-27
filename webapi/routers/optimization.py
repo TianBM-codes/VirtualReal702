@@ -7,10 +7,10 @@ from services.model_update.analysis.bayesian_service import (
 from services.model_update.analysis.model_update_meta_service import (
     add_manual_response,
     resolve_abaqus_command,
-    resolve_bayesian_output_dir,
     resolve_python3_command,
 )
 from services.model_update.analysis import sensitivity_service as _sens
+from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
 from services.model_update.analysis.inp_service import (
     clear_design_response_catalog_entries,
     create_design_response_catalog_entry,
@@ -123,7 +123,7 @@ def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
         "target_responses": body.target_responses,
         "parameter_scatter": body.parameter_scatter,
         "response_scatter": body.response_scatter,
-        "output_dir": resolve_bayesian_output_dir(None),
+        "output_dir": resolve_project_cal_subdir(int(body.project_id), "bayesian"),
         "save_results": body.save_results,
         "odb_id": body.odb_id,
         "base_url": body.base_url,

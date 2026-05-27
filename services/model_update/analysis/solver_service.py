@@ -395,12 +395,12 @@ def _resolve_project_file(project_id: int, path: str, field_name: str) -> Path:
         common = os.path.commonpath([str(workspace), str(resolved)])
     except ValueError as exc:
         raise ValidationError(
-            f"{field_name} 蹇呴』鍦?project workspace 鍐呴儴",
+            f"{field_name} 当前project workspace field name",
             {"project_id": int(project_id), field_name: raw, "workspace": str(workspace)},
         ) from exc
     if common != str(workspace):
         raise ValidationError(
-            f"{field_name} 蹇呴』鍦?project workspace 鍐呴儴",
+            f"{field_name} 当前project workspace field_name",
             {"project_id": int(project_id), field_name: raw, "workspace": str(workspace)},
         )
     return _abs_file(str(resolved), field_name)

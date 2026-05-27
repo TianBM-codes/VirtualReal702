@@ -40,6 +40,7 @@ from .abaqusDSAInpGenerator import (
 )
 from .console_log_service import safe_write_console_event
 from .model_update_meta_service import resolve_abaqus_command
+from .project_path_service import resolve_project_cal_subdir, resolve_project_workspace
 from .project_source_service import resolve_project_source_inp_path
 from .solver_service import delete_abaqus_process_files, run_abaqus_job, run_abaqus_sensitivity_job
 
@@ -1387,17 +1388,11 @@ def _default_project_result_group(batch_no: str, job_name: str) -> str:
 
 
 def _project_workspace_path(project_id: int) -> str:
-    repo = RegistryRepo(settings.registry_db_path)
-    row = repo.get_project(str(int(project_id)))
-    if row is not None:
-        stored_workspace = str(row["workspace"] or "").strip()
-        if stored_workspace:
-            return os.path.abspath(repo.resolve_workspace(stored_workspace, settings.data_root))
-    return os.path.abspath(os.path.join(settings.data_root, str(project_id)))
+    return resolve_project_workspace(int(project_id))
 
 
 def _project_sensitivity_output_dir(project_id: int) -> str:
-    return os.path.abspath(os.path.join(_project_workspace_path(project_id), "sensitivity"))
+    return resolve_project_cal_subdir(int(project_id), "sensitivity")
 
 
 def _build_project_result_parse_options(

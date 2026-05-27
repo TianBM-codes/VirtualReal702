@@ -25,6 +25,7 @@ from .project_config_service import (
     get_node_match_parameter_context,
     save_fem_model_dimensions,
 )
+from .project_path_service import resolve_project_cal_subdir
 from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
 
@@ -63,14 +64,8 @@ def _required_operation_error(message: str, *, operation: str, interface_key: st
     )
 
 
-def _repo_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
 def _cache_dir(project_id: int) -> str:
-    path = os.path.join(_repo_root(), "model_cache", f"project_{project_id}")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return resolve_project_cal_subdir(int(project_id), "octree")
 
 
 def _safe_float(value):
