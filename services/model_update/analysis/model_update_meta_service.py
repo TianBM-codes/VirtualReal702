@@ -1,6 +1,6 @@
-import json
 from pathlib import Path
 from typing import Optional
+from config import _load_service_config
 
 from db import ensure_tables_exist, get_connection
 
@@ -11,14 +11,6 @@ def _repo_root() -> Path:
 
 def _service_config_path() -> Path:
     return _repo_root() / "service_config.json"
-
-
-def _load_service_config() -> dict:
-    config_path = _service_config_path()
-    if not config_path.exists():
-        return {}
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
-    return payload if isinstance(payload, dict) else {}
 
 
 def resolve_abaqus_command(abaqus: Optional[str] = None) -> str:
@@ -60,13 +52,13 @@ def resolve_bayesian_output_dir(output_dir: Optional[str] = None) -> Optional[st
 
 
 def add_manual_parameter(
-    *,
-    project_id: int,
-    parameter: str,
-    parameter_type: str,
-    scatter: float,
-    upper: Optional[float] = None,
-    lower: Optional[float] = None,
+        *,
+        project_id: int,
+        parameter: str,
+        parameter_type: str,
+        scatter: float,
+        upper: Optional[float] = None,
+        lower: Optional[float] = None,
 ) -> dict:
     parameter_name = str(parameter or "").strip()
     if not parameter_name:
@@ -129,12 +121,12 @@ def add_manual_parameter(
 
 
 def add_manual_response(
-    *,
-    project_id: int,
-    response_type: str,
-    scatter: float,
-    dof: str,
-    step: Optional[str] = None,
+        *,
+        project_id: int,
+        response_type: str,
+        scatter: float,
+        dof: str,
+        step: Optional[str] = None,
 ) -> dict:
     resolved_type = str(response_type or "").strip().upper()
     if not resolved_type:
