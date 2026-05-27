@@ -1793,3 +1793,27 @@ odb.close()
 ```
 
 预计 30 分钟内可验证。若属性名不同，更新 9.5 节代码即可，不影响整体架构。
+
+---
+
+## 10. 待实现功能（TODO）
+
+### 10.1 GPU 变形渲染（高优先级）
+
+**设计文档**：`docs/l3/L3-GPU-Deform-Design.md`
+
+将变形渲染从"CPU 替换顶点坐标"改为"GPU shader 叠加位移 attribute"，使 scale 调整变为零网络开销操作。
+
+**核心改动**：
+
+| 层 | 改动摘要 |
+|---|---|
+| 后端 `result_service.py` | `frame_deformed_positions` 改为返回原始位移量 U（不乘 scale，不加原始坐标，不计算法向量） |
+| 后端 `results.py` | payload key 改为 `displacements`，移除 `scale` query 参数和 `normals` 字段 |
+| 前端 `ThreeViewport.vue` | 用 `onBeforeCompile` 注入 `displacement` attribute + `uDeformScale` uniform；切帧时 scatter 位移；scale 调整只改 uniform；边线同样注入 shader；变形时禁用拾取 |
+| 前端 `useOdbApi.js` | `fetchDeformedPositions` 移除 `scale` 参数 |
+
+**关键决策**（已定）：
+- 法向量：接受变形后略偏（不重算，方案 A）
+- 边线：同样注入 displacement shader，通过 `featureEdgeVtxIdxs` / `meshEdgeVtxIdxs` scatter 位移
+- BVH / 拾取：变形激活时（`uDeformScale ≠ 0`）禁用拾取；scale 归零时重建 BVH 并恢复拾取
