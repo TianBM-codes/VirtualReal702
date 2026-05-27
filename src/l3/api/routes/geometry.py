@@ -83,13 +83,14 @@ def _build_render_chunks(positions: np.ndarray, indices: np.ndarray,
           'vertex_global_id': int32  [Nv_k]      chunk-local → global vertex
           'face_idx_base':    int                global face_idx of local face 0 }
 
-    faces_per_chunk=0 means no splitting (single chunk, for high-end clients).
+    faces_per_chunk=0 means use the default FACES_PER_CHUNK (20000, low-end safe).
+    Pass a large value (e.g. 999999) to get a single chunk for high-end clients.
     Per-chunk vertex count is upper-bounded by faces_per_chunk * 3 (≤ 60000).
     Faces stay in their original render order, so global_face_idx =
     face_idx_base + local_face_idx is exact.
     """
     Nt = len(indices)
-    step = faces_per_chunk if faces_per_chunk > 0 else Nt or 1
+    step = faces_per_chunk if faces_per_chunk > 0 else FACES_PER_CHUNK
     chunks = []
     for start in range(0, Nt, step):
         end = min(start + step, Nt)
@@ -239,14 +240,14 @@ async def get_render_buffers_chunked(
       - "vertex_global_id":  int32   [ΣNv_k] chunk-local → global vertex map
 
     Optional ?set=<name>: filter to triangles in the named user set before chunking.
-    Optional ?chunk_size=N: override max faces per chunk (0 = no split, single chunk).
-      Default is FACES_PER_CHUNK (20000), suitable for low-end GPUs (uint16 limit).
-      High-end clients can pass chunk_size=0 to get the whole instance as one chunk,
-      reducing draw calls and CPU split overhead.
+    Optional ?chunk_size=N: override max faces per chunk.
+      0 (default) = use FACES_PER_CHUNK (20000), safe for low-end GPUs (uint16 limit).
+      Large value (e.g. 999999) = single chunk per instance, fewer draw calls,
+      suitable for high-end clients that support large index buffers.
 
     [前端适配说明]
-    若要启用性能开关，前端只需在调用此接口时追加 &chunk_size=0（高端模式）或省略参数（默认分块）。
-    建议将 chunkSize 存入 viewer store（如 store.chunkSize），拼 URL 时带上即可：
+    若要启用性能开关，前端只需在调用此接口时追加 &chunk_size=999999（高端单 chunk 模式）或省略参数（默认 20000 面分块）。
+    建议将 chunkSize 存入 viewer store（如 store.chunkSize，默认 0），拼 URL 时带上即可：
       getApiUrl(`geometry/${inst}/render-buffers-chunked?chunk_size=${store.chunkSize}`)
     POST /render-buffers-subset-chunked 接口同理，已同步支持 chunk_size 参数。
 
