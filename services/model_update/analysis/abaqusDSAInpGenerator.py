@@ -20,6 +20,11 @@ UPDATED_MAIN_INP = r"testmodel_dsa.inp"
 
 DEFAULT_INCLUDE_FILE = r"include.inp"
 COMMENT_EMPTY_SECTION = True
+ROOT_SCOPE_TYPE = "ROOT"
+PART_SCOPE_TYPE = "PART"
+ASSEMBLY_SCOPE_TYPE = "ASSEMBLY"
+ROOT_SCOPE_NAME = "__ROOT__"
+AUTO_COMMENT_PREFIX = "DSA_AUTO"
 
 SECTION_KEYWORDS = (
     "*SHELL SECTION",
@@ -176,6 +181,27 @@ def make_auto_response_node_set_name(index: int) -> str:
 def make_section_sub_set_name(base_name: str, mother_set: str, index: int) -> str:
     safe_mother = re.sub(r"[^A-Za-z0-9_]", "_", mother_set)
     return f"{base_name}__SEC_{index}_{safe_mother}"
+
+
+def make_scope_key(scope_type: str, scope_name: Optional[str]) -> Tuple[str, str]:
+    normalized_type = str(scope_type or ROOT_SCOPE_TYPE).strip().upper() or ROOT_SCOPE_TYPE
+    normalized_name = str(scope_name or "").strip()
+    if normalized_type == ROOT_SCOPE_TYPE:
+        return ROOT_SCOPE_TYPE, ROOT_SCOPE_NAME
+    return normalized_type, normalized_name
+
+
+def scope_comment(scope_type: str, scope_name: Optional[str]) -> str:
+    _, resolved_name = make_scope_key(scope_type, scope_name)
+    if scope_type == ROOT_SCOPE_TYPE:
+        return "ROOT"
+    return f"{scope_type}:{resolved_name}"
+
+
+def safe_include_fragment(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    text = text.strip("._-")
+    return text or "scope"
 
 
 # =========================================================
@@ -480,19 +506,80 @@ def _parse_elset_data_line(parts: List[str], is_generate: bool, elset_name: str)
 # Parse main inp
 # =========================================================
 def parse_main_inp(lines: List[str]) -> Dict[str, Any]:
-    element_to_sets: Dict[int, Set[str]] = defaultdict(set)
-    seed_elset_members: Dict[str, Set[int]] = defaultdict(set)
-    raw_elset_items: Dict[str, List[Tuple[str, Any]]] = defaultdict(list)
+    element_to_sets: Dict[Tuple[str, str, int], Set[str]] = defaultdict(set)
+    seed_elset_members: Dict[Tuple[str, str, str], Set[int]] = defaultdict(set)
+    raw_elset_items: Dict[Tuple[str, str, str], List[Tuple[str, Any]]] = defaultdict(list)
     section_blocks: List[Dict[str, Any]] = []
     step_blocks: List[Dict[str, Any]] = []
+    part_blocks: List[Dict[str, Any]] = []
+    instance_to_part: Dict[str, str] = {}
+    part_to_instances: Dict[str, List[str]] = defaultdict(list)
+    assembly_blocks: List[Dict[str, Any]] = []
 
     i = 0
     n = len(lines)
+    current_part_name: Optional[str] = None
+    current_part_start: Optional[int] = None
+    current_assembly_name: Optional[str] = None
+    current_assembly_start: Optional[int] = None
 
     while i < n:
         line = lines[i]
         s = line.strip()
         su = s.upper()
+
+        if su.startswith("*PART"):
+            current_part_name = parse_param_value(s, "NAME") or ""
+            current_part_start = i
+            i += 1
+            continue
+
+        if su.startswith("*END PART"):
+            part_blocks.append(
+                {
+                    "name": str(current_part_name or "").strip(),
+                    "start": int(current_part_start if current_part_start is not None else i),
+                    "end": i + 1,
+                    "end_part_idx": i,
+                }
+            )
+            current_part_name = None
+            current_part_start = None
+            i += 1
+            continue
+
+        if su.startswith("*ASSEMBLY"):
+            current_assembly_name = parse_param_value(s, "NAME") or ""
+            current_assembly_start = i
+            i += 1
+            continue
+
+        if su.startswith("*END ASSEMBLY"):
+            assembly_blocks.append(
+                {
+                    "name": str(current_assembly_name or "").strip(),
+                    "start": int(current_assembly_start if current_assembly_start is not None else i),
+                    "end": i + 1,
+                    "end_assembly_idx": i,
+                }
+            )
+            current_assembly_name = None
+            current_assembly_start = None
+            i += 1
+            continue
+
+        if su.startswith("*INSTANCE"):
+            instance_name = str(parse_param_value(s, "NAME") or "").strip()
+            part_name = str(parse_param_value(s, "PART") or "").strip()
+            if instance_name and part_name:
+                instance_to_part[instance_name] = part_name
+                part_to_instances[part_name].append(instance_name)
+            i += 1
+            continue
+
+        scope_type = PART_SCOPE_TYPE if current_part_name else ROOT_SCOPE_TYPE
+        scope_name = current_part_name if current_part_name else ROOT_SCOPE_NAME
+        scope_key = make_scope_key(scope_type, scope_name)
 
         if su.startswith("*ELEMENT"):
             elset = parse_param_value(s, "ELSET")
@@ -513,8 +600,8 @@ def parse_main_inp(lines: List[str]) -> Dict[str, Any]:
                     try:
                         eid = int(parts[0])
                         if elset:
-                            seed_elset_members[elset].add(eid)
-                            element_to_sets[eid].add(elset)
+                            seed_elset_members[(scope_key[0], scope_key[1], elset)].add(eid)
+                            element_to_sets[(scope_key[0], scope_key[1], eid)].add(elset)
                     except ValueError:
                         pass
 
@@ -527,6 +614,18 @@ def parse_main_inp(lines: List[str]) -> Dict[str, Any]:
             elset_name = parse_param_value(s, "ELSET")
             if not elset_name:
                 i += 1
+                continue
+
+            if current_assembly_name and not current_part_name:
+                i += 1
+                while i < n:
+                    s2 = lines[i].strip()
+                    if not s2 or s2.startswith("**"):
+                        i += 1
+                        continue
+                    if s2.startswith("*"):
+                        break
+                    i += 1
                 continue
 
             is_generate = "GENERATE" in su
@@ -543,7 +642,7 @@ def parse_main_inp(lines: List[str]) -> Dict[str, Any]:
                     break
 
                 parts = [p.strip() for p in lines[j].split(",") if p.strip()]
-                raw_elset_items[elset_name].extend(
+                raw_elset_items[(scope_key[0], scope_key[1], elset_name)].extend(
                     _parse_elset_data_line(parts, is_generate, elset_name)
                 )
                 j += 1
@@ -571,6 +670,9 @@ def parse_main_inp(lines: List[str]) -> Dict[str, Any]:
                 "elset": elset,
                 "material": material,
                 "data_lines": data_lines,
+                "scope_type": scope_key[0],
+                "scope_name": scope_key[1],
+                "scope_key": scope_key,
             })
             i = j
             continue
@@ -593,41 +695,42 @@ def parse_main_inp(lines: List[str]) -> Dict[str, Any]:
 
         i += 1
 
-    resolved_elset_members: Dict[str, Set[int]] = {}
+    resolved_elset_members: Dict[Tuple[str, str, str], Set[int]] = {}
 
-    def resolve_elset(name: str, stack: Optional[Set[str]] = None) -> Set[int]:
-        if name in resolved_elset_members:
-            return resolved_elset_members[name]
+    def resolve_elset(scope_elset_key: Tuple[str, str, str], stack: Optional[Set[Tuple[str, str, str]]] = None) -> Set[int]:
+        if scope_elset_key in resolved_elset_members:
+            return resolved_elset_members[scope_elset_key]
 
         if stack is None:
             stack = set()
 
-        if name in stack:
-            raise ValueError(f"Cyclic ELSET reference detected: {name}")
+        if scope_elset_key in stack:
+            raise ValueError(f"Cyclic ELSET reference detected: {scope_elset_key[2]}")
 
-        stack.add(name)
+        stack.add(scope_elset_key)
 
-        members = set(seed_elset_members.get(name, set()))
-        for kind, value in raw_elset_items.get(name, []):
+        members = set(seed_elset_members.get(scope_elset_key, set()))
+        for kind, value in raw_elset_items.get(scope_elset_key, []):
             if kind == "id":
                 members.add(value)
             elif kind == "set":
-                members.update(resolve_elset(value, stack))
+                nested_key = (scope_elset_key[0], scope_elset_key[1], str(value))
+                members.update(resolve_elset(nested_key, stack))
 
-        stack.remove(name)
-        resolved_elset_members[name] = members
+        stack.remove(scope_elset_key)
+        resolved_elset_members[scope_elset_key] = members
         return members
 
     all_elset_names = set(seed_elset_members.keys()) | set(raw_elset_items.keys())
-    for set_name in all_elset_names:
-        resolve_elset(set_name)
+    for scoped_set_key in all_elset_names:
+        resolve_elset(scoped_set_key)
 
-    for set_name, members in resolved_elset_members.items():
+    for scoped_set_key, members in resolved_elset_members.items():
         for eid in members:
-            element_to_sets[eid].add(set_name)
+            element_to_sets[(scoped_set_key[0], scoped_set_key[1], eid)].add(scoped_set_key[2])
 
     section_by_elset = {
-        blk["elset"]: blk
+        (blk["scope_type"], blk["scope_name"], blk["elset"]): blk
         for blk in section_blocks
         if blk.get("elset")
     }
@@ -640,6 +743,16 @@ def parse_main_inp(lines: List[str]) -> Dict[str, Any]:
         "section_by_elset": section_by_elset,
         "section_elsets": section_elsets,
         "step_blocks": step_blocks,
+        "part_blocks": part_blocks,
+        "part_blocks_by_name": {
+            str(block.get("name") or "").strip(): block
+            for block in part_blocks
+            if str(block.get("name") or "").strip()
+        },
+        "assembly_blocks": assembly_blocks,
+        "assembly_block": assembly_blocks[0] if assembly_blocks else None,
+        "instance_to_part": instance_to_part,
+        "part_to_instances": {key: list(value) for key, value in part_to_instances.items()},
     }
 
 
@@ -920,6 +1033,444 @@ def build_include_text(
 
     lines.append("** ================================================================")
     return "\n".join(line for line in lines if line.strip() != "") + "\n"
+
+
+def analyze_element_set_tasks_scoped(
+    tasks: List[Dict[str, Any]],
+    parsed: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], Dict[Tuple[str, str, str], Optional[str]], List[str]]:
+    element_to_sets = parsed["element_to_sets"]
+    elset_members = parsed["elset_members"]
+    section_by_elset = parsed["section_by_elset"]
+    section_elsets = parsed["section_elsets"]
+    instance_to_part = parsed.get("instance_to_part", {})
+    part_to_instances = parsed.get("part_to_instances", {})
+
+    warnings: List[str] = []
+    mother_set_to_remove_ids: Dict[Tuple[str, str, str], Set[int]] = defaultdict(set)
+    enriched_tasks: List[Dict[str, Any]] = []
+
+    for task in tasks:
+        set_name = task["set_name"]
+        elements = task["elements"]
+        parameter = task["parameter"]
+        value = task.get("value", None)
+        requested_scope = str(task.get("set_scope") or ROOT_SCOPE_TYPE).strip().upper() or ROOT_SCOPE_TYPE
+        part_name = str(task.get("part_name") or "").strip()
+        instance_name = str(task.get("instance_name") or "").strip()
+
+        if requested_scope == ASSEMBLY_SCOPE_TYPE and instance_name:
+            inferred_part_name = str(instance_to_part.get(instance_name) or "").strip()
+            if not inferred_part_name:
+                raise ValueError(
+                    f'Instance "{instance_name}" cannot be resolved to a part for parameter "{parameter}".'
+                )
+            if len(part_to_instances.get(inferred_part_name, [])) > 1:
+                warnings.append(
+                    f'Parameter "{parameter}" targets instance "{instance_name}", but part "{inferred_part_name}" '
+                    f'is reused by multiple instances. Generated shell section changes will affect all of them.'
+                )
+            part_name = inferred_part_name
+            requested_scope = PART_SCOPE_TYPE
+
+        target_scope_key = make_scope_key(PART_SCOPE_TYPE if part_name else ROOT_SCOPE_TYPE, part_name or ROOT_SCOPE_NAME)
+        source_mother_sets: Dict[Tuple[str, str, str], List[int]] = defaultdict(list)
+
+        for eid in elements:
+            all_sets = element_to_sets.get((target_scope_key[0], target_scope_key[1], eid), set())
+            mother_candidates = sorted(
+                (target_scope_key[0], target_scope_key[1], candidate_name)
+                for candidate_name in all_sets
+                if (target_scope_key[0], target_scope_key[1], candidate_name) in section_elsets
+            )
+            if not mother_candidates:
+                raise ValueError(
+                    f"Element {eid} does not belong to any section-driving mother elset in scope "
+                    f"{scope_comment(target_scope_key[0], target_scope_key[1])}."
+                )
+            if len(mother_candidates) > 1:
+                raise ValueError(
+                    f"Element {eid} belongs to multiple section-driving mother elsets: "
+                    f"{[item[2] for item in mother_candidates]}"
+                )
+            mother_set = mother_candidates[0]
+            source_mother_sets[mother_set].append(eid)
+            mother_set_to_remove_ids[mother_set].add(eid)
+
+        source_groups: List[Dict[str, Any]] = []
+        for idx_group, mother_set in enumerate(sorted(source_mother_sets.keys()), 1):
+            blk = section_by_elset[mother_set]
+            material = parse_param_value(blk["header"], "MATERIAL")
+            if not material:
+                raise ValueError(
+                    f"Cannot infer MATERIAL from section header of mother elset '{mother_set[2]}'. "
+                    f"Header: {blk['header']}"
+                )
+            original_thickness = extract_shell_section_thickness(blk["data_lines"])
+            if original_thickness is None:
+                raise ValueError(
+                    f"Cannot infer original shell thickness from section of mother elset '{mother_set[2]}'. "
+                    f"Header: {blk['header']}"
+                )
+            group_set_name = (
+                set_name if len(source_mother_sets) == 1
+                else make_section_sub_set_name(set_name, mother_set[2], idx_group)
+            )
+            source_groups.append(
+                {
+                    "mother_set": mother_set,
+                    "elements": sorted(set(source_mother_sets[mother_set])),
+                    "section_keyword": infer_section_keyword_from_header(blk["header"]),
+                    "material": material,
+                    "section_header": blk["header"],
+                    "original_thickness": original_thickness,
+                    "group_set_name": group_set_name,
+                    "scope_type": blk["scope_type"],
+                    "scope_name": blk["scope_name"],
+                }
+            )
+
+        if len(source_groups) > 1:
+            warnings.append(
+                f"Set {set_name}: elements belong to multiple original section/material groups; "
+                f"auto split into {len(source_groups)} section subsets."
+            )
+
+        enriched_tasks.append(
+            {
+                "set_name": set_name,
+                "elements": sorted(set(elements)),
+                "parameter": parameter,
+                "value": value,
+                "source_mother_sets": dict(source_mother_sets),
+                "source_groups": source_groups,
+                "set_scope": requested_scope,
+                "part_name": part_name or None,
+                "instance_name": instance_name or None,
+                "target_scope_key": target_scope_key,
+            }
+        )
+
+    mother_set_to_remainder_name: Dict[Tuple[str, str, str], Optional[str]] = {}
+    for mother_set, removed_ids in mother_set_to_remove_ids.items():
+        all_ids = set(elset_members.get(mother_set, set()))
+        remain = sorted(all_ids - removed_ids)
+        if remain:
+            mother_set_to_remainder_name[mother_set] = f"{mother_set[2]}_REM"
+        else:
+            mother_set_to_remainder_name[mother_set] = None
+            warnings.append(
+                f"Mother set {mother_set[2]} in scope {scope_comment(mother_set[0], mother_set[1])} "
+                f"becomes empty after subtraction."
+            )
+
+    return enriched_tasks, mother_set_to_remainder_name, warnings
+
+
+def _build_parameter_lines(enriched_tasks: List[Dict[str, Any]]) -> List[str]:
+    parameter_map: Dict[str, Any] = {}
+    for task in enriched_tasks:
+        parameter_name = task["parameter"]
+        if task.get("value", None) is not None:
+            value = task["value"]
+        else:
+            original_values = sorted(set(str(group["original_thickness"]) for group in task["source_groups"]))
+            if len(original_values) != 1:
+                raise ValueError(
+                    f'Parameter "{parameter_name}" has no explicit value, but selected elements come from '
+                    f"multiple original shell thicknesses: {original_values}. "
+                    f"Please set 'value' explicitly or split this task into different parameters."
+                )
+            value = original_values[0]
+        if parameter_name in parameter_map and str(parameter_map[parameter_name]) != str(value):
+            raise ValueError(
+                f'Parameter "{parameter_name}" has inconsistent initial values: '
+                f"{parameter_map[parameter_name]} vs {value}"
+            )
+        parameter_map[parameter_name] = value
+
+    lines: List[str] = [
+        "** ================================================================",
+        "** Auto-generated DSA global include",
+        "** ================================================================",
+        f"** {AUTO_COMMENT_PREFIX}_GLOBAL_BEGIN",
+        "*PARAMETER",
+    ]
+    for parameter_name in sorted(parameter_map.keys()):
+        lines.append(f"{parameter_name}={parameter_map[parameter_name]}")
+    lines.append("*DESIGN PARAMETER")
+    unique_params = sorted(parameter_map.keys())
+    for i in range(0, len(unique_params), 10):
+        lines.append(",".join(unique_params[i:i + 10]) + ",")
+    lines.append(f"** {AUTO_COMMENT_PREFIX}_GLOBAL_END")
+    return lines
+
+
+def _build_scope_structure_lines(
+    *,
+    scope_key: Tuple[str, str],
+    config: Dict[str, Any],
+    enriched_tasks: List[Dict[str, Any]],
+    parsed: Dict[str, Any],
+    mother_set_to_remainder_name: Dict[Tuple[str, str, str], Optional[str]],
+) -> List[str]:
+    lines: List[str] = [
+        "** ================================================================",
+        f"** Auto-generated DSA scoped include for {scope_comment(scope_key[0], scope_key[1])}",
+        "** ================================================================",
+        f"** {AUTO_COMMENT_PREFIX}_SCOPE_BEGIN {scope_comment(scope_key[0], scope_key[1])}",
+    ]
+    elset_members = parsed["elset_members"]
+
+    local_task_found = False
+    for idx, task in enumerate(enriched_tasks, 1):
+        groups = [group for group in task["source_groups"] if make_scope_key(group["scope_type"], group["scope_name"]) == scope_key]
+        if not groups:
+            continue
+        local_task_found = True
+        lines.append("**")
+        lines.append(
+            f"** {AUTO_COMMENT_PREFIX}_TASK_BEGIN index={idx} parameter={task['parameter']} set={task['set_name']}"
+        )
+        if make_scope_key(task["target_scope_key"][0], task["target_scope_key"][1]) == scope_key:
+            lines.extend(build_set_block("*ELSET", task["set_name"], task["elements"]))
+        for group in groups:
+            if group["group_set_name"] != task["set_name"]:
+                lines.append("**")
+                lines.append(
+                    f"** Auto section subset from mother set {group['mother_set'][2]}: {group['group_set_name']}"
+                )
+                lines.extend(build_set_block("*ELSET", group["group_set_name"], group["elements"]))
+            lines.append(
+                f"{group['section_keyword']}, ELSET={group['group_set_name']}, MATERIAL={group['material']}"
+            )
+            lines.append(f"<{task['parameter']}>")
+        lines.append(
+            f"** {AUTO_COMMENT_PREFIX}_TASK_END index={idx} parameter={task['parameter']} set={task['set_name']}"
+        )
+
+    local_remainder_found = False
+    for mother_set, remainder_name in sorted(mother_set_to_remainder_name.items()):
+        if make_scope_key(mother_set[0], mother_set[1]) != scope_key or remainder_name is None:
+            continue
+        local_remainder_found = True
+        removed_ids = set()
+        for task in enriched_tasks:
+            removed_ids.update(task["source_mother_sets"].get(mother_set, []))
+        all_ids = set(elset_members.get(mother_set, set()))
+        remain = sorted(all_ids - removed_ids)
+        if not remain:
+            continue
+        lines.append("**")
+        lines.append(f"** {AUTO_COMMENT_PREFIX}_REMAINDER mother_set={mother_set[2]} renamed={remainder_name}")
+        lines.extend(build_set_block("*ELSET", remainder_name, remain))
+
+    if scope_key[0] == ROOT_SCOPE_TYPE:
+        if config["node_sets"]:
+            lines.append("** New node sets")
+            for idx, nset in enumerate(config["node_sets"], 1):
+                lines.append("**")
+                lines.append(f"** Node set {idx}: {nset['set_name']}")
+                lines.extend(build_set_block("*NSET", nset["set_name"], nset["nodes"]))
+        for idx, rsp in enumerate(config["responses"], 1):
+            if rsp.get("type") == "element" and "elements" in rsp:
+                lines.append("**")
+                lines.append(f"** Response element set {idx}: {rsp['set']}")
+                lines.extend(build_set_block("*ELSET", rsp["set"], rsp["elements"]))
+            if rsp.get("type") == "node" and "nodes" in rsp:
+                lines.append("**")
+                lines.append(f"** Response node set {idx}: {rsp['set']}")
+                lines.extend(build_set_block("*NSET", rsp["set"], rsp["nodes"]))
+
+    if not local_task_found and not local_remainder_found and len(lines) <= 4:
+        return []
+    lines.append(f"** {AUTO_COMMENT_PREFIX}_SCOPE_END {scope_comment(scope_key[0], scope_key[1])}")
+    return [line for line in lines if line.strip() != ""]
+
+
+def _build_assembly_lines(config: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+    if config["node_sets"]:
+        lines.append("** New node sets")
+        for idx, nset in enumerate(config["node_sets"], 1):
+            lines.append("**")
+            lines.append(f"** Node set {idx}: {nset['set_name']}")
+            lines.extend(build_set_block("*NSET", nset["set_name"], nset["nodes"]))
+    for idx, rsp in enumerate(config["responses"], 1):
+        if rsp.get("type") == "element" and "elements" in rsp:
+            lines.append("**")
+            lines.append(f"** Response element set {idx}: {rsp['set']}")
+            lines.extend(build_set_block("*ELSET", rsp["set"], rsp["elements"]))
+        if rsp.get("type") == "node" and "nodes" in rsp:
+            lines.append("**")
+            lines.append(f"** Response node set {idx}: {rsp['set']}")
+            lines.extend(build_set_block("*NSET", rsp["set"], rsp["nodes"]))
+    if not lines:
+        return []
+    return [
+        "** ================================================================",
+        "** Auto-generated DSA assembly include",
+        "** ================================================================",
+        f"** {AUTO_COMMENT_PREFIX}_ASSEMBLY_BEGIN",
+        *lines,
+        f"** {AUTO_COMMENT_PREFIX}_ASSEMBLY_END",
+    ]
+
+
+def build_dsa_include_layout(
+    config: Dict[str, Any],
+    enriched_tasks: List[Dict[str, Any]],
+    parsed: Dict[str, Any],
+    mother_set_to_remainder_name: Dict[Tuple[str, str, str], Optional[str]],
+    *,
+    include_file: str,
+) -> Dict[str, Any]:
+    include_name = str(include_file or DEFAULT_INCLUDE_FILE).strip() or DEFAULT_INCLUDE_FILE
+    include_path = Path(include_name)
+    include_stem = include_path.stem or "include"
+    include_suffix = include_path.suffix or ".inp"
+
+    files: Dict[str, str] = {}
+    files[include_name] = "\n".join(_build_parameter_lines(enriched_tasks)) + "\n"
+
+    has_part_scope = any(group.get("scope_type") == PART_SCOPE_TYPE for task in enriched_tasks for group in task["source_groups"])
+    scope_include_refs: Dict[Tuple[str, str], str] = {}
+
+    if has_part_scope:
+        part_names = sorted(
+            {
+                make_scope_key(group["scope_type"], group["scope_name"])[1]
+                for task in enriched_tasks
+                for group in task["source_groups"]
+                if group.get("scope_type") == PART_SCOPE_TYPE
+            }
+        )
+        for part_name in part_names:
+            scope_key = make_scope_key(PART_SCOPE_TYPE, part_name)
+            part_include_name = f"{include_stem}_part_{safe_include_fragment(part_name)}{include_suffix}"
+            part_lines = _build_scope_structure_lines(
+                scope_key=scope_key,
+                config=config,
+                enriched_tasks=enriched_tasks,
+                parsed=parsed,
+                mother_set_to_remainder_name=mother_set_to_remainder_name,
+            )
+            if part_lines:
+                files[part_include_name] = "\n".join(part_lines) + "\n"
+                scope_include_refs[scope_key] = part_include_name
+        assembly_lines = _build_assembly_lines(config)
+        assembly_include_name = None
+        if assembly_lines:
+            assembly_include_name = f"{include_stem}_assembly{include_suffix}"
+            files[assembly_include_name] = "\n".join(assembly_lines) + "\n"
+    else:
+        root_scope = make_scope_key(ROOT_SCOPE_TYPE, ROOT_SCOPE_NAME)
+        root_lines = _build_scope_structure_lines(
+            scope_key=root_scope,
+            config=config,
+            enriched_tasks=enriched_tasks,
+            parsed=parsed,
+            mother_set_to_remainder_name=mother_set_to_remainder_name,
+        )
+        if root_lines:
+            files[include_name] = files[include_name] + "\n".join(root_lines) + "\n"
+        assembly_include_name = None
+
+    return {
+        "global_include_name": include_name,
+        "scope_include_refs": scope_include_refs,
+        "assembly_include_name": assembly_include_name,
+        "files": files,
+    }
+
+
+def patch_main_sections_scoped(
+    main_lines: List[str],
+    parsed: Dict[str, Any],
+    mother_set_to_remainder_name: Dict[Tuple[str, str, str], Optional[str]],
+    comment_empty_section: bool = True,
+) -> List[str]:
+    section_blocks = parsed["section_blocks"]
+    start_to_block = {blk["start"]: blk for blk in section_blocks}
+    out_lines: List[str] = []
+    i = 0
+    n = len(main_lines)
+
+    while i < n:
+        blk = start_to_block.get(i)
+        if blk is None:
+            out_lines.append(main_lines[i])
+            i += 1
+            continue
+
+        block_scope_key = (blk["scope_type"], blk["scope_name"], blk["elset"])
+        start = blk["start"]
+        end = blk["end"]
+        if block_scope_key not in mother_set_to_remainder_name:
+            out_lines.extend(main_lines[start:end])
+            i = end
+            continue
+
+        remainder_name = mother_set_to_remainder_name[block_scope_key]
+        if remainder_name is not None:
+            for line_index in range(start, end):
+                line = main_lines[line_index]
+                if line_index == start:
+                    line = re.sub(
+                        rf"(ELSET\s*=\s*){re.escape(blk['elset'])}\b",
+                        rf"\1{remainder_name}",
+                        line,
+                        flags=re.I,
+                    )
+                out_lines.append(line)
+        else:
+            for line_index in range(start, end):
+                line = main_lines[line_index]
+                if line.startswith("**"):
+                    out_lines.append(line)
+                elif comment_empty_section:
+                    out_lines.append("** " + line)
+        i = end
+
+    return out_lines
+
+
+def patch_scoped_include_lines(
+    lines: List[str],
+    parsed: Dict[str, Any],
+    include_layout: Dict[str, Any],
+) -> List[str]:
+    out = patch_include_line(lines, include_layout["global_include_name"])
+    part_blocks_by_name = parsed.get("part_blocks_by_name", {})
+    scope_include_refs = include_layout.get("scope_include_refs", {})
+    assembly_block = parsed.get("assembly_block")
+    assembly_include_name = include_layout.get("assembly_include_name")
+
+    insertions: Dict[int, List[str]] = defaultdict(list)
+    for scope_key, include_name in scope_include_refs.items():
+        if scope_key[0] != PART_SCOPE_TYPE:
+            continue
+        part_block = part_blocks_by_name.get(scope_key[1])
+        if not part_block:
+            raise ValueError(f'Cannot locate *Part block for generated include "{include_name}".')
+        insertions[int(part_block["end_part_idx"])].append(
+            f"** {AUTO_COMMENT_PREFIX}_PART_INCLUDE scope={scope_comment(scope_key[0], scope_key[1])}"
+        )
+        insertions[int(part_block["end_part_idx"])].append(f"*Include, input={include_name}")
+
+    if assembly_include_name and assembly_block:
+        insertions[int(assembly_block["end_assembly_idx"])].append(f"** {AUTO_COMMENT_PREFIX}_ASSEMBLY_INCLUDE")
+        insertions[int(assembly_block["end_assembly_idx"])].append(f"*Include, input={assembly_include_name}")
+
+    if not insertions:
+        return out
+
+    patched_lines: List[str] = []
+    for idx, line in enumerate(out):
+        if idx in insertions:
+            patched_lines.extend(insertions[idx])
+        patched_lines.append(line)
+    return patched_lines
 
 
 # =========================================================

@@ -628,9 +628,9 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
     # Write steps and frames to manifest.db
     for step_name, sm in steps_meta.items():
         db_conn.execute(
-            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
             (result_group, step_name, sm['step_number'], sm['procedure'], sm['num_frames'],
-             sm.get('description'))
+             sm.get('description'), sm.get('nlgeom', 0))
         )
         for fm in sm['frames']:
             db_conn.execute(
