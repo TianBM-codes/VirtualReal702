@@ -76,15 +76,64 @@ def _build_global_section_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float,
     return color_map
 
 
+def _build_global_elset_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float, float, float]]:
+    """
+    Enumerate every element-set name that exists in this workspace and assign
+    palette colours globally (sorted order) so the same set always gets the
+    same colour regardless of which request or instance is being rendered.
+
+    Three sources (all checked, names deduplicated by insertion order):
+      1. sets.h5  element_sets/{inst}/{sn}   — instance-level sets (INP + ODB)
+      2. sets.h5  assembly_sets/{sn}          — assembly-level sets
+      3. geometry/{inst}.h5  instance_sets/element_sets/{sn}  — ODB-only fallback
+    """
+    sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
+    seen: Dict[str, None] = {}
+
+    if os.path.exists(sets_h5):
+        try:
+            with h5py.File(sets_h5, "r") as f:
+                inst_grp = f.get("element_sets")
+                if inst_grp is not None:
+                    for inst in sorted(inst_grp.keys()):
+                        for sn in sorted(inst_grp[inst].keys()):
+                            seen.setdefault(sn, None)
+                asm_grp = f.get("assembly_sets")
+                if asm_grp is not None:
+                    for sn in sorted(asm_grp.keys()):
+                        seen.setdefault(sn, None)
+        except Exception:
+            pass
+
+    from ..infra.manifest_repo import ManifestRepo
+    for inst in sorted(idx.source_elem_etype.keys()):
+        geom_h5 = ManifestRepo(idx.workspace).get_geom_path(inst) or \
+                  os.path.join(idx.workspace, "l1", "geometry", f"{inst}.h5")
+        if not os.path.exists(geom_h5):
+            continue
+        try:
+            with h5py.File(geom_h5, "r") as f:
+                isets = f.get("instance_sets/element_sets")
+                if isets is not None:
+                    for sn in sorted(isets.keys()):
+                        seen.setdefault(sn, None)
+        except Exception:
+            pass
+
+    return {sn: _PALETTE[i % len(_PALETTE)] for i, sn in enumerate(seen)}
+
+
 def _build_global_color_map(idx: "ModelIndex", scheme: str) -> Dict[str, Tuple[float, float, float]]:
     """
-    Build a globally consistent {label: (r,g,b)} map for all non-elset schemes.
+    Build a globally consistent {label: (r,g,b)} map for all schemes.
     Collects every possible value across all instances (sorted alphabetically by
-    instance name) so that the same etype/material/section_type/region always
+    instance name) so that the same etype/material/section_type/region/set always
     gets the same palette colour regardless of which instance is being rendered.
     """
     if scheme == "section":
         return _build_global_section_color_map(idx)
+    if scheme == "elset":
+        return _build_global_elset_color_map(idx)
 
     seen: Dict[str, None] = {}
     if scheme == "etype":
@@ -560,13 +609,8 @@ def _compute_labels_and_legend(
     global_colors = _build_global_color_map(idx, scheme)
 
     legend: List[dict] = []
-    palette_idx = 0
     for i, val in enumerate(unique_vals):
-        if scheme == "elset":
-            auto_rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
-            if auto_rgb != _GREY:
-                palette_idx += 1
-        elif not val or val in ("(none)", "(unknown)"):
+        if not val or val in ("(none)", "(unknown)", "other"):
             auto_rgb = _GREY
         else:
             auto_rgb = global_colors.get(val, _GREY)
@@ -686,13 +730,8 @@ def get_legend_entries(
     # Palette assignment (identical logic to get_color_code)
     global_colors = _build_global_color_map(idx, scheme)
     palette_colors: Dict[str, Tuple[float, float, float]] = {}
-    palette_idx = 0
     for val in unique_vals:
-        if scheme == "elset":
-            rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
-            if rgb != _GREY:
-                palette_idx += 1
-        elif not val or val in ("(none)", "(unknown)"):
+        if not val or val in ("(none)", "(unknown)", "other"):
             rgb = _GREY
         else:
             rgb = global_colors.get(val, _GREY)
