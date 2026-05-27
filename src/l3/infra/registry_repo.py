@@ -238,11 +238,12 @@ class RegistryRepo:
 
     # ── read ─────────────────────────────────────────────────────────────────
 
-    def get_job(self, odb_id: str) -> Optional[sqlite3.Row]:
+    def get_job(self, odb_id: str) -> Optional[dict]:
         with self._connect() as conn:
-            return conn.execute(
+            row = conn.execute(
                 "SELECT * FROM odb_jobs WHERE odb_id=?", (odb_id,)
             ).fetchone()
+            return dict(row) if row is not None else None
 
     def list_jobs(self) -> list:
         """Return all jobs ordered by created_at DESC."""

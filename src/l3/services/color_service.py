@@ -76,6 +76,89 @@ def _build_global_section_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float,
     return color_map
 
 
+def _build_global_elset_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float, float, float]]:
+    """
+    Enumerate every element-set name that exists in this workspace and assign
+    palette colours globally (sorted order) so the same set always gets the
+    same colour regardless of which request or instance is being rendered.
+
+    Four sources (all checked, names deduplicated by insertion order):
+      1. sets.h5  element_sets/{inst}/{sn}            — INP-exported instance sets
+      2. sets.h5  assembly_sets/{sn}                  — assembly-level sets
+      3. geometry/{inst}.h5  instance_sets/element_sets/{sn}  — ODB instance sets
+      4. sets.h5  part_sets/{part}/element_sets/{sn}  — part-level sets via dump_sets
+    """
+    sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
+    seen: Dict[str, None] = {}
+
+    if os.path.exists(sets_h5):
+        try:
+            with h5py.File(sets_h5, "r") as f:
+                inst_grp = f.get("element_sets")
+                if inst_grp is not None:
+                    for inst in sorted(inst_grp.keys()):
+                        for sn in sorted(inst_grp[inst].keys()):
+                            seen.setdefault(sn, None)
+                asm_grp = f.get("assembly_sets")
+                if asm_grp is not None:
+                    for sn in sorted(asm_grp.keys()):
+                        seen.setdefault(sn, None)
+                parts_grp = f.get("part_sets")
+                if parts_grp is not None:
+                    for part_safe in sorted(parts_grp.keys()):
+                        eg = f.get(f"part_sets/{part_safe}/element_sets")
+                        if eg is not None:
+                            for sn in sorted(eg.keys()):
+                                seen.setdefault(sn, None)
+        except Exception:
+            pass
+
+    from ..infra.manifest_repo import ManifestRepo
+    for inst in sorted(idx.source_elem_etype.keys()):
+        geom_h5 = ManifestRepo(idx.workspace).get_geom_path(inst) or \
+                  os.path.join(idx.workspace, "l1", "geometry", f"{inst}.h5")
+        if not os.path.exists(geom_h5):
+            continue
+        try:
+            with h5py.File(geom_h5, "r") as f:
+                isets = f.get("instance_sets/element_sets")
+                if isets is not None:
+                    for sn in sorted(isets.keys()):
+                        seen.setdefault(sn, None)
+        except Exception:
+            pass
+
+    return {sn: _PALETTE[i % len(_PALETTE)] for i, sn in enumerate(seen)}
+
+
+def _build_global_color_map(idx: "ModelIndex", scheme: str) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Build a globally consistent {label: (r,g,b)} map for all schemes.
+    Collects every possible value across all instances (sorted alphabetically by
+    instance name) so that the same etype/material/section_type/region/set always
+    gets the same palette colour regardless of which instance is being rendered.
+    """
+    if scheme == "section":
+        return _build_global_section_color_map(idx)
+    if scheme == "elset":
+        return _build_global_elset_color_map(idx)
+
+    seen: Dict[str, None] = {}
+    if scheme == "etype":
+        for inst in sorted(idx.source_elem_etype.keys()):
+            for v in sorted(_all_etypes_from_l1(idx, inst)):
+                if v:
+                    seen.setdefault(v, None)
+    elif scheme in ("material", "section_type"):
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        for inst in sorted(idx.source_elem_etype.keys()):
+            for v in _all_unique_vals_from_l1(idx, inst, attr_name):
+                if v:
+                    seen.setdefault(v, None)
+
+    return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(seen)}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -120,29 +203,34 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     if has_sec:
         schemes.append("section_type")
 
-    elsets: List[str] = []
+    elsets_seen: Dict[str, None] = {}
     sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
     inst_safe = instance.replace('/', '__').replace('\\', '__').replace(' ', '_')
     if os.path.exists(sets_h5):
         with h5py.File(sets_h5, "r") as f:
-            # Instance-level element sets
+            # INP-exported instance-level sets: element_sets/{instance}/{sn}
             inst_grp = f.get(f"element_sets/{instance}")
             if inst_grp is not None:
-                elsets = list(inst_grp.keys())
-            # Assembly-level element sets that contain elements in this instance
+                for sn in inst_grp.keys():
+                    elsets_seen.setdefault(sn, None)
+            # Assembly-level sets that have elements in this instance
             asm_grp = f.get("assembly_sets")
             if asm_grp is not None:
                 for set_safe in asm_grp.keys():
                     if inst_safe in asm_grp[set_safe] and \
                             "elem_labels" in asm_grp[set_safe][inst_safe]:
-                        elsets.append(set_safe)
-            elsets = sorted(set(elsets))
-    # ODB-only fallback: instance sets live in geometry H5, not sets.h5
-    if not elsets and os.path.exists(geom_h5):
-        with h5py.File(geom_h5, "r") as f:
-            isets_grp = f.get("instance_sets/element_sets")
-            if isets_grp is not None:
-                elsets = sorted(isets_grp.keys())
+                        elsets_seen.setdefault(set_safe, None)
+    # ODB instance-level sets live in geometry H5 (always check, not only as fallback)
+    if os.path.exists(geom_h5):
+        try:
+            with h5py.File(geom_h5, "r") as f:
+                isets_grp = f.get("instance_sets/element_sets")
+                if isets_grp is not None:
+                    for sn in isets_grp.keys():
+                        elsets_seen.setdefault(sn, None)
+        except Exception:
+            pass
+    elsets = sorted(elsets_seen)
     if elsets:
         schemes.append("elset")
 
@@ -359,32 +447,57 @@ def _labels_from_elsets(
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
     # Load all requested sets' label arrays.
-    # Priority 1: sets.h5 element_sets/{instance}/{sn}          (instance sets, INP+ODB mode)
-    # Priority 2: sets.h5 assembly_sets/{sn}/{inst_safe}/elem_labels  (assembly sets)
-    # Priority 3: geometry H5 instance_sets/element_sets/{sn}   (ODB-only mode)
+    # Try all four sources in order; first hit wins for each set name:
+    #   1. sets.h5  element_sets/{instance}/{sn}              (INP-exported instance sets)
+    #   2. sets.h5  assembly_sets/{sn}/{inst_safe}/elem_labels (assembly-level sets)
+    #   3. geometry H5  instance_sets/element_sets/{sn}       (ODB instance sets, always checked)
+    #   4. sets.h5  part_sets/*/element_sets/{sn}             (part-level sets via dump_sets)
     inst_safe = instance.replace('/', '__').replace('\\', '__').replace(' ', '_')
     slabels_dict: Dict[str, np.ndarray] = {}
     if os.path.exists(sets_h5):
         with h5py.File(sets_h5, "r") as f:
             for sn in set_names:
+                if sn in slabels_dict:
+                    continue
                 key = f"element_sets/{instance}/{sn}"
                 if key in f:
                     slabels_dict[sn] = f[key][:]
                     continue
-                # Try assembly_sets (set_safe key may equal sn when sn has no special chars)
                 asm_key = f"assembly_sets/{sn}/{inst_safe}/elem_labels"
                 if asm_key in f:
                     slabels_dict[sn] = f[asm_key][:]
+    # Always also check geometry H5 for ODB instance-level sets
+    if os.path.exists(geom_h5):
+        try:
+            with h5py.File(geom_h5, "r") as f:
+                for sn in set_names:
+                    if sn in slabels_dict:
+                        continue
+                    geom_key = f"instance_sets/element_sets/{sn}"
+                    if geom_key in f:
+                        slabels_dict[sn] = f[geom_key][:]
+        except Exception:
+            pass
+    # Part-level sets stored in sets.h5 part_sets (search across all parts)
     missing = [sn for sn in set_names if sn not in slabels_dict]
-    if missing:
-        if not os.path.exists(geom_h5):
-            raise NotFoundError("No sets data found for this workspace", {})
-        with h5py.File(geom_h5, "r") as f:
-            for sn in missing:
-                geom_key = f"instance_sets/element_sets/{sn}"
-                if geom_key not in f:
-                    raise ValidationError(f"Set '{sn}' not found", {"set_name": sn})
-                slabels_dict[sn] = f[geom_key][:]
+    if missing and os.path.exists(sets_h5):
+        try:
+            with h5py.File(sets_h5, "r") as f:
+                parts_grp = f.get("part_sets")
+                if parts_grp is not None:
+                    for sn in missing:
+                        for part_safe in parts_grp.keys():
+                            pk = f"part_sets/{part_safe}/element_sets/{sn}"
+                            if pk in f:
+                                slabels_dict[sn] = f[pk][:]
+                                break
+        except Exception:
+            pass
+    still_missing = [sn for sn in set_names if sn not in slabels_dict]
+    if still_missing:
+        raise ValidationError(
+            f"Set(s) not found: {still_missing}", {"set_names": still_missing}
+        )
     set_label_arrays: List[Tuple[str, np.ndarray]] = [
         (sn, slabels_dict[sn]) for sn in set_names
     ]
@@ -531,22 +644,14 @@ def _compute_labels_and_legend(
     from ..infra.manifest_repo import ManifestRepo
     overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
 
-    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
+    global_colors = _build_global_color_map(idx, scheme)
 
     legend: List[dict] = []
-    palette_idx = 0
     for i, val in enumerate(unique_vals):
-        if scheme == "elset":
-            auto_rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
-            if auto_rgb != _GREY:
-                palette_idx += 1
-        elif not val or val in ("(none)", "(unknown)"):
+        if not val or val in ("(none)", "(unknown)", "other"):
             auto_rgb = _GREY
-        elif scheme == "section":
-            auto_rgb = global_sec_colors.get(val, _GREY)
         else:
-            auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
-            palette_idx += 1
+            auto_rgb = global_colors.get(val, _GREY)
         ov  = overrides.get(val, {})
         rgb = (ov["color_r"], ov["color_g"], ov["color_b"]) if ov.get("color_r") is not None else auto_rgb
         legend.append({
@@ -661,21 +766,13 @@ def get_legend_entries(
                     surface_set.add(v)
 
     # Palette assignment (identical logic to get_color_code)
-    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
+    global_colors = _build_global_color_map(idx, scheme)
     palette_colors: Dict[str, Tuple[float, float, float]] = {}
-    palette_idx = 0
     for val in unique_vals:
-        if scheme == "elset":
-            rgb = _GREY if val == "other" else _PALETTE[palette_idx % len(_PALETTE)]
-            if rgb != _GREY:
-                palette_idx += 1
-        elif not val or val in ("(none)", "(unknown)"):
+        if not val or val in ("(none)", "(unknown)", "other"):
             rgb = _GREY
-        elif scheme == "section":
-            rgb = global_sec_colors.get(val, _GREY)
         else:
-            rgb = _PALETTE[palette_idx % len(_PALETTE)]
-            palette_idx += 1
+            rgb = global_colors.get(val, _GREY)
         palette_colors[val] = rgb
 
     from ..infra.manifest_repo import ManifestRepo

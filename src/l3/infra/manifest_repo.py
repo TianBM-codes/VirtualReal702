@@ -114,10 +114,11 @@ class ManifestRepo:
         rg_clause, rg_params = self._rg_clause(result_group)
         try:
             with self._get_conn() as conn:
-                return conn.execute(
+                row = conn.execute(
                     "SELECT * FROM steps WHERE step_name=? AND {}".format(rg_clause),
                     [step_name] + rg_params,
                 ).fetchone()
+                return dict(row) if row is not None else None
         except Exception:
             return None
 
