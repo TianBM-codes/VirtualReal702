@@ -76,6 +76,32 @@ def _build_global_section_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float,
     return color_map
 
 
+def _build_global_color_map(idx: "ModelIndex", scheme: str) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Build a globally consistent {label: (r,g,b)} map for all non-elset schemes.
+    Collects every possible value across all instances (sorted alphabetically by
+    instance name) so that the same etype/material/section_type/region always
+    gets the same palette colour regardless of which instance is being rendered.
+    """
+    if scheme == "section":
+        return _build_global_section_color_map(idx)
+
+    seen: Dict[str, None] = {}
+    if scheme == "etype":
+        for inst in sorted(idx.source_elem_etype.keys()):
+            for v in sorted(_all_etypes_from_l1(idx, inst)):
+                if v:
+                    seen.setdefault(v, None)
+    elif scheme in ("material", "section_type"):
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        for inst in sorted(idx.source_elem_etype.keys()):
+            for v in _all_unique_vals_from_l1(idx, inst, attr_name):
+                if v:
+                    seen.setdefault(v, None)
+
+    return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(seen)}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -531,7 +557,7 @@ def _compute_labels_and_legend(
     from ..infra.manifest_repo import ManifestRepo
     overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
 
-    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
+    global_colors = _build_global_color_map(idx, scheme)
 
     legend: List[dict] = []
     palette_idx = 0
@@ -542,11 +568,8 @@ def _compute_labels_and_legend(
                 palette_idx += 1
         elif not val or val in ("(none)", "(unknown)"):
             auto_rgb = _GREY
-        elif scheme == "section":
-            auto_rgb = global_sec_colors.get(val, _GREY)
         else:
-            auto_rgb = _PALETTE[palette_idx % len(_PALETTE)]
-            palette_idx += 1
+            auto_rgb = global_colors.get(val, _GREY)
         ov  = overrides.get(val, {})
         rgb = (ov["color_r"], ov["color_g"], ov["color_b"]) if ov.get("color_r") is not None else auto_rgb
         legend.append({
@@ -661,7 +684,7 @@ def get_legend_entries(
                     surface_set.add(v)
 
     # Palette assignment (identical logic to get_color_code)
-    global_sec_colors = _build_global_section_color_map(idx) if scheme == "section" else {}
+    global_colors = _build_global_color_map(idx, scheme)
     palette_colors: Dict[str, Tuple[float, float, float]] = {}
     palette_idx = 0
     for val in unique_vals:
@@ -671,11 +694,8 @@ def get_legend_entries(
                 palette_idx += 1
         elif not val or val in ("(none)", "(unknown)"):
             rgb = _GREY
-        elif scheme == "section":
-            rgb = global_sec_colors.get(val, _GREY)
         else:
-            rgb = _PALETTE[palette_idx % len(_PALETTE)]
-            palette_idx += 1
+            rgb = global_colors.get(val, _GREY)
         palette_colors[val] = rgb
 
     from ..infra.manifest_repo import ManifestRepo
