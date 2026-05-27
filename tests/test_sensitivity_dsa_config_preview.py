@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from services.model_update.analysis import sensitivity_service
@@ -383,3 +384,64 @@ def test_generate_project_dsa_inp_from_db_keeps_flat_inp_in_single_global_includ
     assert "include_part_" not in analysis_text
     assert "*SHELL SECTION, ELSET=DSA_T1, MATERIAL=MAT1" in include_text
     assert len(result["include_files"]) == 1
+
+
+def test_generate_project_dsa_inp_from_db_serializes_mother_set_remainders(monkeypatch, tmp_path: Path):
+    source_inp = tmp_path / "model.inp"
+    source_inp.write_text("*Heading\n*Step, name=Step-1\n*Static\n1., 1.\n*End Step\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setattr(sensitivity_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "build_project_dsa_config_preview",
+        lambda project_id, value_mode="inherit": {
+            "value_mode": value_mode,
+            "config_json": {
+                "include_file": "include.inp",
+                "main_output": "model_dsa.inp",
+                "element_sets": [],
+                "node_sets": [],
+                "responses": [],
+            },
+            "parameter_count": 0,
+            "response_count": 0,
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "analyze_element_set_tasks_scoped",
+        lambda element_sets, parsed: (
+            [],
+            {("PART", "P1", "SHELL1"): "SHELL1_REM"},
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "build_dsa_include_layout",
+        lambda config, enriched_tasks, parsed, mother_set_to_remainder_name, include_file: {
+            "global_include_name": include_file,
+            "scope_include_refs": {},
+            "assembly_include_name": None,
+            "files": {include_file: "*DESIGN PARAMETER\n"},
+        },
+    )
+
+    result = sensitivity_service.generate_project_dsa_inp_from_db(
+        project_id=1001,
+        input_inp=str(source_inp),
+        output_dir=str(out_dir),
+    )
+
+    encoded = json.loads(json.dumps(result, ensure_ascii=False))
+
+    assert encoded["mother_set_remainders"] == [
+        {
+            "scope_type": "PART",
+            "scope_name": "P1",
+            "mother_set": "SHELL1",
+            "remainder_set": "SHELL1_REM",
+        }
+    ]

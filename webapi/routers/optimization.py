@@ -7,7 +7,6 @@ from services.model_update.analysis.bayesian_service import (
 from services.model_update.analysis.model_update_meta_service import (
     add_manual_response,
     resolve_abaqus_command,
-    resolve_python3_command,
 )
 from services.model_update.analysis import sensitivity_service as _sens
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
@@ -143,7 +142,6 @@ def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
         "lower_bound": body.lower_bound,
         "upper_bound": body.upper_bound,
         "abaqus": resolve_abaqus_command(None),
-        "python3": resolve_python3_command(None),
         "keep_raw": body.keep_raw,
         "timeout": body.timeout,
         "job_name": body.job_name,

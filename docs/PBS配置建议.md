@@ -83,7 +83,6 @@
   "APP_ENABLE_GZIP": 1,
   "APP_EMBEDDED_RUNNER": 0,
   "APP_ABAQUS_CMD": "C:\\Program Files\\SIMULIA\\Commands\\abaqus.bat",
-  "APP_PYTHON3_CMD": "C:\\Python311\\python.exe",
   "APP_BAYESIAN_OUTPUT_DIR": "D:\\WorkSpace\\Temp\\workspace",
   "APP_INVARIANTS": "full",
   "DB_HOST": "127.0.0.1",

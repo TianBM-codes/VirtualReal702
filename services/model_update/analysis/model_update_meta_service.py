@@ -31,16 +31,6 @@ def resolve_nastran_command(nastran: Optional[str] = None) -> str:
     return str(payload.get("NASTRAN") or "nastran").strip() or "nastran"
 
 
-def resolve_python3_command(python3: Optional[str] = None) -> Optional[str]:
-    explicit = str(python3 or "").strip()
-    if explicit:
-        return explicit
-
-    payload = _load_service_config()
-    resolved = str(payload.get("APP_PYTHON3_CMD") or "").strip()
-    return resolved or None
-
-
 def resolve_bayesian_output_dir(output_dir: Optional[str] = None) -> Optional[str]:
     explicit = str(output_dir or "").strip()
     if explicit:

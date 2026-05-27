@@ -1227,6 +1227,23 @@ def _resolve_output_file(path_value: Optional[str], *, output_dir: str, default_
     return str(candidate.resolve())
 
 
+def _serialize_mother_set_remainders(
+        mapping: Dict[Tuple[str, str, str], Optional[str]],
+) -> List[dict]:
+    serialized: List[dict] = []
+    for scope_key, remainder_name in sorted(mapping.items()):
+        scope_type, scope_name, mother_set = scope_key
+        serialized.append(
+            {
+                "scope_type": scope_type,
+                "scope_name": scope_name,
+                "mother_set": mother_set,
+                "remainder_set": remainder_name,
+            }
+        )
+    return serialized
+
+
 def generate_project_dsa_inp_from_db(
         *,
         project_id: int,
@@ -1346,7 +1363,7 @@ def generate_project_dsa_inp_from_db(
         "parameter_count": preview["parameter_count"],
         "response_count": preview["response_count"],
         "warnings": warnings,
-        "mother_set_remainders": mother_set_to_remainder_name,
+        "mother_set_remainders": _serialize_mother_set_remainders(mother_set_to_remainder_name),
     }
 
 

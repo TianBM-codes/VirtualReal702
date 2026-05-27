@@ -2436,7 +2436,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
 
         test_nodes, test_node_source_table = _load_test_nodes_for_matching(cursor, int(project_id))
         if not test_nodes:
-            raise ValueError("未找到试验节点，请先导入 UNV 试验数据")
+            raise ValueError("未找到试验节点，请先导入试验数据")
 
         cache = _load_octree_cache(cache_path)
         part_lookup = _cache_part_lookup(cache)
@@ -4183,7 +4183,7 @@ def _load_static_test_rows_from_data_table(cursor, project_id: int) -> List[dict
     rows = []
     for entry in entries:
         sensor_label = None
-        for key in ("sensor_label", "measuring_point_name", "point_no", "point", "label", "name", "sensorName"):
+        for key in ("sensor_label", "measuringPointName", "point_no", "point", "label", "name", "sensorName"):
             value = entry.get(key)
             if value not in (None, ""):
                 sensor_label = str(value)
