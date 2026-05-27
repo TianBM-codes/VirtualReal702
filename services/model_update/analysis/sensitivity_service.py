@@ -30,11 +30,11 @@ from .abaqusDSAInpGenerator import (
     COMMENT_EMPTY_SECTION,
     DEFAULT_INCLUDE_FILE,
     UPDATED_MAIN_INP,
-    analyze_element_set_tasks,
-    build_include_text,
+    analyze_element_set_tasks_scoped,
+    build_dsa_include_layout,
     parse_main_inp,
-    patch_include_line,
-    patch_main_sections,
+    patch_main_sections_scoped,
+    patch_scoped_include_lines,
     patch_static_step_to_dsa,
     remove_blank_lines,
 )
@@ -1071,6 +1071,15 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
             "parameter": parameter_name,
             "elements": elements,
         }
+        set_scope = str(row.get("set_scope") or "").strip().upper()
+        part_name = str(row.get("part_name") or "").strip()
+        instance_name = str(row.get("instance_name") or "").strip()
+        if set_scope:
+            item["set_scope"] = set_scope
+        if part_name:
+            item["part_name"] = part_name
+        if instance_name:
+            item["instance_name"] = instance_name
         if resolved_value_mode == "explicit":
             current_value = _jsonable_scalar(row.get("scalar_value"))
             item["value"] = current_value
@@ -1276,23 +1285,24 @@ def generate_project_dsa_inp_from_db(
     parsed = parse_main_inp(main_lines)
 
     try:
-        enriched_tasks, mother_set_to_remainder_name, generator_warnings = analyze_element_set_tasks(
+        enriched_tasks, mother_set_to_remainder_name, generator_warnings = analyze_element_set_tasks_scoped(
             config["element_sets"],
             parsed,
         )
-        include_text = build_include_text(
+        include_layout = build_dsa_include_layout(
             config,
             enriched_tasks,
             parsed,
             mother_set_to_remainder_name,
+            include_file=include_ref,
         )
-        patched_main_lines = patch_main_sections(
+        patched_main_lines = patch_main_sections_scoped(
             main_lines,
             parsed,
             mother_set_to_remainder_name,
             comment_empty_section=COMMENT_EMPTY_SECTION,
         )
-        patched_main_lines = patch_include_line(patched_main_lines, include_ref)
+        patched_main_lines = patch_scoped_include_lines(patched_main_lines, parsed, include_layout)
         patched_main_lines = patch_static_step_to_dsa(patched_main_lines, config)
         patched_main_lines = remove_blank_lines(patched_main_lines)
     except ValueError as exc:
@@ -1304,7 +1314,13 @@ def generate_project_dsa_inp_from_db(
     Path(include_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_inp_path).parent.mkdir(parents=True, exist_ok=True)
     Path(config_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(include_path).write_text(include_text, encoding="utf-8")
+    generated_include_files = []
+    include_parent = Path(include_path).parent
+    for relative_name, include_text in include_layout["files"].items():
+        current_path = include_parent / relative_name
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(include_text, encoding="utf-8")
+        generated_include_files.append(str(current_path.resolve()))
     Path(output_inp_path).write_text("\n".join(patched_main_lines) + "\n", encoding="utf-8")
     Path(config_path).write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1323,6 +1339,7 @@ def generate_project_dsa_inp_from_db(
         "input_inp": input_inp_abs,
         "analysis_inp": output_inp_path,
         "include_file": include_path,
+        "include_files": generated_include_files,
         "config_file": config_path,
         "config_json": config,
         "parameter_count": preview["parameter_count"],
@@ -1355,6 +1372,12 @@ def _generate_sensitivity_inp_from_project_db(
         }.items()
         if value
     }
+    if generation_payload.get("include_files"):
+        generation_payload["generated_files"]["include_files"] = [
+            os.path.abspath(str(item))
+            for item in generation_payload["include_files"]
+            if item
+        ]
     generation_payload["generation_summary"] = {
         "optimization_parameter_count": len(parameter_rows),
         "design_response_count": len(design_response_rows),
