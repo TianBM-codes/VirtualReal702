@@ -14,7 +14,7 @@ from src.l3.core.config import settings
 from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
-from .model_update_meta_service import _load_service_config
+from config import _load_service_config
 from .project_log_service import log_project_error, log_project_info, log_project_step
 from .solver_service import (
     _submit_generic_project_result_group_and_wait,
