@@ -211,6 +211,7 @@ async def run_pbs_abaqus_api(request: Request, body: PBSSolverRunRequest):
                 fn=run_pbs_solver_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "PBS Abaqus 任务已提交")
         data = run_pbs_solver_job(**kwargs)
@@ -233,6 +234,7 @@ async def run_pbs_nastran_api(request: Request, body: PBSSolverRunRequest):
                 fn=run_pbs_solver_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "PBS Nastran 任务已提交")
         data = run_pbs_solver_job(**kwargs)
@@ -301,6 +303,7 @@ async def run_nastran_sol103_api(request: Request, body: NastranSol103RunRequest
                 fn=run_nastran_sol103_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "Nastran SOL103 任务已提交")
         data = run_nastran_sol103_job(**kwargs)
@@ -356,6 +359,7 @@ async def run_nastran_sol103_run_api(request: Request, body: NastranSol103RunReq
                 fn=run_nastran_sol103_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "Nastran SOL103 求解任务已提交")
         data = run_nastran_sol103_job(**kwargs)
@@ -378,6 +382,7 @@ async def run_nastran_sol103_run_and_store_modal_api(request: Request, body: Nas
                 fn=run_nastran_sol103_and_store_modal_results,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "Nastran SOL103 求解并导入模态结果任务已提交")
         data = run_nastran_sol103_and_store_modal_results(**kwargs)
@@ -400,6 +405,7 @@ async def run_solver_and_parse_api(request: Request, body: SolverRunAndParseRequ
                 fn=run_solver_and_parse_project_result,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "统一计算并解析任务已提交")
         data = await run_in_threadpool(run_solver_and_parse_project_result, **kwargs)
@@ -484,6 +490,7 @@ async def run_nastran_sol200_api(request: Request, body: NastranSol200RunRequest
                 fn=run_sol200_workflow,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "Nastran SOL200 求解任务已提交")
         data = run_sol200_workflow(**kwargs)

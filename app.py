@@ -10,6 +10,7 @@ from src.l3.main import app
 from src.l3.api.routes.meta import list_steps as list_src_steps
 
 from webapi.routes import router as model_update_router
+from webapi.background_jobs import recover_background_tasks
 from webapi.common import error_response, server_error, success_response
 from src.modal_service.routes import router as modal_router
 from src.l3.core.errors import AppError
@@ -45,6 +46,7 @@ async def model_update_lifespan(application):
         # Warm the DB pool before the first frontend request arrives. This moves
         # the one-time handshake cost out of endpoints such as /get/sensor_position.
         initialize_database_runtime(ensure_tables=True, warm_connection=True)
+        recover_background_tasks()
         yield
 
 

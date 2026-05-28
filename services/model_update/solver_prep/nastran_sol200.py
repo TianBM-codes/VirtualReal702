@@ -230,26 +230,25 @@ def build_sol200_controls(
     lines: List[str] = []
     if sensitivity_csv_path:
         csv_text = str(csv_assign_text or Path(sensitivity_csv_path).name).replace("\\", "/")
-        lines.append(f"ASSIGN USERFILE='{csv_text}' FORM=FORMATTED STATUS=NEW UNIT=52")
+        lines.append(f"ASSIGN USERFILE='{csv_text}' FORM=FORMATTED STATUS=UNKNOWN UNIT=52")
 
     lines.extend([
         "SOL 200",
         "CEND",
         f"METHOD = {eigrl['sid']}",
-        displacement_line,
-        "DESSUB = 1",
-        "DSAPRT(FORMATTED,EXPORT,END=SENS)" if sensitivity_csv_path else "DSAPRT(NOPRINT,EXPORT,END=SENS)",
+        "DISPLACEMENT = ALL",
+        "DSAPRT(NOPRINT,EXPORT,END=SENS)",
         "",
         "SUBCASE 1",
         "  ANALYSIS = MODES",
         "",
         "BEGIN BULK",
-        f"PARAM   POST          {post}",
-        "PARAM   GRDPNT         0",
-        f"PARAM   K6ROT   {k6rot_text}",
-        f"PARAM   COUPMASS      {coupmass}",
+        f"PARAM,POST,{post}",
+        "PARAM,GRDPNT,0",
+        f"PARAM,K6ROT,{k6rot_text}",
+        f"PARAM,COUPMASS,{coupmass}",
         "PARAM,XYUNIT,52" if sensitivity_csv_path else "",
-        "EIGRL   {sid:>8}{v1:>8}{v2:>8}{nd:>8}{blank:>8}{maxset:>8}{shfscl:>8}{norm:>8}".format(
+        "EIGRL,{sid},{v1},{v2},{nd},{blank},{maxset},{shfscl},{norm}".format(
             sid=eigrl["sid"],
             v1=eigrl["v1"],
             v2=eigrl["v2"],

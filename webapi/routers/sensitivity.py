@@ -162,6 +162,7 @@ async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaReque
                 fn=store_dsa_sensitivity_results,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver" if body.run_solver else "internal",
             )
             return success_response(data, "灵敏度结果入库任务已提交")
         data = store_dsa_sensitivity_results(**kwargs)
@@ -184,6 +185,7 @@ async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndSto
                 fn=run_sensitivity_inp_and_store,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "灵敏度 INP 求解并入库任务已提交")
         data = run_sensitivity_inp_and_store(**kwargs)
@@ -206,6 +208,7 @@ async def sensitivity_generate_run_and_store(request: Request, body: Sensitivity
                 fn=generate_sensitivity_inp_and_store,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
+                task_kind="external_solver",
             )
             return success_response(data, "灵敏度 INP 生成求解并入库任务已提交")
         data = generate_sensitivity_inp_and_store(**kwargs)

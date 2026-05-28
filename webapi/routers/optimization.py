@@ -445,6 +445,7 @@ async def run_bayesian_update_api(request: Request, body: BayesianModelUpdateReq
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 pass_task_id=True,
+                task_kind="external_solver" if body.run_solver else "internal",
             )
             return success_response(data, "Bayesian 模型修正任务已提交")
         data = _run_bayesian_update_workflow_compact(**kwargs)
