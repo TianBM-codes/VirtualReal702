@@ -980,6 +980,33 @@ CREATE_TABLE_SQL_LIST = [
         data_operate CHAR(1) NOT NULL COMMENT '+ - 操作类型',
         PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通道信息表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_background_task (
+        task_id VARCHAR(64) NOT NULL COMMENT '任务ID',
+        task_type VARCHAR(128) NOT NULL COMMENT '任务类型',
+        interface_code VARCHAR(128) NULL COMMENT '接口编码',
+        task_kind VARCHAR(32) NOT NULL DEFAULT 'internal' COMMENT '任务分类',
+        project_id BIGINT NULL COMMENT '项目ID',
+        status VARCHAR(32) NOT NULL COMMENT '任务状态',
+        execute_count INT NOT NULL DEFAULT 0 COMMENT '已执行次数',
+        max_execute_count INT NOT NULL DEFAULT 3 COMMENT '最大执行次数',
+        handler_module VARCHAR(255) NULL COMMENT '处理函数模块',
+        handler_name VARCHAR(128) NULL COMMENT '处理函数名称',
+        pass_task_id TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否传递task_id',
+        submitted_at VARCHAR(64) NULL COMMENT '提交时间',
+        started_at VARCHAR(64) NULL COMMENT '开始时间',
+        finished_at VARCHAR(64) NULL COMMENT '结束时间',
+        request_json LONGTEXT NULL COMMENT '请求JSON',
+        kwargs_json LONGTEXT NULL COMMENT '执行参数JSON',
+        progress_json LONGTEXT NULL COMMENT '进度JSON',
+        result_json LONGTEXT NULL COMMENT '结果JSON',
+        error_json LONGTEXT NULL COMMENT '错误JSON',
+        PRIMARY KEY (task_id),
+        KEY idx_task_status (status),
+        KEY idx_project_interface (project_id, interface_code),
+        KEY idx_project_status (project_id, status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模型修正后台任务表';
     """
 ]
 
@@ -1077,6 +1104,71 @@ def ensure_tables_exist():
 
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
+        _ensure_column(
+            "t_mt_py_background_task",
+            "interface_code",
+            "interface_code VARCHAR(128) NULL COMMENT '接口编码'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "task_kind",
+            "task_kind VARCHAR(32) NOT NULL DEFAULT 'internal' COMMENT '任务分类'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "project_id",
+            "project_id BIGINT NULL COMMENT '项目ID'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "execute_count",
+            "execute_count INT NOT NULL DEFAULT 0 COMMENT '已执行次数'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "max_execute_count",
+            "max_execute_count INT NOT NULL DEFAULT 3 COMMENT '最大执行次数'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "handler_module",
+            "handler_module VARCHAR(255) NULL COMMENT '处理函数模块'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "handler_name",
+            "handler_name VARCHAR(128) NULL COMMENT '处理函数名称'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "pass_task_id",
+            "pass_task_id TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否传递task_id'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "request_json",
+            "request_json LONGTEXT NULL COMMENT '请求JSON'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "kwargs_json",
+            "kwargs_json LONGTEXT NULL COMMENT '执行参数JSON'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "progress_json",
+            "progress_json LONGTEXT NULL COMMENT '进度JSON'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "result_json",
+            "result_json LONGTEXT NULL COMMENT '结果JSON'",
+        )
+        _ensure_column(
+            "t_mt_py_background_task",
+            "error_json",
+            "error_json LONGTEXT NULL COMMENT '错误JSON'",
+        )
         cursor.execute(
             """
             SELECT 1
