@@ -1138,18 +1138,22 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
 
     # ── Phase 3: results (auto result-group named after OP2 stem) ────────────
     rg_name = os.path.splitext(os.path.basename(op2_path))[0]
-    repo = _repo()
-    existing = repo.get_result_group(project_id, rg_name)
-    if existing is None:
-        import json as _json
-        repo.create_result_group(
-            project_id=project_id,
-            result_group=rg_name,
-            display_name=rg_name,
-            source_path=op2_path,
-            source_file=os.path.basename(op2_path),
-            parse_options=None,
-        )
+    with sqlite3.connect(REGISTRY_DB, timeout=5.0) as _conn:
+        _conn.row_factory = sqlite3.Row
+        existing = _conn.execute(
+            "SELECT 1 FROM result_groups WHERE project_id=? AND result_group=?",
+            (project_id, rg_name),
+        ).fetchone()
+        if existing is None:
+            _now = _now_iso()
+            _conn.execute(
+                "INSERT INTO result_groups"
+                " (project_id, result_group, display_name, source_path,"
+                "  source_file, status, parse_options, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,'pending',?,?,?)",
+                (project_id, rg_name, rg_name, op2_path,
+                 os.path.basename(op2_path), None, _now, _now),
+            )
     ok = _run_op2_result_group(project_id, rg_name, op2_path, workspace)
     if ok:
         _log_job(project_id, "step", _good("解析全部完成，已就绪"),
