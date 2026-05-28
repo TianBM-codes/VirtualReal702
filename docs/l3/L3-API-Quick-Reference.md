@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-20（补充 BDF/OP2 project 创建、OP2 结果组 modal_import、重复上传行为变更；重写第 13 节 testMesh 接口，补充 flip 参数）
+更新时间：2026-05-28（新增 vertex-displacements、deformed-normals 接口）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -55,7 +55,7 @@ http://<host>:18765
 以下接口返回 `application/octet-stream`，正文为 L3BE：
 
 - Geometry：`render-buffers`、`render-buffers-subset`、`element-mesh-edges`、`feature-edges`
-- Results：`frame-colors`、`frame-scalars`、`deformed-positions`、`raw-values?format=l3be`、`section-mesh`
+- Results：`frame-colors`、`frame-scalars`、`deformed-positions`、`vertex-displacements`、`deformed-normals`、`raw-values?format=l3be`、`section-mesh`
 - Table：`results/node-table`
 - User field：`user-field-colors`
 - Color code：`color-code/{instance}`
@@ -91,6 +91,8 @@ project_id + result_group
 - `GET /api/odb/{odb_id}/results/frame-colors?result_group=...`
 - `GET /api/odb/{odb_id}/results/frame-scalars?result_group=...`
 - `GET /api/odb/{odb_id}/results/deformed-positions?result_group=...`
+- `GET /api/odb/{odb_id}/results/vertex-displacements?result_group=...`
+- `GET /api/odb/{odb_id}/results/deformed-normals?result_group=...`
 - `GET /api/odb/{odb_id}/results/raw-values?result_group=...`
 - `GET /api/odb/{odb_id}/fields?result_group=...`
 - `POST /api/odb/{odb_id}/results/node-table` body 中的 `result_group`
@@ -159,6 +161,8 @@ project_id + result_group
 | results | GET | `/api/odb/{odb_id}/results/frame-colors` |
 | results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
 | results | GET | `/api/odb/{odb_id}/results/deformed-positions` |
+| results | GET | `/api/odb/{odb_id}/results/vertex-displacements` |
+| results | GET | `/api/odb/{odb_id}/results/deformed-normals` |
 | results | GET | `/api/odb/{odb_id}/results/raw-values` |
 | results | GET | `/api/odb/{odb_id}/results/section-mesh` |
 | node table | GET | `/api/odb/{odb_id}/fields` |
@@ -1103,6 +1107,72 @@ L3BE sections：
 
 - `positions = original_positions + scale * U_per_vertex`
 - 需要 indexed geometry，即后端 `ModelIndex` 中存在 `vtx_node_row`。
+
+### `GET /api/odb/{odb_id}/results/vertex-displacements`
+
+返回 U 场在每个渲染顶点上的原始位移值，不乘 scale、不加原始坐标。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | step name；读取该 step 下的 `U` NODAL 位移 |
+| `frame` | 否 | 默认 `0` |
+| `result_group` | 否 | Project 模式结果组 |
+
+响应头：
+
+```text
+X-Vertex-Count: <Nv>
+X-Frame: <frame>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `displacements` | `[Nv, 3]` | `float32` |
+
+说明：
+
+- 返回值 = U NODAL 数据，按 `vtx_node_row` 映射到渲染顶点坐标系后的结果（UX/UY/UZ）。
+- 前端可自行乘以 scale 后加上原始坐标，或用于计算位移幅值云图。
+- 需要 indexed geometry。
+
+### `GET /api/odb/{odb_id}/results/deformed-normals`
+
+返回变形后几何的逐顶点法向量，参数和 scale 与 `deformed-positions` 完全一致。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance name |
+| `step` | 是 | step name；读取该 step 下的 `U` NODAL 位移 |
+| `frame` | 否 | 默认 `0` |
+| `scale` | 否 | 变形放大系数，默认 `1.0` |
+| `result_group` | 否 | Project 模式结果组 |
+
+响应头：
+
+```text
+X-Vertex-Count: <Nv>
+X-Frame: <frame>
+X-Scale: <scale>
+```
+
+L3BE sections：
+
+| 名称 | 形状 | 类型 |
+|---|---|---|
+| `normals` | `[Nv, 3]` | `float32` |
+
+说明：
+
+- 法向量基于 `original_positions + scale * U` 重新计算，与 `deformed-positions` 返回的 normals 完全一致。
+- 适合前端已拿到 deformed positions，只需更新法向量用于光照的场景，节省带宽。
+- 需要 indexed geometry。
 
 ### `GET /api/odb/{odb_id}/results/modal-shape`
 

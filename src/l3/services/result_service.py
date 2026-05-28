@@ -1203,6 +1203,76 @@ def _compute_en_global_range(
 
 # ─── frame_deformed_positions ─────────────────────────────────────────────────
 
+def _load_vertex_displacements(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+) -> Tuple[np.ndarray, object]:
+    """
+    Load U NODAL displacement for frame_idx and map from nodes to render vertices.
+    Returns (disp_vertex [Nv, 3] float32, idx).
+    """
+    if frame_idx < 0:
+        raise ValidationError(
+            f"frame_idx must be >= 0, got {frame_idx}",
+            {"frame_idx": frame_idx},
+        )
+
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
+
+    vtx_nr = idx.vtx_node_row.get(instance)
+    if vtx_nr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
+            {"instance": instance},
+        )
+
+    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
+    if not os.path.exists(h5_path):
+        raise NotFoundError(
+            f"U field not found for step='{step}'",
+            {"step": step, "field": "U"},
+        )
+
+    with h5py.File(h5_path, "r") as f:
+        ds_path = f"/NODAL/{instance}/data"
+        if ds_path not in f:
+            raise NotFoundError(
+                f"No NODAL U data for instance '{instance}'",
+                {"instance": instance},
+            )
+        ds = f[ds_path]
+        num_frames = ds.shape[0]
+        if frame_idx >= num_frames:
+            raise ValidationError(
+                f"frame_idx {frame_idx} out of range [0, {num_frames})",
+                {"frame_idx": frame_idx},
+            )
+        disp_node = ds[frame_idx, :, :3].astype(np.float32)
+
+    if disp_node.ndim == 1:
+        raise ValidationError(
+            "U field is scalar; expected 3-component vector",
+            {"instance": instance},
+        )
+
+    n_nodes = disp_node.shape[0]
+    max_nr  = int(vtx_nr.max())
+    if max_nr >= n_nodes:
+        padded = np.zeros((max_nr + 1, disp_node.shape[1]), dtype=np.float32)
+        padded[:n_nodes] = disp_node
+        disp_node = padded
+
+    return disp_node[vtx_nr], idx   # disp_vertex [Nv, 3], idx
+
+
 def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
     """
     Compute per-vertex normals from deformed positions and triangle index buffer.
@@ -1244,24 +1314,9 @@ def frame_deformed_positions(
 
     Requires indexed geometry (vtx_node_row present in ModelIndex).
     """
-    if frame_idx < 0:
-        raise ValidationError(
-            f"frame_idx must be >= 0, got {frame_idx}",
-            {"frame_idx": frame_idx},
-        )
-
-    idx = registry.get(odb_id)
-    if idx is None:
-        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    if not idx.is_render_ready:
-        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
-
-    vtx_nr = idx.vtx_node_row.get(instance)
-    if vtx_nr is None:
-        raise NotFoundError(
-            f"Instance '{instance}' has no vtx_node_row; indexed geometry required for deformed shape",
-            {"instance": instance},
-        )
+    disp_vertex, idx = _load_vertex_displacements(
+        registry, odb_id, instance, step, frame_idx, result_group
+    )
 
     render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
     if not os.path.exists(render_h5):
@@ -1275,50 +1330,30 @@ def frame_deformed_positions(
         indices   = np.ascontiguousarray(f["render/indices"][:],   dtype=np.int32) \
                     if "render/indices" in f else None
 
-    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
-    if not os.path.exists(h5_path):
-        raise NotFoundError(
-            f"U field not found for step='{step}'",
-            {"step": step, "field": "U"},
-        )
-
-    with h5py.File(h5_path, "r") as f:
-        ds_path = f"/NODAL/{instance}/data"
-        if ds_path not in f:
-            raise NotFoundError(
-                f"No NODAL U data for instance '{instance}'",
-                {"instance": instance},
-            )
-        ds = f[ds_path]
-        num_frames = ds.shape[0]
-        if frame_idx >= num_frames:
-            raise ValidationError(
-                f"frame_idx {frame_idx} out of range [0, {num_frames})",
-                {"frame_idx": frame_idx},
-            )
-        disp_node = ds[frame_idx, :, :3].astype(np.float32)   # [N_nodes, 3] — UX/UY/UZ only
-
-    if disp_node.ndim == 1:
-        raise ValidationError(
-            "U field is scalar; expected 3-component vector",
-            {"instance": instance},
-        )
-
-    # Map node displacement to render vertices, pad if sparse
-    n_nodes = disp_node.shape[0]
-    max_nr  = int(vtx_nr.max())
-    if max_nr >= n_nodes:
-        padded = np.zeros((max_nr + 1, disp_node.shape[1]), dtype=np.float32)
-        padded[:n_nodes] = disp_node
-        disp_node = padded
-
-    disp_vertex = disp_node[vtx_nr]                             # [Nv, 3]
-    deformed    = (positions + np.float32(scale) * disp_vertex).astype(np.float32)
-
-    normals = _compute_vertex_normals(deformed, indices) if indices is not None \
-              else np.zeros_like(deformed)
+    deformed = (positions + np.float32(scale) * disp_vertex).astype(np.float32)
+    normals  = _compute_vertex_normals(deformed, indices) if indices is not None \
+               else np.zeros_like(deformed)
 
     return deformed, normals
+
+
+def frame_vertex_displacements(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+) -> np.ndarray:
+    """
+    Return raw U displacement per render vertex [Nv, 3] float32, without scale or position offset.
+
+    Requires indexed geometry (vtx_node_row present in ModelIndex).
+    """
+    disp_vertex, _ = _load_vertex_displacements(
+        registry, odb_id, instance, step, frame_idx, result_group
+    )
+    return disp_vertex
 
 
 def suggest_deform_scale(

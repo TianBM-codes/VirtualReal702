@@ -21,6 +21,7 @@ from ...services.result_service import (
     frame_colors,
     frame_scalars,
     frame_deformed_positions,
+    frame_vertex_displacements,
     suggest_deform_scale,
     modal_shape_displacement,
     modal_animation_frames,
@@ -271,6 +272,83 @@ async def get_deformed_positions(
         media_type="application/octet-stream",
         headers={
             "X-Vertex-Count": str(len(positions)),
+            "X-Frame":        str(frame),
+            "X-Scale":        str(scale),
+        },
+    )
+
+
+@router.get("/results/vertex-displacements")
+async def get_vertex_displacements(
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int = 0,
+    result_group: Optional[str] = Query(None, description="Result group (project mode)"),
+):
+    """
+    Return raw U displacement per render vertex [Nv, 3] float32 as L3BE binary.
+
+    No scale applied, no position offset — pure displacement values from the U NODAL field.
+    Useful when the frontend wants to apply its own scale or compute displacement magnitude.
+    Requires indexed geometry.
+    """
+    displacements = frame_vertex_displacements(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame_idx=frame,
+        result_group=result_group,
+    )
+
+    payload = l3be_build([
+        ("displacements", displacements),   # [Nv, 3] float32
+    ])
+    return Response(
+        content=payload,
+        media_type="application/octet-stream",
+        headers={
+            "X-Vertex-Count": str(len(displacements)),
+            "X-Frame":        str(frame),
+        },
+    )
+
+
+@router.get("/results/deformed-normals")
+async def get_deformed_normals(
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int = 0,
+    scale: float = Query(1.0, description="Deformation scale factor"),
+    result_group: Optional[str] = Query(None, description="Result group (project mode)"),
+):
+    """
+    Return per-vertex normals [Nv, 3] float32 for the deformed geometry as L3BE binary.
+
+    Normals are recomputed from the deformed mesh (original_positions + scale * U).
+    Useful when the frontend already has positions and only needs updated normals for lighting.
+    Requires indexed geometry.
+    """
+    _, normals = frame_deformed_positions(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame_idx=frame,
+        scale=scale,
+        result_group=result_group,
+    )
+
+    payload = l3be_build([
+        ("normals", normals),   # [Nv, 3] float32
+    ])
+    return Response(
+        content=payload,
+        media_type="application/octet-stream",
+        headers={
+            "X-Vertex-Count": str(len(normals)),
             "X-Frame":        str(frame),
             "X-Scale":        str(scale),
         },
