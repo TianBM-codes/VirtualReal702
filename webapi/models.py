@@ -103,6 +103,9 @@ class CreateDesignResponseRequest(BaseModel):
     region_type: str
     variables: List[str]
     set_name: Optional[str] = None
+    set_scope: Optional[str] = None
+    instance_name: Optional[str] = None
+    part_name: Optional[str] = None
     node_labels: Optional[List[int]] = None
     element_labels: Optional[List[int]] = None
     step_name: Optional[str] = None

@@ -262,7 +262,8 @@ def build_set_block(
     keyword: str,
     set_name: str,
     ids: List[int],
-    per_line: int = IDS_PER_LINE
+    per_line: int = IDS_PER_LINE,
+    extra_options: Optional[List[str]] = None,
 ) -> List[str]:
     """
     自动生成 *ELSET / *NSET 块。
@@ -275,15 +276,20 @@ def build_set_block(
         return [f"** {keyword} {set_name} is empty"]
 
     generate_runs, singles = compress_ids_to_runs(ids)
+    option_suffix = ""
+    if extra_options:
+        filtered_options = [str(item).strip() for item in extra_options if str(item).strip()]
+        if filtered_options:
+            option_suffix = ", " + ", ".join(filtered_options)
 
     lines: List[str] = []
 
     for start, stop, step in generate_runs:
-        lines.append(f"{keyword}, {keyword[1:]}={set_name}, GENERATE")
+        lines.append(f"{keyword}, {keyword[1:]}={set_name}{option_suffix}, GENERATE")
         lines.append(f"{start}, {stop}, {step}")
 
     if singles:
-        lines.append(f"{keyword}, {keyword[1:]}={set_name}")
+        lines.append(f"{keyword}, {keyword[1:]}={set_name}{option_suffix}")
         lines.extend(format_id_lines(singles, per_line=per_line))
 
     return lines
@@ -1295,16 +1301,28 @@ def _build_assembly_lines(config: Dict[str, Any]) -> List[str]:
         for idx, nset in enumerate(config["node_sets"], 1):
             lines.append("**")
             lines.append(f"** Node set {idx}: {nset['set_name']}")
-            lines.extend(build_set_block("*NSET", nset["set_name"], nset["nodes"]))
+            extra_options: List[str] = []
+            instance_name = str(nset.get("instance_name") or "").strip()
+            if instance_name:
+                extra_options.append(f"INSTANCE={instance_name}")
+            lines.extend(build_set_block("*NSET", nset["set_name"], nset["nodes"], extra_options=extra_options))
     for idx, rsp in enumerate(config["responses"], 1):
         if rsp.get("type") == "element" and "elements" in rsp:
             lines.append("**")
             lines.append(f"** Response element set {idx}: {rsp['set']}")
-            lines.extend(build_set_block("*ELSET", rsp["set"], rsp["elements"]))
+            extra_options = []
+            instance_name = str(rsp.get("instance_name") or "").strip()
+            if instance_name:
+                extra_options.append(f"INSTANCE={instance_name}")
+            lines.extend(build_set_block("*ELSET", rsp["set"], rsp["elements"], extra_options=extra_options))
         if rsp.get("type") == "node" and "nodes" in rsp:
             lines.append("**")
             lines.append(f"** Response node set {idx}: {rsp['set']}")
-            lines.extend(build_set_block("*NSET", rsp["set"], rsp["nodes"]))
+            extra_options = []
+            instance_name = str(rsp.get("instance_name") or "").strip()
+            if instance_name:
+                extra_options.append(f"INSTANCE={instance_name}")
+            lines.extend(build_set_block("*NSET", rsp["set"], rsp["nodes"], extra_options=extra_options))
     if not lines:
         return []
     return [
@@ -1441,26 +1459,52 @@ def patch_scoped_include_lines(
     include_layout: Dict[str, Any],
 ) -> List[str]:
     out = patch_include_line(lines, include_layout["global_include_name"])
-    part_blocks_by_name = parsed.get("part_blocks_by_name", {})
     scope_include_refs = include_layout.get("scope_include_refs", {})
     assembly_block = parsed.get("assembly_block")
     assembly_include_name = include_layout.get("assembly_include_name")
+
+    def _find_named_block_end(keyword: str, block_name: str, end_keyword: str) -> Optional[int]:
+        in_target = False
+        for idx, line in enumerate(out):
+            stripped = line.strip()
+            upper = stripped.upper()
+            if not in_target and upper.startswith(keyword):
+                current_name = str(parse_param_value(stripped, "NAME") or "").strip()
+                if current_name == block_name:
+                    in_target = True
+                    continue
+            if in_target and upper.startswith(end_keyword):
+                return idx
+        return None
+
+    def _find_first_keyword(keyword: str) -> Optional[int]:
+        for idx, line in enumerate(out):
+            if line.strip().upper().startswith(keyword):
+                return idx
+        return None
 
     insertions: Dict[int, List[str]] = defaultdict(list)
     for scope_key, include_name in scope_include_refs.items():
         if scope_key[0] != PART_SCOPE_TYPE:
             continue
-        part_block = part_blocks_by_name.get(scope_key[1])
-        if not part_block:
+        end_idx = _find_named_block_end("*PART", str(scope_key[1]), "*END PART")
+        if end_idx is None:
             raise ValueError(f'Cannot locate *Part block for generated include "{include_name}".')
-        insertions[int(part_block["end_part_idx"])].append(
+        insertions[int(end_idx)].append(
             f"** {AUTO_COMMENT_PREFIX}_PART_INCLUDE scope={scope_comment(scope_key[0], scope_key[1])}"
         )
-        insertions[int(part_block["end_part_idx"])].append(f"*Include, input={include_name}")
+        insertions[int(end_idx)].append(f"*Include, input={include_name}")
 
     if assembly_include_name and assembly_block:
-        insertions[int(assembly_block["end_assembly_idx"])].append(f"** {AUTO_COMMENT_PREFIX}_ASSEMBLY_INCLUDE")
-        insertions[int(assembly_block["end_assembly_idx"])].append(f"*Include, input={assembly_include_name}")
+        assembly_name = str(assembly_block.get("name") or "").strip()
+        if assembly_name:
+            end_idx = _find_named_block_end("*ASSEMBLY", assembly_name, "*END ASSEMBLY")
+        else:
+            end_idx = _find_first_keyword("*END ASSEMBLY")
+        if end_idx is None:
+            raise ValueError(f'Cannot locate *Assembly block for generated include "{assembly_include_name}".')
+        insertions[int(end_idx)].append(f"** {AUTO_COMMENT_PREFIX}_ASSEMBLY_INCLUDE")
+        insertions[int(end_idx)].append(f"*Include, input={assembly_include_name}")
 
     if not insertions:
         return out
@@ -1618,12 +1662,62 @@ def find_analysis_step_blocks(lines: List[str]) -> List[Dict[str, int]]:
     return step_blocks
 
 
+def _step_block_is_static(lines: List[str], step_block: Dict[str, int]) -> bool:
+    for idx in range(int(step_block["start"]) + 1, int(step_block["end"])):
+        keyword = lines[idx].strip().upper()
+        if not keyword or keyword.startswith("**"):
+            continue
+        if keyword.startswith("*STATIC"):
+            return True
+        if keyword.startswith("*END STEP"):
+            return False
+    return False
+
+
+def find_static_step_blocks(lines: List[str]) -> List[Dict[str, int]]:
+    return [
+        step_block
+        for step_block in find_analysis_step_blocks(lines)
+        if _step_block_is_static(lines, step_block)
+    ]
+
+
 def remove_existing_dsa_controls(lines: List[str]) -> List[str]:
     out = []
     for line in lines:
         if line.strip().upper().startswith("*DSA CONTROLS"):
             continue
         out.append(line)
+    return out
+
+
+def remove_all_design_response_blocks(lines: List[str]) -> List[str]:
+    """
+    Remove every existing *DESIGN RESPONSE block so the generator can
+    re-insert exactly one normalized block into the selected DSA step.
+    """
+    out: List[str] = []
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        s = lines[i].strip().upper()
+        if not s.startswith("*DESIGN RESPONSE"):
+            out.append(lines[i])
+            i += 1
+            continue
+
+        i += 1
+        while i < n:
+            keyword = lines[i].strip().upper()
+            if keyword.startswith("*NODE RESPONSE") or keyword.startswith("*ELEMENT RESPONSE"):
+                i += 1
+                continue
+            if not keyword.startswith("*"):
+                i += 1
+                continue
+            break
+
     return out
 
 
@@ -1696,14 +1790,18 @@ def patch_static_step_to_dsa(lines: List[str], config: Dict[str, Any]) -> List[s
 
     # 1) 删除所有已有 *DSA CONTROLS
     out = remove_existing_dsa_controls(out)
+    out = remove_all_design_response_blocks(out)
 
     # 2) 找所有分析步
     step_blocks = find_analysis_step_blocks(out)
     if not step_blocks:
         raise ValueError("No *STEP block was found in the main inp.")
+    static_step_blocks = find_static_step_blocks(out)
+    if not static_step_blocks:
+        raise ValueError("No static *STEP block was found in the main inp.")
 
-    first_step_idx = step_blocks[0]["start"]
-    last_step = step_blocks[-1]
+    first_step_idx = static_step_blocks[0]["start"]
+    last_step = static_step_blocks[-1]
     last_step_idx = last_step["start"]
     last_end_step_idx = last_step["end_step_idx"]
 
@@ -1712,11 +1810,11 @@ def patch_static_step_to_dsa(lines: List[str], config: Dict[str, Any]) -> List[s
     out.insert(first_step_idx, dsa_controls_line)
 
     # 4) 重新找 step blocks（因为索引变了）
-    step_blocks = find_analysis_step_blocks(out)
-    if not step_blocks:
-        raise ValueError("No *STEP block was found in the main inp after DSA insertion.")
+    static_step_blocks = find_static_step_blocks(out)
+    if not static_step_blocks:
+        raise ValueError("No static *STEP block was found in the main inp after DSA insertion.")
 
-    last_step = step_blocks[-1]
+    last_step = static_step_blocks[-1]
     last_step_idx = last_step["start"]
     last_end_step_idx = last_step["end_step_idx"]
 
@@ -1726,11 +1824,10 @@ def patch_static_step_to_dsa(lines: List[str], config: Dict[str, Any]) -> List[s
         out[last_step_idx] = normalize_step_line_to_dsa(step_line)
 
     # 6) 删除最后一个分析步里已有的 *DESIGN RESPONSE 块
-    out = remove_design_response_blocks_in_step(out, last_step_idx, last_end_step_idx)
+    static_step_blocks = find_static_step_blocks(out)
 
     # 7) 再次定位最后一个分析步
-    step_blocks = find_analysis_step_blocks(out)
-    last_step = step_blocks[-1]
+    last_step = static_step_blocks[-1]
     last_end_step_idx = last_step["end_step_idx"]
 
     # 8) 在最后一个分析步 *END STEP 之前插入响应块

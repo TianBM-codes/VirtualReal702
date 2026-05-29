@@ -794,7 +794,9 @@ def _load_project_design_responses(project_id: int) -> List[dict]:
     try:
         cursor.execute(
             """
-            SELECT response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json
+            SELECT response_no, request_no, step_name, frequency, region_type,
+                   set_name, set_scope, instance_name, part_name,
+                   variables_json, extra_json
             FROM t_mt_py_fem_design_response_catalog
             WHERE pid = %s
             ORDER BY response_no ASC, request_no ASC
@@ -1177,6 +1179,15 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
             "set": set_name,
             "variables": variables,
         }
+        set_scope = str(row.get("set_scope") or "").strip().upper()
+        part_name = str(row.get("part_name") or "").strip()
+        instance_name = str(row.get("instance_name") or "").strip()
+        if set_scope:
+            response_item["set_scope"] = set_scope
+        if part_name:
+            response_item["part_name"] = part_name
+        if instance_name:
+            response_item["instance_name"] = instance_name
         if response_type == "node" and manual_node_labels:
             response_item["nodes"] = manual_node_labels
             response_item["set_name"] = set_name

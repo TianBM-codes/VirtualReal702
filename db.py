@@ -487,6 +487,9 @@ CREATE_TABLE_SQL_LIST = [
         frequency INT NOT NULL DEFAULT 1 COMMENT '响应频次',
         region_type VARCHAR(32) NOT NULL COMMENT '区域类型',
         set_name VARCHAR(200) NOT NULL COMMENT '集合名称',
+        set_scope VARCHAR(32) NULL COMMENT '集合范围',
+        instance_name VARCHAR(200) NULL COMMENT '实例名称',
+        part_name VARCHAR(200) NULL COMMENT '零件名称',
         variables_json JSON NULL COMMENT '变量信息',
         extra_json JSON NULL COMMENT '扩展信息',
         PRIMARY KEY (id),
@@ -1271,6 +1274,21 @@ def ensure_tables_exist():
             "t_mt_py_fem_parameter_def",
             "upper_bound",
             "upper_bound DOUBLE NULL COMMENT '上界'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_design_response_catalog",
+            "set_scope",
+            "set_scope VARCHAR(32) NULL COMMENT '集合范围'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_design_response_catalog",
+            "instance_name",
+            "instance_name VARCHAR(200) NULL COMMENT '实例名称'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_design_response_catalog",
+            "part_name",
+            "part_name VARCHAR(200) NULL COMMENT '零件名称'",
         )
         cursor.execute(
             """

@@ -2,12 +2,101 @@ import json
 from pathlib import Path
 
 from services.model_update.analysis import sensitivity_service
-from services.model_update.analysis.abaqusDSAInpGenerator import normalize_step_line_to_dsa
+from services.model_update.analysis.abaqusDSAInpGenerator import (
+    normalize_step_line_to_dsa,
+    patch_static_step_to_dsa,
+)
 
 
 def test_normalize_step_line_to_dsa_removes_adjoint_sensitivity():
     assert normalize_step_line_to_dsa("*STEP,SENSITIVITY=ADJOINT") == "*STEP,DSA"
     assert normalize_step_line_to_dsa("*STEP, name=Step-1, SENSITIVITY=ADJOINT") == "*STEP,name=Step-1,DSA"
+
+
+def test_patch_static_step_to_dsa_targets_last_static_step_and_removes_stale_responses():
+    lines = [
+        "*Heading",
+        "*Step, name=Static-1",
+        "*Static",
+        "*Design Response",
+        "*Node Response, NSET=OLD_SET",
+        "U,",
+        "*End Step",
+        "*Step, name=Modal-1",
+        "*Frequency",
+        "10,",
+        "*End Step",
+    ]
+    config = {
+        "responses": [
+            {"type": "node", "set": "RESP_NODES", "variables": ["U"]},
+        ]
+    }
+
+    patched = patch_static_step_to_dsa(lines, config)
+    patched_text = "\n".join(patched)
+
+    assert patched_text.count("*DESIGN RESPONSE") == 1
+    assert "*NODE RESPONSE, NSET=OLD_SET" not in patched_text
+    assert "*STEP,name=Static-1,DSA" in patched_text
+    assert "*Step, name=Modal-1" in patched_text
+    assert "*Frequency" in patched_text
+    assert "*STEP,name=Modal-1,DSA" not in patched_text
+
+
+def test_load_project_design_responses_keeps_scope_and_instance_metadata(monkeypatch):
+    class _FakeCursor:
+        def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+
+        def fetchall(self):
+            return [
+                {
+                    "response_no": 1,
+                    "request_no": 1,
+                    "step_name": "Step-1",
+                    "frequency": 1,
+                    "region_type": "NODE",
+                    "set_name": "RESP_NODES",
+                    "set_scope": "ASSEMBLY",
+                    "instance_name": "PART-1-1",
+                    "part_name": "PART-1",
+                    "variables_json": '["U2"]',
+                    "extra_json": '{"node_labels": [4]}',
+                }
+            ]
+
+        def close(self):
+            pass
+
+    class _FakeConn:
+        def cursor(self, dictionary=True):
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sensitivity_service, "get_connection", lambda: _FakeConn())
+
+    rows = sensitivity_service._load_project_design_responses(1001)
+
+    assert rows == [
+        {
+            "response_no": 1,
+            "request_no": 1,
+            "step_name": "Step-1",
+            "frequency": 1,
+            "region_type": "NODE",
+            "set_name": "RESP_NODES",
+            "set_scope": "ASSEMBLY",
+            "instance_name": "PART-1-1",
+            "part_name": "PART-1",
+            "variables_json": '["U2"]',
+            "extra_json": {"node_labels": [4]},
+            "variables": ["U2"],
+        }
+    ]
 
 
 def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(monkeypatch):
@@ -45,6 +134,9 @@ def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(mon
                 "region_type": "NODE",
                 "set_name": "RESP_NODES",
                 "variables": ["U2"],
+                "set_scope": "ASSEMBLY",
+                "instance_name": "P1-1",
+                "part_name": "P1",
             }
         ],
     )
@@ -58,9 +150,16 @@ def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(mon
         {"set_name": "DSA_T1", "parameter": "T1", "elements": [101, 102], "value": 2.5}
     ]
     assert result["config_json"]["responses"] == [
-        {"type": "node", "set": "RESP_NODES", "variables": ["U2"]}
+        {
+            "type": "node",
+            "set": "RESP_NODES",
+            "variables": ["U"],
+            "set_scope": "ASSEMBLY",
+            "instance_name": "P1-1",
+            "part_name": "P1",
+        }
     ]
-    assert result["warnings"] == []
+    assert {item["code"] for item in result["warnings"]} == {"RESPONSE_VARIABLES_MAPPED_TO_ABAQUS_BASE"}
 
 
 def test_build_project_dsa_config_preview_inherit_omits_value_and_warns(monkeypatch):
@@ -260,6 +359,100 @@ def test_generate_project_dsa_inp_from_db_writes_include_and_main(monkeypatch, t
     part_include_text = part_include.read_text(encoding="utf-8")
     assert "*SHELL SECTION, ELSET=DSA_T1, MATERIAL=MAT1" in part_include_text
     assert "** DSA_AUTO_SCOPE_BEGIN PART:P1" in part_include_text
+
+
+def test_generate_project_dsa_inp_from_db_places_assembly_include_after_sets_and_uses_instance_for_manual_nodes(
+    monkeypatch, tmp_path: Path
+):
+    source_inp = tmp_path / "model.inp"
+    source_inp.write_text(
+        "\n".join(
+            [
+                "*Heading",
+                "*Part, name=P1",
+                "*Node",
+                "1, 0, 0, 0",
+                "2, 1, 0, 0",
+                "3, 1, 1, 0",
+                "4, 0, 1, 0",
+                "*Element, type=S4, elset=SHELL1",
+                "1, 1, 2, 3, 4",
+                "*Elset, elset=SHELL1",
+                "1",
+                "*Shell Section, elset=SHELL1, material=MAT1",
+                "1.0",
+                "*End Part",
+                "*Assembly, name=Assembly",
+                "*Instance, name=P1-1, part=P1",
+                "*End Instance",
+                "*Nset, nset=_M7, internal, instance=P1-1",
+                "4",
+                "*End Assembly",
+                "*Step, name=Step-1",
+                "*Static",
+                "*Cload",
+                "_M7, 2, 100.",
+                "*End Step",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setattr(sensitivity_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id: [
+            {
+                "id": 1,
+                "parameter_name": "T1",
+                "quantity_code": "T",
+                "set_name": "SHELL1",
+                "set_type": "ELSET",
+                "set_scope": "PART",
+                "instance_name": None,
+                "part_name": "P1",
+                "element_label": None,
+                "scalar_value": 1.5,
+                "extra_json": '{"element_labels": [1]}',
+            }
+        ],
+    )
+    monkeypatch.setattr(sensitivity_service, "_load_project_thickness_capabilities", lambda project_id: {})
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_design_responses",
+        lambda project_id: [
+            {
+                "response_no": 1,
+                "request_no": 1,
+                "region_type": "NODE",
+                "set_name": "MANUAL_RESP_NODE_DISP_U2_LOCAL_1",
+                "variables": ["U2"],
+                "set_scope": "ASSEMBLY",
+                "instance_name": "P1-1",
+                "part_name": "P1",
+                "extra_json": '{"node_labels": [4]}',
+            }
+        ],
+    )
+
+    result = sensitivity_service.generate_project_dsa_inp_from_db(
+        project_id=1001,
+        input_inp=str(source_inp),
+        output_dir=str(out_dir),
+        value_mode="explicit",
+    )
+
+    analysis_text = Path(result["analysis_inp"]).read_text(encoding="utf-8")
+    assembly_text = (out_dir / "include_assembly.inp").read_text(encoding="utf-8")
+
+    assert "*Nset, nset=_M7, internal, instance=P1-1\n4\n** DSA_AUTO_ASSEMBLY_INCLUDE" in analysis_text
+    assert "** DSA_AUTO_ASSEMBLY_INCLUDE\n*Include, input=include_assembly.inp\n*End Assembly" in analysis_text
+    assert "*NSET, NSET=MANUAL_RESP_NODE_DISP_U2_LOCAL_1, INSTANCE=P1-1" in assembly_text
+    assert "*NODE RESPONSE, NSET=MANUAL_RESP_NODE_DISP_U2_LOCAL_1" in analysis_text
 
 
 def test_generate_project_dsa_inp_from_db_resolves_project_paths_when_omitted(monkeypatch, tmp_path: Path):

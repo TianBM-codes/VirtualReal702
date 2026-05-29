@@ -2154,6 +2154,9 @@ def create_design_response_catalog_entry(
         region_type: str,
         variables,
         set_name: Optional[str] = None,
+        set_scope: Optional[str] = None,
+        instance_name: Optional[str] = None,
+        part_name: Optional[str] = None,
         node_labels: Optional[List[int]] = None,
         element_labels: Optional[List[int]] = None,
         step_name: Optional[str] = None,
@@ -2210,6 +2213,9 @@ def create_design_response_catalog_entry(
         request_no = 1
         resolved_step_name = str(step_name or "").strip() or None
         resolved_response_name = str(response_name or "").strip() or f"RESP_{response_no}"
+        resolved_set_scope = str(set_scope or "").strip().upper() or None
+        resolved_instance_name = str(instance_name or "").strip() or None
+        resolved_part_name = str(part_name or "").strip() or None
 
         extra_json = {"response_name": resolved_response_name}
         if has_manual_labels:
@@ -2226,8 +2232,9 @@ def create_design_response_catalog_entry(
         cursor.execute(
             """
             INSERT INTO t_mt_py_fem_design_response_catalog
-            (pid, response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (pid, response_no, request_no, step_name, frequency, region_type, set_name,
+             set_scope, instance_name, part_name, variables_json, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 int(project_id),
@@ -2237,6 +2244,9 @@ def create_design_response_catalog_entry(
                 int(frequency),
                 resolved_region,
                 normalized_set_name,
+                resolved_set_scope,
+                resolved_instance_name,
+                resolved_part_name,
                 _json_dumps(resolved_variables),
                 _json_dumps(extra_json),
             ),
@@ -2270,6 +2280,9 @@ def create_design_response_catalog_entry(
         "frequency": int(frequency),
         "region_type": resolved_region,
         "set_name": normalized_set_name,
+        "set_scope": resolved_set_scope,
+        "instance_name": resolved_instance_name,
+        "part_name": resolved_part_name,
         "variables": resolved_variables,
     }
     if resolved_region == "NODE" and normalized_node_labels:
@@ -2285,7 +2298,8 @@ def list_design_response_catalog_entries(project_id: int) -> dict:
     try:
         cursor.execute(
             """
-            SELECT response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json
+            SELECT response_no, request_no, step_name, frequency, region_type,
+                   set_name, set_scope, instance_name, part_name, variables_json, extra_json
             FROM t_mt_py_fem_design_response_catalog
             WHERE pid = %s
             ORDER BY response_no ASC, request_no ASC
@@ -2308,6 +2322,9 @@ def list_design_response_catalog_entries(project_id: int) -> dict:
                 "frequency": int(item.get("frequency") or 1),
                 "region_type": str(item.get("region_type") or "").upper(),
                 "set_name": str(item.get("set_name") or ""),
+                "set_scope": str(item.get("set_scope") or "").upper() or None,
+                "instance_name": str(item.get("instance_name") or "") or None,
+                "part_name": str(item.get("part_name") or "") or None,
                 "variables": [str(v).strip().upper() for v in (variables or []) if str(v).strip()],
                 "set_source": str(extra_json.get("set_source") or "catalog"),
                 "extra_json": extra_json,
