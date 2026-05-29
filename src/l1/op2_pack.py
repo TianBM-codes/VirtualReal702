@@ -337,8 +337,8 @@ def pack(op2_path, workspace, result_group):
 
         # steps
         db_conn.execute(
-            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?)",
-            (result_group, step_name, step_number, procedure, n_frames, None),
+            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
+            (result_group, step_name, step_number, procedure, n_frames, None, None),
         )
 
         # frames — use real mode numbers from result_obj.modes

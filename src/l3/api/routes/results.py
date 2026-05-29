@@ -225,11 +225,7 @@ async def get_frame_scalar_range(
                 global_max = v_max
 
     if not instance_ranges:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=404,
-            detail=f"No result data found for field '{field}' in any of the requested instances.",
-        )
+        return ok({"global_min": None, "global_max": None, "instance_ranges": {}})
 
     return ok({
         "global_min": global_min,
