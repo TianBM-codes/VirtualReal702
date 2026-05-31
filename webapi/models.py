@@ -145,7 +145,8 @@ class CreateSol200ResponseConfigRequest(BaseModel):
 class BayesianModelUpdateRequest(BaseModel):
     project_id: int
     batch_no: int = Field(default=1, ge=1)
-    input_inp: str
+    input_inp: Optional[str] = None
+    input_inp_name: Optional[str] = None
     target_responses: Any
     parameter_scatter: Any = None
     response_scatter: Any = None
@@ -311,6 +312,7 @@ class SensitivityDsaConfigPreviewRequest(BaseModel):
 class SensitivityDsaInpGenerateRequest(BaseModel):
     project_id: int
     input_inp: Optional[str] = None
+    input_inp_name: Optional[str] = None
     output_dir: Optional[str] = None
     value_mode: str = "inherit"
     output_inp: Optional[str] = None
@@ -333,9 +335,11 @@ class SensitivityTableRequest(BaseModel):
 class SensitivityExportVtuBaseRequest(BaseModel):
     project_id: int
     odb_id: Optional[str] = None
-    output_vtu: str
+    output_vtu: Optional[str] = None
+    output_vtu_name: Optional[str] = None
     base_url: Optional[str] = None
     inp_path: Optional[str] = None
+    inp_file_name: Optional[str] = None
     workspace: Optional[str] = None
     odb_path: Optional[str] = None
     step: Optional[str] = None
@@ -366,7 +370,8 @@ class SensitivityExportVtuRequest(SensitivityExportDsaVtuRequest):
 class SensitivityStoreDsaRequest(BaseModel):
     project_id: int
     batch_no: Optional[str] = "1"
-    input_inp: str
+    input_inp: Optional[str] = None
+    input_inp_name: Optional[str] = None
     output_dir: Optional[str] = None
     odb_id: Optional[str] = None
     base_url: Optional[str] = None
@@ -404,8 +409,9 @@ class SensitivityStoreDsaRequest(BaseModel):
 class SensitivityRunAndStoreRequest(BaseModel):
     project_id: int
     batch_no: Optional[str] = "1"
-    input_inp: str
-    output_dir: str
+    input_inp: Optional[str] = None
+    input_inp_name: Optional[str] = None
+    output_dir: Optional[str] = None
     step: str
     instances: List[str]
     field_prefix: str
@@ -442,6 +448,7 @@ class SensitivityGenerateRunAndStoreRequest(BaseModel):
     project_id: int
     batch_no: Optional[str] = "1"
     input_inp: Optional[str] = None
+    input_inp_name: Optional[str] = None
     output_dir: Optional[str] = None
     step: str
     instances: List[str]
@@ -487,8 +494,11 @@ class SensitivityMergeFieldsRequest(BaseModel):
 
 
 class AbaqusSensitivityRunRequest(BaseModel):
-    input_inp: str
+    project_id: Optional[int] = None
+    input_inp: Optional[str] = None
+    input_inp_name: Optional[str] = None
     output_dir: Optional[str] = None
+    output_dir_name: Optional[str] = None
     response_elset: Optional[str] = None
     response_nset: Optional[str] = None
     response_frequency: int = 1
@@ -504,8 +514,11 @@ class AbaqusSensitivityRunRequest(BaseModel):
 
 
 class AbaqusAdjointRunRequest(BaseModel):
-    input_inp: str
+    project_id: Optional[int] = None
+    input_inp: Optional[str] = None
+    input_inp_name: Optional[str] = None
     output_inp: Optional[str] = None
+    output_inp_name: Optional[str] = None
     response_nset: Optional[str] = None
     abaqus: Optional[str] = None
     job_name: Optional[str] = None
@@ -517,8 +530,11 @@ class AbaqusAdjointRunRequest(BaseModel):
 
 
 class NastranSol103RunRequest(BaseModel):
-    input_bdf: str
+    project_id: Optional[int] = None
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
     nastran: Optional[str] = None
     run_solver: bool = True
@@ -528,20 +544,27 @@ class NastranSol103RunRequest(BaseModel):
 
 
 class NastranSol103PreviewRequest(BaseModel):
-    input_bdf: str
+    project_id: Optional[int] = None
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NastranSol103GenerateRequest(BaseModel):
-    input_bdf: str
+    project_id: Optional[int] = None
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NastranSol103RunAndStoreModalRequest(BaseModel):
     project_id: int
-    input_bdf: str
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
     nastran: Optional[str] = None
     timeout_sec: Optional[int] = None
@@ -563,7 +586,9 @@ class SolverRunAndParseRequest(BaseModel):
     display_name: Optional[str] = None
     base_url: Optional[str] = None
     output_dir: Optional[str] = None
+    output_dir_name: Optional[str] = None
     output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
     abaqus: Optional[str] = None
     nastran: Optional[str] = None
     cpus: Optional[int] = None
@@ -587,6 +612,7 @@ class PBSSolverRunRequest(BaseModel):
     input_file_name: Optional[str] = None
     job_name: Optional[str] = None
     output_dir: Optional[str] = None
+    output_dir_name: Optional[str] = None
     result_group: Optional[str] = None
     display_name: Optional[str] = None
     base_url: Optional[str] = None
@@ -638,7 +664,8 @@ class NastranSol200ParameterPresetRequest(BaseModel):
 
 class NastranSol200PreviewRequest(BaseModel):
     project_id: Optional[int] = None
-    input_bdf: str
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
     parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
     responses: List[NastranResponseRequest] = Field(default_factory=list)
@@ -649,8 +676,10 @@ class NastranSol200GenerateRequest(BaseModel):
     project_id: Optional[int] = None
     batch_no: str = "1"
     case_name: str = "nastran_sol200"
-    input_bdf: str
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
     parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
     responses: List[NastranResponseRequest] = Field(default_factory=list)
@@ -661,8 +690,10 @@ class NastranSol200RunRequest(BaseModel):
     project_id: Optional[int] = None
     batch_no: str = "1"
     case_name: str = "nastran_sol200"
-    input_bdf: str
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
     parameters: List[NastranParameterRequest] = Field(default_factory=list)
     parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
     responses: List[NastranResponseRequest] = Field(default_factory=list)
@@ -676,8 +707,10 @@ class NastranSol200RunRequest(BaseModel):
 
 class Op2ModalPreviewRequest(BaseModel):
     project_id: Optional[int] = None
-    op2_path: str
+    op2_path: Optional[str] = None
+    op2_file_name: Optional[str] = None
     bdf_path: Optional[str] = None
+    bdf_file_name: Optional[str] = None
     subcase_id: Optional[int] = None
     mode_numbers: Optional[List[int]] = None
     preview_node_limit: int = 5
@@ -689,8 +722,10 @@ class Op2ModalPreviewRequest(BaseModel):
 
 class Op2ModalStoreRequest(BaseModel):
     project_id: int
-    op2_path: str
+    op2_path: Optional[str] = None
+    op2_file_name: Optional[str] = None
     bdf_path: Optional[str] = None
+    bdf_file_name: Optional[str] = None
     subcase_id: Optional[int] = None
     mode_numbers: Optional[List[int]] = None
     overwrite: bool = True
@@ -700,9 +735,13 @@ class Op2ModalStoreRequest(BaseModel):
 
 
 class Op2ModalVtuExportRequest(BaseModel):
-    op2_path: str
-    bdf_path: str
-    output_vtu: str
+    project_id: Optional[int] = None
+    op2_path: Optional[str] = None
+    op2_file_name: Optional[str] = None
+    bdf_path: Optional[str] = None
+    bdf_file_name: Optional[str] = None
+    output_vtu: Optional[str] = None
+    output_vtu_name: Optional[str] = None
     mode_number: int
     subcase_id: Optional[int] = None
     displacement_scale: float = 1.0
@@ -712,9 +751,13 @@ class Op2SensitivityPreviewRequest(BaseModel):
     project_id: Optional[int] = None
     batch_no: str = "1"
     op2_path: Optional[str] = None
+    op2_file_name: Optional[str] = None
     matrix_path: Optional[str] = None
+    matrix_file_name: Optional[str] = None
     bdf_path: Optional[str] = None
+    bdf_file_name: Optional[str] = None
     metadata_json: Optional[str] = None
+    metadata_json_name: Optional[str] = None
     parameter_names: Optional[List[str]] = None
     response_names: Optional[List[str]] = None
 
@@ -724,9 +767,13 @@ class Op2SensitivityStoreRequest(BaseModel):
     batch_no: str = "1"
     case_name: str = "nastran_sol200"
     op2_path: Optional[str] = None
+    op2_file_name: Optional[str] = None
     matrix_path: Optional[str] = None
+    matrix_file_name: Optional[str] = None
     bdf_path: Optional[str] = None
+    bdf_file_name: Optional[str] = None
     metadata_json: Optional[str] = None
+    metadata_json_name: Optional[str] = None
     parameter_names: Optional[List[str]] = None
     response_names: Optional[List[str]] = None
     async_submit: bool = False
@@ -735,7 +782,10 @@ class Op2SensitivityStoreRequest(BaseModel):
 class Op2SensitivityVtuExportRequest(BaseModel):
     project_id: int
     batch_no: str = "1"
-    input_bdf: str
-    output_vtu: str
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
+    output_vtu: Optional[str] = None
+    output_vtu_name: Optional[str] = None
     response_name: str
     metadata_json: Optional[str] = None
+    metadata_json_name: Optional[str] = None

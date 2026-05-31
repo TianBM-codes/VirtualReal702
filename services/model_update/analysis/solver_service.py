@@ -20,6 +20,7 @@ from .project_log_service import (
     log_project_info,
     log_project_step,
 )
+from .project_file_service import resolve_project_output_dir, resolve_project_output_file
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import (
     build_sol103_controls,
@@ -1124,7 +1125,9 @@ def run_solver_and_parse_project_result(
     display_name: Optional[str] = None,
     base_url: Optional[str] = None,
     output_dir: Optional[str] = None,
+    output_dir_name: Optional[str] = None,
     output_bdf: Optional[str] = None,
+    output_bdf_name: Optional[str] = None,
     abaqus: Optional[str] = None,
     nastran: Optional[str] = None,
     cpus: Optional[int] = None,
@@ -1154,6 +1157,30 @@ def run_solver_and_parse_project_result(
             )
         input_path = _resolve_project_file(project_id, resolved_input, resolved_field_name)
         source_type = _detect_project_source_type(input_path)
+        resolved_output_dir = str(output_dir or "").strip() or str(output_dir_name or "").strip()
+        if source_type == "inp":
+            output_dir = str(
+                resolve_project_output_dir(
+                    int(project_id),
+                    category_parts=("solver", "abaqus"),
+                    explicit_dir=resolved_output_dir or None,
+                )
+            )
+        elif resolved_output_dir:
+            output_dir = resolved_output_dir
+        resolved_output_bdf = str(output_bdf or "").strip() or str(output_bdf_name or "").strip()
+        if source_type == "bdf":
+            output_bdf = str(
+                resolve_project_output_file(
+                    int(project_id),
+                    category_parts=("solver", "nastran_sol103"),
+                    explicit_path=resolved_output_bdf or None,
+                    default_name=f"{input_path.stem}_sol103.bdf",
+                    field_name="output_bdf",
+                )
+            )
+        elif resolved_output_bdf:
+            output_bdf = resolved_output_bdf
         log_project_info(
             int(project_id),
             f"已解析输入文件路径: {input_path.name}",

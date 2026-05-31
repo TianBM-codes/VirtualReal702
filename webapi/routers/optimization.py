@@ -9,6 +9,7 @@ from services.model_update.analysis.model_update_meta_service import (
     resolve_abaqus_command,
 )
 from services.model_update.analysis import sensitivity_service as _sens
+from services.model_update.analysis.project_file_service import resolve_project_input_file
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
 from services.model_update.analysis.inp_service import (
     clear_design_response_catalog_entries,
@@ -115,10 +116,18 @@ def _compact_bayesian_run_response(payload: dict) -> dict:
 
 
 def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
+    input_inp = str(
+        resolve_project_input_file(
+            int(body.project_id),
+            explicit_path=body.input_inp,
+            file_name=body.input_inp_name,
+            field_name="input_inp",
+        )
+    )
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,
-        "input_inp": body.input_inp,
+        "input_inp": input_inp,
         "target_responses": body.target_responses,
         "parameter_scatter": body.parameter_scatter,
         "response_scatter": body.response_scatter,

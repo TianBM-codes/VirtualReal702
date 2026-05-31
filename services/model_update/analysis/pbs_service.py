@@ -16,6 +16,7 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from config import _load_service_config
+from .project_file_service import resolve_project_output_dir
 from .project_log_service import log_project_error, log_project_info, log_project_step
 from .solver_service import (
     _submit_generic_project_result_group_and_wait,
@@ -826,6 +827,7 @@ def run_pbs_solver_job(
         env: Optional[str] = None,
         job_name: Optional[str] = None,
         output_dir: Optional[str] = None,
+        output_dir_name: Optional[str] = None,
         result_group: Optional[str] = None,
         display_name: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -894,7 +896,16 @@ def run_pbs_solver_job(
 
         client = PBSClient(config, timeout=timeout_sec)
         resolved_job_name = str(job_name or source_path.stem).strip() or source_path.stem
-        target_dir = Path(output_dir).expanduser().resolve() if output_dir else source_path.parent.resolve()
+        resolved_output_dir = str(output_dir or "").strip() or str(output_dir_name or "").strip()
+        if project_id is not None:
+            category = ("pbs", str(application or "").strip().lower() or "solver")
+            target_dir = resolve_project_output_dir(
+                int(project_id),
+                category_parts=category,
+                explicit_dir=resolved_output_dir or None,
+            )
+        else:
+            target_dir = Path(resolved_output_dir).expanduser().resolve() if resolved_output_dir else source_path.parent.resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
 
         primary_ext = source_path.suffix.lower()

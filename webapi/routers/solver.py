@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Request
@@ -24,6 +25,11 @@ from services.model_update.analysis.nastran_sol200_service import (
     preview_sol200_workflow,
     run_sol200_workflow,
     store_sol200_sensitivity,
+)
+from services.model_update.analysis.project_file_service import (
+    resolve_project_input_file,
+    resolve_project_output_dir,
+    resolve_project_output_file,
 )
 from services.model_update.importers.op2_service import (
     build_modal_import_payload,
@@ -62,6 +68,79 @@ from ..utils import log_request, model_to_dict
 router = APIRouter(tags=["solver"])
 
 
+def _resolve_project_local_input(
+    *,
+    project_id: Optional[int],
+    explicit_path: Optional[str],
+    file_name: Optional[str],
+    field_name: str,
+) -> str:
+    raw = str(explicit_path or "").strip() or str(file_name or "").strip()
+    if project_id is not None:
+        return str(
+            resolve_project_input_file(
+                int(project_id),
+                explicit_path=explicit_path,
+                file_name=file_name,
+                field_name=field_name,
+            )
+        )
+    if not raw:
+        raise ValidationError(
+            f"{field_name} is required",
+            {"project_id": project_id, field_name: explicit_path, f"{field_name}_name": file_name},
+        )
+    resolved = Path(raw).expanduser().resolve()
+    if not resolved.exists() or not resolved.is_file():
+        raise ValidationError(
+            f"{field_name} not found",
+            {"project_id": project_id, field_name: str(resolved)},
+        )
+    return str(resolved)
+
+
+def _resolve_project_local_output_dir(
+    *,
+    project_id: Optional[int],
+    explicit_dir: Optional[str],
+    dir_name: Optional[str],
+    category_parts: tuple[str, ...],
+) -> Optional[str]:
+    raw = str(explicit_dir or "").strip() or str(dir_name or "").strip()
+    if project_id is None:
+        return raw or explicit_dir
+    return str(
+        resolve_project_output_dir(
+            int(project_id),
+            category_parts=category_parts,
+            explicit_dir=raw or None,
+        )
+    )
+
+
+def _resolve_project_local_output_file(
+    *,
+    project_id: Optional[int],
+    explicit_path: Optional[str],
+    file_name: Optional[str],
+    category_parts: tuple[str, ...],
+    field_name: str,
+    default_name: Optional[str] = None,
+) -> Optional[str]:
+    raw = str(explicit_path or "").strip() or str(file_name or "").strip()
+    if project_id is None:
+        return raw or explicit_path
+    return str(
+        resolve_project_output_file(
+            int(project_id),
+            category_parts=category_parts,
+            explicit_path=raw or None,
+            default_name=default_name,
+            field_name=field_name,
+        )
+    )
+
+
 def _resolve_modal_op2_path(op2_path: Optional[str], project_id: Optional[int]) -> str:
     text = str(op2_path or "").strip()
     if text:
@@ -73,9 +152,23 @@ def _resolve_modal_op2_path(op2_path: Optional[str], project_id: Optional[int]) 
     )
 
 def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
+    input_bdf = _resolve_project_local_input(
+        project_id=body.project_id,
+        explicit_path=body.input_bdf,
+        file_name=body.input_bdf_name,
+        field_name="input_bdf",
+    )
+    output_bdf = _resolve_project_local_output_file(
+        project_id=body.project_id,
+        explicit_path=body.output_bdf,
+        file_name=body.output_bdf_name,
+        category_parts=("solver", "nastran_sol103"),
+        field_name="output_bdf",
+        default_name=f"{Path(input_bdf).stem}_sol103.bdf" if body.project_id is not None else None,
+    )
     return {
-        "input_bdf": body.input_bdf,
-        "output_bdf": body.output_bdf,
+        "input_bdf": input_bdf,
+        "output_bdf": output_bdf,
         "settings": body.settings,
         "nastran": body.nastran,
         "run_solver": body.run_solver,
@@ -85,10 +178,24 @@ def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
 
 
 def _sol103_run_and_store_modal_kwargs(body: NastranSol103RunAndStoreModalRequest) -> dict:
+    input_bdf = _resolve_project_local_input(
+        project_id=body.project_id,
+        explicit_path=body.input_bdf,
+        file_name=body.input_bdf_name,
+        field_name="input_bdf",
+    )
+    output_bdf = _resolve_project_local_output_file(
+        project_id=body.project_id,
+        explicit_path=body.output_bdf,
+        file_name=body.output_bdf_name,
+        category_parts=("solver", "nastran_sol103"),
+        field_name="output_bdf",
+        default_name=f"{Path(input_bdf).stem}_sol103.bdf",
+    )
     return {
         "project_id": body.project_id,
-        "input_bdf": body.input_bdf,
-        "output_bdf": body.output_bdf,
+        "input_bdf": input_bdf,
+        "output_bdf": output_bdf,
         "settings": body.settings,
         "nastran": body.nastran,
         "timeout_sec": body.timeout_sec,
@@ -110,7 +217,9 @@ def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
         "display_name": body.display_name,
         "base_url": body.base_url,
         "output_dir": body.output_dir,
+        "output_dir_name": body.output_dir_name,
         "output_bdf": body.output_bdf,
+        "output_bdf_name": body.output_bdf_name,
         "abaqus": body.abaqus,
         "nastran": body.nastran,
         "cpus": body.cpus,
@@ -128,12 +237,26 @@ def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
 
 
 def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
+    input_bdf = _resolve_project_local_input(
+        project_id=body.project_id,
+        explicit_path=body.input_bdf,
+        file_name=body.input_bdf_name,
+        field_name="input_bdf",
+    )
+    output_bdf = _resolve_project_local_output_file(
+        project_id=body.project_id,
+        explicit_path=body.output_bdf,
+        file_name=body.output_bdf_name,
+        category_parts=("solver", "nastran_sol200"),
+        field_name="output_bdf",
+        default_name=f"{Path(input_bdf).stem}_sol200.bdf" if body.project_id is not None else None,
+    )
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,
         "case_name": body.case_name,
-        "input_bdf": body.input_bdf,
-        "output_bdf": body.output_bdf,
+        "input_bdf": input_bdf,
+        "output_bdf": output_bdf,
         "parameters": [model_to_dict(item) for item in body.parameters],
         "parameter_preset": model_to_dict(body.parameter_preset) if body.parameter_preset else None,
         "responses": [model_to_dict(item) for item in body.responses],
@@ -154,6 +277,7 @@ def _pbs_solver_run_kwargs(body: PBSSolverRunRequest, application: str) -> dict:
         "env": body.env,
         "job_name": body.job_name,
         "output_dir": body.output_dir,
+        "output_dir_name": body.output_dir_name,
         "result_group": body.result_group,
         "display_name": body.display_name,
         "base_url": body.base_url,
@@ -176,9 +300,21 @@ async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRu
     # one request so callers can use the same endpoint for prep-only or full run.
     await log_request(request, model_to_dict(body))
     try:
+        input_inp = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.input_inp,
+            file_name=body.input_inp_name,
+            field_name="input_inp",
+        )
+        output_dir = _resolve_project_local_output_dir(
+            project_id=body.project_id,
+            explicit_dir=body.output_dir,
+            dir_name=body.output_dir_name,
+            category_parts=("sensitivity",),
+        )
         data = run_abaqus_sensitivity_job(
-            input_inp=body.input_inp,
-            output_dir=body.output_dir,
+            input_inp=input_inp,
+            output_dir=output_dir,
             response_elset=body.response_elset,
             response_nset=body.response_nset,
             response_frequency=body.response_frequency,
@@ -270,9 +406,28 @@ async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest
     # service layer; the router only logs, validates, and normalizes responses.
     await log_request(request, model_to_dict(body))
     try:
+        input_inp = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.input_inp,
+            file_name=body.input_inp_name,
+            field_name="input_inp",
+        )
+        default_output_name = (
+            f"{Path(input_inp).stem}_adjoint_thickness.inp"
+            if body.project_id is not None
+            else None
+        )
+        output_inp = _resolve_project_local_output_file(
+            project_id=body.project_id,
+            explicit_path=body.output_inp,
+            file_name=body.output_inp_name,
+            category_parts=("solver", "abaqus_adjoint"),
+            field_name="output_inp",
+            default_name=default_output_name,
+        )
         data = run_abaqus_adjoint_job(
-            input_inp=body.input_inp,
-            output_inp=body.output_inp,
+            input_inp=input_inp,
+            output_inp=output_inp,
             response_nset=body.response_nset,
             abaqus=body.abaqus,
             job_name=body.job_name,
@@ -319,8 +474,14 @@ async def run_nastran_sol103_api(request: Request, body: NastranSol103RunRequest
 async def preview_nastran_sol103_api(request: Request, body: NastranSol103PreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
+        input_bdf = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.input_bdf,
+            file_name=body.input_bdf_name,
+            field_name="input_bdf",
+        )
         data = preview_nastran_sol103_job(
-            input_bdf=body.input_bdf,
+            input_bdf=input_bdf,
             settings=body.settings,
         )
         return success_response(data, "Nastran SOL103 预览成功")
@@ -335,9 +496,23 @@ async def preview_nastran_sol103_api(request: Request, body: NastranSol103Previe
 async def generate_nastran_sol103_api(request: Request, body: NastranSol103GenerateRequest):
     await log_request(request, model_to_dict(body))
     try:
+        input_bdf = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.input_bdf,
+            file_name=body.input_bdf_name,
+            field_name="input_bdf",
+        )
+        output_bdf = _resolve_project_local_output_file(
+            project_id=body.project_id,
+            explicit_path=body.output_bdf,
+            file_name=body.output_bdf_name,
+            category_parts=("solver", "nastran_sol103"),
+            field_name="output_bdf",
+            default_name=f"{Path(input_bdf).stem}_sol103.bdf" if body.project_id is not None else None,
+        )
         data = generate_nastran_sol103_job(
-            input_bdf=body.input_bdf,
-            output_bdf=body.output_bdf,
+            input_bdf=input_bdf,
+            output_bdf=output_bdf,
             settings=body.settings,
         )
         return success_response(data, "Nastran SOL103 生成成功")
@@ -440,9 +615,15 @@ async def nastran_task_status(task_id: str):
 async def preview_nastran_sol200_api(request: Request, body: NastranSol200PreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
+        input_bdf = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.input_bdf,
+            file_name=body.input_bdf_name,
+            field_name="input_bdf",
+        )
         data = preview_sol200_workflow(
             project_id=body.project_id,
-            input_bdf=body.input_bdf,
+            input_bdf=input_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
             parameter_preset=model_to_dict(body.parameter_preset) if body.parameter_preset else None,
             responses=[model_to_dict(item) for item in body.responses],
@@ -460,12 +641,26 @@ async def preview_nastran_sol200_api(request: Request, body: NastranSol200Previe
 async def generate_nastran_sol200_api(request: Request, body: NastranSol200GenerateRequest):
     await log_request(request, model_to_dict(body))
     try:
+        input_bdf = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.input_bdf,
+            file_name=body.input_bdf_name,
+            field_name="input_bdf",
+        )
+        output_bdf = _resolve_project_local_output_file(
+            project_id=body.project_id,
+            explicit_path=body.output_bdf,
+            file_name=body.output_bdf_name,
+            category_parts=("solver", "nastran_sol200"),
+            field_name="output_bdf",
+            default_name=f"{Path(input_bdf).stem}_sol200.bdf" if body.project_id is not None else None,
+        )
         data = generate_sol200_workflow(
             project_id=body.project_id,
             batch_no=body.batch_no,
             case_name=body.case_name,
-            input_bdf=body.input_bdf,
-            output_bdf=body.output_bdf,
+            input_bdf=input_bdf,
+            output_bdf=output_bdf,
             parameters=[model_to_dict(item) for item in body.parameters],
             parameter_preset=model_to_dict(body.parameter_preset) if body.parameter_preset else None,
             responses=[model_to_dict(item) for item in body.responses],
@@ -507,9 +702,26 @@ async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
         resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
+        if body.project_id is not None and (str(body.op2_path or "").strip() or str(body.op2_file_name or "").strip()):
+            resolved_op2_path = _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.op2_path,
+                file_name=body.op2_file_name,
+                field_name="op2_path",
+            )
+        resolved_bdf_path = (
+            _resolve_project_local_input(
+                project_id=int(body.project_id),
+                explicit_path=body.bdf_path,
+                file_name=body.bdf_file_name,
+                field_name="bdf_path",
+            )
+            if body.project_id is not None and (str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip())
+            else body.bdf_path
+        )
         data = preview_op2_modal(
             op2_path=resolved_op2_path,
-            bdf_path=body.bdf_path,
+            bdf_path=resolved_bdf_path,
             subcase_id=body.subcase_id,
             mode_numbers=body.mode_numbers,
             preview_node_limit=body.preview_node_limit,
@@ -518,7 +730,7 @@ async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
             store_kwargs = {
                 "project_id": body.project_id,
                 "op2_path": resolved_op2_path,
-                "bdf_path": body.bdf_path,
+                "bdf_path": resolved_bdf_path,
                 "subcase_id": body.subcase_id,
                 "mode_numbers": body.mode_numbers,
                 "overwrite": body.overwrite,
@@ -575,11 +787,29 @@ def _store_op2_modal_job(
 async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
-        resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
+        if str(body.op2_path or "").strip() or str(body.op2_file_name or "").strip():
+            resolved_op2_path = _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.op2_path,
+                file_name=body.op2_file_name,
+                field_name="op2_path",
+            )
+        else:
+            resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
+        resolved_bdf_path = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.bdf_path,
+                file_name=body.bdf_file_name,
+                field_name="bdf_path",
+            )
+            if str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip()
+            else None
+        )
         kwargs = {
             "project_id": body.project_id,
             "op2_path": resolved_op2_path,
-            "bdf_path": body.bdf_path,
+            "bdf_path": resolved_bdf_path,
             "subcase_id": body.subcase_id,
             "mode_numbers": body.mode_numbers,
             "overwrite": body.overwrite,
@@ -607,10 +837,29 @@ async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
 async def export_op2_modal_vtu_api(request: Request, body: Op2ModalVtuExportRequest):
     await log_request(request, model_to_dict(body))
     try:
+        op2_path = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.op2_path,
+            file_name=body.op2_file_name,
+            field_name="op2_path",
+        )
+        bdf_path = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.bdf_path,
+            file_name=body.bdf_file_name,
+            field_name="bdf_path",
+        )
+        output_vtu = _resolve_project_local_output_file(
+            project_id=body.project_id,
+            explicit_path=body.output_vtu,
+            file_name=body.output_vtu_name,
+            category_parts=("modal", "exports"),
+            field_name="output_vtu",
+        )
         data = export_modal_to_vtu(
-            op2_path=body.op2_path,
-            bdf_path=body.bdf_path,
-            output_vtu=body.output_vtu,
+            op2_path=op2_path,
+            bdf_path=bdf_path,
+            output_vtu=output_vtu,
             mode_number=body.mode_number,
             subcase_id=body.subcase_id,
             displacement_scale=body.displacement_scale,
@@ -627,13 +876,53 @@ async def export_op2_modal_vtu_api(request: Request, body: Op2ModalVtuExportRequ
 async def preview_op2_sensitivity_api(request: Request, body: Op2SensitivityPreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
+        op2_path = (
+            _resolve_project_local_input(
+                project_id=int(body.project_id),
+                explicit_path=body.op2_path,
+                file_name=body.op2_file_name,
+                field_name="op2_path",
+            )
+            if body.project_id is not None and (str(body.op2_path or "").strip() or str(body.op2_file_name or "").strip())
+            else body.op2_path
+        )
+        matrix_path = (
+            _resolve_project_local_input(
+                project_id=int(body.project_id),
+                explicit_path=body.matrix_path,
+                file_name=body.matrix_file_name,
+                field_name="matrix_path",
+            )
+            if body.project_id is not None and (str(body.matrix_path or "").strip() or str(body.matrix_file_name or "").strip())
+            else body.matrix_path
+        )
+        bdf_path = (
+            _resolve_project_local_input(
+                project_id=int(body.project_id),
+                explicit_path=body.bdf_path,
+                file_name=body.bdf_file_name,
+                field_name="bdf_path",
+            )
+            if body.project_id is not None and (str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip())
+            else body.bdf_path
+        )
+        metadata_json = (
+            _resolve_project_local_input(
+                project_id=int(body.project_id),
+                explicit_path=body.metadata_json,
+                file_name=body.metadata_json_name,
+                field_name="metadata_json",
+            )
+            if body.project_id is not None and (str(body.metadata_json or "").strip() or str(body.metadata_json_name or "").strip())
+            else body.metadata_json
+        )
         data = preview_sol200_sensitivity(
             project_id=body.project_id,
             batch_no=body.batch_no,
-            op2_path=body.op2_path,
-            matrix_path=body.matrix_path,
-            bdf_path=body.bdf_path,
-            metadata_json=body.metadata_json,
+            op2_path=op2_path,
+            matrix_path=matrix_path,
+            bdf_path=bdf_path,
+            metadata_json=metadata_json,
             parameter_names=body.parameter_names,
             response_names=body.response_names,
         )
@@ -649,14 +938,54 @@ async def preview_op2_sensitivity_api(request: Request, body: Op2SensitivityPrev
 async def store_op2_sensitivity_api(request: Request, body: Op2SensitivityStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
+        op2_path = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.op2_path,
+                file_name=body.op2_file_name,
+                field_name="op2_path",
+            )
+            if str(body.op2_path or "").strip() or str(body.op2_file_name or "").strip()
+            else None
+        )
+        matrix_path = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.matrix_path,
+                file_name=body.matrix_file_name,
+                field_name="matrix_path",
+            )
+            if str(body.matrix_path or "").strip() or str(body.matrix_file_name or "").strip()
+            else None
+        )
+        bdf_path = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.bdf_path,
+                file_name=body.bdf_file_name,
+                field_name="bdf_path",
+            )
+            if str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip()
+            else None
+        )
+        metadata_json = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.metadata_json,
+                file_name=body.metadata_json_name,
+                field_name="metadata_json",
+            )
+            if str(body.metadata_json or "").strip() or str(body.metadata_json_name or "").strip()
+            else None
+        )
         kwargs = {
             "project_id": body.project_id,
             "batch_no": body.batch_no,
             "case_name": body.case_name,
-            "op2_path": body.op2_path,
-            "matrix_path": body.matrix_path,
-            "bdf_path": body.bdf_path,
-            "metadata_json": body.metadata_json,
+            "op2_path": op2_path,
+            "matrix_path": matrix_path,
+            "bdf_path": bdf_path,
+            "metadata_json": metadata_json,
             "parameter_names": body.parameter_names,
             "response_names": body.response_names,
         }
@@ -681,13 +1010,36 @@ async def store_op2_sensitivity_api(request: Request, body: Op2SensitivityStoreR
 async def export_op2_sensitivity_vtu_api(request: Request, body: Op2SensitivityVtuExportRequest):
     await log_request(request, model_to_dict(body))
     try:
+        input_bdf = _resolve_project_local_input(
+            project_id=body.project_id,
+            explicit_path=body.input_bdf,
+            file_name=body.input_bdf_name,
+            field_name="input_bdf",
+        )
+        output_vtu = _resolve_project_local_output_file(
+            project_id=body.project_id,
+            explicit_path=body.output_vtu,
+            file_name=body.output_vtu_name,
+            category_parts=("sol200", "exports"),
+            field_name="output_vtu",
+        )
+        metadata_json = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.metadata_json,
+                file_name=body.metadata_json_name,
+                field_name="metadata_json",
+            )
+            if str(body.metadata_json or "").strip() or str(body.metadata_json_name or "").strip()
+            else None
+        )
         data = export_sol200_sensitivity_vtu(
             project_id=body.project_id,
             batch_no=body.batch_no,
-            input_bdf=body.input_bdf,
-            output_vtu=body.output_vtu,
+            input_bdf=input_bdf,
+            output_vtu=output_vtu,
             response_name=body.response_name,
-            metadata_json=body.metadata_json,
+            metadata_json=metadata_json,
         )
         return success_response(data, "OP2 灵敏度 VTU 导出成功")
     except AppError as exc:

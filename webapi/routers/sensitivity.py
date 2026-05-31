@@ -18,6 +18,11 @@ from services.model_update.analysis.sensitivity_service import (
     run_sensitivity_inp_and_store,
     store_dsa_sensitivity_results,
 )
+from services.model_update.analysis.project_file_service import (
+    resolve_project_input_file,
+    resolve_project_output_dir,
+    resolve_project_output_file,
+)
 from src.l3.core.errors import AppError
 
 from ..background_jobs import get_background_task, submit_background_task
@@ -42,12 +47,59 @@ from ..utils import log_request, model_to_dict
 router = APIRouter(tags=["sensitivity"])
 
 
+def _resolve_sensitivity_input_inp(project_id: int, explicit_path: str | None, file_name: str | None) -> str | None:
+    if not (str(explicit_path or "").strip() or str(file_name or "").strip()):
+        return None
+    return str(
+        resolve_project_input_file(
+            int(project_id),
+            explicit_path=explicit_path,
+            file_name=file_name,
+            field_name="input_inp",
+        )
+    )
+
+
+def _require_sensitivity_input_inp(project_id: int, explicit_path: str | None, file_name: str | None) -> str:
+    resolved = _resolve_sensitivity_input_inp(project_id, explicit_path, file_name)
+    if resolved:
+        return resolved
+    raise AppError(
+        "input_inp or input_inp_name is required",
+        code="VALIDATION_ERROR",
+        status_code=400,
+        details={"project_id": int(project_id)},
+    )
+
+
+def _resolve_sensitivity_output_dir(project_id: int, explicit_dir: str | None) -> str:
+    return str(
+        resolve_project_output_dir(
+            int(project_id),
+            category_parts=("sensitivity",),
+            explicit_dir=explicit_dir,
+        )
+    )
+
+
+def _resolve_sensitivity_export_file(project_id: int, explicit_path: str | None, file_name: str | None) -> str:
+    return str(
+        resolve_project_output_file(
+            int(project_id),
+            category_parts=("sensitivity", "exports"),
+            explicit_path=explicit_path,
+            file_name=file_name,
+            field_name="output_vtu",
+        )
+    )
+
+
 def _store_dsa_kwargs(body: SensitivityStoreDsaRequest) -> dict:
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,
-        "input_inp": body.input_inp,
-        "output_dir": body.output_dir,
+        "input_inp": _require_sensitivity_input_inp(body.project_id, body.input_inp, body.input_inp_name),
+        "output_dir": _resolve_sensitivity_output_dir(body.project_id, body.output_dir),
         "odb_id": body.odb_id,
         "base_url": body.base_url,
         "workspace": body.workspace,
@@ -85,8 +137,8 @@ def _run_and_store_kwargs(body: SensitivityRunAndStoreRequest) -> dict:
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,
-        "input_inp": body.input_inp,
-        "output_dir": body.output_dir,
+        "input_inp": _require_sensitivity_input_inp(body.project_id, body.input_inp, body.input_inp_name),
+        "output_dir": _resolve_sensitivity_output_dir(body.project_id, body.output_dir),
         "step": body.step,
         "instances": body.instances,
         "field_prefix": body.field_prefix,
@@ -123,8 +175,8 @@ def _generate_run_and_store_kwargs(body: SensitivityGenerateRunAndStoreRequest) 
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,
-        "input_inp": body.input_inp,
-        "output_dir": body.output_dir,
+        "input_inp": _resolve_sensitivity_input_inp(body.project_id, body.input_inp, body.input_inp_name),
+        "output_dir": _resolve_sensitivity_output_dir(body.project_id, body.output_dir),
         "step": body.step,
         "instances": body.instances,
         "field_prefix": body.field_prefix,
@@ -259,10 +311,12 @@ async def sensitivity_dsa_config_preview(request: Request, body: SensitivityDsaC
 async def sensitivity_dsa_inp_generate(request: Request, body: SensitivityDsaInpGenerateRequest):
     await log_request(request, model_to_dict(body))
     try:
+        input_inp = _resolve_sensitivity_input_inp(body.project_id, body.input_inp, body.input_inp_name)
+        output_dir = _resolve_sensitivity_output_dir(body.project_id, body.output_dir)
         data = generate_project_dsa_inp_from_db(
             project_id=body.project_id,
-            input_inp=body.input_inp,
-            output_dir=body.output_dir,
+            input_inp=input_inp,
+            output_dir=output_dir,
             value_mode=body.value_mode,
             output_inp=body.output_inp,
             include_file=body.include_file,
@@ -419,12 +473,14 @@ async def sensitivity_export_vtu(request: Request, body: SensitivityExportVtuReq
     # Export DSA-style ODB sensitivity fields to VTU for visual inspection.
     await log_request(request, model_to_dict(body))
     try:
+        output_vtu = _resolve_sensitivity_export_file(body.project_id, body.output_vtu, body.output_vtu_name)
+        inp_path = _resolve_sensitivity_input_inp(body.project_id, body.inp_path, body.inp_file_name)
         data = export_odb_sensitivity_vtu(
             project_id=body.project_id,
             odb_id=body.odb_id,
-            output_vtu=body.output_vtu,
+            output_vtu=output_vtu,
             base_url=body.base_url,
-            inp_path=body.inp_path,
+            inp_path=inp_path,
             workspace=body.workspace,
             odb_path=body.odb_path,
             step=body.step,
@@ -453,12 +509,14 @@ async def sensitivity_export_dsa_vtu(request: Request, body: SensitivityExportDs
     # clients that already know they need the design-sensitivity convention.
     await log_request(request, model_to_dict(body))
     try:
+        output_vtu = _resolve_sensitivity_export_file(body.project_id, body.output_vtu, body.output_vtu_name)
+        inp_path = _resolve_sensitivity_input_inp(body.project_id, body.inp_path, body.inp_file_name)
         data = export_dsa_sensitivity_vtu(
             project_id=body.project_id,
             odb_id=body.odb_id,
-            output_vtu=body.output_vtu,
+            output_vtu=output_vtu,
             base_url=body.base_url,
-            inp_path=body.inp_path,
+            inp_path=inp_path,
             workspace=body.workspace,
             odb_path=body.odb_path,
             step=body.step,
@@ -487,12 +545,14 @@ async def sensitivity_export_adjoint_vtu(request: Request, body: SensitivityExpo
     # route delegates to a dedicated exporter instead of the DSA helper.
     await log_request(request, model_to_dict(body))
     try:
+        output_vtu = _resolve_sensitivity_export_file(body.project_id, body.output_vtu, body.output_vtu_name)
+        inp_path = _resolve_sensitivity_input_inp(body.project_id, body.inp_path, body.inp_file_name)
         data = export_adjoint_sensitivity_vtu(
             project_id=body.project_id,
             odb_id=body.odb_id,
-            output_vtu=body.output_vtu,
+            output_vtu=output_vtu,
             base_url=body.base_url,
-            inp_path=body.inp_path,
+            inp_path=inp_path,
             workspace=body.workspace,
             odb_path=body.odb_path,
             step=body.step,
