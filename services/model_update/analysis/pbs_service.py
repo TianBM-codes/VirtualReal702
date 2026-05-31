@@ -898,10 +898,9 @@ def run_pbs_solver_job(
         resolved_job_name = str(job_name or source_path.stem).strip() or source_path.stem
         resolved_output_dir = str(output_dir or "").strip() or str(output_dir_name or "").strip()
         if project_id is not None:
-            category = ("pbs", str(application or "").strip().lower() or "solver")
             target_dir = resolve_project_output_dir(
                 int(project_id),
-                category_parts=category,
+                category_parts=(),
                 explicit_dir=resolved_output_dir or None,
             )
         else:
