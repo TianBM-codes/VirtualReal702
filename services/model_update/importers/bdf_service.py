@@ -1,11 +1,15 @@
 import os
+import json
 
 import numpy as np
 
 from db import get_connection, ensure_tables_exist, clear_fem_tables
 from BDFParserPyNastran import BDFParser
 from services.model_update.analysis.console_log_service import safe_write_console_event
-from services.model_update.analysis.inp_service import _save_octree_cache
+from services.model_update.analysis.inp_service import (
+    _SUPPORTED_CORRECTION_QUANTITIES,
+    _save_octree_cache,
+)
 from services.model_update.analysis.project_config_service import save_fem_model_dimensions, upsert_project_config
 
 
@@ -27,6 +31,175 @@ def _safe_int(value):
     if value is None:
         return None
     return int(value)
+
+
+def _json_dumps(data):
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _element_property_id(element):
+    try:
+        pid = element.Pid()
+        return int(pid) if pid is not None else None
+    except Exception:
+        pid = getattr(element, "pid", None)
+        return int(pid) if pid is not None else None
+
+
+def _property_material_id(prop):
+    if prop is None:
+        return None
+    for attr_name in ("mid1", "mid", "Mid1", "Mid"):
+        value = getattr(prop, attr_name, None)
+        if hasattr(value, "mid"):
+            try:
+                return int(value.mid)
+            except Exception:
+                continue
+        if value is not None:
+            try:
+                return int(value)
+            except Exception:
+                continue
+    return None
+
+
+def _material_elastic_modulus(material):
+    if material is None:
+        return None
+    for attr_name in ("e", "E", "e11"):
+        value = getattr(material, attr_name, None)
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                pass
+    try:
+        fields = list(material.raw_fields() or [])
+    except Exception:
+        fields = []
+    material_type = str(getattr(material, "type", "") or "").upper()
+    if material_type == "MAT1" and len(fields) > 2 and fields[2] not in (None, ""):
+        return float(fields[2])
+    if material_type == "MAT8" and len(fields) > 2 and fields[2] not in (None, ""):
+        return float(fields[2])
+    return None
+
+
+def _property_thickness(prop):
+    if prop is None:
+        return None
+    ptype = str(getattr(prop, "type", "") or "").upper()
+    if ptype == "PSHELL":
+        value = getattr(prop, "t", None)
+        if isinstance(value, np.ndarray):
+            value = value[0] if len(value) else None
+        return _safe_float(value)
+    if ptype in {"PCOMP", "PCOMPG"}:
+        if hasattr(prop, "TotalThickness"):
+            try:
+                return float(prop.TotalThickness())
+            except Exception:
+                pass
+        if hasattr(prop, "Thickness"):
+            try:
+                return float(prop.Thickness())
+            except Exception:
+                pass
+    return None
+
+
+def _property_element_family(prop):
+    ptype = str(getattr(prop, "type", "") or "").upper()
+    if ptype in {"PSHELL", "PCOMP", "PCOMPG"}:
+        return "SHELL"
+    if ptype in {"PBAR", "PBEAM", "PROD", "PTUBE", "PBARL", "PBEAML"}:
+        return "BEAM"
+    if ptype in {"PSOLID", "PLSOLID", "PIHEX", "PCOMPS"}:
+        return "SOLID"
+    return "OTHER"
+
+
+def _build_bdf_property_set_capabilities(bdf_parser):
+    bdf_model = bdf_parser.bdf
+    property_elements = {}
+    for eid, element in sorted((bdf_model.elements or {}).items()):
+        pid = _element_property_id(element)
+        if pid is None:
+            continue
+        property_elements.setdefault(int(pid), []).append(int(eid))
+
+    capability_rows = []
+    for pid, element_labels in sorted(property_elements.items()):
+        prop = bdf_model.properties.get(int(pid))
+        if prop is None:
+            continue
+
+        element_family = _property_element_family(prop)
+        material_id = _property_material_id(prop)
+        material = bdf_model.materials.get(int(material_id)) if material_id is not None else None
+        material_name = f"MID_{int(material_id)}" if material_id is not None else None
+        e_value = _material_elastic_modulus(material)
+        t_value = _property_thickness(prop)
+        part_name = "BDF_MODEL"
+        set_name = f"PROPERTY_{int(pid)}"
+        target_keys = [f"PART::{part_name}::{int(label)}" for label in element_labels]
+        target_keys_by_label = {
+            str(int(label)): [f"PART::{part_name}::{int(label)}"] for label in element_labels
+        }
+
+        quantity_values = {
+            "E": e_value,
+            "T": t_value,
+        }
+        section_type = str(getattr(prop, "type", "") or "").upper() or None
+
+        for quantity in _SUPPORTED_CORRECTION_QUANTITIES:
+            quantity_code = str(quantity["quantity_code"])
+            current_value = quantity_values.get(quantity_code)
+            supports_global = False
+            supports_local = False
+            if quantity_code == "E" and current_value is not None and element_family in {"SHELL", "SOLID", "BEAM"}:
+                supports_global = True
+                supports_local = True
+            elif quantity_code == "T" and current_value is not None and element_family == "SHELL":
+                supports_global = True
+                supports_local = True
+
+            if not supports_global and not supports_local:
+                continue
+
+            element_values = {
+                str(int(label)): float(current_value) for label in element_labels
+            }
+            capability_rows.append(
+                {
+                    "quantity_code": quantity_code,
+                    "set_name": set_name,
+                    "set_type": "PROPERTY",
+                    "set_scope": "PART",
+                    "instance_name": None,
+                    "part_name": part_name,
+                    "set_role": "PROPERTY_SET",
+                    "element_family": element_family,
+                    "section_type": section_type,
+                    "material_name": material_name,
+                    "member_count": len(element_labels),
+                    "supports_global": supports_global,
+                    "supports_local": supports_local,
+                    "current_value": float(current_value),
+                    "extra_json": {
+                        "property_id": int(pid),
+                        "material_id": int(material_id) if material_id is not None else None,
+                        "element_labels": [int(label) for label in element_labels],
+                        "target_keys": target_keys,
+                        "target_keys_by_label": target_keys_by_label,
+                        "element_values": element_values,
+                    },
+                }
+            )
+
+    return capability_rows
 
 
 def _build_bdf_octree_node_data(bdf_parser):
@@ -62,6 +235,7 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
     bdf_parser = BDFParser(file_path)
     bdf_parser.parse()
     bdf_info = bdf_parser.GetDatabaseData()
+    quantity_set_capabilities = _build_bdf_property_set_capabilities(bdf_parser)
     octree_node_data = _build_bdf_octree_node_data(bdf_parser)
 
     conn = get_connection()
@@ -104,6 +278,25 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
                 _safe_float(row.get("X7")),
                 _safe_float(row.get("X8")),
                 _safe_float(row.get("X9")),
+            ))
+
+        quantity_sql = """
+        INSERT INTO t_mt_py_fem_supported_quantity
+        (quantity_code, quantity_name, unit, enabled, sort_no)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            quantity_name = VALUES(quantity_name),
+            unit = VALUES(unit),
+            enabled = VALUES(enabled),
+            sort_no = VALUES(sort_no)
+        """
+        for item in _SUPPORTED_CORRECTION_QUANTITIES:
+            cursor.execute(quantity_sql, (
+                item["quantity_code"],
+                item["quantity_name"],
+                item.get("unit"),
+                int(item.get("enabled", 1)),
+                int(item.get("sort_no", 0)),
             ))
 
         # =========================================================
@@ -344,6 +537,43 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
                 _safe_float(rz)
             ))
 
+        capability_sql = """
+        INSERT INTO t_mt_py_fem_quantity_set_capability
+        (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name,
+         set_role, element_family, section_type, material_name, member_count,
+         supports_global, supports_local, current_value, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            set_role = VALUES(set_role),
+            element_family = VALUES(element_family),
+            section_type = VALUES(section_type),
+            material_name = VALUES(material_name),
+            member_count = VALUES(member_count),
+            supports_global = VALUES(supports_global),
+            supports_local = VALUES(supports_local),
+            current_value = VALUES(current_value),
+            extra_json = VALUES(extra_json)
+        """
+        for item in quantity_set_capabilities:
+            cursor.execute(capability_sql, (
+                int(project_id),
+                item["quantity_code"],
+                item["set_name"],
+                item["set_type"],
+                item["set_scope"],
+                item.get("instance_name"),
+                item.get("part_name"),
+                item["set_role"],
+                item.get("element_family"),
+                item.get("section_type"),
+                item.get("material_name"),
+                int(item["member_count"]),
+                1 if item.get("supports_global") else 0,
+                1 if item.get("supports_local") else 0,
+                item.get("current_value"),
+                _json_dumps(item.get("extra_json") or {}),
+            ))
+
         cache_path = _save_octree_cache(
             int(project_id),
             os.path.abspath(file_path),
@@ -406,6 +636,8 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
             "solid_property_count": len(bdf_info.get("solid_properties", [])),
             "layered_property_count": len(bdf_info.get("layered_properties", [])),
             "boundary_count": len(bdf_info.get("boundary", [])),
+            "supported_quantity_count": len(_SUPPORTED_CORRECTION_QUANTITIES),
+            "quantity_set_capability_count": len(quantity_set_capabilities),
             "octree_cache_path": os.path.abspath(cache_path),
             "octree_node_count": int(len(octree_node_data["point_labels"])),
             "project_config": project_config,
