@@ -184,6 +184,27 @@ class BayesianModelUpdateRequest(BaseModel):
     async_submit: bool = False
 
 
+class ModalFrequencyBayesianModelUpdateRequest(BaseModel):
+    project_id: int
+    batch_no: int = Field(default=1, ge=1)
+    sensitivity_batch_no: Optional[int] = Field(default=None, ge=1)
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
+    parameter_scatter: Any = None
+    response_scatter: Any = None
+    save_results: bool = True
+    iterations: int = Field(default=1, ge=1)
+    exit_diff_percent: Optional[float] = Field(default=None, ge=0)
+    damping: float = 1e-8
+    step_scale: float = 1.0
+    lower_bound: Optional[Any] = None
+    upper_bound: Optional[Any] = None
+    mac_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
+    matching_method: str = "greedy"
+    async_submit: bool = False
+
+
 class TextRowReadRequest(BaseModel):
     file_path: str
     row: int = Field(ge=1)

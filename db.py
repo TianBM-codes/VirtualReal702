@@ -864,6 +864,28 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模型修正最终位移结果表';
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_model_update_modal_result (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        batch_no VARCHAR(32) NOT NULL COMMENT '批次号',
+        response_name VARCHAR(200) NOT NULL COMMENT '响应名称',
+        response_type VARCHAR(32) NOT NULL DEFAULT 'FREQ' COMMENT '响应类型',
+        fem_mode_no INT NOT NULL COMMENT 'FEM 模态阶次',
+        test_mode_no INT NOT NULL COMMENT '试验模态阶次',
+        freq_fem_initial DOUBLE NULL COMMENT '修正前 FEM 频率',
+        freq_fem_updated DOUBLE NULL COMMENT '修正后 FEM 频率',
+        freq_test DOUBLE NULL COMMENT '目标试验频率',
+        initial_relative_error DOUBLE NULL COMMENT '修正前相对误差(%)',
+        updated_relative_error DOUBLE NULL COMMENT '修正后相对误差(%)',
+        mac DOUBLE NULL COMMENT '匹配使用的 MAC',
+        extra_json JSON NULL COMMENT '扩展信息',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_batch_modal_pair (pid, batch_no, fem_mode_no, test_mode_no),
+        KEY idx_pid_batch (pid, batch_no)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模型修正最终模态频率结果表';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_manual_response (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
@@ -1387,5 +1409,6 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_relevance_tracking WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_analysis_error WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_model_update_static_result WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_model_update_modal_result WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_manual_response WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dac_dsf WHERE pid = {pid}")

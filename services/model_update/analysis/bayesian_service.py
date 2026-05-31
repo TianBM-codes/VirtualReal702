@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
 import numpy as np
+from pyNastran.bdf.bdf import BDF
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -298,6 +299,13 @@ def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
             iteration_result.get("parameter_element_mapping", []),
         ),
     }
+    if iteration_result.get("response_values_before_update") is not None:
+        files["response_values_before_update_txt"] = _save_vector_txt(
+            iteration_dir / "response_values_before_update.txt",
+            iteration_result["response_values_before_update"],
+        )
+    if iteration_result.get("updated_bdf"):
+        files["updated_bdf"] = str(iteration_result["updated_bdf"])
     return {"iteration_dir": str(iteration_dir), "files": files}
 
 
@@ -1107,6 +1115,7 @@ def _clear_bayesian_run_outputs(*, project_id: int, batch_no: int) -> dict:
             ("t_mt_py_fem_parameter_variation", "DELETE FROM t_mt_py_fem_parameter_variation WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
             ("t_mt_py_fem_tracking_value", "DELETE FROM t_mt_py_fem_tracking_value WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
             ("t_mt_py_fem_model_update_static_result", "DELETE FROM t_mt_py_fem_model_update_static_result WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
+            ("t_mt_py_fem_model_update_modal_result", "DELETE FROM t_mt_py_fem_model_update_modal_result WHERE pid = %s AND batch_no = %s", (int(project_id), resolved_batch_no)),
         ]
         for table_name, sql, params in sql_list:
             cursor.execute(sql, params)
@@ -2530,6 +2539,388 @@ def _persist_final_iteration_static_outputs(
     }
 
 
+def _normalize_modal_parameter_columns(parameter_columns: Sequence[dict]) -> List[dict]:
+    rows: List[dict] = []
+    for index, raw_row in enumerate(parameter_columns or [], start=1):
+        row = dict(raw_row or {})
+        parameter_name = str(
+            row.get("parameter_name")
+            or row.get("param_name")
+            or row.get("field")
+            or f"parameter_{index}"
+        ).strip()
+        row["parameter_name"] = parameter_name or f"parameter_{index}"
+        row["parameter_value"] = row.get("parameter_value", row.get("initial_value", row.get("initial")))
+        row["param_type"] = str(row.get("param_type") or row.get("parameter_type") or row.get("type") or "").upper()
+        rows.append(row)
+    return rows
+
+
+def _build_modal_response_payload(
+        *,
+        project_id: int,
+        stored_response_rows: Sequence[dict],
+        matrix: Sequence[Sequence[float]],
+        mac_threshold: float,
+        max_freq_error_ratio: Optional[float],
+        matching_method: str,
+) -> dict:
+    matched_payload = _inp.match_modal_modes(
+        int(project_id),
+        mac_threshold=float(mac_threshold),
+        max_freq_error_ratio=max_freq_error_ratio,
+        method=str(matching_method or "greedy"),
+    )
+    matched_rows = list(matched_payload.get("rows") or [])
+    matched_by_fem = {
+        int(row["fem_mode_no"]): dict(row)
+        for row in matched_rows
+        if row.get("fem_mode_no") is not None
+    }
+
+    selected_indexes: List[int] = []
+    response_rows: List[dict] = []
+    target_values: List[float] = []
+    model_values: List[float] = []
+    skipped_rows: List[dict] = []
+
+    for index, raw_row in enumerate(stored_response_rows or []):
+        row = dict(raw_row or {})
+        mode_number = row.get("mode_number")
+        response_type = str(row.get("response_type") or row.get("type") or "").upper()
+        if mode_number is None or response_type not in {"FREQ", "MODAL_FREQUENCY"}:
+            skipped_rows.append(
+                {
+                    "seq_no": row.get("seq_no"),
+                    "response_name": row.get("response_name"),
+                    "response_type": response_type or None,
+                    "mode_number": mode_number,
+                    "reason": "response_is_not_modal_frequency",
+                }
+            )
+            continue
+        matched = matched_by_fem.get(int(mode_number))
+        if not matched:
+            skipped_rows.append(
+                {
+                    "seq_no": row.get("seq_no"),
+                    "response_name": row.get("response_name"),
+                    "response_type": response_type,
+                    "mode_number": int(mode_number),
+                    "reason": "mode_not_in_modal_match_result",
+                }
+            )
+            continue
+
+        selected_indexes.append(index)
+        response_name = str(row.get("response_name") or f"FREQ_MODE_{int(mode_number)}").strip()
+        tracking_name = f"{response_name}@FE{int(matched['fem_mode_no'])}_TEST{int(matched['test_mode_no'])}"
+        response_rows.append(
+            {
+                **row,
+                "response_name": response_name,
+                "response_type": "FREQ",
+                "mode_number": int(mode_number),
+                "tracking_name": tracking_name,
+                "fem_mode_no": int(matched["fem_mode_no"]),
+                "test_mode_no": int(matched["test_mode_no"]),
+                "mac": matched.get("mac"),
+                "freq_error_ratio": matched.get("freq_error_ratio"),
+            }
+        )
+        model_values.append(float(matched["freq_fem"]))
+        target_values.append(float(matched["freq_test"]))
+
+    if not response_rows:
+        raise ValidationError(
+            "no matched modal frequency responses are available for modal bayesian update",
+            {
+                "project_id": int(project_id),
+                "matched_pair_count": len(matched_rows),
+                "stored_response_count": len(list(stored_response_rows or [])),
+                "skipped_preview": skipped_rows[:20],
+            },
+        )
+
+    matrix_arr = np.asarray(matrix, dtype=np.float64)
+    selected_matrix = matrix_arr[selected_indexes, :]
+    return {
+        "response_rows": response_rows,
+        "model_values": model_values,
+        "target_values": target_values,
+        "matched_rows": matched_rows,
+        "matched_payload": matched_payload,
+        "skipped_rows": skipped_rows,
+        "matrix": selected_matrix,
+    }
+
+
+def _metadata_bound_vector(
+        parameter_columns: Sequence[dict],
+        *,
+        request_value: Any,
+        label: str,
+        key_candidates: Sequence[str],
+        metadata_key: str,
+        fallback: float,
+) -> Optional[np.ndarray]:
+    if request_value is not None:
+        return np.asarray(
+            _vector_from_input(
+                request_value,
+                parameter_columns,
+                label=label,
+                key_candidates=key_candidates,
+            ),
+            dtype=np.float64,
+        )
+    values = []
+    has_metadata = False
+    for item in parameter_columns:
+        raw_value = dict(item or {}).get(metadata_key)
+        if raw_value is None:
+            values.append(float(fallback))
+            continue
+        has_metadata = True
+        values.append(float(raw_value))
+    if not has_metadata:
+        return None
+    return np.asarray(values, dtype=np.float64)
+
+
+def _predict_updated_response_values(
+        *,
+        response_values: Sequence[float],
+        parameter_values: Sequence[float],
+        updated_parameter_values: Sequence[float],
+        normalized_sensitivity: Sequence[Sequence[float]],
+        eps: float = 1e-12,
+) -> np.ndarray:
+    r_model = np.asarray(response_values, dtype=np.float64).reshape(-1)
+    p_current = np.asarray(parameter_values, dtype=np.float64).reshape(-1)
+    p_new = np.asarray(updated_parameter_values, dtype=np.float64).reshape(-1)
+    s_norm = np.asarray(normalized_sensitivity, dtype=np.float64)
+    if s_norm.shape != (len(r_model), len(p_current)):
+        raise ValidationError(
+            "normalized sensitivity matrix shape does not match modal response and parameter sizes",
+            {
+                "matrix_shape": list(s_norm.shape),
+                "response_count": len(r_model),
+                "parameter_count": len(p_current),
+            },
+        )
+
+    delta_p = p_new - p_current
+    safe_param = np.where(np.abs(p_current) > float(eps), p_current, np.where(p_current >= 0.0, float(eps), -float(eps)))
+    jacobian = s_norm * r_model.reshape(-1, 1) / safe_param.reshape(1, -1)
+    predicted = r_model + jacobian @ delta_p
+    return np.asarray(predicted, dtype=np.float64).reshape(-1)
+
+
+def _update_bdf_parameter_values(
+        *,
+        input_bdf: str,
+        parameter_columns: Sequence[dict],
+        updated_parameter_values: Sequence[float],
+        output_bdf: str,
+) -> dict:
+    input_path = _solver._abs_file(input_bdf, "input_bdf")
+    output_path = Path(output_bdf).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    model = BDF(debug=False)
+    model.read_bdf(str(input_path), xref=False)
+
+    updated_rows = []
+    missing_rows = []
+    for index, row in enumerate(parameter_columns or []):
+        item = dict(row or {})
+        parameter_name = str(item.get("parameter_name") or item.get("param_name") or f"parameter_{index + 1}")
+        parameter_type = str(item.get("param_type") or item.get("parameter_type") or item.get("type") or "").upper()
+        material_id = item.get("material_id")
+        if material_id is None:
+            material_id = item.get("source_material_id")
+        if material_id is None:
+            missing_rows.append({"parameter_name": parameter_name, "reason": "material_id_missing"})
+            continue
+        material = model.materials.get(int(material_id))
+        if material is None:
+            missing_rows.append({"parameter_name": parameter_name, "material_id": int(material_id), "reason": "material_not_found"})
+            continue
+        if str(getattr(material, "type", "")).upper() != "MAT1":
+            missing_rows.append(
+                {
+                    "parameter_name": parameter_name,
+                    "material_id": int(material_id),
+                    "material_type": str(getattr(material, "type", "")),
+                    "reason": "unsupported_material_type",
+                }
+            )
+            continue
+
+        value = float(updated_parameter_values[index])
+        if parameter_type == "E":
+            material.e = value
+            if getattr(material, "g", None) is not None:
+                material.g = None
+        elif parameter_type == "RHO":
+            material.rho = value
+        else:
+            missing_rows.append(
+                {
+                    "parameter_name": parameter_name,
+                    "material_id": int(material_id),
+                    "parameter_type": parameter_type,
+                    "reason": "unsupported_parameter_type",
+                }
+            )
+            continue
+        updated_rows.append(
+            {
+                "parameter_name": parameter_name,
+                "parameter_type": parameter_type,
+                "material_id": int(material_id),
+                "updated_value": value,
+            }
+        )
+
+    if not updated_rows:
+        raise ValidationError(
+            "no modal-frequency parameters could be written back into the bdf file",
+            {"input_bdf": str(input_path), "missing_preview": missing_rows[:20]},
+        )
+
+    model.write_bdf(str(output_path), interspersed=False)
+    return {
+        "input_bdf": str(input_path),
+        "output_bdf": str(output_path),
+        "updated_count": len(updated_rows),
+        "updated_preview": updated_rows[:20],
+        "skipped_preview": missing_rows[:20],
+    }
+
+
+def _persist_model_update_modal_results(
+        *,
+        project_id: int,
+        batch_no: int,
+        modal_rows: Sequence[dict],
+) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM t_mt_py_fem_model_update_modal_result WHERE pid = %s AND batch_no = %s",
+            (int(project_id), str(batch_no)),
+        )
+        insert_sql = """
+            INSERT INTO t_mt_py_fem_model_update_modal_result
+            (pid, batch_no, response_name, response_type, fem_mode_no, test_mode_no,
+             freq_fem_initial, freq_fem_updated, freq_test, initial_relative_error, updated_relative_error, mac, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                response_name = VALUES(response_name),
+                response_type = VALUES(response_type),
+                freq_fem_initial = VALUES(freq_fem_initial),
+                freq_fem_updated = VALUES(freq_fem_updated),
+                freq_test = VALUES(freq_test),
+                initial_relative_error = VALUES(initial_relative_error),
+                updated_relative_error = VALUES(updated_relative_error),
+                mac = VALUES(mac),
+                extra_json = VALUES(extra_json),
+                created_at = CURRENT_TIMESTAMP
+        """
+        preview = []
+        for row in modal_rows:
+            cursor.execute(
+                insert_sql,
+                (
+                    int(project_id),
+                    str(batch_no),
+                    row.get("response_name"),
+                    row.get("response_type"),
+                    int(row["fem_mode_no"]),
+                    int(row["test_mode_no"]),
+                    float(row["freq_fem_initial"]),
+                    float(row["freq_fem_updated"]),
+                    float(row["freq_test"]),
+                    row.get("initial_relative_error"),
+                    row.get("updated_relative_error"),
+                    row.get("mac"),
+                    json.dumps(row.get("extra_json") or {}, ensure_ascii=False),
+                ),
+            )
+            if len(preview) < 20:
+                preview.append(
+                    {
+                        "response_name": row.get("response_name"),
+                        "fem_mode_no": int(row["fem_mode_no"]),
+                        "test_mode_no": int(row["test_mode_no"]),
+                        "freq_fem_initial": float(row["freq_fem_initial"]),
+                        "freq_fem_updated": float(row["freq_fem_updated"]),
+                        "freq_test": float(row["freq_test"]),
+                        "updated_relative_error": row.get("updated_relative_error"),
+                    }
+                )
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "batch_no": str(batch_no),
+            "row_count": len(list(modal_rows or [])),
+            "rows_preview": preview,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _persist_final_iteration_modal_outputs(
+        *,
+        project_id: int,
+        batch_no: int,
+        response_rows: Sequence[dict],
+        initial_response_values: Sequence[float],
+        updated_response_values: Sequence[float],
+) -> dict:
+    modal_rows = []
+    for index, row_meta in enumerate(response_rows or []):
+        row = dict(row_meta or {})
+        initial_value = float(initial_response_values[index])
+        updated_value = float(updated_response_values[index])
+        target_value = float(row.get("target_value"))
+        modal_rows.append(
+            {
+                "response_name": str(row.get("response_name") or f"response_{index + 1}"),
+                "response_type": "FREQ",
+                "fem_mode_no": int(row["fem_mode_no"]),
+                "test_mode_no": int(row["test_mode_no"]),
+                "freq_fem_initial": initial_value,
+                "freq_fem_updated": updated_value,
+                "freq_test": target_value,
+                "initial_relative_error": _response_difference_percent(initial_value, target_value),
+                "updated_relative_error": _response_difference_percent(updated_value, target_value),
+                "mac": float(row["mac"]) if row.get("mac") is not None else None,
+                "extra_json": {
+                    "mode_number": int(row.get("mode_number") or row.get("fem_mode_no")),
+                    "tracking_name": row.get("tracking_name"),
+                    "freq_error_ratio_before_update": row.get("freq_error_ratio"),
+                },
+            }
+        )
+    stored_result = _persist_model_update_modal_results(
+        project_id=project_id,
+        batch_no=batch_no,
+        modal_rows=modal_rows,
+    )
+    return {
+        "modal_result": stored_result,
+    }
+
+
 def run_bayesian_update_workflow(
         *,
         project_id: int,
@@ -2942,6 +3333,310 @@ def run_bayesian_update_workflow(
             "模型修正完成",
             [
                 f"批次号: {resolved_batch_no}",
+                f"迭代次数: {len(iteration_results)}",
+                f"提前终止: {'是' if stopped_early else '否'}",
+                f"输出目录: {str(root_dir) if save_results else '-'}",
+            ],
+        )
+        return result
+    finally:
+        if cleanup_root_dir is not None:
+            shutil.rmtree(cleanup_root_dir, ignore_errors=True)
+
+
+def run_modal_frequency_bayesian_update_workflow(
+        *,
+        project_id: int,
+        batch_no: int = 1,
+        sensitivity_batch_no: Optional[int] = None,
+        input_bdf: Optional[str] = None,
+        parameter_scatter: Any = None,
+        response_scatter: Any = None,
+        output_dir: Optional[str] = None,
+        save_results: bool = True,
+        iterations: int = 1,
+        exit_diff_percent: Optional[float] = None,
+        damping: float = 1e-8,
+        step_scale: float = 1.0,
+        lower_bound: Any = None,
+        upper_bound: Any = None,
+        mac_threshold: float = 0.7,
+        max_freq_error_ratio: Optional[float] = 0.2,
+        matching_method: str = "greedy",
+        progress_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    resolved_batch_no = _normalize_batch_no(batch_no)
+    resolved_sensitivity_batch_no = _normalize_batch_no(sensitivity_batch_no or batch_no)
+    if int(iterations) <= 0:
+        raise ValidationError("iterations must be > 0", {"iterations": iterations})
+
+    stored_payload = _sens._load_stored_sensitivity_run(
+        project_id=int(project_id),
+        batch_no=resolved_sensitivity_batch_no,
+    )
+    parameter_columns = _normalize_modal_parameter_columns(stored_payload.get("parameter_columns") or [])
+    if not parameter_columns:
+        raise ValidationError(
+            "stored modal sensitivity run does not contain any parameters",
+            {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
+        )
+
+    modal_payload = _build_modal_response_payload(
+        project_id=int(project_id),
+        stored_response_rows=stored_payload.get("response_rows") or [],
+        matrix=stored_payload.get("matrix") or [],
+        mac_threshold=float(mac_threshold),
+        max_freq_error_ratio=max_freq_error_ratio,
+        matching_method=str(matching_method or "greedy"),
+    )
+    response_rows = [dict(row) for row in (modal_payload.get("response_rows") or [])]
+    for index, row in enumerate(response_rows):
+        row["target_value"] = float(modal_payload["target_values"][index])
+
+    input_bdf_path = _normalize_optional_path(input_bdf)
+    input_base_stem = Path(input_bdf_path).stem if input_bdf_path else f"project_{int(project_id)}_modal"
+    cleanup_result = _clear_bayesian_run_outputs(
+        project_id=int(project_id),
+        batch_no=resolved_batch_no,
+    )
+
+    safe_write_console_event(
+        int(project_id),
+        "模态频率模型修正开始",
+        [
+            f"批次号: {resolved_batch_no}",
+            f"灵敏度批次: {resolved_sensitivity_batch_no}",
+            f"匹配模态对数: {len(response_rows)}",
+            "已先清空上一轮模型修正结果",
+        ],
+    )
+
+    root_dir: Path
+    cleanup_root_dir: Optional[Path] = None
+    if save_results:
+        root_dir = _solver._abs_dir(output_dir, Path(tempfile.gettempdir()) / f"{input_base_stem}_modal_bayesian")
+    else:
+        root_dir = Path(tempfile.mkdtemp(prefix=f"{input_base_stem}_modal_bayesian_")).resolve()
+        cleanup_root_dir = root_dir
+
+    try:
+        raw_parameter_values = [row.get("parameter_value") for row in parameter_columns]
+        if any(value is None for value in raw_parameter_values):
+            raise ValidationError(
+                "stored parameter initial values are required for modal bayesian update",
+                {
+                    "project_id": int(project_id),
+                    "batch_no": resolved_sensitivity_batch_no,
+                    "parameter_preview": parameter_columns[:10],
+                },
+            )
+        current_parameter_values = np.asarray([float(value) for value in raw_parameter_values], dtype=np.float64)
+        if any(not np.isfinite(value) for value in current_parameter_values.tolist()):
+            raise ValidationError(
+                "stored parameter initial values are required for modal bayesian update",
+                {
+                    "project_id": int(project_id),
+                    "batch_no": resolved_sensitivity_batch_no,
+                    "parameter_preview": parameter_columns[:10],
+                },
+            )
+
+        normalized_matrix = np.asarray(modal_payload["matrix"], dtype=np.float64)
+        current_response_values = np.asarray(modal_payload["model_values"], dtype=np.float64)
+        initial_response_values = current_response_values.copy()
+        target_response_values = np.asarray(modal_payload["target_values"], dtype=np.float64)
+
+        p_scatter = _resolve_scatter_vector(
+            parameter_scatter,
+            parameter_columns,
+            label="parameter_scatter",
+            key_candidates=("parameter_name", "param_name", "param_code"),
+            default_value=_sens._DEFAULT_PARAMETER_SCATTER,
+        )
+        r_scatter = _resolve_scatter_vector(
+            response_scatter,
+            response_rows,
+            label="response_scatter",
+            key_candidates=("tracking_name", "response_name", "response_code"),
+            default_value=_sens._DEFAULT_RESPONSE_SCATTER,
+        )
+        lower_bound_values = _metadata_bound_vector(
+            parameter_columns,
+            request_value=lower_bound,
+            label="lower_bound",
+            key_candidates=("parameter_name", "param_name", "param_code"),
+            metadata_key="lower_bound",
+            fallback=-float("inf"),
+        )
+        upper_bound_values = _metadata_bound_vector(
+            parameter_columns,
+            request_value=upper_bound,
+            label="upper_bound",
+            key_candidates=("parameter_name", "param_name", "param_code"),
+            metadata_key="upper_bound",
+            fallback=float("inf"),
+        )
+
+        iteration_results = []
+        stopped_early = False
+        current_bdf_path = input_bdf_path
+
+        for iteration_index in range(int(iterations)):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "phase": "iteration",
+                        "current_iteration": int(iteration_index) + 1,
+                        "total_iterations": int(iterations),
+                    }
+                )
+
+            exit_check = _evaluate_exit_condition(
+                current_response_values.tolist(),
+                target_response_values.tolist(),
+                exit_diff_percent=exit_diff_percent,
+            )
+            effective_step_scale = 0.0 if exit_check and bool(exit_check.get("converged")) else float(step_scale)
+            update_payload = bayesian_update_normalized(
+                p_current=current_parameter_values,
+                r_model=current_response_values,
+                r_target=target_response_values,
+                S_norm=normalized_matrix,
+                p_scatter=p_scatter,
+                r_scatter=r_scatter,
+                damping=damping,
+                step_scale=effective_step_scale,
+                lower_bound=lower_bound_values,
+                upper_bound=upper_bound_values,
+                p_ref=current_parameter_values,
+            )
+
+            updated_response_values = _predict_updated_response_values(
+                response_values=current_response_values,
+                parameter_values=current_parameter_values,
+                updated_parameter_values=update_payload["p_new"],
+                normalized_sensitivity=normalized_matrix,
+            )
+            iteration_metrics = _build_iteration_metrics(
+                response_values=updated_response_values.tolist(),
+                target_values=target_response_values.tolist(),
+                response_scatter=r_scatter.tolist(),
+                parameter_step=update_payload["dp"],
+            )
+
+            updated_bdf_result = None
+            updated_bdf_path = None
+            if current_bdf_path:
+                iteration_dir = _iteration_dir(root_dir, iteration_index + 1)
+                updated_bdf_path = iteration_dir / Path(current_bdf_path).name
+                updated_bdf_result = _update_bdf_parameter_values(
+                    input_bdf=current_bdf_path,
+                    parameter_columns=parameter_columns,
+                    updated_parameter_values=update_payload["p_new"],
+                    output_bdf=str(updated_bdf_path),
+                )
+
+            iteration_result = {
+                "iteration": iteration_index + 1,
+                "input_bdf": str(current_bdf_path) if current_bdf_path else None,
+                "sensitivity_batch_no": str(resolved_sensitivity_batch_no),
+                "response_values_before_update": current_response_values.tolist(),
+                "response_values": updated_response_values.tolist(),
+                "target_responses": target_response_values.tolist(),
+                "parameter_values": current_parameter_values.tolist(),
+                "parameter_scatter": p_scatter.tolist(),
+                "response_scatter": r_scatter.tolist(),
+                "parameter_columns": parameter_columns,
+                "parameter_element_mapping": [],
+                "response_rows": response_rows,
+                "sensitivity_matrix": normalized_matrix.tolist(),
+                "bayesian": _clone_jsonable(update_payload),
+                "metrics": _clone_jsonable(iteration_metrics),
+                "exit_check": _clone_jsonable(exit_check),
+                "updated_bdf": str(updated_bdf_path) if updated_bdf_path else None,
+                "updated_bdf_result": updated_bdf_result,
+            }
+            if save_results:
+                iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)
+            iteration_results.append(iteration_result)
+
+            if exit_check and bool(exit_check.get("converged")):
+                stopped_early = True
+
+            _write_bayesian_iteration_console_log(
+                project_id=int(project_id),
+                batch_no=resolved_batch_no,
+                iteration_result=iteration_result,
+                stopped_early=stopped_early,
+            )
+            _persist_bayesian_tracking_results(
+                project_id=project_id,
+                batch_no=resolved_batch_no,
+                iteration_results=iteration_results,
+            )
+
+            if stopped_early:
+                break
+
+            current_parameter_values = np.asarray(update_payload["p_new"], dtype=np.float64)
+            current_response_values = np.asarray(updated_response_values, dtype=np.float64)
+            if updated_bdf_path is not None:
+                current_bdf_path = str(updated_bdf_path)
+
+        final_iteration = iteration_results[-1]
+        saved_artifacts = (
+            _save_bayesian_history_artifacts(
+                root_dir=root_dir,
+                project_id=project_id,
+                batch_no=resolved_batch_no,
+                iteration_results=iteration_results,
+            )
+            if save_results
+            else {}
+        )
+        final_modal_output = _persist_final_iteration_modal_outputs(
+            project_id=project_id,
+            batch_no=resolved_batch_no,
+            response_rows=response_rows,
+            initial_response_values=initial_response_values.tolist(),
+            updated_response_values=final_iteration["response_values"],
+        )
+        matched_payload = modal_payload.get("matched_payload") or {}
+
+        update_work_condition_project_status(
+            int(project_id),
+            fixes_cal_status=1,
+            fixes_result_status=1,
+        )
+        result = {
+            "project_id": int(project_id),
+            "batch_no": str(resolved_batch_no),
+            "sensitivity_batch_no": str(resolved_sensitivity_batch_no),
+            "cleanup_result": cleanup_result,
+            "input_bdf": input_bdf_path,
+            "output_dir": str(root_dir) if save_results else None,
+            "save_results": bool(save_results),
+            "iterations": len(iteration_results),
+            "requested_iterations": int(iterations),
+            "stopped_early": bool(stopped_early),
+            "exit_diff_percent": None if exit_diff_percent is None else float(exit_diff_percent),
+            "final_updated_bdf": final_iteration.get("updated_bdf"),
+            "final_parameter_values": final_iteration["bayesian"]["p_new"],
+            "parameter_columns": parameter_columns,
+            "response_rows": response_rows,
+            "matched_modal_rows": matched_payload.get("rows") or [],
+            "matched_pair_count": len(response_rows),
+            "iteration_results": iteration_results,
+            "saved_artifacts": saved_artifacts,
+            "final_modal_output": final_modal_output,
+            "skipped_response_rows_preview": modal_payload.get("skipped_rows", [])[:20],
+        }
+        safe_write_console_event(
+            int(project_id),
+            "模态频率模型修正完成",
+            [
+                f"批次号: {resolved_batch_no}",
+                f"灵敏度批次: {resolved_sensitivity_batch_no}",
                 f"迭代次数: {len(iteration_results)}",
                 f"提前终止: {'是' if stopped_early else '否'}",
                 f"输出目录: {str(root_dir) if save_results else '-'}",
