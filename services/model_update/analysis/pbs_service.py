@@ -1,4 +1,5 @@
 import json
+import uuid
 import os
 import posixpath
 import time
@@ -46,7 +47,7 @@ DEFAULT_PBS_API_PATHS = {
     "file_exists": "/api/Sservice6/pas/restservice/files/file/exists",
     "submit_job": "/api/Service6/pas/restservice/jobs",
     "job_status": "/api/storage/jobs/{job_id}",
-    "list_files": "/api/Sservice6/pas/restservice/files/file/list",
+    "list_files": "/api/Sservice6/pas/restservice/files/list",
     "download_file": "/api/Service6/pas/restservice/files/download",
 }
 _PBS_SUCCESS_VALUES = {True, "true", "True", "TRUE", 1, "1", "success", "SUCCESS"}
@@ -268,8 +269,8 @@ def load_pbs_environment_config(env: Optional[str] = None) -> PBSEnvironmentConf
                 api_paths[str(key)] = text
 
     if not all(api_paths.get(key) for key in (
-        "login", "expand_vars", "create_dir", "upload_file", "file_exists", "submit_job", "job_status", 
-        "list_files", "download_file")):
+            "login", "expand_vars", "create_dir", "upload_file", "file_exists", "submit_job", "job_status",
+            "list_files", "download_file")):
         raise ValidationError(
             "PBS 接口路径配置不完整",
             {"env": selected_env, "api_paths": api_paths},
@@ -341,19 +342,19 @@ class PBSClient:
         return headers
 
     def request(
-        self,
-        method: str,
-        path_key: str,
-        *,
-        expected_statuses: Iterable[int] = (200,),
-        json_body: Any = None,
-        data: Any = None,
-        files: Any = None,
-        params: Optional[Dict[str, Any]] = None,
-        stream: bool = False,
-        timeout: Optional[int] = None,
-        headers=None,
-        **kwargs,
+            self,
+            method: str,
+            path_key: str,
+            *,
+            expected_statuses: Iterable[int] = (200,),
+            json_body: Any = None,
+            data: Any = None,
+            files: Any = None,
+            params: Optional[Dict[str, Any]] = None,
+            stream: bool = False,
+            timeout: Optional[int] = None,
+            headers=None,
+            **kwargs,
     ) -> requests.Response:
         timeout_value = max(int(timeout or self.timeout), 1)
         expected = {int(item) for item in expected_statuses}
@@ -471,11 +472,11 @@ class PBSClient:
             return str(payload[0])
         if isinstance(payload, dict):
             for key in ("paths", "data", "result", "results"):
-                value = payload.get(key)
+                value = payload.get("data").get(key)
                 if isinstance(value, list) and value:
                     return str(value[0])
             for key in ("path", "expandedPaths", "stage_root"):
-                value = payload.get(key)
+                value = payload.get("data").get(key)
                 if value:
                     return str(value[template])
         if isinstance(payload, str) and payload:
@@ -491,7 +492,7 @@ class PBSClient:
         response = self.request(
             "POST",
             "create_dir",
-            expected_statuses=(200,),
+            expected_statuses=(200, 201),
             json_body={"path": remote_job_dir},
         )
         return self._parse_json_or_text(response)
@@ -508,9 +509,9 @@ class PBSClient:
                 "upload_file",
                 expected_statuses=(200,),
                 params={
-                    "serversidefilepath": remote_dir,
+                    "serversidefilepath": remote_dir + "/" + source_path.name,
                     "access_token": self.access_token,
-                    "uid": self.config.username,
+                    "uid": uuid.uuid4(),
                 },
                 headers={"access_token": f"{self.access_token}"},
                 files={"attfile": (source_path.name, handle)},
@@ -522,7 +523,7 @@ class PBSClient:
             print("Upload Success _t")
         return _safe_posix_join(remote_dir, source_path.name)
 
-    def file_exists(self, remote_path: str) -> bool:
+    def file_exists(self, remote_path: List[str]) -> bool:
         response = self.request(
             "POST",
             "file_exists",
@@ -572,13 +573,13 @@ class PBSClient:
         return config
 
     def build_submit_payload(
-        self,
-        *,
-        application: str,
-        job_name: str,
-        remote_primary_file: str,
-        remote_job_dir: str,
-        overrides: Optional[Dict[str, Any]] = None,
+            self,
+            *,
+            application: str,
+            job_name: str,
+            remote_primary_file: str,
+            remote_job_dir: str,
+            overrides: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         config = self.get_application_config(application)
         payload = {
@@ -640,11 +641,11 @@ class PBSClient:
         raise ValidationError("PBS 任务状态返回结果不是 JSON 对象", {"payload": payload})
 
     def wait_until_done(
-        self,
-        job_id: str,
-        *,
-        poll_interval_sec: float = 10.0,
-        wait_timeout_sec: int = 3600,
+            self,
+            job_id: str,
+            *,
+            poll_interval_sec: float = 10.0,
+            wait_timeout_sec: int = 3600,
     ) -> Dict[str, Any]:
         poll_interval = max(float(poll_interval_sec or 0), 0.1)
         timeout_sec = max(int(wait_timeout_sec or 0), 1)
@@ -657,7 +658,7 @@ class PBSClient:
             if state in _PBS_FINAL_STATES:
                 payload["resolved_job_state"] = state
                 return payload
-            
+
             if time.monotonic() - started_at >= timeout_sec:
                 raise ValidationError(
                     "pbs wait_until_done timed out",
@@ -685,7 +686,7 @@ class PBSClient:
             "POST",
             "list_files",
             expected_statuses=(200,),
-            params={"page":1, "size":100, "jobstatus":"undefined", "sortby": "ctime", "sortorder": "DSC"},
+            params={"page": 1, "size": 100, "jobstatus": "undefined", "sortby": "ctime", "sortorder": "DSC"},
             json_body={"includeHidden": False, "path": remote_job_dir},
         )
         payload = self._parse_json_or_text(response)
@@ -724,17 +725,17 @@ class PBSClient:
         return str(target)
 
     def run_job(
-        self,
-        *,
-        application: str,
-        local_primary_file: str,
-        job_name: str,
-        output_dir: str,
-        wait: bool = True,
-        download_results: bool = True,
-        poll_interval_sec: float = 10.0,
-        wait_timeout_sec: int = 3600,
-        submit_overrides: Optional[Dict[str, Any]] = None,
+            self,
+            *,
+            application: str,
+            local_primary_file: str,
+            job_name: str,
+            output_dir: str,
+            wait: bool = True,
+            download_results: bool = True,
+            poll_interval_sec: float = 10.0,
+            wait_timeout_sec: int = 3600,
+            submit_overrides: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self.login()
         stage_root = self.expand_stage_root()
@@ -745,7 +746,7 @@ class PBSClient:
         )
         self.create_remote_dir(remote_job_dir)
         remote_primary_file = self.upload_file(local_path=local_primary_file, remote_dir=remote_job_dir)
-        if not self.file_exists(remote_primary_file):
+        if not self.file_exists([remote_primary_file]):
             raise ValidationError(
                 "pbs primary file upload failed",
                 {
@@ -817,27 +818,27 @@ class PBSClient:
 
 
 def run_pbs_solver_job(
-    *,
-    project_id: Optional[int] = None,
-    application: str,
-    input_file: Optional[str] = None,
-    input_file_name: Optional[str] = None,
-    env: Optional[str] = None,
-    job_name: Optional[str] = None,
-    output_dir: Optional[str] = None,
-    result_group: Optional[str] = None,
-    display_name: Optional[str] = None,
-    base_url: Optional[str] = None,
-    step: Optional[str] = None,
-    frame: Optional[int] = None,
-    field_prefix: Optional[str] = None,
-    upload_timeout: int = 60,
-    wait: bool = True,
-    download_results: bool = True,
-    poll_interval_sec: float = 10.0,
-    wait_timeout_sec: int = 3600,
-    timeout_sec: int = 60,
-    submit_overrides: Optional[Dict[str, Any]] = None,
+        *,
+        project_id: Optional[int] = None,
+        application: str,
+        input_file: Optional[str] = None,
+        input_file_name: Optional[str] = None,
+        env: Optional[str] = None,
+        job_name: Optional[str] = None,
+        output_dir: Optional[str] = None,
+        result_group: Optional[str] = None,
+        display_name: Optional[str] = None,
+        base_url: Optional[str] = None,
+        step: Optional[str] = None,
+        frame: Optional[int] = None,
+        field_prefix: Optional[str] = None,
+        upload_timeout: int = 60,
+        wait: bool = True,
+        download_results: bool = True,
+        poll_interval_sec: float = 10.0,
+        wait_timeout_sec: int = 3600,
+        timeout_sec: int = 60,
+        submit_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     try:
         if project_id is not None:
