@@ -1,21 +1,18 @@
 import argparse
 import json
 import os
-import tempfile
 import shutil
 import subprocess
-from math import pi
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import meshio
 import numpy as np
 from pyNastran.bdf.bdf import BDF
-from pyNastran.op2.op2 import OP2
 
 
 RUN_CONFIG = {
-    "nastran_command": r"C:\MSC.Software\MSC_Nastran\20180\bin\nastran.exe",
+    "nastran_command": r"C:/MSC.Software/MSC_Nastran/20180/bin/nastran.exe",
     "input_bdf": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_py.bdf",
     "output_bdf": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_all_elem_e_sol200.bdf",
     "parameter_preset": {
@@ -100,23 +97,12 @@ def run_sol200_frequency_sensitivity(config: Dict[str, Any]) -> Dict[str, Any]:
             generated["generated_files"]["sensitivity_csv_internal"],
             generated["generated_files"]["sensitivity_csv"],
         )
-    sensitivity_csv_path = generated["generated_files"]["sensitivity_csv"]
-    metadata_json_path = generated["generated_files"]["metadata_json"]
-    if _has_nonempty_file(sensitivity_csv_path):
-        sensitivity = extract_sensitivity_results(
-            matrix_path=sensitivity_csv_path,
-            metadata_json=metadata_json_path,
-            response_names=[item["name"] for item in responses],
-        )
-    else:
-        if not solver_payload:
-            raise RuntimeError(f"sensitivity csv is empty and fort fallback is unavailable: {sensitivity_csv_path}")
-        sensitivity = extract_sensitivity_results_from_fort(
-            solver_artifacts=solver_payload.get("artifacts") or {},
-            metadata_json=metadata_json_path,
-            localized_bdf=localized_input_bdf,
-            response_names=[item["name"] for item in responses],
-        )
+
+    sensitivity = extract_sensitivity_results(
+        matrix_path=generated["generated_files"]["sensitivity_csv"],
+        metadata_json=generated["generated_files"]["metadata_json"],
+        response_names=[item["name"] for item in responses],
+    )
     return {
         "workflow": "sol200_freq_sensitivity",
         "input_bdf": input_bdf,
@@ -163,114 +149,6 @@ def extract_sensitivity_results(
         "response_rows": [response_map[name] for name in parsed["row_labels"]],
         "parameter_columns": [parameter_map[name] for name in parsed["column_labels"]],
         "matrix": parsed["matrix"],
-    }
-
-
-def extract_sensitivity_results_from_fort(
-    solver_artifacts: Dict[str, Any],
-    metadata_json: str,
-    localized_bdf: str,
-    response_names: Sequence[str],
-) -> Dict[str, Any]:
-    resolved_metadata = _abs_file(metadata_json, "metadata_json")
-    resolved_bdf = _abs_file(localized_bdf, "localized_bdf")
-    metadata = json.loads(Path(resolved_metadata).read_text(encoding="utf-8"))
-
-    raw_parameters = [dict(item) for item in (metadata.get("parameters") or [])]
-    raw_responses = [dict(item) for item in (metadata.get("responses") or [])]
-    parameter_map = {str(item["name"]): dict(item) for item in raw_parameters if item.get("name")}
-    response_map = {str(item["name"]): dict(item) for item in raw_responses if item.get("name")}
-
-    chosen_responses = []
-    for name in response_names:
-        item = response_map.get(str(name))
-        if item is None:
-            raise RuntimeError(f"response {name!r} not found in metadata")
-        chosen_responses.append(item)
-
-    fort51 = _artifact_file(solver_artifacts, "fort.51")
-    fort91 = _artifact_file(solver_artifacts, "fort.91")
-    fort92 = _artifact_file(solver_artifacts, "fort.92")
-
-    eigen_op2 = _read_patched_op2(fort51)
-    kelm_op2 = _read_patched_op2(fort91)
-    melm_op2 = _read_patched_op2(fort92)
-
-    if not eigen_op2.eigenvectors:
-        raise RuntimeError(f"no eigenvectors found in {fort51}")
-    eigenvectors = list(eigen_op2.eigenvectors.values())[0]
-    phi = np.asarray(eigenvectors.get_phi(), dtype=np.float64)
-    node_gridtype = np.asarray(eigenvectors.node_gridtype, dtype=np.int64)
-    raw_mode_cycles = getattr(eigenvectors, "mode_cycles", None)
-    raw_mode_numbers = getattr(eigenvectors, "modes", None)
-    mode_cycles = [float(item) for item in (np.asarray(raw_mode_cycles).tolist() if raw_mode_cycles is not None else [])]
-    mode_numbers = [int(item) for item in (np.asarray(raw_mode_numbers).tolist() if raw_mode_numbers is not None else [])]
-    mode_index_by_number = {mode: idx for idx, mode in enumerate(mode_numbers)}
-    node_id_to_eig_index = {int(node_id): idx for idx, node_id in enumerate(node_gridtype[:, 0].tolist())}
-
-    kelm = np.asarray(kelm_op2.matrices["KELM"].data, dtype=np.float64)
-    melm = np.asarray(melm_op2.matrices["MELM"].data, dtype=np.float64)
-    if kelm.shape != melm.shape:
-        raise RuntimeError(f"KELM/MELM shape mismatch: {kelm.shape} vs {melm.shape}")
-    if kelm.shape[1] != len(raw_parameters):
-        raise RuntimeError(f"KELM column count {kelm.shape[1]} does not match parameter count {len(raw_parameters)}")
-
-    model = BDF(debug=False)
-    model.read_bdf(resolved_bdf, xref=True)
-
-    mode_specs: List[Tuple[str, int, float]] = []
-    for response in chosen_responses:
-        mode_number = int(response.get("mode_number"))
-        if mode_number not in mode_index_by_number:
-            raise RuntimeError(f"mode {mode_number} not found in fort.51")
-        mode_idx = mode_index_by_number[mode_number]
-        if mode_idx >= len(mode_cycles):
-            raise RuntimeError(f"mode cycle for mode {mode_number} not available in fort.51")
-        mode_specs.append((str(response["name"]), mode_idx, float(mode_cycles[mode_idx])))
-
-    denominators = np.zeros(len(mode_specs), dtype=np.float64)
-    element_payloads: List[Tuple[Dict[str, Any], np.ndarray, np.ndarray, List[int], int]] = []
-    for col_idx, parameter in enumerate(raw_parameters):
-        element_id = int(parameter["element_id"])
-        element = model.elements.get(element_id)
-        if element is None:
-            raise RuntimeError(f"element {element_id} not found in localized BDF")
-        node_ids = [int(node_id) for node_id in (element.node_ids or [])]
-        dof_per_node = _element_dof_per_node(str(element.type or "").upper())
-        ndof = len(node_ids) * dof_per_node
-        ke = _unpack_packed_symmetric_column(kelm[:, col_idx], ndof)
-        me = _unpack_packed_symmetric_column(melm[:, col_idx], ndof)
-        element_payloads.append((parameter, ke, me, node_ids, dof_per_node))
-        for row_idx, (_, mode_idx, _) in enumerate(mode_specs):
-            phi_e = _element_mode_vector(phi, mode_idx, node_ids, dof_per_node, node_id_to_eig_index)
-            denominators[row_idx] += float(phi_e.T @ me @ phi_e)
-
-    if np.any(np.abs(denominators) < 1e-20):
-        raise RuntimeError(f"invalid modal normalization denominator from fort files: {denominators.tolist()}")
-
-    matrix = np.zeros((len(mode_specs), len(raw_parameters)), dtype=np.float64)
-    for col_idx, (parameter, ke, _me, node_ids, dof_per_node) in enumerate(element_payloads):
-        e_value = float(parameter["initial"])
-        if abs(e_value) < 1e-20:
-            raise RuntimeError(f"parameter {parameter['name']!r} has invalid initial E={e_value}")
-        dke = ke / e_value
-        for row_idx, (_response_name, mode_idx, frequency_hz) in enumerate(mode_specs):
-            phi_e = _element_mode_vector(phi, mode_idx, node_ids, dof_per_node, node_id_to_eig_index)
-            dlambda = float(phi_e.T @ dke @ phi_e) / float(denominators[row_idx])
-            matrix[row_idx, col_idx] = dlambda / (8.0 * pi * pi * frequency_hz)
-
-    row_labels = [name for name, _mode_idx, _frequency_hz in mode_specs]
-    column_labels = [str(item["name"]) for item in raw_parameters]
-    return {
-        "matrix_path": None,
-        "metadata_json": resolved_metadata,
-        "row_labels": row_labels,
-        "column_labels": column_labels,
-        "response_rows": [response_map[name] for name in row_labels],
-        "parameter_columns": [parameter_map[name] for name in column_labels],
-        "matrix": matrix,
-        "source_kind": "fort",
-        "source_files": {"fort.51": fort51, "fort.91": fort91, "fort.92": fort92},
     }
 
 
@@ -355,6 +233,8 @@ def _localize_all_elements_e(
             skipped.append({"element_id": int(eid), "reason": f"material {int(mid)} is not MAT1"})
             continue
         e_value = _material_scalar(material, "E")
+        if getattr(material, "g", None) is not None:
+            material.g = None
         if e_value is None:
             skipped.append({"element_id": int(eid), "reason": f"material {int(mid)} missing E"})
             continue
@@ -373,6 +253,10 @@ def _localize_all_elements_e(
             new_property.mid = int(new_mid)
         elif hasattr(new_property, "mid1"):
             new_property.mid1 = int(new_mid)
+            if hasattr(new_property, "mid2"):
+                new_property.mid2 = int(new_mid)
+            if hasattr(new_property, "mid3"):
+                new_property.mid3 = None
         else:
             raise RuntimeError(f"unsupported property type: {getattr(prop, 'type', '')}")
 
@@ -472,10 +356,6 @@ def _run_nastran(
     extra_args: Sequence[str],
 ) -> Dict[str, Any]:
     bdf = Path(bdf_path).resolve()
-    for stale_name in ("sens.csv", "sol200_sens.csv"):
-        stale_path = bdf.parent / stale_name
-        if stale_path.exists():
-            stale_path.unlink()
     completed = subprocess.run(
         [nastran_command, str(bdf)] + [str(item) for item in extra_args],
         cwd=str(bdf.parent),
@@ -499,8 +379,6 @@ def _parse_formatted_sensitivity_csv(
     response_names: Sequence[str],
 ) -> Dict[str, Any]:
     lines = Path(matrix_path).read_text(encoding="utf-8", errors="ignore").splitlines()
-    if not any(line.strip() for line in lines):
-        raise RuntimeError(f"sensitivity csv is empty: {matrix_path}")
     dv_names: List[str] = []
     response_blocks: List[Dict[str, Any]] = []
     idx = 0
@@ -618,9 +496,9 @@ def _build_sol200_control_lines(settings: Dict[str, Any], sensitivity_csv_intern
     if dynamic_norm not in {"MASS", "2"}:
         raise RuntimeError("dynamic.norm must be MASS or 2")
 
-    fmin = _format_free_float(float(settings.get("dynamic.fmin", 0.0)))
-    fmax = _format_free_float(float(settings.get("dynamic.fmax"))) if settings.get("dynamic.fmax") not in (None, "") else ""
-    vectors = str(int(settings.get("dynamic.vectors"))) if settings.get("dynamic.vectors") not in (None, "") else ""
+    fmin = _format_float_or_blank(settings.get("dynamic.fmin"))
+    fmax = _format_float_or_blank(settings.get("dynamic.fmax"))
+    vectors = _format_int_or_blank(settings.get("dynamic.vectors"))
     post = "-5" if str(settings.get("result.target", "OP2")).strip().upper() == "OP2" else "-1"
 
     lines: List[str] = []
@@ -631,12 +509,12 @@ def _build_sol200_control_lines(settings: Dict[str, Any], sensitivity_csv_intern
             "SOL 200",
             "CEND",
             "METHOD = 1",
-            "DISPLACEMENT(PLOT) = ALL",
-            "DSAPRT(NOPRINT,EXPORT,END=SENS)",
+            "DISPLACEMENT(PLOT)=ALL",
+            "DSAPRT(FORMATTED,EXPORT,END=SENS)" if sensitivity_csv_internal else "DSAPRT(NOPRINT,EXPORT,END=SENS)",
             "",
             "SUBCASE 1",
             "  ANALYSIS = MODES",
-            "",
+            "  DESSUB = 1",
             "BEGIN BULK",
             f"PARAM,POST,{post}",
             "PARAM,GRDPNT,0",
@@ -673,7 +551,8 @@ def _build_sol200_design_lines(parameters: Sequence[Dict[str, Any]], responses: 
 
     for index, response in enumerate(responses, start=1):
         lines.append(f"DRESP1,{index},{response['name']},FREQ,STRUC,,{int(response['mode_number'])}")
-        lines.append(f"DCONSTR,1,{index},1.0E30,1.0E30")
+        lines.append(f"DCONSTR,1,{index},-1.0E30,1.0E30")
+        lines.append(f"DSCREEN  FREQ    -1.0E30")
     return lines
 
 
@@ -718,79 +597,6 @@ def _materialize_sensitivity_csv(internal_path: Optional[str], target_path: Opti
     if src != dst:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(src), str(dst))
-
-
-def _has_nonempty_file(path: Optional[str]) -> bool:
-    if not path:
-        return False
-    try:
-        return Path(path).resolve().is_file() and Path(path).resolve().stat().st_size > 0
-    except Exception:
-        return False
-
-
-def _artifact_file(artifacts: Dict[str, Any], name: str) -> str:
-    path = artifacts.get(name)
-    if not path:
-        raise RuntimeError(f"required solver artifact {name!r} not found")
-    return _abs_file(str(path), name)
-
-
-def _read_patched_op2(path: str) -> OP2:
-    source = Path(path).resolve()
-    with tempfile.NamedTemporaryFile(suffix=source.suffix or ".op2", delete=False) as temp_file:
-        patched_path = Path(temp_file.name)
-    try:
-        patched_path.write_bytes(source.read_bytes() + b"\x04\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00")
-        model = OP2(debug=False)
-        model.read_op2(str(patched_path), skip_undefined_matrices=True)
-        return model
-    finally:
-        try:
-            patched_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-def _element_dof_per_node(element_type: str) -> int:
-    if element_type in {"CTETRA", "CPENTA", "CHEXA"}:
-        return 3
-    if element_type in {"CQUAD4", "CTRIA3", "CBAR", "CBEAM"}:
-        return 6
-    raise RuntimeError(f"unsupported element type for fort sensitivity fallback: {element_type}")
-
-
-def _unpack_packed_symmetric_column(column: np.ndarray, ndof: int) -> np.ndarray:
-    needed = ndof * (ndof + 1) // 2
-    if needed > len(column):
-        raise RuntimeError(f"packed matrix column too short for ndof={ndof}: need {needed}, got {len(column)}")
-    packed = np.asarray(column[:needed], dtype=np.float64)
-    matrix = np.zeros((ndof, ndof), dtype=np.float64)
-    idx = 0
-    for i in range(ndof):
-        for j in range(i, ndof):
-            value = packed[idx]
-            idx += 1
-            matrix[i, j] = value
-            matrix[j, i] = value
-    return matrix
-
-
-def _element_mode_vector(
-    phi: np.ndarray,
-    mode_index: int,
-    node_ids: Sequence[int],
-    dof_per_node: int,
-    node_id_to_eig_index: Dict[int, int],
-) -> np.ndarray:
-    values: List[float] = []
-    for node_id in node_ids:
-        eig_index = node_id_to_eig_index.get(int(node_id))
-        if eig_index is None:
-            raise RuntimeError(f"node {node_id} not found in fort.51 eigenvectors")
-        start = eig_index * 6
-        values.extend(phi[start:start + dof_per_node, mode_index].tolist())
-    return np.asarray(values, dtype=np.float64)
 
 
 def _resolve_sensitivity_csv_path(output_bdf: Path, settings: Dict[str, Any]) -> Optional[str]:
@@ -896,50 +702,16 @@ def _format_free_float(value: Any) -> str:
     return text
 
 
-def _ensure_sensitivity_csv_generated(matrix_path: Optional[str], solver_payload: Optional[Dict[str, Any]]) -> None:
-    if not matrix_path:
-        return
-    path = Path(matrix_path).resolve()
-    if path.exists() and path.stat().st_size > 0:
-        return
-
-    message = f"solver did not generate sensitivity csv: {path}"
-    details: List[str] = []
-    artifacts = dict((solver_payload or {}).get("artifacts") or {})
-    for key in ("f06", "f04", "log"):
-        artifact_path = artifacts.get(key)
-        if not artifact_path:
-            continue
-        fatal_preview = _extract_solver_fatal_preview(artifact_path)
-        if fatal_preview:
-            details.append(f"{key}: {fatal_preview}")
-    if details:
-        message = f"{message}; {' | '.join(details)}"
-    alternate_outputs = [key for key in ("fort.51", "fort.91", "fort.92", "op2", "pch") if artifacts.get(key)]
-    if alternate_outputs:
-        message = (
-            f"{message}; solver artifacts available: {', '.join(alternate_outputs)}"
-            " (current standalone flow only parses formatted sensitivity csv)"
-        )
-    raise RuntimeError(message)
-
-
-def _extract_solver_fatal_preview(path: str) -> str:
-    try:
-        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
-    except Exception:
+def _format_float_or_blank(value: Any) -> str:
+    if value in (None, ""):
         return ""
-    hits: List[str] = []
-    for line in lines:
-        stripped = line.strip()
-        upper = stripped.upper()
-        if "USER FATAL MESSAGE" in upper or "SYSTEM FATAL MESSAGE" in upper:
-            hits.append(stripped)
-        elif hits and stripped:
-            hits.append(stripped)
-        if len(hits) >= 4:
-            break
-    return " / ".join(hits[:4])
+    return _format_small_float(float(value)).strip()
+
+
+def _format_int_or_blank(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    return str(int(value))
 
 
 def _parse_float(text: str) -> float:

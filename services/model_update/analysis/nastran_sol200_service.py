@@ -529,6 +529,10 @@ def _clone_property_with_material(prop: Any, *, new_pid: int, new_mid: int) -> A
         return cloned
     if hasattr(cloned, "mid1"):
         cloned.mid1 = int(new_mid)
+        if hasattr(cloned, "mid2"):
+            cloned.mid2 = int(new_mid)
+        if hasattr(cloned, "mid3"):
+            cloned.mid3 = None
         return cloned
     raise ValidationError(
         "property type does not support single-material E localization in phase 1",
@@ -540,6 +544,8 @@ def _material_copy_with_new_id(material: Any, *, new_mid: int) -> Any:
     cloned = copy.deepcopy(material)
     if hasattr(cloned, "mid"):
         cloned.mid = int(new_mid)
+        if getattr(cloned, "g", None) is not None:
+            cloned.g = None
         return cloned
     raise ValidationError(
         "material type does not support cloning in phase 1",
