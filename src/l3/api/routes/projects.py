@@ -14,7 +14,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel
 from typing import Optional
 
@@ -84,6 +84,65 @@ class CloneProjectRequest(BaseModel):
 
 
 # ── Shared helper ──────────────────────────────────────────────────────────────
+
+def _default_upload_name(source_type: Optional[str]) -> str:
+    suffix_map = {
+        "inp": ".inp",
+        "odb": ".odb",
+        "bdf": ".bdf",
+        "op2": ".op2",
+    }
+    return "upload" + suffix_map.get((source_type or "").strip().lower(), "")
+
+
+async def _persist_uploaded_project_file(
+    upload: UploadFile,
+    workspace: Path,
+    source_type: Optional[str],
+) -> str:
+    file_name = Path((upload.filename or "").strip()).name or _default_upload_name(source_type)
+    uploads_dir = workspace / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    target = uploads_dir / file_name
+
+    try:
+        with target.open("wb") as f:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+    finally:
+        await upload.close()
+
+    return str(target.resolve())
+
+
+async def _parse_create_project_request(
+    request: Request,
+    project_id_form: Optional[str],
+    source_path_form: Optional[str],
+    source_type_form: Optional[str],
+    file: Optional[UploadFile],
+):
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise ValidationError("Request body is not valid JSON") from exc
+        body = CreateProjectRequest(**payload)
+        return body.project_id, body.source_path, body.source_type, None
+
+    if not project_id_form:
+        raise ValidationError("project_id is required")
+    if file is not None and source_path_form:
+        raise ValidationError("Pass either source_path or file, not both")
+    if file is None and not source_path_form:
+        raise ValidationError("Either source_path or file is required")
+
+    return project_id_form, source_path_form or "", source_type_form, file
+
 
 def _build_project_response(proj, repo) -> dict:
     """Build the full project dict (including result_groups) from a projects row."""
@@ -197,7 +256,13 @@ async def list_projects():
 # ── POST /api/projects ─────────────────────────────────────────────────────────
 
 @router.post("", status_code=201)
-async def create_project(body: CreateProjectRequest):
+async def create_project(
+    request: Request,
+    project_id_form: Optional[str] = Form(default=None, alias="project_id"),
+    source_path_form: Optional[str] = Form(default=None, alias="source_path"),
+    source_type_form: Optional[str] = Form(default=None, alias="source_type"),
+    file: Optional[UploadFile] = File(default=None),
+):
     """
     创建新 project，触发 source_path 对应的解析流程。
     调用方（Java 后端）提供 project_id（UUID），避免 L3 自己生成。
@@ -205,10 +270,21 @@ async def create_project(body: CreateProjectRequest):
     若同 project_id 已存在且 geom_status='error'，视为重试：
     清空 workspace、更新 source_path、重置为 pending。
     """
-    project_id = validate_workspace_id(body.project_id, "project_id")
-    if not _is_http_url(body.source_path) and not os.path.isfile(body.source_path):
-        raise ValidationError(f"File not found on server: {body.source_path}")
-    source_type = _detect_source_type(body.source_path, body.source_type)
+    project_id_raw, source_path_raw, source_type_raw, uploaded_file = await _parse_create_project_request(
+        request,
+        project_id_form,
+        source_path_form,
+        source_type_form,
+        file,
+    )
+    project_id = validate_workspace_id(project_id_raw, "project_id")
+    if uploaded_file is None:
+        if not _is_http_url(source_path_raw) and not os.path.isfile(source_path_raw):
+            raise ValidationError(f"File not found on server: {source_path_raw}")
+        source_type = _detect_source_type(source_path_raw, source_type_raw)
+    else:
+        upload_name = Path((uploaded_file.filename or "").strip()).name or _default_upload_name(source_type_raw)
+        source_type = _detect_source_type(upload_name, source_type_raw)
 
     repo = _repo()
     existing = repo.get_project(project_id)
@@ -224,7 +300,14 @@ async def create_project(body: CreateProjectRequest):
         if workspace.exists() or workspace.is_symlink():
             safe_rmtree(workspace, settings.data_root, "project workspace")
         workspace.mkdir(parents=True, exist_ok=True)
-        repo.reset_project_for_retry(project_id, body.source_path, source_type)
+        source_path = source_path_raw
+        if uploaded_file is not None:
+            try:
+                source_path = await _persist_uploaded_project_file(uploaded_file, workspace, source_type)
+            except Exception:
+                safe_rmtree(workspace, settings.data_root, "project workspace")
+                raise
+        repo.reset_project_for_retry(project_id, source_path, source_type)
         return ok({
             "project_id": project_id,
             "source_type": source_type,
@@ -242,10 +325,13 @@ async def create_project(body: CreateProjectRequest):
     # Store bare project_id as workspace key (same pattern as odb_jobs).
     # resolve_workspace(project_id, data_root) → data_root/project_id at read time.
     try:
+        source_path = source_path_raw
+        if uploaded_file is not None:
+            source_path = await _persist_uploaded_project_file(uploaded_file, workspace, source_type)
         repo.create_project(
             project_id=project_id,
             workspace=project_id,
-            inp_path=body.source_path,
+            inp_path=source_path,
             source_type=source_type,
         )
     except Exception:

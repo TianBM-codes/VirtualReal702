@@ -191,6 +191,7 @@ const expandedProjects = reactive(new Set())
 const showCreateProject = ref(false)
 const newProjectId = ref('')
 const newProjectInp = ref('')
+const newProjectUploadFile = ref(null)
 const addRgProjectId = ref(null)
 const addRgPath = ref('')
 const addRgName = ref('')
@@ -291,6 +292,14 @@ function setPathFromPicker(targetKey, absolutePath, sourceLabel) {
   store.setStatus(`${pathLabelFor(targetKey)}已通过${sourceLabel}填入`, 'ok')
 }
 
+function setProjectUploadFromPicker(file, sourceLabel, absolutePath = null) {
+  if (!file) return
+  newProjectUploadFile.value = file
+  newProjectInp.value = absolutePath || file.name || ''
+  setPickerHint('newProjectInp', `宸查€夋嫨鏈湴鏂囦欢锛屽皢閫氳繃 API 涓婁紶锛?{file.name}`, 'ok')
+  store.setStatus(`Project 婧愭枃浠跺皢閫氳繃${sourceLabel}涓婁紶`, 'ok')
+}
+
 function showPathAccessHint(targetKey, file) {
   const fileLabel = file?.webkitRelativePath || file?.name || '所选文件'
   setPickerHint(
@@ -305,6 +314,7 @@ function showPathAccessHint(targetKey, file) {
 }
 
 function openLocalFilePicker(targetKey, accept) {
+  if (targetKey === 'newProjectInp') newProjectUploadFile.value = null
   pickerContext.value = {
     targetKey,
     extensions: accept.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
@@ -317,6 +327,7 @@ function openLocalFilePicker(targetKey, accept) {
 }
 
 function openLocalDirectoryPicker(targetKey, extensions) {
+  if (targetKey === 'newProjectInp') newProjectUploadFile.value = null
   pickerContext.value = {
     targetKey,
     extensions: (extensions || []).map(s => s.trim().toLowerCase()).filter(Boolean),
@@ -345,6 +356,11 @@ function onLocalFilePicked(event) {
     return
   }
   const absolutePath = resolveAbsolutePath(file, inputEl)
+  if (ctx.targetKey === 'newProjectInp') {
+    setProjectUploadFromPicker(file, '鏈湴鏂囦欢閫夋嫨', absolutePath)
+    resetPickerInput(inputEl)
+    return
+  }
   if (!absolutePath) {
     showPathAccessHint(ctx.targetKey, file)
     resetPickerInput(inputEl)
@@ -392,6 +408,11 @@ function onLocalDirectoryPicked(event) {
   }
 
   const absolutePath = resolveAbsolutePath(file, inputEl)
+  if (ctx.targetKey === 'newProjectInp') {
+    setProjectUploadFromPicker(file, '鏈湴鐩綍閫夋嫨', absolutePath)
+    resetPickerInput(inputEl)
+    return
+  }
   if (!absolutePath) {
     showPathAccessHint(ctx.targetKey, file)
     resetPickerInput(inputEl)
@@ -493,13 +514,19 @@ function selectResultGroup(projectId, rg) {
 
 async function onCreateProject() {
   try {
-    await api.createProject(newProjectId.value, newProjectInp.value)
+    const sourceText = (newProjectInp.value || '').trim()
+    const hasServerPath = /^https?:\/\//i.test(sourceText) || /^[A-Za-z]:[\\/]/.test(sourceText) || sourceText.startsWith('/')
+    const sourceInput = hasServerPath || !newProjectUploadFile.value
+      ? sourceText
+      : newProjectUploadFile.value
+    await api.createProject(newProjectId.value, sourceInput)
     const res = await api.fetchProject(newProjectId.value)
     projects.value.unshift(res.data)
     expandedProjects.add(newProjectId.value)
     showCreateProject.value = false
     newProjectId.value = ''
     newProjectInp.value = ''
+    newProjectUploadFile.value = null
     store.setStatus('Project 已创建，正在解析源文件…', 'ok')
     startProjectPolling()
   } catch (e) {
