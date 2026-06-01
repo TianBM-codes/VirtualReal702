@@ -28,6 +28,7 @@ from services.model_update.analysis.nastran_sol200_service import (
     store_sol200_sensitivity,
 )
 from services.model_update.analysis.project_file_service import (
+    resolve_project_cal_root,
     resolve_project_input_file,
     resolve_project_output_dir,
     resolve_project_output_file,
@@ -99,6 +100,38 @@ def _resolve_project_local_input(
             {"project_id": project_id, field_name: str(resolved)},
         )
     return str(resolved)
+
+
+def _resolve_project_local_input_with_fallback(
+    *,
+    project_id: Optional[int],
+    explicit_path: Optional[str],
+    file_name: Optional[str],
+    field_name: str,
+    fallback_category_parts: tuple[str, ...] = (),
+) -> str:
+    raw = str(explicit_path or "").strip() or str(file_name or "").strip()
+    try:
+        return _resolve_project_local_input(
+            project_id=project_id,
+            explicit_path=explicit_path,
+            file_name=file_name,
+            field_name=field_name,
+        )
+    except AppError as exc:
+        if project_id is None or not raw or Path(raw).expanduser().is_absolute() or not fallback_category_parts:
+            raise exc
+        fallback_root = resolve_project_cal_root(int(project_id), *fallback_category_parts)
+        candidate = (Path(fallback_root) / Path(raw)).expanduser().resolve()
+        try:
+            common = os.path.commonpath([str(Path(fallback_root).resolve()), str(candidate)])
+        except ValueError:
+            raise exc
+        if common != str(Path(fallback_root).resolve()):
+            raise exc
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+        raise exc
 
 
 def _resolve_project_local_output_dir(
@@ -705,18 +738,20 @@ async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
     try:
         resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
         if body.project_id is not None and (str(body.op2_path or "").strip() or str(body.op2_file_name or "").strip()):
-            resolved_op2_path = _resolve_project_local_input(
+            resolved_op2_path = _resolve_project_local_input_with_fallback(
                 project_id=body.project_id,
                 explicit_path=body.op2_path,
                 file_name=body.op2_file_name,
                 field_name="op2_path",
+                fallback_category_parts=("solver", "nastran_sol103"),
             )
         resolved_bdf_path = (
-            _resolve_project_local_input(
+            _resolve_project_local_input_with_fallback(
                 project_id=int(body.project_id),
                 explicit_path=body.bdf_path,
                 file_name=body.bdf_file_name,
                 field_name="bdf_path",
+                fallback_category_parts=("solver", "nastran_sol103"),
             )
             if body.project_id is not None and (str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip())
             else body.bdf_path
@@ -790,20 +825,22 @@ async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
         if str(body.op2_path or "").strip() or str(body.op2_file_name or "").strip():
-            resolved_op2_path = _resolve_project_local_input(
+            resolved_op2_path = _resolve_project_local_input_with_fallback(
                 project_id=body.project_id,
                 explicit_path=body.op2_path,
                 file_name=body.op2_file_name,
                 field_name="op2_path",
+                fallback_category_parts=("solver", "nastran_sol103"),
             )
         else:
             resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
         resolved_bdf_path = (
-            _resolve_project_local_input(
+            _resolve_project_local_input_with_fallback(
                 project_id=body.project_id,
                 explicit_path=body.bdf_path,
                 file_name=body.bdf_file_name,
                 field_name="bdf_path",
+                fallback_category_parts=("solver", "nastran_sol103"),
             )
             if str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip()
             else None
@@ -839,17 +876,19 @@ async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
 async def export_op2_modal_vtu_api(request: Request, body: Op2ModalVtuExportRequest):
     await log_request(request, model_to_dict(body))
     try:
-        op2_path = _resolve_project_local_input(
+        op2_path = _resolve_project_local_input_with_fallback(
             project_id=body.project_id,
             explicit_path=body.op2_path,
             file_name=body.op2_file_name,
             field_name="op2_path",
+            fallback_category_parts=("solver", "nastran_sol103"),
         )
-        bdf_path = _resolve_project_local_input(
+        bdf_path = _resolve_project_local_input_with_fallback(
             project_id=body.project_id,
             explicit_path=body.bdf_path,
             file_name=body.bdf_file_name,
             field_name="bdf_path",
+            fallback_category_parts=("solver", "nastran_sol103"),
         )
         output_vtu = _resolve_project_local_output_file(
             project_id=body.project_id,
