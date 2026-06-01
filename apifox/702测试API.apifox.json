@@ -196,7 +196,7 @@
                   "parameters": [],
                   "oasExtensions": ""
                 },
-                "description": "",
+                "description": "Import BDF baseline FEM data and automatically build model-update capability catalogs. The backend now writes both `PROPERTY_<pid>` and `MAT1_<mid>` style sets into `t_mt_py_fem_quantity_set_capability`, including `E`, `T/H`, and `RHO` where applicable.",
                 "tags": [
                   "宠物"
                 ],
@@ -1131,6 +1131,366 @@
                 "responseChildren": [],
                 "visibility": "INHERITED",
                 "moduleId": 6177934,
+                "oasExtensions": "",
+                "type": "http",
+                "preProcessors": [],
+                "postProcessors": [],
+                "inheritPostProcessors": {},
+                "inheritPreProcessors": {}
+              }
+            },
+            {
+              "name": "List saved optimization parameters",
+              "api": {
+                "id": "437164930",
+                "method": "post",
+                "path": "/optimization/parameter",
+                "parameters": {
+                  "path": [],
+                  "query": [],
+                  "cookie": [],
+                  "header": []
+                },
+                "auth": {},
+                "securityScheme": {},
+                "commonParameters": {},
+                "responses": [
+                  {
+                    "id": "183805990",
+                    "code": "200",
+                    "headers": [],
+                    "jsonSchema": {
+                      "$ref": "#/definitions/260138651"
+                    },
+                    "itemSchema": {},
+                    "description": "OK",
+                    "contentType": "json",
+                    "mediaType": "application/json",
+                    "oasExtensions": ""
+                  }
+                ],
+                "responseExamples": [],
+                "requestBody": {
+                  "type": "application/json",
+                  "parameters": [],
+                  "jsonSchema": {
+                    "$ref": "#/definitions/260138703"
+                  },
+                  "mediaType": "application/json",
+                  "oasExtensions": "",
+                  "required": true,
+                  "additionalContent": [],
+                  "examples": [
+                    {
+                      "value": "{\n    \"project_id\": 3\n}",
+                      "mediaType": "application/json",
+                      "description": ""
+                    }
+                  ]
+                },
+                "description": "Query saved optimization parameters from `t_mt_py_fem_selected_parameter` before syncing to SOL200.",
+                "tags": [
+                  "optimization"
+                ],
+                "status": "released",
+                "serverId": "",
+                "operationId": "",
+                "sourceUrl": "",
+                "ordering": 7,
+                "cases": [
+                  {
+                    "id": 360001140,
+                    "type": "DEBUG_CASE",
+                    "path": null,
+                    "name": "成功",
+                    "responseId": "183805990",
+                    "parameters": {
+                      "path": [],
+                      "query": [],
+                      "cookie": [],
+                      "header": []
+                    },
+                    "commonParameters": {},
+                    "requestBody": {
+                      "parameters": [],
+                      "data": "{\n    \"project_id\": 3\n}",
+                      "type": "application/json",
+                      "generateMode": "normal"
+                    },
+                    "auth": {},
+                    "securityScheme": {},
+                    "advancedSettings": {
+                      "disabledSystemHeaders": {}
+                    },
+                    "requestResult": null,
+                    "visibility": "INHERITED",
+                    "moduleId": 7419173,
+                    "categoryId": 0,
+                    "tagIds": [],
+                    "apiTestDataList": [],
+                    "preProcessors": [],
+                    "postProcessors": [],
+                    "inheritPostProcessors": {
+                      "enable": {},
+                      "defaultEnable": {}
+                    },
+                    "inheritPreProcessors": {
+                      "enable": {},
+                      "defaultEnable": {}
+                    }
+                  }
+                ],
+                "mocks": [],
+                "customApiFields": "{}",
+                "advancedSettings": {
+                  "disabledSystemHeaders": {}
+                },
+                "mockScript": {},
+                "codeSamples": [],
+                "commonResponseStatus": {},
+                "responseChildren": [],
+                "visibility": "INHERITED",
+                "moduleId": 7419173,
+                "oasExtensions": "",
+                "type": "http",
+                "preProcessors": [],
+                "postProcessors": [],
+                "inheritPostProcessors": {},
+                "inheritPreProcessors": {}
+              }
+            },
+            {
+              "name": "Build modal-frequency response catalog from modal match",
+              "api": {
+                "id": "437164931",
+                "method": "post",
+                "path": "/optimization/response/modal_frequency/create_from_match",
+                "parameters": {
+                  "path": [],
+                  "query": [],
+                  "cookie": [],
+                  "header": []
+                },
+                "auth": {},
+                "securityScheme": {},
+                "commonParameters": {},
+                "responses": [
+                  {
+                    "id": "183805991",
+                    "code": "200",
+                    "headers": [],
+                    "jsonSchema": {
+                      "$ref": "#/definitions/260138651"
+                    },
+                    "itemSchema": {},
+                    "description": "OK",
+                    "contentType": "json",
+                    "mediaType": "application/json",
+                    "oasExtensions": ""
+                  }
+                ],
+                "responseExamples": [],
+                "requestBody": {
+                  "type": "application/json",
+                  "parameters": [],
+                  "jsonSchema": {
+                    "$ref": "#/definitions/260138704"
+                  },
+                  "mediaType": "application/json",
+                  "oasExtensions": "",
+                  "required": true,
+                  "additionalContent": [],
+                  "examples": [
+                    {
+                      "value": "{\n    \"project_id\": 3,\n    \"overwrite\": true,\n    \"mac_threshold\": 80,\n    \"max_freq_error_ratio\": 0.15,\n    \"matching_method\": \"greedy\"\n}",
+                      "mediaType": "application/json",
+                      "description": ""
+                    }
+                  ]
+                },
+                "description": "Create `MODAL_FREQUENCY` response catalog rows from the current modal-match result so they can be synced into SOL200 responses.",
+                "tags": [
+                  "optimization"
+                ],
+                "status": "released",
+                "serverId": "",
+                "operationId": "",
+                "sourceUrl": "",
+                "ordering": 8,
+                "cases": [
+                  {
+                    "id": 360001141,
+                    "type": "DEBUG_CASE",
+                    "path": null,
+                    "name": "成功",
+                    "responseId": "183805991",
+                    "parameters": {
+                      "path": [],
+                      "query": [],
+                      "cookie": [],
+                      "header": []
+                    },
+                    "commonParameters": {},
+                    "requestBody": {
+                      "parameters": [],
+                      "data": "{\n    \"project_id\": 3,\n    \"overwrite\": true,\n    \"mac_threshold\": 80,\n    \"max_freq_error_ratio\": 0.15,\n    \"matching_method\": \"greedy\"\n}",
+                      "type": "application/json",
+                      "generateMode": "normal"
+                    },
+                    "auth": {},
+                    "securityScheme": {},
+                    "advancedSettings": {
+                      "disabledSystemHeaders": {}
+                    },
+                    "requestResult": null,
+                    "visibility": "INHERITED",
+                    "moduleId": 7419173,
+                    "categoryId": 0,
+                    "tagIds": [],
+                    "apiTestDataList": [],
+                    "preProcessors": [],
+                    "postProcessors": [],
+                    "inheritPostProcessors": {
+                      "enable": {},
+                      "defaultEnable": {}
+                    },
+                    "inheritPreProcessors": {
+                      "enable": {},
+                      "defaultEnable": {}
+                    }
+                  }
+                ],
+                "mocks": [],
+                "customApiFields": "{}",
+                "advancedSettings": {
+                  "disabledSystemHeaders": {}
+                },
+                "mockScript": {},
+                "codeSamples": [],
+                "commonResponseStatus": {},
+                "responseChildren": [],
+                "visibility": "INHERITED",
+                "moduleId": 7419173,
+                "oasExtensions": "",
+                "type": "http",
+                "preProcessors": [],
+                "postProcessors": [],
+                "inheritPostProcessors": {},
+                "inheritPreProcessors": {}
+              }
+            },
+            {
+              "name": "Sync optimization catalog into SOL200 config",
+              "api": {
+                "id": "437164932",
+                "method": "post",
+                "path": "/optimization/sol200/config/sync_from_catalog",
+                "parameters": {
+                  "path": [],
+                  "query": [],
+                  "cookie": [],
+                  "header": []
+                },
+                "auth": {},
+                "securityScheme": {},
+                "commonParameters": {},
+                "responses": [
+                  {
+                    "id": "183805992",
+                    "code": "200",
+                    "headers": [],
+                    "jsonSchema": {
+                      "$ref": "#/definitions/260138651"
+                    },
+                    "itemSchema": {},
+                    "description": "OK",
+                    "contentType": "json",
+                    "mediaType": "application/json",
+                    "oasExtensions": ""
+                  }
+                ],
+                "responseExamples": [],
+                "requestBody": {
+                  "type": "application/json",
+                  "parameters": [],
+                  "jsonSchema": {
+                    "$ref": "#/definitions/260138705"
+                  },
+                  "mediaType": "application/json",
+                  "oasExtensions": "",
+                  "required": true,
+                  "additionalContent": [],
+                  "examples": [
+                    {
+                      "value": "{\n    \"project_id\": 3,\n    \"overwrite\": true,\n    \"parameter_source\": \"selected_parameter\",\n    \"response_source\": \"response_catalog\"\n}",
+                      "mediaType": "application/json",
+                      "description": ""
+                    }
+                  ]
+                },
+                "description": "Sync saved optimization parameters and modal-frequency responses into SOL200 parameter/response config tables.",
+                "tags": [
+                  "optimization"
+                ],
+                "status": "released",
+                "serverId": "",
+                "operationId": "",
+                "sourceUrl": "",
+                "ordering": 9,
+                "cases": [
+                  {
+                    "id": 360001142,
+                    "type": "DEBUG_CASE",
+                    "path": null,
+                    "name": "成功",
+                    "responseId": "183805992",
+                    "parameters": {
+                      "path": [],
+                      "query": [],
+                      "cookie": [],
+                      "header": []
+                    },
+                    "commonParameters": {},
+                    "requestBody": {
+                      "parameters": [],
+                      "data": "{\n    \"project_id\": 3,\n    \"overwrite\": true,\n    \"parameter_source\": \"selected_parameter\",\n    \"response_source\": \"response_catalog\"\n}",
+                      "type": "application/json",
+                      "generateMode": "normal"
+                    },
+                    "auth": {},
+                    "securityScheme": {},
+                    "advancedSettings": {
+                      "disabledSystemHeaders": {}
+                    },
+                    "requestResult": null,
+                    "visibility": "INHERITED",
+                    "moduleId": 7419173,
+                    "categoryId": 0,
+                    "tagIds": [],
+                    "apiTestDataList": [],
+                    "preProcessors": [],
+                    "postProcessors": [],
+                    "inheritPostProcessors": {
+                      "enable": {},
+                      "defaultEnable": {}
+                    },
+                    "inheritPreProcessors": {
+                      "enable": {},
+                      "defaultEnable": {}
+                    }
+                  }
+                ],
+                "mocks": [],
+                "customApiFields": "{}",
+                "advancedSettings": {
+                  "disabledSystemHeaders": {}
+                },
+                "mockScript": {},
+                "codeSamples": [],
+                "commonResponseStatus": {},
+                "responseChildren": [],
+                "visibility": "INHERITED",
+                "moduleId": 7419173,
                 "oasExtensions": "",
                 "type": "http",
                 "preProcessors": [],
@@ -5444,6 +5804,138 @@
           "moduleId": 7419173
         },
         {
+          "name": "OptimizationParameterCatalogRequest",
+          "displayName": "",
+          "id": "#/definitions/260138703",
+          "description": "",
+          "schema": {
+            "jsonSchema": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "project_id"
+              ],
+              "x-apifox-orders": [
+                "project_id"
+              ]
+            }
+          },
+          "visibility": "INHERITED",
+          "moduleId": 7419173
+        },
+        {
+          "name": "ModalFrequencyResponseFromMatchRequest",
+          "displayName": "",
+          "id": "#/definitions/260138704",
+          "description": "Build modal-frequency response catalog rows from already matched modal pairs. `mac_threshold` accepts either 0-1 or 0-100 scale.",
+          "schema": {
+            "jsonSchema": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "integer"
+                },
+                "overwrite": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "mac_threshold": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "max_freq_error_ratio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "matching_method": {
+                  "type": "string",
+                  "default": "greedy"
+                }
+              },
+              "required": [
+                "project_id"
+              ],
+              "x-apifox-orders": [
+                "project_id",
+                "overwrite",
+                "mac_threshold",
+                "max_freq_error_ratio",
+                "matching_method"
+              ]
+            }
+          },
+          "visibility": "INHERITED",
+          "moduleId": 7419173
+        },
+        {
+          "name": "Sol200SyncFromCatalogRequest",
+          "displayName": "",
+          "id": "#/definitions/260138705",
+          "description": "Sync saved optimization parameters and modal-frequency responses into SOL200 config tables.",
+          "schema": {
+            "jsonSchema": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "integer"
+                },
+                "overwrite": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "parameter_source": {
+                  "type": "string",
+                  "default": "selected_parameter"
+                },
+                "response_source": {
+                  "type": "string",
+                  "default": "response_catalog"
+                },
+                "mac_threshold": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "max_freq_error_ratio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "matching_method": {
+                  "type": "string",
+                  "default": "greedy"
+                }
+              },
+              "required": [
+                "project_id"
+              ],
+              "x-apifox-orders": [
+                "project_id",
+                "overwrite",
+                "parameter_source",
+                "response_source",
+                "mac_threshold",
+                "max_freq_error_ratio",
+                "matching_method"
+              ]
+            }
+          },
+          "visibility": "INHERITED",
+          "moduleId": 7419173
+        },
+        {
           "name": "DumpJsonRequest",
           "displayName": "",
           "id": "#/definitions/260138655",
@@ -9527,7 +10019,7 @@
     {
       "id": "7419173",
       "name": "VirtualReal702 Model Update API",
-      "description": "Model-updating focused APIs exposed by `app.py`.\n\nSuggested smoke-test order in Apifox:\n1. `POST /init`\n2. `POST /import/unv`\n3. `POST /import/inp/catalog`\n4. `POST /catalog/inp`\n5. `POST /optimization/parameter/create`\n6. `POST /match/nodes`\n7. `POST /match/dofs`\n8. `POST /match/dofs/query`\n9. `POST /catalog/response/build`\n10. `POST /catalog/response`\n11. `POST /import/fem/modal`\n12. `POST /import/fem/modal/query`\n13. `POST /correlation/modal/compute`\n14. `POST /correlation/modal`\n\nNotes:\n- Start service with `python app.py`, default server is `http://127.0.0.1:5000`.\n- `/match/nodes` currently does not expose `auto_rotate` in the FastAPI model, but the backend service defaults it to `true`.\n- ODB visualization APIs under `src/l3` are intentionally omitted here.\n",
+      "description": "Model-updating focused APIs exposed by `app.py`.\n\nSuggested smoke-test order in Apifox:\n1. `POST /import/bdf`\n2. `POST /optimization/parameter/create`\n3. `POST /optimization/parameter`\n4. `POST /import/op2/modal/store`\n5. `POST /correlation/modal/compute`\n6. `POST /optimization/response/modal_frequency/create_from_match`\n7. `POST /optimization/response`\n8. `POST /optimization/sol200/config/sync_from_catalog`\n9. `POST /optimization/sol200/parameter`\n10. `POST /optimization/sol200/response`\n11. `POST /solver/nastran/sol200/generate`\n\nNotes:\n- Start service with `python app.py`, default server is `http://127.0.0.1:5000`.\n- `POST /import/bdf` now builds both `PROPERTY_<pid>` and `MAT1_<mid>` capability sets for dynamic model-updating.\n- `POST /optimization/response/modal_frequency/create_from_match` accepts `mac_threshold` in either 0-1 or 0-100 scale.\n- ODB visualization APIs under `src/l3` are intentionally omitted here.\n",
       "moduleVariables": [],
       "openApiInfo": {
         "title": "VirtualReal702 Model Update API",

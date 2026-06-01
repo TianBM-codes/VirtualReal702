@@ -86,6 +86,26 @@ def _material_elastic_modulus(material):
     return None
 
 
+def _material_density(material):
+    if material is None:
+        return None
+    for attr_name in ("rho", "Rho", "RHO"):
+        value = getattr(material, attr_name, None)
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                pass
+    try:
+        fields = list(material.raw_fields() or [])
+    except Exception:
+        fields = []
+    material_type = str(getattr(material, "type", "") or "").upper()
+    if material_type in {"MAT1", "MAT8", "MAT9"} and len(fields) > 1 and fields[1] not in (None, ""):
+        return float(fields[1])
+    return None
+
+
 def _property_thickness(prop):
     if prop is None:
         return None
@@ -123,11 +143,16 @@ def _property_element_family(prop):
 def _build_bdf_property_set_capabilities(bdf_parser):
     bdf_model = bdf_parser.bdf
     property_elements = {}
+    material_elements = {}
     for eid, element in sorted((bdf_model.elements or {}).items()):
         pid = _element_property_id(element)
         if pid is None:
             continue
         property_elements.setdefault(int(pid), []).append(int(eid))
+        prop = bdf_model.properties.get(int(pid))
+        material_id = _property_material_id(prop)
+        if material_id is not None:
+            material_elements.setdefault(int(material_id), []).append(int(eid))
 
     capability_rows = []
     for pid, element_labels in sorted(property_elements.items()):
@@ -140,6 +165,7 @@ def _build_bdf_property_set_capabilities(bdf_parser):
         material = bdf_model.materials.get(int(material_id)) if material_id is not None else None
         material_name = f"MID_{int(material_id)}" if material_id is not None else None
         e_value = _material_elastic_modulus(material)
+        rho_value = _material_density(material)
         t_value = _property_thickness(prop)
         part_name = "BDF_MODEL"
         set_name = f"PROPERTY_{int(pid)}"
@@ -151,6 +177,7 @@ def _build_bdf_property_set_capabilities(bdf_parser):
         quantity_values = {
             "E": e_value,
             "T": t_value,
+            "RHO": rho_value,
         }
         section_type = str(getattr(prop, "type", "") or "").upper() or None
 
@@ -160,6 +187,9 @@ def _build_bdf_property_set_capabilities(bdf_parser):
             supports_global = False
             supports_local = False
             if quantity_code == "E" and current_value is not None and element_family in {"SHELL", "SOLID", "BEAM"}:
+                supports_global = True
+                supports_local = True
+            elif quantity_code == "RHO" and current_value is not None and element_family in {"SHELL", "SOLID", "BEAM"}:
                 supports_global = True
                 supports_local = True
             elif quantity_code == "T" and current_value is not None and element_family == "SHELL":
@@ -191,6 +221,56 @@ def _build_bdf_property_set_capabilities(bdf_parser):
                     "extra_json": {
                         "property_id": int(pid),
                         "material_id": int(material_id) if material_id is not None else None,
+                        "element_labels": [int(label) for label in element_labels],
+                        "target_keys": target_keys,
+                        "target_keys_by_label": target_keys_by_label,
+                        "element_values": element_values,
+                    },
+                }
+            )
+
+    for material_id, element_labels in sorted(material_elements.items()):
+        material = bdf_model.materials.get(int(material_id))
+        if material is None:
+            continue
+        part_name = "BDF_MODEL"
+        set_name = f"MAT1_{int(material_id)}"
+        target_keys = [f"PART::{part_name}::{int(label)}" for label in element_labels]
+        target_keys_by_label = {
+            str(int(label)): [f"PART::{part_name}::{int(label)}"] for label in element_labels
+        }
+        e_value = _material_elastic_modulus(material)
+        rho_value = _material_density(material)
+        quantity_values = {
+            "E": e_value,
+            "RHO": rho_value,
+        }
+        for quantity in _SUPPORTED_CORRECTION_QUANTITIES:
+            quantity_code = str(quantity["quantity_code"])
+            current_value = quantity_values.get(quantity_code)
+            if quantity_code not in {"E", "RHO"} or current_value is None:
+                continue
+            element_values = {
+                str(int(label)): float(current_value) for label in element_labels
+            }
+            capability_rows.append(
+                {
+                    "quantity_code": quantity_code,
+                    "set_name": set_name,
+                    "set_type": "MATERIAL",
+                    "set_scope": "PART",
+                    "instance_name": None,
+                    "part_name": part_name,
+                    "set_role": "MATERIAL_SET",
+                    "element_family": "MIXED",
+                    "section_type": str(getattr(material, "type", "") or "").upper() or None,
+                    "material_name": set_name,
+                    "member_count": len(element_labels),
+                    "supports_global": True,
+                    "supports_local": True,
+                    "current_value": float(current_value),
+                    "extra_json": {
+                        "material_id": int(material_id),
                         "element_labels": [int(label) for label in element_labels],
                         "target_keys": target_keys,
                         "target_keys_by_label": target_keys_by_label,

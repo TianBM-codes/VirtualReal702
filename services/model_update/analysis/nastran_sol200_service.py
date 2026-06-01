@@ -355,6 +355,226 @@ def clear_sol200_response_config_entries(project_id: int) -> dict:
         conn.close()
 
 
+def _normalize_sync_mac_threshold(mac_threshold: Optional[float]) -> Optional[float]:
+    if mac_threshold is None:
+        return None
+    resolved = float(mac_threshold)
+    if resolved < 0.0:
+        raise ValidationError("mac_threshold must be >= 0", {"mac_threshold": mac_threshold})
+    if resolved <= 1.0:
+        return resolved * 100.0
+    if resolved <= 100.0:
+        return resolved
+    raise ValidationError("mac_threshold must be <= 100", {"mac_threshold": mac_threshold})
+
+
+def _extract_numeric_suffix(text: Any, prefixes: Sequence[str]) -> Optional[int]:
+    token = str(text or "").strip().upper()
+    for prefix in prefixes:
+        normalized_prefix = str(prefix).strip().upper()
+        if token.startswith(normalized_prefix):
+            suffix = token[len(normalized_prefix):].strip("_:-")
+            if suffix.isdigit():
+                return int(suffix)
+    return None
+
+
+def _infer_material_id(parameter_row: Dict[str, Any]) -> Optional[int]:
+    extra = dict(parameter_row.get("extra_json") or {})
+    for key in ("material_id", "source_material_id", "mid"):
+        value = extra.get(key)
+        if value is not None:
+            return int(value)
+    return _extract_numeric_suffix(parameter_row.get("set_name"), ("MAT1_", "MAT_", "MID_"))
+
+
+def _infer_property_id(parameter_row: Dict[str, Any]) -> Optional[int]:
+    extra = dict(parameter_row.get("extra_json") or {})
+    for key in ("property_id", "source_property_id", "pid"):
+        value = extra.get(key)
+        if value is not None:
+            return int(value)
+    return _extract_numeric_suffix(parameter_row.get("set_name"), ("PROP_", "PID_", "PSHELL_"))
+
+
+def _map_selected_parameter_to_sol200(parameter_row: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    quantity_code = _normalize_sol200_parameter_type(parameter_row.get("quantity_code"))
+    current_value = parameter_row.get("current_value")
+    if current_value is None:
+        return None, "current_value_missing"
+    payload = {
+        "name": str(parameter_row.get("parameter_name") or "").strip(),
+        "type": quantity_code,
+        "initial": float(current_value),
+        "lower": parameter_row.get("lower"),
+        "upper": parameter_row.get("upper"),
+    }
+    if quantity_code in {"E", "RHO"}:
+        material_id = _infer_material_id(parameter_row)
+        if material_id is None:
+            return None, "material_id_unresolved"
+        payload["material_id"] = int(material_id)
+    elif quantity_code == "H":
+        property_id = _infer_property_id(parameter_row)
+        if property_id is None:
+            return None, "property_id_unresolved"
+        payload["property_id"] = int(property_id)
+    return payload, None
+
+
+def _map_catalog_response_to_sol200(response_row: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    response_type = str(response_row.get("response_type") or "").strip().upper()
+    if response_type not in {"FREQ", "MODAL_FREQUENCY"}:
+        return None, "response_is_not_modal_frequency"
+    extra = dict(response_row.get("extra_json") or {})
+    mode_number = extra.get("mode_number")
+    if mode_number is None:
+        mode_number = extra.get("fem_mode_no")
+    if mode_number is None:
+        mode_number = response_row.get("test_mode_no")
+    if mode_number is None:
+        return None, "mode_number_missing"
+    return {
+        "name": str(response_row.get("response_name") or f"FREQ_MODE_{int(mode_number)}").strip(),
+        "type": "FREQ",
+        "mode_number": int(mode_number),
+        "extra_json": extra,
+    }, None
+
+
+def sync_sol200_config_from_catalog(
+    *,
+    project_id: int,
+    overwrite: bool = True,
+    parameter_source: str = "selected_parameter",
+    response_source: str = "response_catalog",
+    mac_threshold: Optional[float] = None,
+    max_freq_error_ratio: Optional[float] = 0.2,
+    matching_method: str = "greedy",
+) -> dict:
+    ensure_tables_exist()
+    resolved_parameter_source = str(parameter_source or "selected_parameter").strip().lower()
+    resolved_response_source = str(response_source or "response_catalog").strip().lower()
+    if resolved_parameter_source != "selected_parameter":
+        raise ValidationError(
+            "unsupported parameter_source",
+            {"parameter_source": parameter_source, "allowed": ["selected_parameter"]},
+        )
+    if resolved_response_source not in {"response_catalog", "modal_match"}:
+        raise ValidationError(
+            "unsupported response_source",
+            {"response_source": response_source, "allowed": ["response_catalog", "modal_match"]},
+        )
+
+    from . import inp_service as _inp
+
+    parameter_payload = _inp.list_optimization_parameters(int(project_id))
+    parameter_rows = list(parameter_payload.get("parameters") or [])
+
+    if resolved_response_source == "modal_match":
+        _inp.create_modal_frequency_response_catalog_from_match(
+            int(project_id),
+            overwrite=True,
+            mac_threshold=_normalize_sync_mac_threshold(mac_threshold),
+            max_freq_error_ratio=max_freq_error_ratio,
+            matching_method=str(matching_method or "greedy"),
+        )
+    response_payload = _inp.get_fe_response_catalog(int(project_id))
+    response_rows = list(response_payload.get("responses") or [])
+
+    mapped_parameters: List[Dict[str, Any]] = []
+    skipped_parameters: List[dict] = []
+    for row in parameter_rows:
+        mapped, reason = _map_selected_parameter_to_sol200(row)
+        if mapped is None:
+            skipped_parameters.append({
+                "parameter_name": row.get("parameter_name"),
+                "quantity_code": row.get("quantity_code"),
+                "reason": reason,
+            })
+            continue
+        mapped_parameters.append(mapped)
+
+    mapped_responses: List[Dict[str, Any]] = []
+    skipped_responses: List[dict] = []
+    for row in response_rows:
+        mapped, reason = _map_catalog_response_to_sol200(row)
+        if mapped is None:
+            skipped_responses.append({
+                "response_name": row.get("response_name"),
+                "response_type": row.get("response_type"),
+                "reason": reason,
+            })
+            continue
+        mapped_responses.append(mapped)
+
+    if not mapped_parameters:
+        raise ValidationError(
+            "no SOL200-compatible parameters could be resolved from selected_parameter",
+            {"project_id": int(project_id), "skipped_preview": skipped_parameters[:20]},
+        )
+    if not mapped_responses:
+        raise ValidationError(
+            "no SOL200-compatible responses could be resolved from response catalog",
+            {"project_id": int(project_id), "skipped_preview": skipped_responses[:20]},
+        )
+
+    if overwrite:
+        clear_sol200_parameter_config_entries(int(project_id))
+        clear_sol200_response_config_entries(int(project_id))
+
+    created_parameters = []
+    for item in mapped_parameters:
+        created_parameters.append(
+            create_sol200_parameter_config_entry(
+                project_id=int(project_id),
+                parameter_name=item["name"],
+                parameter_type=item["type"],
+                initial=float(item["initial"]),
+                lower=item.get("lower"),
+                upper=item.get("upper"),
+                property_id=item.get("property_id"),
+                material_id=item.get("material_id"),
+                element_id=item.get("element_id"),
+                extra_json={
+                    "source_table": "t_mt_py_fem_selected_parameter",
+                    **({k: v for k, v in item.items() if k not in {"name", "type", "initial", "lower", "upper"}}),
+                },
+            )
+        )
+
+    created_responses = []
+    for item in mapped_responses:
+        created_responses.append(
+            create_sol200_response_config_entry(
+                project_id=int(project_id),
+                response_name=item["name"],
+                response_type=item["type"],
+                mode_number=item.get("mode_number"),
+                extra_json={
+                    "source_table": "t_mt_py_fem_response_catalog",
+                    **dict(item.get("extra_json") or {}),
+                },
+            )
+        )
+
+    return {
+        "project_id": int(project_id),
+        "overwrite": bool(overwrite),
+        "parameter_source": resolved_parameter_source,
+        "response_source": resolved_response_source,
+        "mac_threshold": _normalize_sync_mac_threshold(mac_threshold),
+        "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
+        "matching_method": str(matching_method or "greedy"),
+        "parameter_count": len(created_parameters),
+        "response_count": len(created_responses),
+        "parameters_preview": created_parameters[:20],
+        "responses_preview": created_responses[:20],
+        "skipped_parameters_preview": skipped_parameters[:20],
+        "skipped_responses_preview": skipped_responses[:20],
+    }
+
+
 def _load_project_sol200_parameters(project_id: int) -> List[Dict[str, Any]]:
     payload = list_sol200_parameter_config_entries(project_id)
     return [

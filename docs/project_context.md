@@ -117,9 +117,13 @@ It currently provides:
 
 Added in `app.py`:
 
+- `POST /import/bdf`
 - `POST /import/inp/catalog`
 - `POST /catalog/inp`
 - `POST /optimization/parameter/create`
+- `POST /optimization/parameter`
+- `POST /optimization/response/modal_frequency/create_from_match`
+- `POST /optimization/sol200/config/sync_from_catalog`
 - `POST /match/nodes`
 - `POST /match/dofs`
 - `POST /match/dofs/query`
@@ -338,6 +342,55 @@ Request body:
   "project_id": 1001,
   "overwrite": true,
   "mac_threshold": 80
+}
+```
+
+### `POST /optimization/parameter`
+
+Purpose:
+
+- query saved optimization parameters from `t_mt_py_fem_selected_parameter`
+
+Request body:
+
+```json
+{
+  "project_id": 1001
+}
+```
+
+### `POST /optimization/response/modal_frequency/create_from_match`
+
+Purpose:
+
+- build modal-frequency response catalog rows from the already computed modal-match result
+
+Request body:
+
+```json
+{
+  "project_id": 1001,
+  "overwrite": true,
+  "mac_threshold": 80,
+  "max_freq_error_ratio": 0.15,
+  "matching_method": "greedy"
+}
+```
+
+### `POST /optimization/sol200/config/sync_from_catalog`
+
+Purpose:
+
+- map saved optimization parameters plus modal-frequency response catalog rows into `SOL200` parameter/response config tables
+
+Request body:
+
+```json
+{
+  "project_id": 1001,
+  "overwrite": true,
+  "parameter_source": "selected_parameter",
+  "response_source": "response_catalog"
 }
 ```
 

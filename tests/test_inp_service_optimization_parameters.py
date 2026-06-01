@@ -36,7 +36,7 @@ class _CreateParameterCursor:
             rows = [dict(row) for row in self.capability_rows]
             idx = 1
             quantity_codes = set()
-            while idx < len(params) and str(params[idx]).upper() in {"E", "T", "H"}:
+            while idx < len(params) and str(params[idx]).upper() in {"E", "T", "H", "RHO"}:
                 quantity_codes.add(str(params[idx]).upper())
                 idx += 1
             if quantity_codes:

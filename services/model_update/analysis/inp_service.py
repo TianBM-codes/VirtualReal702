@@ -28,6 +28,7 @@ from .project_config_service import (
 from .project_path_service import resolve_project_cal_subdir
 from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
+from services.model_update.analysis.sensitivity_service import _parse_id_list, _parse_optional_json_object
 
 # This module is the "model-update integration" layer around parsed INP data.
 # It converts the parsed model into database catalogs, builds the spatial cache
@@ -795,6 +796,7 @@ _DEFAULT_PARAMETER_SCATTER = 0.25
 _SUPPORTED_CORRECTION_QUANTITIES = (
     {"quantity_code": "E", "quantity_name": "E", "unit": None, "enabled": 1, "sort_no": 1},
     {"quantity_code": "T", "quantity_name": "T", "unit": None, "enabled": 1, "sort_no": 2},
+    {"quantity_code": "RHO", "quantity_name": "RHO", "unit": None, "enabled": 1, "sort_no": 3},
 )
 
 
@@ -804,6 +806,8 @@ def _quantity_description(quantity_code: str, quantity_name: Optional[str] = Non
         return "杨氏模量"
     if token == "T":
         return "壳单元厚度"
+    if token == "RHO":
+        return "密度"
     return f"{str(quantity_name or token).strip()} parameter."
 
 
@@ -887,8 +891,8 @@ def _normalize_quantity_code(quantity_code: str) -> str:
     value = str(quantity_code or "").strip().upper()
     if value == "H":
         return "T"
-    if value not in {"E", "T"}:
-        raise ValueError("quantity_code must be one of: E, T")
+    if value not in {"E", "T", "RHO"}:
+        raise ValueError("quantity_code must be one of: E, T, RHO")
     return value
 
 
@@ -954,7 +958,7 @@ def _target_keys_for_scope(set_scope: str, part_name: Optional[str], instance_na
 
 
 def _build_section_parameter_maps(model, parameter_defs: Dict[str, dict]):
-    quantity_maps = {"E": {}, "T": {}}
+    quantity_maps = {"E": {}, "T": {}, "RHO": {}}
     property_sets = {}
 
     for part_name, part in model.parts.items():
@@ -1793,14 +1797,15 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
 
         if has_manual_elements:
             resolved_mode = _normalize_selection_mode(selection_mode or "LOCAL")
+            display_quantity_code = str(quantity_code or resolved_quantity_code).strip().upper() or resolved_quantity_code
             parameter_group_name = str(
                 parameter_name or _default_parameter_group_name(
                     resolved_quantity_code,
-                    _safe_manual_set_name(resolved_quantity_code, resolved_mode, parameter_name),
+                    _safe_manual_set_name(display_quantity_code, resolved_mode, parameter_name),
                 )
             )
             manual_set_name = str(set_name or _safe_manual_set_name(
-                resolved_quantity_code,
+                display_quantity_code,
                 resolved_mode,
                 parameter_group_name,
             ))
@@ -3286,6 +3291,187 @@ def get_fe_response_catalog(project_id):
             "project_id": project_id,
             "responses": cursor.fetchall(),
         }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def list_optimization_parameters(project_id: int) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
+                   instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter,
+                   description, extra_json, created_at
+            FROM t_mt_py_fem_selected_parameter
+            WHERE pid = %s
+            ORDER BY created_at DESC, parameter_name ASC
+            """,
+            (int(project_id),),
+        )
+        parameters = []
+        for row in cursor.fetchall() or []:
+            extra_json = _parse_optional_json_object(row.get("extra_json"))
+            parameters.append({
+                "parameter_group_name": str(row.get("parameter_group_name") or ""),
+                "parameter_name": str(row.get("parameter_name") or ""),
+                "quantity_code": str(row.get("quantity_code") or "").upper(),
+                "selection_mode": str(row.get("selection_mode") or "").upper(),
+                "set_name": str(row.get("set_name") or ""),
+                "set_type": str(row.get("set_type") or ""),
+                "set_scope": str(row.get("set_scope") or ""),
+                "instance_name": row.get("instance_name"),
+                "part_name": row.get("part_name"),
+                "element_label": int(row["element_label"]) if row.get("element_label") is not None else None,
+                "current_value": _safe_float(row.get("current_value")),
+                "lower": _safe_float(row.get("lower")),
+                "upper": _safe_float(row.get("upper")),
+                "prob_id": int(row.get("prob_id") or 0),
+                "scatter": _safe_float(row.get("scatter")),
+                "description": str(row.get("description") or ""),
+                "extra_json": extra_json,
+                "created_at": row.get("created_at"),
+            })
+        return {
+            "project_id": int(project_id),
+            "parameter_count": len(parameters),
+            "parameters": parameters,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _normalize_modal_mac_threshold_value(mac_threshold: Optional[float]) -> Optional[float]:
+    if mac_threshold is None:
+        return None
+    resolved = float(mac_threshold)
+    if resolved < 0:
+        raise ValidationError("mac_threshold must be >= 0", {"mac_threshold": mac_threshold})
+    if resolved <= 1.0:
+        return resolved * 100.0
+    if resolved <= 100.0:
+        return resolved
+    raise ValidationError("mac_threshold must be <= 100", {"mac_threshold": mac_threshold})
+
+
+def create_modal_frequency_response_catalog_from_match(
+        project_id: int,
+        *,
+        overwrite: bool = True,
+        mac_threshold: Optional[float] = None,
+        max_freq_error_ratio: Optional[float] = 0.2,
+        matching_method: str = "greedy",
+) -> dict:
+    ensure_tables_exist()
+    resolved_mac_threshold = _normalize_modal_mac_threshold_value(mac_threshold)
+    matched = match_modal_modes(
+        int(project_id),
+        mac_threshold=0.0 if resolved_mac_threshold is None else float(resolved_mac_threshold),
+        max_freq_error_ratio=max_freq_error_ratio,
+        method=str(matching_method or "greedy"),
+    )
+    matched_rows = list(matched.get("rows") or [])
+    if not matched_rows:
+        raise ValidationError(
+            "no modal matches passed the requested filters",
+            {
+                "project_id": int(project_id),
+                "mac_threshold": resolved_mac_threshold,
+                "max_freq_error_ratio": max_freq_error_ratio,
+                "matching_method": matching_method,
+            },
+        )
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        if overwrite:
+            cursor.execute(
+                """
+                DELETE FROM t_mt_py_fem_response_catalog
+                WHERE pid = %s AND response_type = %s
+                """,
+                (int(project_id), "MODAL_FREQUENCY"),
+            )
+
+        insert_sql = """
+        INSERT INTO t_mt_py_fem_response_catalog
+        (pid, response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
+         instance_name, part_name, fem_node_label, component, unit, seq_no, source_table, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            response_name = VALUES(response_name),
+            response_type = VALUES(response_type),
+            entity_type = VALUES(entity_type),
+            test_mode_no = VALUES(test_mode_no),
+            component = VALUES(component),
+            unit = VALUES(unit),
+            seq_no = VALUES(seq_no),
+            source_table = VALUES(source_table),
+            extra_json = VALUES(extra_json),
+            created_at = CURRENT_TIMESTAMP
+        """
+        rows = []
+        for seq_no, row in enumerate(matched_rows, start=1):
+            fem_mode_no = int(row["fem_mode_no"])
+            test_mode_no = int(row["test_mode_no"])
+            payload = {
+                "response_code": f"MODE_FREQ:FE{fem_mode_no}:TEST{test_mode_no}",
+                "response_name": f"FREQ_MODE_{fem_mode_no}",
+                "response_type": "MODAL_FREQUENCY",
+                "entity_type": "MODE",
+                "test_mode_no": test_mode_no,
+                "component": "FREQ",
+                "unit": "Hz",
+                "seq_no": seq_no,
+                "source_table": "t_mt_py_fem_modal_correlation",
+                "extra_json": {
+                    "mode_number": fem_mode_no,
+                    "fem_mode_no": fem_mode_no,
+                    "test_mode_no": test_mode_no,
+                    "mac": _safe_float(row.get("mac")),
+                    "freq_test": _safe_float(row.get("freq_test")),
+                    "freq_fem": _safe_float(row.get("freq_fem")),
+                    "freq_error_ratio": _safe_float(row.get("freq_error_ratio")),
+                    "matching_method": str(matching_method or "greedy"),
+                },
+            }
+            cursor.execute(
+                insert_sql,
+                (
+                    int(project_id),
+                    payload["response_code"],
+                    payload["response_name"],
+                    payload["response_type"],
+                    payload["entity_type"],
+                    payload["test_mode_no"],
+                    None,
+                    None,
+                    None,
+                    None,
+                    payload["component"],
+                    payload["unit"],
+                    payload["seq_no"],
+                    payload["source_table"],
+                    _json_dumps(payload["extra_json"]),
+                ),
+            )
+            rows.append(payload)
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "response_count": len(rows),
+            "mac_threshold": resolved_mac_threshold,
+            "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
+            "matching_method": str(matching_method or "greedy"),
+            "responses_preview": rows[:20],
+        }
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cursor.close()
         conn.close()

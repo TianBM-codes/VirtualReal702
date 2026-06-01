@@ -14,8 +14,10 @@ from services.model_update.analysis.project_file_service import resolve_project_
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
 from services.model_update.analysis.inp_service import (
     clear_design_response_catalog_entries,
+    create_modal_frequency_response_catalog_from_match,
     create_design_response_catalog_entry,
     create_optimization_parameter,
+    list_optimization_parameters,
     list_design_response_catalog_entries,
 )
 from services.model_update.analysis.nastran_sol200_service import (
@@ -25,6 +27,7 @@ from services.model_update.analysis.nastran_sol200_service import (
     create_sol200_response_config_entry,
     list_sol200_parameter_config_entries,
     list_sol200_response_config_entries,
+    sync_sol200_config_from_catalog,
 )
 from src.l3.core.errors import AppError, ValidationError
 
@@ -39,7 +42,10 @@ from ..models import (
     CreateSol200ParameterConfigRequest,
     CreateSol200ResponseConfigRequest,
     DesignResponseCatalogRequest,
+    ModalFrequencyResponseFromMatchRequest,
     ModalFrequencyBayesianModelUpdateRequest,
+    OptimizationParameterCatalogRequest,
+    Sol200SyncFromCatalogRequest,
     Sol200ConfigCatalogRequest,
 )
 from ..utils import log_request, model_to_dict
@@ -404,6 +410,38 @@ async def create_design_response_api(request: Request, body: CreateDesignRespons
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+@router.post("/optimization/response/modal_frequency/create_from_match")
+async def create_modal_frequency_response_from_match_api(request: Request, body: ModalFrequencyResponseFromMatchRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = create_modal_frequency_response_catalog_from_match(
+            project_id=body.project_id,
+            overwrite=body.overwrite,
+            mac_threshold=body.mac_threshold,
+            max_freq_error_ratio=body.max_freq_error_ratio,
+            matching_method=body.matching_method,
+        )
+        return success_response(data, "模态频率响应目录创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/parameter")
+async def list_optimization_parameter_api(request: Request, body: OptimizationParameterCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = list_optimization_parameters(body.project_id)
+        return success_response(data, "优化参数目录加载成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
 @router.post("/optimization/response")
 async def list_design_response_api(request: Request, body: DesignResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
@@ -518,6 +556,27 @@ async def clear_sol200_response_api(request: Request, body: Sol200ConfigCatalogR
     try:
         data = clear_sol200_response_config_entries(body.project_id)
         return success_response(data, "SOL200 响应配置已清空")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/sol200/config/sync_from_catalog")
+async def sync_sol200_config_from_catalog_api(request: Request, body: Sol200SyncFromCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = sync_sol200_config_from_catalog(
+            project_id=body.project_id,
+            overwrite=body.overwrite,
+            parameter_source=body.parameter_source,
+            response_source=body.response_source,
+            mac_threshold=body.mac_threshold,
+            max_freq_error_ratio=body.max_freq_error_ratio,
+            matching_method=body.matching_method,
+        )
+        return success_response(data, "SOL200 配置同步成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

@@ -205,6 +205,28 @@ class ModalFrequencyBayesianModelUpdateRequest(BaseModel):
     async_submit: bool = False
 
 
+class OptimizationParameterCatalogRequest(BaseModel):
+    project_id: int
+
+
+class ModalFrequencyResponseFromMatchRequest(BaseModel):
+    project_id: int
+    overwrite: bool = True
+    mac_threshold: Optional[float] = None
+    max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
+    matching_method: str = "greedy"
+
+
+class Sol200SyncFromCatalogRequest(BaseModel):
+    project_id: int
+    overwrite: bool = True
+    parameter_source: str = "selected_parameter"
+    response_source: str = "response_catalog"
+    mac_threshold: Optional[float] = None
+    max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
+    matching_method: str = "greedy"
+
+
 class TextRowReadRequest(BaseModel):
     file_path: str
     row: int = Field(ge=1)
