@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request
+from typing import Optional
 
 from services.model_update.analysis.sensitivity_service import (
     build_project_dsa_config_preview,
@@ -47,7 +48,7 @@ from ..utils import log_request, model_to_dict
 router = APIRouter(tags=["sensitivity"])
 
 
-def _resolve_sensitivity_input_inp(project_id: int, explicit_path: str | None, file_name: str | None) -> str | None:
+def _resolve_sensitivity_input_inp(project_id: int, explicit_path: Optional[str], file_name: Optional[str]) -> Optional[str]:
     if not (str(explicit_path or "").strip() or str(file_name or "").strip()):
         return None
     return str(
@@ -60,7 +61,7 @@ def _resolve_sensitivity_input_inp(project_id: int, explicit_path: str | None, f
     )
 
 
-def _require_sensitivity_input_inp(project_id: int, explicit_path: str | None, file_name: str | None) -> str:
+def _require_sensitivity_input_inp(project_id: int, explicit_path: Optional[str], file_name: Optional[str]) -> str:
     resolved = _resolve_sensitivity_input_inp(project_id, explicit_path, file_name)
     if resolved:
         return resolved
@@ -72,7 +73,7 @@ def _require_sensitivity_input_inp(project_id: int, explicit_path: str | None, f
     )
 
 
-def _resolve_sensitivity_output_dir(project_id: int, explicit_dir: str | None) -> str:
+def _resolve_sensitivity_output_dir(project_id: int, explicit_dir: Optional[str]) -> str:
     return str(
         resolve_project_output_dir(
             int(project_id),
@@ -82,7 +83,7 @@ def _resolve_sensitivity_output_dir(project_id: int, explicit_dir: str | None) -
     )
 
 
-def _resolve_sensitivity_export_file(project_id: int, explicit_path: str | None, file_name: str | None) -> str:
+def _resolve_sensitivity_export_file(project_id: int, explicit_path: Optional[str], file_name: Optional[str]) -> str:
     return str(
         resolve_project_output_file(
             int(project_id),
