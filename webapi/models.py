@@ -800,6 +800,26 @@ class Op2SensitivityStoreRequest(BaseModel):
     async_submit: bool = False
 
 
+class Op2SensitivityStoreCloudRequest(BaseModel):
+    project_id: int
+    batch_no: str = "1"
+    case_name: str = "nastran_sol200"
+    op2_path: Optional[str] = None
+    op2_file_name: Optional[str] = None
+    matrix_path: Optional[str] = None
+    matrix_file_name: Optional[str] = None
+    bdf_path: Optional[str] = None
+    bdf_file_name: Optional[str] = None
+    metadata_json: Optional[str] = None
+    metadata_json_name: Optional[str] = None
+    parameter_names: Optional[List[str]] = None
+    response_names: Optional[List[str]] = None
+    cloud_result_group: Optional[str] = None
+    cloud_step_name: str = "Sensitivity"
+    cloud_field_name: str = "SENSITIVITY_CLOUD"
+    async_submit: bool = False
+
+
 class Op2SensitivityVtuExportRequest(BaseModel):
     project_id: int
     batch_no: str = "1"

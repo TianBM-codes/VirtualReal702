@@ -968,6 +968,250 @@ def store_op2_sensitivity(
     }
 
 
+def _resolve_cloud_target_instances(workspace: str, column_meta: dict) -> List[str]:
+    from src.l3.infra.manifest_repo import ManifestRepo
+
+    repo = ManifestRepo(workspace)
+    instance_name = str(column_meta.get("instance_name") or "").strip()
+    if instance_name:
+        return [instance_name]
+
+    part_name = str(column_meta.get("part_name") or "").strip()
+    if part_name:
+        matched = [str(item) for item in (repo.get_instances_by_part_name(part_name) or []) if str(item).strip()]
+        if matched:
+            return matched
+
+    rows = [dict(item) for item in (repo.list_instances() or [])]
+    if len(rows) == 1:
+        only_name = str(rows[0].get("instance_name") or "").strip()
+        if only_name:
+            return [only_name]
+
+    raise ValidationError(
+        "cannot resolve target instance for Nastran sensitivity cloud export",
+        {
+            "workspace": os.path.abspath(workspace),
+            "parameter_name": column_meta.get("parameter_name"),
+            "instance_name": column_meta.get("instance_name"),
+            "part_name": column_meta.get("part_name"),
+            "available_instances": [str(item.get("instance_name") or "") for item in rows],
+        },
+    )
+
+
+def _build_op2_parameter_columns_with_mappings(
+    *,
+    workspace: str,
+    bdf_path: str,
+    parameter_columns: Sequence[dict],
+) -> List[dict]:
+    model = _load_bdf_model(_abs_file(bdf_path, "bdf_path"))
+    all_element_ids = sorted(int(eid) for eid in model.elements.keys())
+    resolved_columns: List[dict] = []
+
+    for raw_column in parameter_columns:
+        column_meta = dict(raw_column or {})
+        parameter_name = str(column_meta.get("parameter_name") or column_meta.get("param_name") or "").strip()
+        parameter_type = str(column_meta.get("param_type") or column_meta.get("type") or "").strip().upper()
+        if not parameter_name:
+            raise ValidationError("parameter_name is required for cloud export", {"column": column_meta})
+
+        targets: List[int] = []
+        element_id = column_meta.get("element_id")
+        if element_id is not None:
+            targets = [int(element_id)]
+        elif parameter_type == "H":
+            property_id = column_meta.get("property_id")
+            if property_id is None:
+                raise ValidationError(
+                    "H parameter requires property_id for cloud export",
+                    {"parameter_name": parameter_name, "column": column_meta},
+                )
+            target_pid = int(property_id)
+            for eid in all_element_ids:
+                element = model.elements.get(int(eid))
+                if element is None:
+                    continue
+                if _element_property_id(element) == target_pid:
+                    targets.append(int(eid))
+        elif parameter_type in {"E", "RHO"}:
+            material_id = column_meta.get("material_id")
+            if material_id is None:
+                raise ValidationError(
+                    f"{parameter_type} parameter requires material_id for cloud export",
+                    {"parameter_name": parameter_name, "column": column_meta},
+                )
+            target_mid = int(material_id)
+            for eid in all_element_ids:
+                element = model.elements.get(int(eid))
+                if element is None:
+                    continue
+                if _element_material_id(element, model) == target_mid:
+                    targets.append(int(eid))
+        else:
+            raise ValidationError(
+                "unsupported Nastran sensitivity parameter type for cloud export",
+                {
+                    "parameter_name": parameter_name,
+                    "parameter_type": parameter_type,
+                    "allowed": ["E", "RHO", "H"],
+                },
+            )
+
+        if not targets:
+            raise ValidationError(
+                "no target elements were resolved for Nastran sensitivity parameter",
+                {
+                    "parameter_name": parameter_name,
+                    "parameter_type": parameter_type,
+                    "column": column_meta,
+                },
+            )
+
+        targets_by_scope = {
+            instance_name: list(sorted({int(label) for label in targets}))
+            for instance_name in _resolve_cloud_target_instances(workspace, column_meta)
+        }
+        enriched = dict(column_meta)
+        enriched["parameter_name"] = parameter_name
+        enriched["element_mapping"] = {
+            "target_kind": "cell",
+            "targets_by_scope": targets_by_scope,
+        }
+        resolved_columns.append(enriched)
+    return resolved_columns
+
+
+def _write_element_cloud_result_to_workspace(
+    *,
+    workspace: str,
+    batch_no: str,
+    matrix_payload: dict,
+    result_group: Optional[str] = None,
+    step_name: str = "Sensitivity",
+    field_name: str = "SENSITIVITY_CLOUD",
+) -> dict:
+    from services.model_update.analysis import sensitivity_service as _sens
+    from src.l3.services.external_result_writer import ExternalResultWriter
+
+    request_body, metadata = _sens._build_sensitivity_cloud_request(
+        batch_no=str(batch_no),
+        matrix_payload=matrix_payload,
+        result_group=result_group,
+        step_name=step_name,
+        field_name=field_name,
+    )
+
+    writer = ExternalResultWriter(os.path.abspath(workspace), metadata["result_group"])
+    total_frames = 0
+    for instance_entry in list(request_body.get("instances") or []):
+        total_frames = max(
+            total_frames,
+            writer.write_element(
+                instance=str(instance_entry["instance"]),
+                step=str(request_body["step_name"]),
+                field=str(request_body["field_name"]),
+                components=list(request_body.get("components") or []),
+                frames=list(instance_entry.get("frames") or []),
+            ),
+        )
+
+    result = dict(metadata)
+    result.update(
+        {
+            "workspace": os.path.abspath(workspace),
+            "write_response": {
+                "field_name": request_body["field_name"],
+                "step_name": request_body["step_name"],
+                "instances_written": len(list(request_body.get("instances") or [])),
+                "frames_written": int(total_frames),
+                "source": "external",
+            },
+            "query_hint": {
+                "result_group": metadata["result_group"],
+                "step": metadata["step"],
+                "field": metadata["field"],
+                "frame": 0,
+                "component_idx": 0,
+            },
+        }
+    )
+    return result
+
+
+def store_op2_sensitivity_cloud(
+    *,
+    project_id: int,
+    batch_no: str,
+    case_name: str,
+    op2_path: Optional[str] = None,
+    matrix_path: Optional[str] = None,
+    bdf_path: Optional[str] = None,
+    metadata_json: Optional[str] = None,
+    parameter_names: Optional[Sequence[str]] = None,
+    response_names: Optional[Sequence[str]] = None,
+    cloud_result_group: Optional[str] = None,
+    cloud_step_name: str = "Sensitivity",
+    cloud_field_name: str = "SENSITIVITY_CLOUD",
+) -> dict:
+    preview = preview_op2_sensitivity(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        op2_path=op2_path,
+        matrix_path=matrix_path,
+        bdf_path=bdf_path,
+        metadata_json=metadata_json,
+        parameter_names=parameter_names,
+        response_names=response_names,
+    )
+    from services.model_update.analysis import sensitivity_service as _sens
+    from services.model_update.analysis.project_path_service import resolve_project_workspace
+
+    matrix_payload = {
+        "response_rows": [dict(item) for item in (preview.get("response_rows") or [])],
+        "parameter_columns": [dict(item) for item in (preview.get("parameter_columns") or [])],
+        "matrix": preview["matrix_preview"],
+        "source": dict(preview.get("source") or {}),
+    }
+    stored = _sens._persist_sensitivity_matrix(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        matrix_payload=matrix_payload,
+    )
+
+    workspace = _sens._workspace_path(resolve_project_workspace(int(project_id)))
+    resolved_bdf_path = str(preview.get("source", {}).get("bdf_path") or bdf_path or "").strip()
+    if not resolved_bdf_path:
+        raise ValidationError(
+            "bdf_path is required for Nastran sensitivity cloud export",
+            {"project_id": int(project_id), "batch_no": str(batch_no)},
+        )
+
+    matrix_payload["workspace"] = workspace
+    matrix_payload["parameter_columns"] = _build_op2_parameter_columns_with_mappings(
+        workspace=workspace,
+        bdf_path=resolved_bdf_path,
+        parameter_columns=matrix_payload["parameter_columns"],
+    )
+    cloud_result = _write_element_cloud_result_to_workspace(
+        workspace=workspace,
+        batch_no=str(batch_no),
+        matrix_payload=matrix_payload,
+        result_group=cloud_result_group,
+        step_name=cloud_step_name,
+        field_name=cloud_field_name,
+    )
+    return {
+        "workflow": "op2_sensitivity_store_cloud",
+        **stored,
+        "workspace": workspace,
+        "cloud_result": cloud_result,
+        "warnings": preview.get("warnings") or [],
+    }
+
+
 def _element_property_id(element: Any) -> Optional[int]:
     try:
         pid = element.Pid()

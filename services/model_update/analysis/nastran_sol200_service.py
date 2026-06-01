@@ -10,6 +10,7 @@ from src.l3.core.errors import ValidationError
 from ..importers.op2_service import (
     export_sensitivity_to_vtu,
     preview_op2_sensitivity,
+    store_op2_sensitivity_cloud,
     store_op2_sensitivity,
 )
 from .solver_service import (
@@ -956,6 +957,39 @@ def store_sol200_sensitivity(
         metadata_json=metadata_json,
         parameter_names=parameter_names,
         response_names=response_names,
+    )
+    payload["service"] = "nastran_sol200_phase1"
+    return payload
+
+
+def store_sol200_sensitivity_cloud(
+    *,
+    project_id: int,
+    batch_no: str,
+    case_name: str,
+    op2_path: Optional[str] = None,
+    matrix_path: Optional[str] = None,
+    bdf_path: Optional[str] = None,
+    metadata_json: Optional[str] = None,
+    parameter_names: Optional[Sequence[str]] = None,
+    response_names: Optional[Sequence[str]] = None,
+    cloud_result_group: Optional[str] = None,
+    cloud_step_name: str = "Sensitivity",
+    cloud_field_name: str = "SENSITIVITY_CLOUD",
+) -> dict:
+    payload = store_op2_sensitivity_cloud(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        op2_path=op2_path,
+        matrix_path=matrix_path,
+        bdf_path=bdf_path,
+        metadata_json=metadata_json,
+        parameter_names=parameter_names,
+        response_names=response_names,
+        cloud_result_group=cloud_result_group,
+        cloud_step_name=cloud_step_name,
+        cloud_field_name=cloud_field_name,
     )
     payload["service"] = "nastran_sol200_phase1"
     return payload

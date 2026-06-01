@@ -24,6 +24,7 @@ from services.model_update.analysis.nastran_sol200_service import (
     preview_sol200_sensitivity,
     preview_sol200_workflow,
     run_sol200_workflow,
+    store_sol200_sensitivity_cloud,
     store_sol200_sensitivity,
 )
 from services.model_update.analysis.project_file_service import (
@@ -57,6 +58,7 @@ from ..models import (
     Op2ModalStoreRequest,
     Op2ModalVtuExportRequest,
     Op2SensitivityPreviewRequest,
+    Op2SensitivityStoreCloudRequest,
     Op2SensitivityStoreRequest,
     Op2SensitivityVtuExportRequest,
     PBSJobStatusRequest,
@@ -999,6 +1001,81 @@ async def store_op2_sensitivity_api(request: Request, body: Op2SensitivityStoreR
             return success_response(data, "OP2 灵敏度导入任务已提交")
         data = store_sol200_sensitivity(**kwargs)
         return success_response(data, "OP2 灵敏度导入成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/import/op2/sensitivity/store_cloud")
+async def store_op2_sensitivity_cloud_api(request: Request, body: Op2SensitivityStoreCloudRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        op2_path = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.op2_path,
+                file_name=body.op2_file_name,
+                field_name="op2_path",
+            )
+            if str(body.op2_path or "").strip() or str(body.op2_file_name or "").strip()
+            else None
+        )
+        matrix_path = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.matrix_path,
+                file_name=body.matrix_file_name,
+                field_name="matrix_path",
+            )
+            if str(body.matrix_path or "").strip() or str(body.matrix_file_name or "").strip()
+            else None
+        )
+        bdf_path = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.bdf_path,
+                file_name=body.bdf_file_name,
+                field_name="bdf_path",
+            )
+            if str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip()
+            else None
+        )
+        metadata_json = (
+            _resolve_project_local_input(
+                project_id=body.project_id,
+                explicit_path=body.metadata_json,
+                file_name=body.metadata_json_name,
+                field_name="metadata_json",
+            )
+            if str(body.metadata_json or "").strip() or str(body.metadata_json_name or "").strip()
+            else None
+        )
+        kwargs = {
+            "project_id": body.project_id,
+            "batch_no": body.batch_no,
+            "case_name": body.case_name,
+            "op2_path": op2_path,
+            "matrix_path": matrix_path,
+            "bdf_path": bdf_path,
+            "metadata_json": metadata_json,
+            "parameter_names": body.parameter_names,
+            "response_names": body.response_names,
+            "cloud_result_group": body.cloud_result_group,
+            "cloud_step_name": body.cloud_step_name,
+            "cloud_field_name": body.cloud_field_name,
+        }
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="import.op2.sensitivity.store_cloud",
+                fn=store_sol200_sensitivity_cloud,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+            )
+            return success_response(data, "OP2 灵敏度入库并生成云图结果任务已提交")
+        data = store_sol200_sensitivity_cloud(**kwargs)
+        return success_response(data, "OP2 灵敏度入库并生成云图结果成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
