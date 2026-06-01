@@ -32,7 +32,7 @@ def _make_projects_app(monkeypatch, tmp_path: Path):
     return app, data_root, registry_db
 
 
-def test_create_project_accepts_json_source_path(monkeypatch, tmp_path: Path):
+def test_create_project_accepts_json_local_path(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -45,7 +45,7 @@ def test_create_project_accepts_json_source_path(monkeypatch, tmp_path: Path):
         "/api/projects",
         json={
             "project_id": "proj_json_001",
-            "source_path": str(source_file),
+            "local_path": str(source_file),
         },
     )
 
@@ -66,36 +66,34 @@ def test_create_project_accepts_json_source_path(monkeypatch, tmp_path: Path):
     assert row == (str(source_file), "inp", "pending")
 
 
-def test_create_project_accepts_uploaded_file(monkeypatch, tmp_path: Path):
+def test_create_project_accepts_http_source_path(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
     client = TestClient(app)
+    source_url = "http://example.com/files/local_model.odb"
 
     response = client.post(
         "/api/projects",
-        data={"project_id": "proj_upload_001"},
-        files={"file": ("local_model.odb", b"fake odb payload", "application/octet-stream")},
+        json={
+            "project_id": "proj_url_001",
+            "source_path": source_url,
+        },
     )
 
     assert response.status_code == 201
     assert response.json()["data"] == {
-        "project_id": "proj_upload_001",
+        "project_id": "proj_url_001",
         "source_type": "odb",
         "geom_status": "pending",
     }
-
-    workspace = data_root / "proj_upload_001"
-    uploaded = workspace / "uploads" / "local_model.odb"
-    assert uploaded.is_file()
-    assert uploaded.read_bytes() == b"fake odb payload"
+    assert (data_root / "proj_url_001").is_dir()
 
     with sqlite3.connect(registry_db) as conn:
         row = conn.execute(
             "SELECT inp_path, source_type, geom_status FROM projects WHERE project_id=?",
-            ("proj_upload_001",),
+            ("proj_url_001",),
         ).fetchone()
 
-    assert row[0] == str(uploaded.resolve())
-    assert row[1:] == ("odb", "pending")
+    assert row == (source_url, "odb", "pending")

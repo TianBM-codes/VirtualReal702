@@ -418,21 +418,23 @@ async function pollLogs(odbId) {
 }
 ```
 
-也支持直接上传本地文件（`multipart/form-data`）：
+本地文件用 `local_path`：
 
-```bash
-curl -X POST http://localhost:5000/api/projects \
-  -F "project_id=proj-002" \
-  -F "file=@D:/models/door.inp"
+```json
+{
+  "project_id": "proj-002",
+  "local_path": "D:/models/door.inp"
+}
 ```
 
 说明：
 
-- JSON 模式里的 `source_path` 支持服务端本机路径或内网 HTTP URL。
-- `multipart/form-data` 里的 `file` 表示把调用方机器上的文件直接传给后端，后端会先保存到该 project 的 workspace，再进入原有解析流程。
-- `source_type` 仍可显式指定；不传时会优先按 `source_path` 或上传文件名的扩展名自动推断。
+- `source_path` 现在专门表示内网 HTTP URL。
+- `local_path` 专门表示后端机器本地可访问的文件路径。
+- 两者必须二选一，不能同时传，也不能都不传。
+- `source_type` 仍可显式指定；不传时会按 `source_path` 或 `local_path` 的扩展名自动推断。
 
-`source_path` / 上传文件支持的类型与触发流程：
+`source_path` / `local_path` 支持的类型与触发流程：
 
 | source_type | 触发流程 | 说明 |
 |---|---|---|

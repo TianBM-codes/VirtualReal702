@@ -241,23 +241,11 @@ export function useOdbApi() {
     return http.get(`${store.baseUrl}/api/projects/${projectId}`)
   }
 
-  function createProject(projectId, sourceInput, sourceType = null) {
-    if (sourceInput instanceof File || sourceInput instanceof Blob) {
-      const form = new FormData()
-      form.append('project_id', projectId)
-      if (sourceType) form.append('source_type', sourceType)
-      form.append('file', sourceInput, sourceInput.name || 'upload')
-      return http.post(`${store.baseUrl}/api/projects`, form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
-    }
-
-    const body = {
+  function createProject(projectId, sourcePath) {
+    return http.post(`${store.baseUrl}/api/projects`, {
       project_id: projectId,
-      source_path: sourceInput,
-    }
-    if (sourceType) body.source_type = sourceType
-    return http.post(`${store.baseUrl}/api/projects`, body)
+      source_path: sourcePath,
+    })
   }
 
   function addResultGroup(projectId, { sourcePath, resultGroup, displayName, parseOptions }) {
