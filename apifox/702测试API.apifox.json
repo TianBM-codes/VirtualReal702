@@ -2869,7 +2869,7 @@
                   "type": "application/json",
                   "parameters": [],
                   "jsonSchema": {
-                    "$ref": "#/definitions/260138653"
+                    "$ref": "#/definitions/260138699"
                   },
                   "mediaType": "application/json",
                   "oasExtensions": "",
@@ -2877,13 +2877,13 @@
                   "additionalContent": [],
                   "examples": [
                     {
-                      "value": "{\n    \"project_id\": 1001,\n    \"overwrite\": true\n}",
+                      "value": "{\n    \"project_id\": 1001,\n    \"overwrite\": true,\n    \"mac_threshold\": 80\n}",
                       "mediaType": "application/json",
                       "description": ""
                     }
                   ]
                 },
-                "description": "",
+                "description": "Compute DAC/DSF/MAC for all test-mode and FE-mode combinations based on matched DOFs, and optionally write only rows whose MAC is greater than or equal to `mac_threshold`. `mac_threshold` uses a 0-100 percentage scale in this interface.",
                 "tags": [
                   "matching"
                 ],
@@ -2908,7 +2908,7 @@
                     "commonParameters": {},
                     "requestBody": {
                       "parameters": [],
-                      "data": "{\n    \"project_id\": 1001,\n    \"overwrite\": true\n}",
+                      "data": "{\n    \"project_id\": 1001,\n    \"overwrite\": true,\n    \"mac_threshold\": 80\n}",
                       "type": "application/json",
                       "generateMode": "normal"
                     },
@@ -5401,6 +5401,42 @@
               "x-apifox-orders": [
                 "vtk_path",
                 "project_id"
+              ]
+            }
+          },
+          "visibility": "INHERITED",
+          "moduleId": 7419173
+        },
+        {
+          "name": "ModalCorrelationComputeRequest",
+          "displayName": "",
+          "id": "#/definitions/260138699",
+          "description": "Request body for POST /correlation/modal/compute. `mac_threshold` uses a 0-100 percentage scale.",
+          "schema": {
+            "jsonSchema": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "integer"
+                },
+                "overwrite": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "mac_threshold": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "Only keep mode pairs with MAC >= mac_threshold. Uses 0-100 percentage scale."
+                }
+              },
+              "required": [
+                "project_id"
+              ],
+              "x-apifox-orders": [
+                "project_id",
+                "overwrite",
+                "mac_threshold"
               ]
             }
           },

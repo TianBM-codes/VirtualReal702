@@ -3301,6 +3301,16 @@ def _load_modal_payload(file_path=None, modes=None) -> List[dict]:
     return [dict(item) for item in modes]
 
 
+def _resolve_modal_node_identity(node_item: dict) -> tuple[str, str]:
+    instance_name = str(node_item.get("instance_name") or "").strip()
+    part_name = str(node_item.get("part_name") or "").strip()
+    if not instance_name:
+        instance_name = "BDF_MODEL"
+    if not part_name:
+        part_name = instance_name or "BDF_MODEL"
+    return instance_name, part_name
+
+
 def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=None):
     # Import solver modal results into a flat per-node table so the later
     # correlation pass can stream them mode-by-mode from SQL.
@@ -3361,11 +3371,12 @@ def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=No
                     if u3 is None:
                         u3 = vector[2]
 
+                instance_name, part_name = _resolve_modal_node_identity(node_item)
                 payload = {
                     "mode_no": mode_no,
                     "frequency": frequency,
-                    "instance_name": node_item.get("instance_name"),
-                    "part_name": node_item.get("part_name"),
+                    "instance_name": instance_name,
+                    "part_name": part_name,
                     "fem_node_label": int(node_item["fem_node_label"]),
                     "u1": _safe_float(u1),
                     "u2": _safe_float(u2),
@@ -5013,10 +5024,16 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray, *, mac_mode: str
     }
 
 
-def compute_modal_correlation(project_id, overwrite=True):
+def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optional[float] = None):
     # Modal correlation enumerates all test-mode / FE-mode combinations and
     # scores them using the already-resolved DOF correspondence table.
     ensure_tables_exist()
+    resolved_mac_threshold = None if mac_threshold is None else float(mac_threshold)
+    if resolved_mac_threshold is not None and not (0.0 <= resolved_mac_threshold <= 100.0):
+        raise ValidationError(
+            "mac_threshold must be between 0 and 100",
+            {"mac_threshold": mac_threshold},
+        )
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -5154,6 +5171,8 @@ def compute_modal_correlation(project_id, overwrite=True):
                         "anchors_preview": anchors,
                     },
                 }
+                if resolved_mac_threshold is not None and float(item["mac"]) < resolved_mac_threshold:
+                    continue
                 results.append(item)
                 cursor.execute(insert_sql, (
                     project_id,
@@ -5204,6 +5223,7 @@ def compute_modal_correlation(project_id, overwrite=True):
         return {
             "project_id": project_id,
             "mac_mode": mac_mode,
+            "mac_threshold": resolved_mac_threshold,
             "comparison_count": len(results),
             "best_pairs_by_test_mode": [best_by_test_mode[key] for key in sorted(best_by_test_mode)],
             "results_preview": results[:20],

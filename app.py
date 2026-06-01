@@ -255,6 +255,7 @@ async def compute_modal_correlation_api(request: Request):
         result = compute_modal_correlation(
             project_id=int(body["project_id"]),
             overwrite=bool(body.get("overwrite", True)),
+            mac_threshold=body.get("mac_threshold"),
         )
         return success_response(result, "模态相关性计算成功")
     except Exception as exc:

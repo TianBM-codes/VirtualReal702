@@ -329,15 +329,23 @@ Request body example using inline payload:
 Purpose:
 
 - compute DAC / DSF between each test mode and each imported FE mode using matched DOFs
+- optionally filter out low-MAC combinations before they are written to `t_mt_py_fem_modal_correlation`
 
 Request body:
 
 ```json
 {
   "project_id": 1001,
-  "overwrite": true
+  "overwrite": true,
+  "mac_threshold": 80
 }
 ```
+
+Notes:
+
+- `mac_threshold` is optional.
+- `mac_threshold` uses the same percentage scale as stored `MAC` values in this interface, so valid values are `0` to `100`.
+- Example: use `80` to keep only pairs with `MAC >= 80`.
 
 ### `POST /correlation/modal`
 
