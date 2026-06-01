@@ -16,6 +16,7 @@ src/utils/file_fetch.py — 内网 HTTP 文件下载工具
 """
 import logging
 import os
+import shutil
 import urllib.parse
 import urllib.request
 
@@ -99,4 +100,38 @@ def download_if_url(
 
     size = os.path.getsize(dest_path)
     logger.info("file_fetch: done, %d bytes saved to %s", size, dest_path)
+    return dest_path
+
+
+def materialize_source_file(
+    url_or_path: str,
+    dest_dir: str = None,
+    dest_name: str = None,
+) -> str:
+    """Make sure the source file exists as a local file under dest_dir.
+
+    - HTTP URL: download into dest_dir and return the downloaded file path.
+    - Local path: copy into dest_dir and return the copied file path.
+    - If dest_dir is omitted for a local path, just return the absolute path.
+    """
+    if is_http_url(url_or_path):
+        return download_if_url(url_or_path, dest_dir=dest_dir, dest_name=dest_name)
+
+    source_abs = os.path.abspath(url_or_path)
+    if dest_dir is None:
+        return source_abs
+
+    if dest_name is None:
+        dest_name = os.path.basename(source_abs)
+
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.abspath(os.path.join(dest_dir, dest_name))
+    try:
+        if os.path.exists(dest_path) and os.path.samefile(source_abs, dest_path):
+            return dest_path
+    except Exception:
+        pass
+
+    logger.info("file_fetch: copying %s -> %s", source_abs, dest_path)
+    shutil.copy2(source_abs, dest_path)
     return dest_path

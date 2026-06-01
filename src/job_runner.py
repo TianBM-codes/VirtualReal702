@@ -36,7 +36,7 @@ REPO_ROOT     = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.utils.file_fetch import download_if_url, is_http_url
+from src.utils.file_fetch import is_http_url, materialize_source_file
 DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
 PACK_SCRIPT     = REPO_ROOT / "src" / "l1" / "l1_pack.py"
 INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
@@ -1554,7 +1554,7 @@ def main() -> None:
                 did_work = True
                 logger.info("Claimed project geom %s", project_id)
                 try:
-                    source_path = download_if_url(source_path, ws)
+                    source_path = materialize_source_file(source_path, ws)
                     _run_project(project_id, source_path, source_type, ws)
                 except Exception:
                     logger.exception("Error in project geom %s", project_id)
@@ -1573,8 +1573,13 @@ def main() -> None:
                 logger.info("Claimed result_group %s", label)
                 try:
                     _cleanup_result_group(ws, rg)
-                    if is_http_url(src):
-                        src = download_if_url(src, ws)
+                    rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
+                    raw_tail = src.split("?")[0] if is_http_url(src) else src
+                    ext = os.path.splitext(raw_tail)[1] or ".odb"
+                    src = materialize_source_file(
+                        src, ws,
+                        dest_name="{}_source{}".format(rg_safe, ext),
+                    )
                     _run_result_group(project_id, rg, src, parse_opts, ws)
                 except Exception:
                     logger.exception("Error in result_group %s", label)
@@ -1591,7 +1596,7 @@ def main() -> None:
                 did_work = True
                 logger.info("Claimed job %s", odb_id)
                 try:
-                    odb_path = download_if_url(odb_path, workspace)
+                    odb_path = materialize_source_file(odb_path, workspace)
                     _run_job(odb_id, odb_path, workspace)
                 except Exception:
                     logger.exception("Error in job %s", odb_id)

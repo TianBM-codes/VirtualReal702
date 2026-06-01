@@ -24,7 +24,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.utils.file_fetch import download_if_url, is_http_url
+from src.utils.file_fetch import is_http_url, materialize_source_file
 from src.l3.infra.manifest_repo import ManifestRepo as _ManifestRepo
 
 logger = logging.getLogger(__name__)
@@ -775,7 +775,7 @@ class EmbeddedRunner:
                 did_work = True
                 logger.info("Runner claimed project geom %s", project_id)
                 try:
-                    source_path = download_if_url(source_path, ws)
+                    source_path = materialize_source_file(source_path, ws)
                     self._run_project(project_id, source_path, source_type, ws)
                 except Exception:
                     logger.exception("Runner: error in project geom %s", project_id)
@@ -795,13 +795,13 @@ class EmbeddedRunner:
                 try:
                     # error 重试：先清理旧产物
                     self._cleanup_result_group(ws, rg)
-                    if is_http_url(src):
-                        rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
-                        ext = os.path.splitext(src.split("?")[0])[1] or ".odb"
-                        src = download_if_url(
-                            src, ws,
-                            dest_name="{}_source{}".format(rg_safe, ext),
-                        )
+                    rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
+                    raw_tail = src.split("?")[0] if is_http_url(src) else src
+                    ext = os.path.splitext(raw_tail)[1] or ".odb"
+                    src = materialize_source_file(
+                        src, ws,
+                        dest_name="{}_source{}".format(rg_safe, ext),
+                    )
                     self._run_result_group(project_id, rg, src, parse_opts, ws)
                 except Exception:
                     logger.exception("Runner: error in result_group %s", label)
@@ -818,7 +818,7 @@ class EmbeddedRunner:
                 did_work = True
                 logger.info("Runner claimed job %s", odb_id)
                 try:
-                    odb_path = download_if_url(odb_path, workspace)
+                    odb_path = materialize_source_file(odb_path, workspace)
                     ok = self._run_l1(odb_id, odb_path, workspace)
                     if ok:
                         self._run_l2(odb_id, workspace)

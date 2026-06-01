@@ -433,6 +433,7 @@ async function pollLogs(odbId) {
 - `local_path` 专门表示后端机器本地可访问的文件路径。
 - 两者必须二选一，不能同时传，也不能都不传。
 - `source_type` 仍可显式指定；不传时会按 `source_path` 或 `local_path` 的扩展名自动推断。
+- 解析真正开始前，后端会把源文件复制到该 project 的 workspace 里；也就是说，`source_path` 下载后的文件和 `local_path` 指向的本地文件，后续都会统一改用 workspace 内副本继续解析。
 
 `source_path` / `local_path` 支持的类型与触发流程：
 
