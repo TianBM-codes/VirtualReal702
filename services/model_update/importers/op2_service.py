@@ -592,6 +592,7 @@ def _parse_formatted_sensitivity_csv(
     *,
     parameter_names: Optional[Sequence[str]] = None,
     response_names: Optional[Sequence[str]] = None,
+    response_rows: Optional[Sequence[dict]] = None,
 ) -> Optional[dict]:
     resolved = _abs_file(result_path, "matrix_path")
     if Path(resolved).suffix.lower() not in {".csv", ".txt", ".dat"}:
@@ -655,8 +656,10 @@ def _parse_formatted_sensitivity_csv(
                         if item.strip()
                     ]
             response_blocks.append({
+                "response_id": int(desc_parts[0]) if str(desc_parts[0]).strip().isdigit() else None,
                 "label": label,
                 "response_type": response_type,
+                "reference_id": int(desc_parts[3]) if str(desc_parts[3]).strip().isdigit() else None,
                 "parameter_labels": response_labels,
                 "values": response_values,
             })
@@ -675,12 +678,24 @@ def _parse_formatted_sensitivity_csv(
     if requested_response_names:
         ordered_blocks = []
         block_by_name = {str(item.get("label")): item for item in eign_blocks}
-        for name in requested_response_names:
+        requested_rows = list(response_rows or [])
+        for idx, name in enumerate(requested_response_names):
             block = block_by_name.get(str(name))
+            response_row = dict(requested_rows[idx]) if idx < len(requested_rows) and isinstance(requested_rows[idx], dict) else {}
+            if block is None and response_row.get("mode_number") is not None:
+                mode_number = int(response_row["mode_number"])
+                mode_matches = [item for item in eign_blocks if item.get("reference_id") == mode_number]
+                if len(mode_matches) == 1:
+                    block = mode_matches[0]
             if block is None:
                 raise NotFoundError(
                     "requested sensitivity response not found in formatted CSV",
-                    {"response_name": str(name), "available_response_names": [item.get("label") for item in eign_blocks]},
+                    {
+                        "response_name": str(name),
+                        "mode_number": response_row.get("mode_number"),
+                        "available_response_names": [item.get("label") for item in eign_blocks],
+                        "available_reference_ids": [item.get("reference_id") for item in eign_blocks],
+                    },
                 )
             ordered_blocks.append(block)
     else:
@@ -859,6 +874,7 @@ def preview_op2_sensitivity(
             result_path,
             parameter_names=parameter_names,
             response_names=response_names,
+            response_rows=selected_response_rows,
         )
         if chosen is not None:
             warnings.append({
