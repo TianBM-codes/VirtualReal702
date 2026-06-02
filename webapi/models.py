@@ -788,6 +788,27 @@ class NastranSol200RunRequest(BaseModel):
     async_submit: bool = False
 
 
+class NastranSol200RunAndStoreRequest(BaseModel):
+    project_id: int
+    batch_no: str = "1"
+    case_name: str = "nastran_sol200"
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
+    output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
+    parameters: List[NastranParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
+    responses: List[NastranResponseRequest] = Field(default_factory=list)
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    nastran: Optional[str] = None
+    run_solver: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    parameter_names: Optional[List[str]] = None
+    response_names: Optional[List[str]] = None
+    async_submit: bool = False
+
+
 class Op2ModalPreviewRequest(BaseModel):
     project_id: Optional[int] = None
     op2_path: Optional[str] = None

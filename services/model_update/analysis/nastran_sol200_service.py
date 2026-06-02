@@ -1153,6 +1153,114 @@ def run_sol200_workflow(
     return payload
 
 
+def _pick_first_existing_path(candidates: Sequence[Optional[str]]) -> Optional[str]:
+    for candidate in list(candidates or []):
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser().resolve()
+        if path.exists() and path.is_file():
+            return str(path)
+    return None
+
+
+def _resolve_generated_sol200_op2_path(run_payload: Dict[str, Any]) -> Optional[str]:
+    solver = dict(run_payload.get("solver") or {})
+    summary = dict(solver.get("artifacts_summary") or {})
+    op2_files = [str(item) for item in list(summary.get("op2_files") or []) if str(item or "").strip()]
+    resolved = _pick_first_existing_path(op2_files)
+    if resolved:
+        return resolved
+
+    output_bdf = str(run_payload.get("output_bdf") or "").strip()
+    if output_bdf:
+        output_path = Path(output_bdf).expanduser().resolve()
+        fallback = output_path.with_suffix(".op2")
+        if fallback.exists() and fallback.is_file():
+            return str(fallback)
+    return None
+
+
+def run_sol200_and_store_workflow(
+    *,
+    project_id: int,
+    batch_no: str = "1",
+    case_name: str = "nastran_sol200",
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    parameters: Optional[List[Dict[str, Any]]] = None,
+    parameter_preset: Optional[Dict[str, Any]] = None,
+    responses: Optional[List[Dict[str, Any]]] = None,
+    settings: Optional[Dict[str, Any]] = None,
+    nastran: Optional[str] = None,
+    run_solver: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+    parameter_names: Optional[Sequence[str]] = None,
+    response_names: Optional[Sequence[str]] = None,
+) -> dict:
+    run_payload = run_sol200_workflow(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        input_bdf=input_bdf,
+        output_bdf=output_bdf,
+        parameters=parameters,
+        parameter_preset=parameter_preset,
+        responses=responses,
+        settings=settings,
+        nastran=nastran,
+        run_solver=run_solver,
+        timeout_sec=timeout_sec,
+        extra_args=extra_args,
+    )
+
+    op2_path = _resolve_generated_sol200_op2_path(run_payload)
+    if not op2_path:
+        raise ValidationError(
+            "SOL200 solve completed but no OP2 file was found for sensitivity import",
+            {
+                "project_id": int(project_id),
+                "batch_no": str(batch_no),
+                "case_name": str(case_name),
+                "output_bdf": run_payload.get("output_bdf"),
+                "artifacts_summary": (run_payload.get("solver") or {}).get("artifacts_summary"),
+            },
+        )
+
+    metadata_json = _pick_first_existing_path([
+        (run_payload.get("generated_files") or {}).get("metadata_json"),
+    ])
+    bdf_path = _pick_first_existing_path([run_payload.get("output_bdf")]) or str(
+        Path(str(run_payload.get("output_bdf") or "")).expanduser().resolve()
+    )
+
+    store_payload = store_sol200_sensitivity(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        op2_path=op2_path,
+        matrix_path=None,
+        bdf_path=bdf_path,
+        metadata_json=metadata_json,
+        parameter_names=parameter_names,
+        response_names=response_names,
+    )
+    return {
+        "workflow": "nastran_sol200_run_and_store",
+        "project_id": int(project_id),
+        "batch_no": str(batch_no),
+        "case_name": str(case_name),
+        "input_bdf": run_payload.get("input_bdf"),
+        "output_bdf": run_payload.get("output_bdf"),
+        "op2_path": op2_path,
+        "metadata_json": metadata_json,
+        "run": run_payload,
+        "store": store_payload,
+        "warnings": list(run_payload.get("warnings") or []),
+    }
+
+
 def preview_sol200_sensitivity(
     *,
     project_id: Optional[int] = None,
