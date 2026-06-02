@@ -8,6 +8,7 @@ from .nastran_sol103 import (
     build_eigrl_fields,
     format_float_like_bas,
     read_lines,
+    resolve_dynamic_norm,
     resolve_post_value,
     resolve_result_target,
     split_bdf,
@@ -72,6 +73,48 @@ def _normalize_card_name(line: str) -> str:
         return ""
     token = stripped.split(",", 1)[0].split()[0]
     return token.rstrip("*").upper()
+
+
+def _split_bdf_fields(line: str) -> List[str]:
+    stripped = str(line or "").rstrip("\n")
+    if "," in stripped:
+        return [part.strip() for part in stripped.split(",")]
+    chunks = [stripped[i:i + 8].strip() for i in range(0, len(stripped), 8)]
+    while chunks and chunks[-1] == "":
+        chunks.pop()
+    return chunks
+
+
+def _parse_eigrl_card(line: str) -> Optional[Dict[str, str]]:
+    fields = _split_bdf_fields(line)
+    if not fields:
+        return None
+    if str(fields[0]).strip().upper() != "EIGRL":
+        return None
+
+    def _field(index: int) -> str:
+        return str(fields[index]).strip() if index < len(fields) else ""
+
+    return {
+        "sid": _field(1) or "1",
+        "v1": _field(2),
+        "v2": _field(3),
+        "nd": _field(4),
+        "maxset": _field(6),
+        "shfscl": _field(7),
+        "normalization": _field(8) or "MASS",
+    }
+
+
+def _find_existing_eigrl_fields(bulk_lines: List[str]) -> Optional[Dict[str, str]]:
+    for line in list(bulk_lines or []):
+        card = _normalize_card_name(line)
+        if card != "EIGRL":
+            continue
+        parsed = _parse_eigrl_card(line)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _parse_param_name(line: str) -> str:
@@ -207,14 +250,51 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
     ]
 
 
+def _resolve_sol200_eigrl_fields(settings: Optional[Dict[str, Any]] = None, *, bulk_lines: Optional[List[str]] = None) -> Dict[str, str]:
+    settings = dict(settings or {})
+    existing = _find_existing_eigrl_fields(list(bulk_lines or []))
+    if existing is None:
+        return build_eigrl_fields(settings)
+
+    resolved = dict(existing)
+    if "dynamic.sid" in settings and settings.get("dynamic.sid") not in (None, ""):
+        resolved["sid"] = str(int(settings.get("dynamic.sid")))
+    if "dynamic.fmin" in settings and settings.get("dynamic.fmin") not in (None, ""):
+        resolved["v1"] = format_float_like_bas(float(settings.get("dynamic.fmin")))
+    if "dynamic.fmax" in settings:
+        fmax_raw = settings.get("dynamic.fmax")
+        if fmax_raw in (None, ""):
+            resolved["v2"] = ""
+        else:
+            fmax = float(fmax_raw)
+            resolved["v2"] = "" if fmax <= 0 else format_float_like_bas(fmax)
+    if "dynamic.vectors" in settings:
+        vectors_raw = settings.get("dynamic.vectors")
+        if vectors_raw in (None, ""):
+            resolved["nd"] = ""
+        else:
+            vectors = int(vectors_raw)
+            resolved["nd"] = "" if vectors <= 0 else str(vectors)
+    if "dynamic.size" in settings:
+        size_raw = settings.get("dynamic.size")
+        size = 0 if size_raw in (None, "") else int(size_raw)
+        resolved["maxset"] = str(size) if size > 0 else ""
+    if "dynamic.norm" in settings and settings.get("dynamic.norm") not in (None, ""):
+        resolved["normalization"] = resolve_dynamic_norm(settings.get("dynamic.norm", 2))
+    else:
+        resolved["normalization"] = resolve_dynamic_norm(resolved.get("normalization", "MASS"))
+    return resolved
+
+
 def build_sol200_controls(
     settings: Optional[Dict[str, Any]] = None,
     *,
     sensitivity_csv_path: Optional[str] = None,
     csv_assign_text: Optional[str] = None,
+    bulk_lines: Optional[List[str]] = None,
 ) -> List[str]:
     settings = _normalize_sol200_settings(settings)
-    eigrl = build_eigrl_fields(settings)
+    eigrl = _resolve_sol200_eigrl_fields(settings, bulk_lines=bulk_lines)
     result_target = resolve_result_target(settings.get("result.target", "OP2"))
     displacement_line = build_displacement_request(settings.get("displacement", "ALL"), result_target)
     post = resolve_post_value(settings, result_target=result_target, default_post=-5)
@@ -335,6 +415,7 @@ def build_sol200_lines(
         settings,
         sensitivity_csv_path=sensitivity_csv_path,
         csv_assign_text=csv_assign_text,
+        bulk_lines=bulk_lines,
     )
     design_payload = build_sol200_design_lines(parameters=parameters, responses=responses)
     filtered_bulk_lines = filter_sol200_bulk_lines(bulk_lines)
