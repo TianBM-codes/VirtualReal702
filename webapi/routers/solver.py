@@ -186,6 +186,21 @@ def _resolve_modal_op2_path(op2_path: Optional[str], project_id: Optional[int]) 
         os.path.join(settings.data_root, str(int(project_id)), "default_result_source.op2")
     )
 
+
+def _resolve_sol200_input_bdf(
+    *,
+    project_id: Optional[int],
+    explicit_path: Optional[str],
+    file_name: Optional[str],
+) -> str:
+    return _resolve_project_local_input_with_fallback(
+        project_id=project_id,
+        explicit_path=explicit_path,
+        file_name=file_name,
+        field_name="input_bdf",
+        fallback_category_parts=("solver", "nastran_sol103"),
+    )
+
 def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
     input_bdf = _resolve_project_local_input(
         project_id=body.project_id,
@@ -272,11 +287,10 @@ def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
 
 
 def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
-    input_bdf = _resolve_project_local_input(
+    input_bdf = _resolve_sol200_input_bdf(
         project_id=body.project_id,
         explicit_path=body.input_bdf,
         file_name=body.input_bdf_name,
-        field_name="input_bdf",
     )
     output_bdf = _resolve_project_local_output_file(
         project_id=body.project_id,
@@ -650,11 +664,10 @@ async def nastran_task_status(task_id: str):
 async def preview_nastran_sol200_api(request: Request, body: NastranSol200PreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
-        input_bdf = _resolve_project_local_input(
+        input_bdf = _resolve_sol200_input_bdf(
             project_id=body.project_id,
             explicit_path=body.input_bdf,
             file_name=body.input_bdf_name,
-            field_name="input_bdf",
         )
         data = preview_sol200_workflow(
             project_id=body.project_id,
@@ -676,11 +689,10 @@ async def preview_nastran_sol200_api(request: Request, body: NastranSol200Previe
 async def generate_nastran_sol200_api(request: Request, body: NastranSol200GenerateRequest):
     await log_request(request, model_to_dict(body))
     try:
-        input_bdf = _resolve_project_local_input(
+        input_bdf = _resolve_sol200_input_bdf(
             project_id=body.project_id,
             explicit_path=body.input_bdf,
             file_name=body.input_bdf_name,
-            field_name="input_bdf",
         )
         output_bdf = _resolve_project_local_output_file(
             project_id=body.project_id,
