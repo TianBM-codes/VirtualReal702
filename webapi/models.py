@@ -88,6 +88,7 @@ class CreateOptimizationParameterRequest(BaseModel):
     set_scope: Optional[str] = None
     instance_name: Optional[str] = None
     part_name: Optional[str] = None
+    usage_scope: Optional[List[str]] = None
 
 
 class AddResponseRequest(BaseModel):
@@ -209,12 +210,51 @@ class OptimizationParameterCatalogRequest(BaseModel):
     project_id: int
 
 
+class ParameterUsageItemRequest(BaseModel):
+    parameter_name: str
+    usage_scope: List[str]
+
+
+class OptimizationParameterUsageUpdateRequest(BaseModel):
+    project_id: int
+    parameters: List[ParameterUsageItemRequest]
+
+
+class OptimizationParameterSelectForUpdateRequest(BaseModel):
+    project_id: int
+    parameter_names: List[str]
+    replace_update_set: bool = False
+
+
+class OptimizationParameterRemoveFromUpdateRequest(BaseModel):
+    project_id: int
+    parameter_names: List[str]
+
+
 class ModalFrequencyResponseFromMatchRequest(BaseModel):
     project_id: int
     overwrite: bool = True
     mac_threshold: Optional[float] = None
     max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
     matching_method: str = "greedy"
+    solver_scope: Optional[List[str]] = None
+
+
+class ModalMatchPairRequest(BaseModel):
+    test_mode_no: int
+    fem_mode_no: int
+
+
+class ModalMatchResponseSelectRequest(BaseModel):
+    project_id: int
+    overwrite: bool = False
+    response_types: List[str] = Field(default_factory=lambda: ["MODAL_FREQUENCY"])
+    solver_scope: Optional[List[str]] = None
+    selected_pairs: List[ModalMatchPairRequest]
+
+
+class FeResponseCatalogRequest(BaseModel):
+    project_id: int
 
 
 class Sol200SyncFromCatalogRequest(BaseModel):

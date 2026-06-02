@@ -69,7 +69,9 @@ def test_create_modal_frequency_response_catalog_from_match_writes_modal_frequen
     assert "INSERT INTO t_mt_py_fem_response_catalog" in insert_sql
     assert insert_params[2] == "FREQ_MODE_2"
     assert insert_params[3] == "MODAL_FREQUENCY"
-    extra_json = json.loads(insert_params[14])
+    assert insert_params[14] == "auto_modal_match"
+    assert json.loads(insert_params[15]) == ["SOL200", "BAYESIAN"]
+    extra_json = json.loads(insert_params[17])
     assert extra_json["mode_number"] == 2
     assert extra_json["test_mode_no"] == 3
     assert result["response_count"] == 1

@@ -31,6 +31,23 @@ def _json_dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def _scope_contains(scope_value, expected: str) -> bool:
+    token = str(expected or "").strip().upper()
+    if not token:
+        return False
+    raw = scope_value
+    if raw in (None, ""):
+        raw = ["SENSITIVITY", "UPDATE", "SOL200", "BAYESIAN", "DSA"]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            raw = parsed if isinstance(parsed, list) else [raw]
+        except Exception:
+            raw = [part.strip() for part in raw.split(",")]
+    values = list(raw or [])
+    return token in {str(item or "").strip().upper() for item in values}
+
+
 def _normalize_sol200_parameter_type(value: Any) -> str:
     token = str(value or "").strip().upper()
     mapping = {
@@ -469,7 +486,10 @@ def sync_sol200_config_from_catalog(
     from . import inp_service as _inp
 
     parameter_payload = _inp.list_optimization_parameters(int(project_id))
-    parameter_rows = list(parameter_payload.get("parameters") or [])
+    parameter_rows = [
+        row for row in list(parameter_payload.get("parameters") or [])
+        if _scope_contains(row.get("usage_scope"), "UPDATE")
+    ]
 
     if resolved_response_source == "modal_match":
         _inp.create_modal_frequency_response_catalog_from_match(
@@ -480,7 +500,10 @@ def sync_sol200_config_from_catalog(
             matching_method=str(matching_method or "greedy"),
         )
     response_payload = _inp.get_fe_response_catalog(int(project_id))
-    response_rows = list(response_payload.get("responses") or [])
+    response_rows = [
+        row for row in list(response_payload.get("responses") or [])
+        if bool(row.get("enabled", True)) and _scope_contains(row.get("solver_scope"), "SOL200")
+    ]
 
     mapped_parameters: List[Dict[str, Any]] = []
     skipped_parameters: List[dict] = []

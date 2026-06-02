@@ -14,11 +14,16 @@ from services.model_update.analysis.project_file_service import resolve_project_
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
 from services.model_update.analysis.inp_service import (
     clear_design_response_catalog_entries,
+    create_modal_match_response_catalog_entries,
     create_modal_frequency_response_catalog_from_match,
     create_design_response_catalog_entry,
     create_optimization_parameter,
+    get_fe_response_catalog,
     list_optimization_parameters,
     list_design_response_catalog_entries,
+    remove_optimization_parameters_from_update,
+    select_optimization_parameters_for_update,
+    update_optimization_parameter_usage,
 )
 from services.model_update.analysis.nastran_sol200_service import (
     clear_sol200_parameter_config_entries,
@@ -42,9 +47,14 @@ from ..models import (
     CreateSol200ParameterConfigRequest,
     CreateSol200ResponseConfigRequest,
     DesignResponseCatalogRequest,
+    FeResponseCatalogRequest,
     ModalFrequencyResponseFromMatchRequest,
+    ModalMatchResponseSelectRequest,
     ModalFrequencyBayesianModelUpdateRequest,
     OptimizationParameterCatalogRequest,
+    OptimizationParameterRemoveFromUpdateRequest,
+    OptimizationParameterSelectForUpdateRequest,
+    OptimizationParameterUsageUpdateRequest,
     Sol200SyncFromCatalogRequest,
     Sol200ConfigCatalogRequest,
 )
@@ -335,6 +345,7 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
                 part_name=body.part_name,
                 element_labels=element_labels,
                 current_value=body.current_value,
+                usage_scope=body.usage_scope,
             )
             return success_response(result, "优化参数创建成功")
 
@@ -362,6 +373,7 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
                     instance_name=body.instance_name,
                     part_name=body.part_name,
                     current_value=body.current_value,
+                    usage_scope=body.usage_scope,
                 )
             )
         result = (
@@ -419,6 +431,7 @@ async def create_modal_frequency_response_from_match_api(request: Request, body:
             overwrite=body.overwrite,
             mac_threshold=body.mac_threshold,
             max_freq_error_ratio=body.max_freq_error_ratio,
+            solver_scope=body.solver_scope,
             matching_method=body.matching_method,
         )
         return success_response(data, "模态频率响应目录创建成功")
@@ -442,12 +455,93 @@ async def list_optimization_parameter_api(request: Request, body: OptimizationPa
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+@router.post("/optimization/parameter/usage/update")
+async def update_optimization_parameter_usage_api(request: Request, body: OptimizationParameterUsageUpdateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = update_optimization_parameter_usage(
+            project_id=body.project_id,
+            parameters=[model_to_dict(item) for item in body.parameters],
+        )
+        return success_response(data, "优化参数用途已更新")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/parameter/select_for_update")
+async def select_optimization_parameter_for_update_api(request: Request, body: OptimizationParameterSelectForUpdateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = select_optimization_parameters_for_update(
+            project_id=body.project_id,
+            parameter_names=body.parameter_names,
+            replace_update_set=body.replace_update_set,
+        )
+        return success_response(data, "优化参数已加入模型修正集合")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/parameter/remove_from_update")
+async def remove_optimization_parameter_from_update_api(request: Request, body: OptimizationParameterRemoveFromUpdateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = remove_optimization_parameters_from_update(
+            project_id=body.project_id,
+            parameter_names=body.parameter_names,
+        )
+        return success_response(data, "优化参数已从模型修正集合移除")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
 @router.post("/optimization/response")
 async def list_design_response_api(request: Request, body: DesignResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
         data = list_design_response_catalog_entries(body.project_id)
         return success_response(data, "设计响应目录加载成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/response/catalog")
+async def list_formal_response_catalog_api(request: Request, body: FeResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = get_fe_response_catalog(body.project_id)
+        return success_response(data, "正式响应目录加载成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/response/modal_match/select")
+async def select_modal_match_response_api(request: Request, body: ModalMatchResponseSelectRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = create_modal_match_response_catalog_entries(
+            project_id=body.project_id,
+            overwrite=body.overwrite,
+            response_types=body.response_types,
+            solver_scope=body.solver_scope,
+            selected_pairs=[model_to_dict(item) for item in body.selected_pairs],
+        )
+        return success_response(data, "模态匹配对正式响应已保存")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

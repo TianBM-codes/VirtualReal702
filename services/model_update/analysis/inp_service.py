@@ -87,6 +87,98 @@ def _json_loads(value):
     return json.loads(value)
 
 
+_ALLOWED_PARAMETER_USAGE_SCOPE = {"SENSITIVITY", "UPDATE"}
+_DEFAULT_PARAMETER_USAGE_SCOPE = ("SENSITIVITY", "UPDATE")
+_ALLOWED_RESPONSE_SOLVER_SCOPE = {"DSA", "SOL200", "BAYESIAN"}
+_DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE = ("SOL200", "BAYESIAN")
+_ALLOWED_MODAL_RESPONSE_TYPES = {"MODAL_FREQUENCY", "MODAL_MAC"}
+
+
+def _normalize_string_scope(
+        raw_value,
+        *,
+        allowed: Sequence[str],
+        default_values: Sequence[str],
+        field_name: str,
+) -> List[str]:
+    allowed_set = {str(item).strip().upper() for item in allowed}
+    values = list(raw_value or default_values or [])
+    if not values:
+        values = list(default_values or [])
+    normalized = []
+    seen = set()
+    for item in values:
+        token = str(item or "").strip().upper()
+        if not token:
+            continue
+        if token not in allowed_set:
+            raise ValidationError(
+                f"unsupported {field_name}",
+                {field_name: token, "allowed": sorted(allowed_set)},
+            )
+        if token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    if not normalized:
+        normalized = [str(item).strip().upper() for item in (default_values or []) if str(item).strip()]
+    if not normalized:
+        raise ValidationError(f"{field_name} cannot be empty", {field_name: raw_value})
+    return normalized
+
+
+def _normalize_parameter_usage_scope(raw_value) -> List[str]:
+    return _normalize_string_scope(
+        raw_value,
+        allowed=_ALLOWED_PARAMETER_USAGE_SCOPE,
+        default_values=_DEFAULT_PARAMETER_USAGE_SCOPE,
+        field_name="usage_scope",
+    )
+
+
+def _normalize_response_solver_scope(raw_value, *, default_values=None) -> List[str]:
+    return _normalize_string_scope(
+        raw_value,
+        allowed=_ALLOWED_RESPONSE_SOLVER_SCOPE,
+        default_values=default_values or _DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE,
+        field_name="solver_scope",
+    )
+
+
+def _normalize_modal_response_types(raw_value) -> List[str]:
+    return _normalize_string_scope(
+        raw_value,
+        allowed=_ALLOWED_MODAL_RESPONSE_TYPES,
+        default_values=("MODAL_FREQUENCY",),
+        field_name="response_types",
+    )
+
+
+def _scope_contains(scope_values, expected: str) -> bool:
+    token = str(expected or "").strip().upper()
+    return token in {str(item or "").strip().upper() for item in list(scope_values or [])}
+
+
+def _parse_json_list(raw_value, *, default_values: Optional[Sequence[str]] = None) -> List[str]:
+    if raw_value in (None, ""):
+        return [str(item).strip().upper() for item in list(default_values or []) if str(item).strip()]
+    if isinstance(raw_value, list):
+        return [str(item).strip().upper() for item in raw_value if str(item).strip()]
+    if isinstance(raw_value, tuple):
+        return [str(item).strip().upper() for item in list(raw_value) if str(item).strip()]
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except Exception:
+            parsed = [part.strip() for part in raw_value.split(",")]
+        if isinstance(parsed, list):
+            return [str(item).strip().upper() for item in parsed if str(item).strip()]
+        if parsed in (None, ""):
+            return [str(item).strip().upper() for item in list(default_values or []) if str(item).strip()]
+        return [str(parsed).strip().upper()]
+    return [str(item).strip().upper() for item in list(default_values or []) if str(item).strip()]
+
+
 def _clear_import_inp_catalog_tables(cursor, project_id: int) -> None:
     # Importing a new INP should only refresh tables rebuilt from the INP
     # itself. User-maintained selected-parameter / response tables stay intact.
@@ -1762,7 +1854,8 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                                   selection_mode=None, set_name=None, parameter_name=None, scatter=None,
                                   description="", set_type=None, set_scope=None,
                                   instance_name=None, part_name=None,
-                                  element_labels=None, current_value=None):
+                                  element_labels=None, current_value=None,
+                                  usage_scope=None):
     # This API turns a generic candidate type plus one cataloged set into a
     # concrete optimization parameter record that Bayesian update can address.
     ensure_tables_exist()
@@ -1792,6 +1885,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         resolved_scatter = float(
             _DEFAULT_PARAMETER_SCATTER if scatter is None else scatter
         )
+        resolved_usage_scope = _normalize_parameter_usage_scope(usage_scope)
         if resolved_scatter <= 0:
             raise ValueError("scatter must be > 0")
 
@@ -1843,8 +1937,8 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             insert_sql = """
             INSERT INTO t_mt_py_fem_selected_parameter
             (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
-             instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, extra_json)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, usage_scope, extra_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             created_parameters = []
             insert_rows = []
@@ -1865,12 +1959,13 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                     resolved_current_value,
                     resolved_lower,
                     resolved_upper,
-                    resolved_prob_id,
-                    resolved_scatter,
-                    description or "",
-                    _json_dumps({
-                        "target_keys": [],
-                        "element_labels": provided_element_labels,
+                        resolved_prob_id,
+                        resolved_scatter,
+                        description or "",
+                        _json_dumps(resolved_usage_scope),
+                        _json_dumps({
+                            "target_keys": [],
+                            "element_labels": provided_element_labels,
                         "set_source": "manual",
                         "virtual_set_name": manual_set_name,
                         "current_value": resolved_current_value,
@@ -1907,6 +2002,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                         resolved_prob_id,
                         resolved_scatter,
                         description or "",
+                        _json_dumps(resolved_usage_scope),
                         _json_dumps({
                             "target_keys": [],
                             "element_labels": [int(element_label)],
@@ -1947,6 +2043,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 "prob_id": resolved_prob_id,
                 "scatter": resolved_scatter,
                 "description": description or "",
+                "usage_scope": resolved_usage_scope,
                 "created_parameter_count": len(created_parameters),
                 "created_parameters_preview": created_parameters[:20],
                 "element_labels_preview": provided_element_labels[:20],
@@ -2046,8 +2143,8 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         insert_sql = """
         INSERT INTO t_mt_py_fem_selected_parameter
         (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
-         instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, usage_scope, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         created_parameters = []
         insert_rows = []
@@ -2071,6 +2168,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 resolved_prob_id,
                 resolved_scatter,
                 description or "",
+                _json_dumps(resolved_usage_scope),
                 _json_dumps({
                     "target_keys": target_keys,
                     "element_labels": element_labels,
@@ -2106,6 +2204,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                     resolved_prob_id,
                     resolved_scatter,
                     description or "",
+                    _json_dumps(resolved_usage_scope),
                     _json_dumps({
                         "target_keys": row_target_keys,
                         "element_labels": [int(element_label)],
@@ -2139,11 +2238,12 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             "part_name": capability_row["part_name"],
             "lower": resolved_lower,
             "upper": resolved_upper,
-            "prob_id": resolved_prob_id,
-            "scatter": resolved_scatter,
-            "description": description or "",
-            "created_parameter_count": len(created_parameters),
-            "created_parameters_preview": created_parameters[:20],
+        "prob_id": resolved_prob_id,
+        "scatter": resolved_scatter,
+        "description": description or "",
+        "usage_scope": resolved_usage_scope,
+        "created_parameter_count": len(created_parameters),
+        "created_parameters_preview": created_parameters[:20],
         }
     except Exception:
         conn.rollback()
@@ -3278,18 +3378,29 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
 def get_fe_response_catalog(project_id):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
+    write_cursor = None
     try:
         cursor.execute("""
             SELECT response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
-                   instance_name, part_name, fem_node_label, component, unit, seq_no, source_table,
-                   extra_json, created_at
+                   instance_name, part_name, fem_node_label, component, unit, seq_no, enabled,
+                   selection_source, solver_scope, source_table, extra_json, created_at, updated_at
             FROM t_mt_py_fem_response_catalog
             WHERE pid = %s
             ORDER BY seq_no, response_code
         """, (project_id,))
+        responses = []
+        for row in cursor.fetchall() or []:
+            response_type = str(row.get("response_type") or "").upper()
+            default_scope = _DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE if response_type.startswith("MODAL_") else ("DSA",)
+            responses.append({
+                **dict(row),
+                "enabled": bool(row.get("enabled", 1)),
+                "solver_scope": _parse_json_list(row.get("solver_scope"), default_values=default_scope),
+                "extra_json": _parse_optional_json_object(row.get("extra_json")),
+            })
         return {
             "project_id": project_id,
-            "responses": cursor.fetchall(),
+            "responses": responses,
         }
     finally:
         cursor.close()
@@ -3304,7 +3415,7 @@ def list_optimization_parameters(project_id: int) -> dict:
             """
             SELECT parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
                    instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter,
-                   description, extra_json, created_at
+                   description, usage_scope, extra_json, created_at
             FROM t_mt_py_fem_selected_parameter
             WHERE pid = %s
             ORDER BY created_at DESC, parameter_name ASC
@@ -3331,6 +3442,7 @@ def list_optimization_parameters(project_id: int) -> dict:
                 "prob_id": int(row.get("prob_id") or 0),
                 "scatter": _safe_float(row.get("scatter")),
                 "description": str(row.get("description") or ""),
+                "usage_scope": _parse_json_list(row.get("usage_scope"), default_values=_DEFAULT_PARAMETER_USAGE_SCOPE),
                 "extra_json": extra_json,
                 "created_at": row.get("created_at"),
             })
@@ -3342,6 +3454,135 @@ def list_optimization_parameters(project_id: int) -> dict:
     finally:
         cursor.close()
         conn.close()
+
+
+def update_optimization_parameter_usage(project_id: int, parameters: Sequence[dict]) -> dict:
+    ensure_tables_exist()
+    updates = []
+    seen = set()
+    for item in list(parameters or []):
+        parameter_name = str((item or {}).get("parameter_name") or "").strip()
+        if not parameter_name:
+            raise ValidationError("parameter_name is required", {"item": item})
+        if parameter_name in seen:
+            raise ValidationError("duplicate parameter_name in request", {"parameter_name": parameter_name})
+        seen.add(parameter_name)
+        updates.append({
+            "parameter_name": parameter_name,
+            "usage_scope": _normalize_parameter_usage_scope((item or {}).get("usage_scope")),
+        })
+    if not updates:
+        raise ValidationError("parameters cannot be empty", {"project_id": int(project_id)})
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        parameter_names = [item["parameter_name"] for item in updates]
+        cursor.execute(
+            f"""
+            SELECT parameter_name
+            FROM t_mt_py_fem_selected_parameter
+            WHERE pid = %s AND parameter_name IN ({", ".join(["%s"] * len(parameter_names))})
+            """,
+            (int(project_id), *parameter_names),
+        )
+        existing_names = {str(row.get("parameter_name") or "") for row in (cursor.fetchall() or [])}
+        missing = [name for name in parameter_names if name not in existing_names]
+        if missing:
+            raise ValidationError(
+                "some parameters were not found",
+                {"project_id": int(project_id), "missing_parameter_names": missing[:20]},
+            )
+
+        for item in updates:
+            cursor.execute(
+                """
+                UPDATE t_mt_py_fem_selected_parameter
+                SET usage_scope = %s
+                WHERE pid = %s AND parameter_name = %s
+                """,
+                (_json_dumps(item["usage_scope"]), int(project_id), item["parameter_name"]),
+            )
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "updated_parameter_count": len(updates),
+            "updated_parameters": updates,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def select_optimization_parameters_for_update(project_id: int, parameter_names: Sequence[str], *, replace_update_set: bool = False) -> dict:
+    payload = list_optimization_parameters(int(project_id))
+    rows = list(payload.get("parameters") or [])
+    resolved_names = []
+    seen = set()
+    for item in list(parameter_names or []):
+        token = str(item or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        resolved_names.append(token)
+    if not resolved_names:
+        raise ValidationError("parameter_names cannot be empty", {"project_id": int(project_id)})
+
+    row_by_name = {str(row.get("parameter_name") or ""): dict(row) for row in rows}
+    missing = [name for name in resolved_names if name not in row_by_name]
+    if missing:
+        raise ValidationError("some parameters were not found", {"missing_parameter_names": missing[:20]})
+
+    updates = []
+    for name, row in row_by_name.items():
+        current_scope = _normalize_parameter_usage_scope(row.get("usage_scope"))
+        if name in resolved_names:
+            new_scope = sorted(set(current_scope) | {"UPDATE"})
+            if "SENSITIVITY" not in new_scope:
+                new_scope.append("SENSITIVITY")
+            updates.append({"parameter_name": name, "usage_scope": new_scope})
+        elif replace_update_set and _scope_contains(current_scope, "UPDATE"):
+            new_scope = [item for item in current_scope if item != "UPDATE"]
+            if not new_scope:
+                new_scope = ["SENSITIVITY"]
+            updates.append({"parameter_name": name, "usage_scope": new_scope})
+    result = update_optimization_parameter_usage(int(project_id), updates)
+    result["replace_update_set"] = bool(replace_update_set)
+    result["selected_parameter_names"] = resolved_names
+    return result
+
+
+def remove_optimization_parameters_from_update(project_id: int, parameter_names: Sequence[str]) -> dict:
+    payload = list_optimization_parameters(int(project_id))
+    rows = list(payload.get("parameters") or [])
+    row_by_name = {str(row.get("parameter_name") or ""): dict(row) for row in rows}
+    resolved_names = []
+    seen = set()
+    for item in list(parameter_names or []):
+        token = str(item or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        resolved_names.append(token)
+    if not resolved_names:
+        raise ValidationError("parameter_names cannot be empty", {"project_id": int(project_id)})
+    missing = [name for name in resolved_names if name not in row_by_name]
+    if missing:
+        raise ValidationError("some parameters were not found", {"missing_parameter_names": missing[:20]})
+
+    updates = []
+    for name in resolved_names:
+        current_scope = _normalize_parameter_usage_scope(row_by_name[name].get("usage_scope"))
+        new_scope = [item for item in current_scope if item != "UPDATE"]
+        if not new_scope:
+            new_scope = ["SENSITIVITY"]
+        updates.append({"parameter_name": name, "usage_scope": new_scope})
+    result = update_optimization_parameter_usage(int(project_id), updates)
+    result["removed_parameter_names"] = resolved_names
+    return result
 
 
 def _normalize_modal_mac_threshold_value(mac_threshold: Optional[float]) -> Optional[float]:
@@ -3357,16 +3598,135 @@ def _normalize_modal_mac_threshold_value(mac_threshold: Optional[float]) -> Opti
     raise ValidationError("mac_threshold must be <= 100", {"mac_threshold": mac_threshold})
 
 
+def _delete_response_catalog_entries_by_types(cursor, project_id: int, response_types: Sequence[str]) -> None:
+    resolved_types = [str(item).strip().upper() for item in list(response_types or []) if str(item).strip()]
+    if not resolved_types:
+        return
+    cursor.execute(
+        f"""
+        DELETE FROM t_mt_py_fem_response_catalog
+        WHERE pid = %s AND response_type IN ({", ".join(["%s"] * len(resolved_types))})
+        """,
+        (int(project_id), *resolved_types),
+    )
+
+
+def _build_modal_response_catalog_row(
+        row: dict,
+        *,
+        response_type: str,
+        seq_no: int,
+        matching_method: str,
+        solver_scope: Sequence[str],
+        selection_source: str,
+) -> dict:
+    fem_mode_no = int(row["fem_mode_no"])
+    test_mode_no = int(row["test_mode_no"])
+    resolved_type = str(response_type or "").strip().upper()
+    if resolved_type == "MODAL_FREQUENCY":
+        response_code = f"MODE_FREQ:FE{fem_mode_no}:TEST{test_mode_no}"
+        response_name = f"FREQ_MODE_{fem_mode_no}"
+        component = "FREQ"
+        unit = "Hz"
+    elif resolved_type == "MODAL_MAC":
+        response_code = f"MODE_MAC:FE{fem_mode_no}:TEST{test_mode_no}"
+        response_name = f"MAC_MODE_{fem_mode_no}"
+        component = "MAC"
+        unit = None
+    else:
+        raise ValidationError(
+            "unsupported modal response type",
+            {"response_type": response_type, "allowed": sorted(_ALLOWED_MODAL_RESPONSE_TYPES)},
+        )
+    return {
+        "response_code": response_code,
+        "response_name": response_name,
+        "response_type": resolved_type,
+        "entity_type": "MODE",
+        "test_mode_no": test_mode_no,
+        "component": component,
+        "unit": unit,
+        "seq_no": int(seq_no),
+        "enabled": True,
+        "selection_source": str(selection_source or "manual_modal_match"),
+        "solver_scope": list(solver_scope or []),
+        "source_table": "t_mt_py_fem_modal_correlation",
+        "extra_json": {
+            "mode_number": fem_mode_no,
+            "fem_mode_no": fem_mode_no,
+            "test_mode_no": test_mode_no,
+            "mac": _safe_float(row.get("mac")),
+            "freq_test": _safe_float(row.get("freq_test")),
+            "freq_fem": _safe_float(row.get("freq_fem")),
+            "freq_error_ratio": _safe_float(row.get("freq_error_ratio")),
+            "matching_method": str(matching_method or "greedy"),
+        },
+    }
+
+
+def _insert_response_catalog_rows(cursor, project_id: int, rows: Sequence[dict]) -> None:
+    insert_sql = """
+    INSERT INTO t_mt_py_fem_response_catalog
+    (pid, response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
+     instance_name, part_name, fem_node_label, component, unit, seq_no, enabled, selection_source,
+     solver_scope, source_table, extra_json)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON DUPLICATE KEY UPDATE
+        response_name = VALUES(response_name),
+        response_type = VALUES(response_type),
+        entity_type = VALUES(entity_type),
+        test_mode_no = VALUES(test_mode_no),
+        component = VALUES(component),
+        unit = VALUES(unit),
+        seq_no = VALUES(seq_no),
+        enabled = VALUES(enabled),
+        selection_source = VALUES(selection_source),
+        solver_scope = VALUES(solver_scope),
+        source_table = VALUES(source_table),
+        extra_json = VALUES(extra_json),
+        updated_at = CURRENT_TIMESTAMP
+    """
+    for payload in list(rows or []):
+        cursor.execute(
+            insert_sql,
+            (
+                int(project_id),
+                payload["response_code"],
+                payload["response_name"],
+                payload["response_type"],
+                payload["entity_type"],
+                payload["test_mode_no"],
+                None,
+                None,
+                None,
+                None,
+                payload["component"],
+                payload["unit"],
+                payload["seq_no"],
+                1 if payload.get("enabled", True) else 0,
+                payload.get("selection_source"),
+                _json_dumps(list(payload.get("solver_scope") or [])),
+                payload["source_table"],
+                _json_dumps(payload["extra_json"]),
+            ),
+        )
+
+
 def create_modal_frequency_response_catalog_from_match(
         project_id: int,
         *,
         overwrite: bool = True,
         mac_threshold: Optional[float] = None,
         max_freq_error_ratio: Optional[float] = 0.2,
+        solver_scope: Optional[Sequence[str]] = None,
         matching_method: str = "greedy",
 ) -> dict:
     ensure_tables_exist()
     resolved_mac_threshold = _normalize_modal_mac_threshold_value(mac_threshold)
+    resolved_solver_scope = _normalize_response_solver_scope(
+        solver_scope,
+        default_values=_DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE,
+    )
     matched = match_modal_modes(
         int(project_id),
         mac_threshold=0.0 if resolved_mac_threshold is None else float(resolved_mac_threshold),
@@ -3389,77 +3749,20 @@ def create_modal_frequency_response_catalog_from_match(
     cursor = conn.cursor()
     try:
         if overwrite:
-            cursor.execute(
-                """
-                DELETE FROM t_mt_py_fem_response_catalog
-                WHERE pid = %s AND response_type = %s
-                """,
-                (int(project_id), "MODAL_FREQUENCY"),
-            )
-
-        insert_sql = """
-        INSERT INTO t_mt_py_fem_response_catalog
-        (pid, response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
-         instance_name, part_name, fem_node_label, component, unit, seq_no, source_table, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            response_name = VALUES(response_name),
-            response_type = VALUES(response_type),
-            entity_type = VALUES(entity_type),
-            test_mode_no = VALUES(test_mode_no),
-            component = VALUES(component),
-            unit = VALUES(unit),
-            seq_no = VALUES(seq_no),
-            source_table = VALUES(source_table),
-            extra_json = VALUES(extra_json),
-            created_at = CURRENT_TIMESTAMP
-        """
+            _delete_response_catalog_entries_by_types(cursor, int(project_id), ["MODAL_FREQUENCY"])
         rows = []
         for seq_no, row in enumerate(matched_rows, start=1):
-            fem_mode_no = int(row["fem_mode_no"])
-            test_mode_no = int(row["test_mode_no"])
-            payload = {
-                "response_code": f"MODE_FREQ:FE{fem_mode_no}:TEST{test_mode_no}",
-                "response_name": f"FREQ_MODE_{fem_mode_no}",
-                "response_type": "MODAL_FREQUENCY",
-                "entity_type": "MODE",
-                "test_mode_no": test_mode_no,
-                "component": "FREQ",
-                "unit": "Hz",
-                "seq_no": seq_no,
-                "source_table": "t_mt_py_fem_modal_correlation",
-                "extra_json": {
-                    "mode_number": fem_mode_no,
-                    "fem_mode_no": fem_mode_no,
-                    "test_mode_no": test_mode_no,
-                    "mac": _safe_float(row.get("mac")),
-                    "freq_test": _safe_float(row.get("freq_test")),
-                    "freq_fem": _safe_float(row.get("freq_fem")),
-                    "freq_error_ratio": _safe_float(row.get("freq_error_ratio")),
-                    "matching_method": str(matching_method or "greedy"),
-                },
-            }
-            cursor.execute(
-                insert_sql,
-                (
-                    int(project_id),
-                    payload["response_code"],
-                    payload["response_name"],
-                    payload["response_type"],
-                    payload["entity_type"],
-                    payload["test_mode_no"],
-                    None,
-                    None,
-                    None,
-                    None,
-                    payload["component"],
-                    payload["unit"],
-                    payload["seq_no"],
-                    payload["source_table"],
-                    _json_dumps(payload["extra_json"]),
-                ),
+            rows.append(
+                _build_modal_response_catalog_row(
+                    row,
+                    response_type="MODAL_FREQUENCY",
+                    seq_no=seq_no,
+                    matching_method=str(matching_method or "greedy"),
+                    solver_scope=resolved_solver_scope,
+                    selection_source="auto_modal_match",
+                )
             )
-            rows.append(payload)
+        _insert_response_catalog_rows(cursor, int(project_id), rows)
         conn.commit()
         return {
             "project_id": int(project_id),
@@ -3467,12 +3770,111 @@ def create_modal_frequency_response_catalog_from_match(
             "mac_threshold": resolved_mac_threshold,
             "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
             "matching_method": str(matching_method or "greedy"),
+            "solver_scope": resolved_solver_scope,
             "responses_preview": rows[:20],
         }
     except Exception:
         conn.rollback()
         raise
     finally:
+        cursor.close()
+        conn.close()
+
+
+def create_modal_match_response_catalog_entries(
+        project_id: int,
+        *,
+        selected_pairs: Sequence[dict],
+        response_types: Sequence[str],
+        solver_scope: Optional[Sequence[str]] = None,
+        overwrite: bool = False,
+        matching_method: str = "manual_select",
+) -> dict:
+    ensure_tables_exist()
+    resolved_pairs = []
+    seen_pairs = set()
+    for item in list(selected_pairs or []):
+        test_mode_no = int((item or {}).get("test_mode_no"))
+        fem_mode_no = int((item or {}).get("fem_mode_no"))
+        key = (test_mode_no, fem_mode_no)
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        resolved_pairs.append({"test_mode_no": test_mode_no, "fem_mode_no": fem_mode_no})
+    if not resolved_pairs:
+        raise ValidationError("selected_pairs cannot be empty", {"project_id": int(project_id)})
+
+    resolved_response_types = _normalize_modal_response_types(response_types)
+    resolved_solver_scope = _normalize_response_solver_scope(
+        solver_scope,
+        default_values=_DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE,
+    )
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"""
+            SELECT test_mode_no, fem_mode_no, mac, freq_test, freq_fem, freq_error_ratio
+            FROM t_mt_py_fem_modal_correlation
+            WHERE pid = %s
+              AND (
+                {" OR ".join(["(test_mode_no = %s AND fem_mode_no = %s)"] * len(resolved_pairs))}
+              )
+            ORDER BY fem_mode_no, test_mode_no
+            """,
+            (int(project_id), *[value for pair in resolved_pairs for value in (pair["test_mode_no"], pair["fem_mode_no"])]),
+        )
+        matched_rows = [dict(row) for row in (cursor.fetchall() or [])]
+        row_by_key = {(int(row["test_mode_no"]), int(row["fem_mode_no"])): dict(row) for row in matched_rows}
+        missing = [
+            {"test_mode_no": pair["test_mode_no"], "fem_mode_no": pair["fem_mode_no"]}
+            for pair in resolved_pairs
+            if (pair["test_mode_no"], pair["fem_mode_no"]) not in row_by_key
+        ]
+        if missing:
+            raise ValidationError(
+                "some selected modal pairs were not found in modal correlation results",
+                {"missing_pairs": missing[:20], "project_id": int(project_id)},
+            )
+
+        ordered_rows = []
+        seq_no = 1
+        for pair in resolved_pairs:
+            source_row = row_by_key[(pair["test_mode_no"], pair["fem_mode_no"])]
+            for response_type in resolved_response_types:
+                ordered_rows.append(
+                    _build_modal_response_catalog_row(
+                        source_row,
+                        response_type=response_type,
+                        seq_no=seq_no,
+                        matching_method=str(matching_method or "manual_select"),
+                        solver_scope=resolved_solver_scope,
+                        selection_source="manual_modal_match",
+                    )
+                )
+                seq_no += 1
+
+        write_cursor = conn.cursor()
+        if overwrite:
+            _delete_response_catalog_entries_by_types(write_cursor, int(project_id), resolved_response_types)
+        _insert_response_catalog_rows(write_cursor, int(project_id), ordered_rows)
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "overwrite": bool(overwrite),
+            "response_types": resolved_response_types,
+            "solver_scope": resolved_solver_scope,
+            "selected_pair_count": len(resolved_pairs),
+            "response_count": len(ordered_rows),
+            "responses_preview": ordered_rows[:20],
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if write_cursor is not None:
+            write_cursor.close()
         cursor.close()
         conn.close()
 
@@ -5627,7 +6029,7 @@ def _passes_modal_match_filters(
 
 def _build_modal_match_row(row: dict, *, status: str, recommended: bool, rank: Optional[int] = None, subcase_name=None) -> dict:
     if not subcase_name or len(subcase_name) == 0:
-        step_name = "SUBCASE_1_TBM"
+        step_name = "SUBCASE_1"
     else:
         step_name = subcase_name[-1]
     fem_mode_no = int(row["fem_mode_no"])

@@ -33,6 +33,7 @@ def test_sync_sol200_config_from_catalog_maps_selected_parameters_and_modal_freq
                     "current_value": 2.1e11,
                     "lower": 1.9e11,
                     "upper": 2.3e11,
+                    "usage_scope": ["SENSITIVITY", "UPDATE"],
                     "extra_json": {},
                 }
             ]
@@ -46,6 +47,8 @@ def test_sync_sol200_config_from_catalog_maps_selected_parameters_and_modal_freq
                 {
                     "response_name": "FREQ_MODE_1",
                     "response_type": "MODAL_FREQUENCY",
+                    "enabled": True,
+                    "solver_scope": ["SOL200", "BAYESIAN"],
                     "test_mode_no": 1,
                     "extra_json": {
                         "mode_number": 1,

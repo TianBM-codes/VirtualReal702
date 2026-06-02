@@ -822,7 +822,7 @@ def _load_project_design_responses(project_id: int) -> List[dict]:
 def _load_project_thickness_parameters(project_id: int) -> List[dict]:
     return [
         row
-        for row in _load_project_optimization_parameters(project_id)
+        for row in _load_project_optimization_parameters(project_id, required_scope="SENSITIVITY")
         if str(row.get("quantity_code") or "").upper() in {"T", "H"}
     ]
 
@@ -2759,7 +2759,7 @@ def generate_sensitivity_inp_and_store(
     os.makedirs(output_dir_abs, exist_ok=True)
 
     def _run():
-        parameter_rows = _load_project_optimization_parameters(project_id)
+        parameter_rows = _load_project_optimization_parameters(project_id, required_scope="SENSITIVITY")
         if not parameter_rows:
             raise ValidationError(
                 "no optimization parameters found for project-driven sensitivity generation",
@@ -3383,7 +3383,24 @@ def _merge_vtu_result_map(target: Dict[object, object], incoming: Dict[object, o
         target[label] = value
 
 
-def _load_project_optimization_parameters(project_id: int) -> List[dict]:
+def _scope_list_contains(scope_value, expected: str) -> bool:
+    token = str(expected or "").strip().upper()
+    if not token:
+        return False
+    raw = scope_value
+    if raw in (None, ""):
+        raw = ["SENSITIVITY", "UPDATE"]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            raw = parsed if isinstance(parsed, list) else [raw]
+        except Exception:
+            raw = [part.strip() for part in raw.split(",")]
+    values = list(raw or [])
+    return token in {str(item or "").strip().upper() for item in values}
+
+
+def _load_project_optimization_parameters(project_id: int, *, required_scope: Optional[str] = None) -> List[dict]:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -3391,14 +3408,17 @@ def _load_project_optimization_parameters(project_id: int) -> List[dict]:
             """
             SELECT id, parameter_group_name, parameter_name, quantity_code, selection_mode,
                    set_name, set_type, set_scope, instance_name, part_name,
-                   element_label, lower, upper, prob_id, scatter, current_value AS scalar_value, extra_json
+                   element_label, lower, upper, prob_id, scatter, current_value AS scalar_value, usage_scope, extra_json
             FROM t_mt_py_fem_selected_parameter
             WHERE pid = %s
             ORDER BY created_at ASC, id ASC
             """,
             (project_id,),
         )
-        return [dict(row) for row in (cursor.fetchall() or [])]
+        rows = [dict(row) for row in (cursor.fetchall() or [])]
+        if not required_scope:
+            return rows
+        return [row for row in rows if _scope_list_contains(row.get("usage_scope"), required_scope)]
     finally:
         cursor.close()
         conn.close()
@@ -4245,7 +4265,7 @@ def _export_sensitivity_vtu(
         )
         source_mode = "l3_api"
 
-    dsa_parameter_rows = _load_project_optimization_parameters(project_id) if selector["kind"] == "prefix" else []
+    dsa_parameter_rows = _load_project_optimization_parameters(project_id, required_scope="SENSITIVITY") if selector["kind"] == "prefix" else []
     dsa_model = parse_inp(resolved_inp_path) if selector["kind"] == "prefix" else None
     dsa_direct_target_map = build_parameter_target_map(dsa_model) if dsa_model is not None else {}
     dsa_design_parameter_name_map = _build_dsa_design_parameter_name_map(dsa_model) if dsa_model is not None else {}
@@ -4782,7 +4802,7 @@ def merge_dsa_sensitivity_fields(
     """
     from src.l3.services.dsa_merge_service import merge_dsa_fields
 
-    parameter_rows = _load_project_optimization_parameters(project_id)
+    parameter_rows = _load_project_optimization_parameters(project_id, required_scope="SENSITIVITY")
     if not parameter_rows:
         raise ValidationError(
             "no optimization parameters found for project",

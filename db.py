@@ -1194,6 +1194,31 @@ def ensure_tables_exist():
             "error_json",
             "error_json LONGTEXT NULL COMMENT '错误JSON'",
         )
+        _ensure_column(
+            "t_mt_py_fem_selected_parameter",
+            "usage_scope",
+            "usage_scope JSON NULL COMMENT 'parameter usage scope'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_response_catalog",
+            "enabled",
+            "enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT 'response enabled flag'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_response_catalog",
+            "selection_source",
+            "selection_source VARCHAR(64) NULL COMMENT 'response selection source'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_response_catalog",
+            "solver_scope",
+            "solver_scope JSON NULL COMMENT 'response solver scope'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_response_catalog",
+            "updated_at",
+            "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time'",
+        )
         cursor.execute(
             """
             SELECT 1
