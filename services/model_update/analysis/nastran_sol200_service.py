@@ -1181,6 +1181,35 @@ def _resolve_generated_sol200_op2_path(run_payload: Dict[str, Any]) -> Optional[
     return None
 
 
+def _resolve_generated_sol200_matrix_path(run_payload: Dict[str, Any]) -> Optional[str]:
+    generated_files = dict(run_payload.get("generated_files") or {})
+    solver = dict(run_payload.get("solver") or {})
+    summary = dict(solver.get("artifacts_summary") or {})
+    artifacts = dict(solver.get("artifacts") or {})
+
+    explicit_csv = _pick_first_existing_path([
+        generated_files.get("sensitivity_csv"),
+    ])
+    if explicit_csv:
+        return explicit_csv
+
+    assign_name = str(generated_files.get("sensitivity_csv_assign_name") or "").strip()
+    if assign_name:
+        assign_candidate = _pick_first_existing_path([
+            artifacts.get(assign_name),
+            str(Path(str(run_payload.get("output_bdf") or "")).expanduser().resolve().with_name(assign_name))
+            if str(run_payload.get("output_bdf") or "").strip() else None,
+        ])
+        if assign_candidate:
+            return assign_candidate
+
+    unit11_candidates = [str(item) for item in list(summary.get("unit11_candidates") or []) if str(item or "").strip()]
+    resolved_unit11 = _pick_first_existing_path(unit11_candidates)
+    if resolved_unit11:
+        return resolved_unit11
+    return None
+
+
 def run_sol200_and_store_workflow(
     *,
     project_id: int,
@@ -1216,14 +1245,16 @@ def run_sol200_and_store_workflow(
     )
 
     op2_path = _resolve_generated_sol200_op2_path(run_payload)
-    if not op2_path:
+    matrix_path = None if op2_path else _resolve_generated_sol200_matrix_path(run_payload)
+    if not op2_path and not matrix_path:
         raise ValidationError(
-            "SOL200 solve completed but no OP2 file was found for sensitivity import",
+            "SOL200 solve completed but no OP2 or matrix result file was found for sensitivity import",
             {
                 "project_id": int(project_id),
                 "batch_no": str(batch_no),
                 "case_name": str(case_name),
                 "output_bdf": run_payload.get("output_bdf"),
+                "generated_files": run_payload.get("generated_files"),
                 "artifacts_summary": (run_payload.get("solver") or {}).get("artifacts_summary"),
             },
         )
@@ -1240,7 +1271,7 @@ def run_sol200_and_store_workflow(
         batch_no=str(batch_no),
         case_name=str(case_name),
         op2_path=op2_path,
-        matrix_path=None,
+        matrix_path=matrix_path,
         bdf_path=bdf_path,
         metadata_json=metadata_json,
         parameter_names=parameter_names,
@@ -1254,6 +1285,7 @@ def run_sol200_and_store_workflow(
         "input_bdf": run_payload.get("input_bdf"),
         "output_bdf": run_payload.get("output_bdf"),
         "op2_path": op2_path,
+        "matrix_path": matrix_path,
         "metadata_json": metadata_json,
         "run": run_payload,
         "store": store_payload,

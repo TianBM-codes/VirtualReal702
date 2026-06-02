@@ -151,3 +151,64 @@ def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypat
     assert captured["bdf_path"] == str(output_bdf.resolve())
     assert captured["metadata_json"] == str(metadata_path.resolve())
     assert payload["store"]["stored"] is True
+
+
+def test_run_sol200_and_store_workflow_falls_back_to_sensitivity_csv(monkeypatch, tmp_path):
+    output_bdf = tmp_path / "demo_sol200.bdf"
+    output_bdf.write_text("BEGIN BULK\nENDDATA\n", encoding="utf-8")
+    csv_path = tmp_path / "sol200_sens.csv"
+    csv_path.write_text("dummy", encoding="utf-8")
+    metadata_path = tmp_path / "demo_sol200.bdf.sol200.json"
+    metadata_path.write_text("{}", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run_sol200_workflow(**kwargs):
+        return {
+            "input_bdf": str(tmp_path / "input.bdf"),
+            "output_bdf": str(output_bdf),
+            "generated_files": {
+                "metadata_json": str(metadata_path),
+                "sensitivity_csv": str(csv_path),
+            },
+            "solver": {
+                "artifacts_summary": {
+                    "op2_files": [],
+                    "has_op2": False,
+                    "unit11_candidates": [],
+                }
+            },
+            "warnings": [
+                {
+                    "code": "NASTRAN_OP2_NOT_FOUND",
+                    "message": "solve completed without an OP2 file",
+                }
+            ],
+        }
+
+    def fake_store_sol200_sensitivity(**kwargs):
+        captured.update(kwargs)
+        return {"stored": True, "batch_no": kwargs["batch_no"]}
+
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.run_sol200_workflow",
+        fake_run_sol200_workflow,
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.store_sol200_sensitivity",
+        fake_store_sol200_sensitivity,
+    )
+
+    payload = run_sol200_and_store_workflow(
+        project_id=3,
+        batch_no="1",
+        case_name="modal_freq_sens",
+        input_bdf=str(tmp_path / "input.bdf"),
+        output_bdf=str(output_bdf),
+        settings={"dynamic.norm": "MASS", "sol200.sensitivity_csv": True},
+    )
+
+    assert captured["op2_path"] is None
+    assert captured["matrix_path"] == str(csv_path.resolve())
+    assert payload["matrix_path"] == str(csv_path.resolve())
+    assert payload["store"]["stored"] is True
