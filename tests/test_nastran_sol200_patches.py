@@ -37,11 +37,37 @@ def test_build_sol200_controls_uses_formatted_dsaprt_when_csv_enabled(tmp_path):
     assert "PARAM,XYUNIT,52" in lines
 
 
-def test_build_sol200_response_lines_allow_negative_lower_bound_and_disable_screening():
+def test_build_sol200_response_lines_allow_negative_lower_bound():
     lines = _build_response_lines(1, {"type": "FREQ", "name": "FREQ1", "mode_number": 1})
 
     assert "DCONSTR,1,1,-1.0E30,1.0E30" in lines
-    assert "DSCREEN  FREQ    -1.0E30" in lines
+
+
+def test_build_sol200_design_lines_add_single_dscreen_for_freq_responses(tmp_path):
+    input_bdf = tmp_path / "input.bdf"
+    input_bdf.write_text("SOL 103\nCEND\nBEGIN BULK\nENDDATA\n", encoding="utf-8")
+
+    payload = build_sol200_lines(
+        input_bdf=str(input_bdf),
+        parameters=[
+            {
+                "name": "E1",
+                "type": "E",
+                "material_id": 1001,
+                "initial": 210000.0,
+                "lower": 2000.0,
+                "upper": 300000.0,
+            }
+        ],
+        responses=[
+            {"type": "FREQ", "name": "FREQ1", "mode_number": 1},
+            {"type": "FREQ", "name": "FREQ2", "mode_number": 2},
+        ],
+        settings={"dynamic.norm": "MASS"},
+    )
+
+    dscreen_lines = [line for line in payload["response_lines"] if "DSCREEN" in line]
+    assert dscreen_lines == ["DSCREEN  FREQ    -1.0E30"]
 
 
 def test_build_sol200_lines_preserves_existing_eigrl_frequency_range(tmp_path):
@@ -77,7 +103,7 @@ def test_build_sol200_lines_preserves_existing_eigrl_frequency_range(tmp_path):
     )
 
     eigrl_line = next(line for line in payload["control_lines"] if line.startswith("EIGRL,"))
-    assert eigrl_line == "EIGRL,1,100.0,10000.0,20,,,MASS"
+    assert eigrl_line == "EIGRL,1,100.0,10000.0,20,,,,MASS"
 
 
 def test_clone_property_with_material_updates_multimaterial_fields():

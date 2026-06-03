@@ -7,6 +7,7 @@ Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT
 import logging
 import math
 import os
+import re
 from collections import defaultdict
 from typing import Dict, Literal, Optional, Tuple
 
@@ -149,6 +150,20 @@ def _resolve_magnitude_field(workspace: str, step: str, field: str,
     if os.path.exists(parent_path):
         return parent, None
     return None, None
+
+
+_SENSITIVITY_FRAME_ALIAS_RE = re.compile(r"^(?P<field>.+)__FRAME_(?P<frame>\d+)$")
+
+
+def _resolve_sensitivity_frame_alias(field: str, frame_idx: int) -> Tuple[str, int]:
+    """
+    Resolve pseudo-fields emitted by the sensitivity picker back to the
+    underlying field + concrete frame.
+    """
+    match = _SENSITIVITY_FRAME_ALIAS_RE.match(str(field or ""))
+    if not match:
+        return field, frame_idx
+    return match.group("field"), int(match.group("frame"))
 
 
 def _result_h5_path(workspace: str, step: str, field: str,
@@ -301,6 +316,7 @@ def frame_colors(
             f"frame_idx must be >= 0, got {frame_idx}",
             {"frame_idx": frame_idx},
         )
+    field, frame_idx = _resolve_sensitivity_frame_alias(field, frame_idx)
 
     idx = registry.get(odb_id)
     if idx is None:
@@ -460,6 +476,7 @@ def compute_scalar_range(
             f"frame_idx must be >= 0, got {frame_idx}",
             {"frame_idx": frame_idx},
         )
+    field, frame_idx = _resolve_sensitivity_frame_alias(field, frame_idx)
 
     idx = registry.get(odb_id)
     if idx is None:
@@ -582,6 +599,7 @@ def frame_scalars(
             f"frame_idx must be >= 0, got {frame_idx}",
             {"frame_idx": frame_idx},
         )
+    field, frame_idx = _resolve_sensitivity_frame_alias(field, frame_idx)
 
     idx = registry.get(odb_id)
     if idx is None:

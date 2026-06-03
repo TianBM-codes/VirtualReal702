@@ -246,7 +246,6 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
     return [
         f"DRESP1,{int(index)},{name},FREQ,STRUC,,{int(mode_number)}",
         f"DCONSTR,1,{int(index)},-1.0E30,1.0E30",
-        "DSCREEN  FREQ    -1.0E30",
     ]
 
 
@@ -364,6 +363,9 @@ def build_sol200_design_lines(
     for index, response in enumerate(responses, start=1):
         response_lines.extend(_build_response_lines(index, response))
 
+    # DSCREEN is a global screening control card; keep exactly one copy.
+    response_lines.append("DSCREEN  FREQ    -1.0E30")
+
     design_lines = [
         "$ -----------------------------------------------------------------------------",
         "$ Phase-1 SOL200 design model include",
@@ -454,7 +456,7 @@ def build_sol200_lines(
 def filter_sol200_bulk_lines(bulk_lines: List[str]) -> List[str]:
     filtered: List[str] = []
     skipping_continuation = False
-    skip_prefixes = ("EIG", "DES", "DCO", "DRE", "DVM", "DVP")
+    skip_prefixes = ("EIG", "DES", "DCO", "DRE", "DVM", "DVP", "DSC")
     for line in bulk_lines:
         stripped = line.lstrip()
         if not stripped:
