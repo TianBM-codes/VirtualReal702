@@ -796,6 +796,11 @@ def compute_feature_edges(surf_tri_nodes, coords_global,
         cos_angle = (na * nb).sum(axis=1)
         edge_types[shared_idx[cos_angle < cos_thresh]] = 2
 
+    # Edges shared by 3+ triangles sit at geometric junctions (e.g. two bonded
+    # shells meeting at a solid side face) — always feature edges, same root
+    # cause as the count>=2 fix in compute_all_surface_edges.
+    edge_types[counts >= 3] = 1
+
     # Return only boundary + fold edges (skip interior smooth edges)
     keep = edge_types > 0
     return unique_edge_nodes[keep], edge_types[keep]
