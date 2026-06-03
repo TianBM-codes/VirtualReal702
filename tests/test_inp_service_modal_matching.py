@@ -146,8 +146,8 @@ def test_modal_match_frequency_scatter_payload_contains_points_and_tooltips(monk
     assert payload["project_id"] == 18
     assert payload["chart_type"] == "scatter"
     assert payload["data"][0]["label"] == "matched_modes"
-    assert payload["data"][0]["xaxis"] == ["31.8", "64.2"]
-    assert payload["data"][0]["data"] == [[31.8, 32.5], [64.2, 63.9]]
+    assert payload["data"][0]["xaxis"] == ["31.800", "64.200"]
+    assert payload["data"][0]["data"] == [["31.800", 32.5], ["64.200", 63.9]]
     assert payload["data"][0]["points"][0]["tooltip"]["fem_mode_no"] == 1
     assert payload["data"][0]["points"][1]["tooltip"]["flip"] is True
     assert payload["summary"]["point_count"] == 2
@@ -215,21 +215,28 @@ def test_modal_frequency_consistency_payload_auto_computes_when_rows_missing(mon
 
     assert captured == {"project_id": 18, "overwrite": True, "mac_threshold": None}
     assert payload["project_type"] == "MTXZ"
+    assert payload["chart_type"] == "line"
     assert payload["summary"]["fem_mode_count"] == 3
     assert payload["summary"]["test_mode_count"] == 2
     assert payload["summary"]["compared_mode_count"] == 2
+    assert payload["summary"]["point_count"] == 2
+    assert payload["data"][0]["label"] == "frequency_consistency_error"
+    assert payload["data"][0]["xaxis"] == ["1", "2"]
+    assert round(payload["data"][0]["data"][0], 10) == 2.0
     assert round(payload["rows"][0]["freq_error_ratio"], 10) == 0.02
+    assert round(payload["rows"][0]["freq_error_percent"], 10) == 2.0
     assert round(payload["rows"][1]["freq_error_ratio"], 10) == round((20.5 - 19.5) / 19.5, 10)
-    assert payload["rows"][2]["test_mode_no"] is None
+    assert payload["rows"][0]["fem_mode_no"] == 1
+    assert payload["rows"][1]["fem_mode_no"] == 2
 
 
-def test_modal_correlation_all_scatter_payload_contains_mac_tooltips(monkeypatch):
+def test_modal_correlation_all_scatter_payload_returns_frequency_pairs(monkeypatch):
     monkeypatch.setattr(
         "services.model_update.analysis.inp_service._load_modal_correlation_rows",
         lambda project_id: [
             {
                 "fem_mode_no": 1,
-                "test_mode_no": 2,
+                "test_mode_no": 1,
                 "dof_pair_count": 8,
                 "mac": 97.5,
                 "freq_fem": 31.8,
@@ -238,8 +245,28 @@ def test_modal_correlation_all_scatter_payload_contains_mac_tooltips(monkeypatch
                 "flip": False,
             },
             {
+                "fem_mode_no": 1,
+                "test_mode_no": 2,
+                "dof_pair_count": 8,
+                "mac": 10.0,
+                "freq_fem": 31.8,
+                "freq_test": 63.9,
+                "freq_error_ratio": -0.50,
+                "flip": False,
+            },
+            {
                 "fem_mode_no": 2,
-                "test_mode_no": 4,
+                "test_mode_no": 1,
+                "dof_pair_count": 8,
+                "mac": 12.0,
+                "freq_fem": 64.2,
+                "freq_test": 32.5,
+                "freq_error_ratio": 0.97,
+                "flip": False,
+            },
+            {
+                "fem_mode_no": 2,
+                "test_mode_no": 2,
                 "dof_pair_count": 8,
                 "mac": 95.0,
                 "freq_fem": 64.2,
@@ -255,7 +282,9 @@ def test_modal_correlation_all_scatter_payload_contains_mac_tooltips(monkeypatch
     assert payload["project_id"] == 18
     assert payload["chart_type"] == "scatter"
     assert payload["value_label"] == "mac"
-    assert payload["data"][0]["data"] == [[1, 2], [2, 4]]
+    assert payload["data"][0]["label"] == "frequency_order_pairs"
+    assert payload["data"][0]["data"] == [["31.800", 32.5], ["64.200", 63.9]]
     assert payload["data"][0]["points"][0]["tooltip"]["mac"] == 97.5
     assert payload["data"][0]["points"][1]["tooltip"]["flip"] is True
     assert payload["summary"]["point_count"] == 2
+    assert payload["summary"]["compared_mode_count"] == 2

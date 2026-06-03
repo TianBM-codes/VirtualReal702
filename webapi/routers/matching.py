@@ -175,6 +175,19 @@ async def modal_correlation_all_scatter_api(request: Request, body: ModalCorrela
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+@router.post("/correlation/modal/frequency_consistency")
+async def modal_frequency_consistency_api(request: Request, body: ModalCorrelationScatterRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_modal_frequency_consistency_payload(project_id=body.project_id)
+        return success_response(result, "频率一致性计算成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
 @router.post("/transform/operation")
 async def save_transform_operation_api(request: Request, body: TransformOperationRequest):
     await log_request(request, model_to_dict(body))

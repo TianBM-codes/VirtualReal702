@@ -253,6 +253,11 @@ class ModalMatchResponseSelectRequest(BaseModel):
     selected_pairs: List[ModalMatchPairRequest]
 
 
+class ModalFrequencyResponseOptionsRequest(BaseModel):
+    project_id: int
+    response_source: str
+
+
 class FeResponseCatalogRequest(BaseModel):
     project_id: int
 

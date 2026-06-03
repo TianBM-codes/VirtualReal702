@@ -3664,6 +3664,97 @@ def _build_modal_response_catalog_row(
     }
 
 
+def get_modal_frequency_response_options(project_id: int, response_source: str) -> dict:
+    resolved_source = str(response_source or "").strip().upper()
+    if resolved_source not in {"FEM", "TEST"}:
+        raise ValidationError(
+            "unsupported response_source",
+            {"response_source": response_source, "allowed": ["FEM", "TEST"]},
+        )
+
+    if resolved_source == "FEM":
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            cursor.execute("""
+                SELECT mode_no, frequency
+                FROM t_mt_py_fem_modal_result
+                WHERE pid = %s
+                GROUP BY mode_no, frequency
+                ORDER BY mode_no
+            """, (int(project_id),))
+            source_rows = [dict(row) for row in (cursor.fetchall() or [])]
+        finally:
+            cursor.close()
+            conn.close()
+
+        table_rows = [
+            {
+                "order": int(row["mode_no"]),
+                "frequency_hz": _safe_float(row.get("frequency")),
+            }
+            for row in source_rows
+        ]
+        columns = [
+            {"key": "order", "title": "阶次", "type": "number"},
+            {"key": "frequency_hz", "title": "频率(Hz)", "type": "number"},
+        ]
+        return {
+            "project_id": int(project_id),
+            "response_source": resolved_source,
+            "columns": columns,
+            "rows": table_rows,
+            "summary": {
+                "row_count": len(table_rows),
+                "column_count": len(columns),
+            },
+        }
+
+    rows = _ensure_modal_correlation_rows(int(project_id))
+    candidates = sorted(
+        [dict(row) for row in rows],
+        key=lambda item: (
+            -(float(item["mac"]) if item.get("mac") is not None else -1.0),
+            abs(float(item["freq_error_ratio"])) if item.get("freq_error_ratio") is not None else math.inf,
+            int(item["fem_mode_no"]),
+            int(item["test_mode_no"]),
+        )
+    )
+    used_fem = set()
+    used_test = set()
+    matched_rows = []
+    for item in candidates:
+        fem_mode_no = int(item["fem_mode_no"])
+        test_mode_no = int(item["test_mode_no"])
+        if fem_mode_no in used_fem or test_mode_no in used_test:
+            continue
+        used_fem.add(fem_mode_no)
+        used_test.add(test_mode_no)
+        matched_rows.append({
+            "test_frequency_hz": _safe_float(item.get("freq_test")),
+            "test_order": test_mode_no,
+            "fem_frequency_hz": _safe_float(item.get("freq_fem")),
+            "fem_order": fem_mode_no,
+        })
+    matched_rows.sort(key=lambda item: item["test_order"])
+    columns = [
+        {"key": "test_frequency_hz", "title": "试验频率", "type": "number"},
+        {"key": "test_order", "title": "试验阶次", "type": "number"},
+        {"key": "fem_frequency_hz", "title": "计算频率", "type": "number"},
+        {"key": "fem_order", "title": "计算阶次", "type": "number"},
+    ]
+    return {
+        "project_id": int(project_id),
+        "response_source": resolved_source,
+        "columns": columns,
+        "rows": matched_rows,
+        "summary": {
+            "row_count": len(matched_rows),
+            "column_count": len(columns),
+        },
+    }
+
+
 def _insert_response_catalog_rows(cursor, project_id: int, rows: Sequence[dict]) -> None:
     insert_sql = """
     INSERT INTO t_mt_py_fem_response_catalog
@@ -5942,9 +6033,9 @@ def get_modal_match_frequency_scatter_payload(
         freq_test = row.get("freq_test")
         if freq_fem is None or freq_test is None:
             continue
-        x_value = float(freq_fem)
+        x_value = f"{float(freq_fem):.3f}"
         y_value = float(freq_test)
-        xaxis.append(str(x_value))
+        xaxis.append(x_value)
         scatter_points.append([x_value, y_value])
         tooltip_points.append(
             {
@@ -6018,13 +6109,17 @@ def _ensure_modal_correlation_rows(project_id: int) -> List[dict]:
     return _load_modal_correlation_rows(int(project_id))
 
 
-def get_modal_frequency_consistency_payload(project_id: int) -> dict:
+def _build_modal_frequency_order_rows(project_id: int) -> dict:
     rows = _ensure_modal_correlation_rows(int(project_id))
     if not rows:
         raise ValueError("未找到模态相关性结果，请先完成 MAC 计算")
 
     fem_mode_order = sorted({int(row["fem_mode_no"]) for row in rows})
     test_mode_order = sorted({int(row["test_mode_no"]) for row in rows})
+    row_by_key = {
+        (int(row["test_mode_no"]), int(row["fem_mode_no"])): dict(row)
+        for row in rows
+    }
 
     fem_freq_by_mode: Dict[int, Optional[float]] = {}
     test_freq_by_mode: Dict[int, Optional[float]] = {}
@@ -6036,12 +6131,15 @@ def get_modal_frequency_consistency_payload(project_id: int) -> dict:
         if test_mode_no not in test_freq_by_mode:
             test_freq_by_mode[test_mode_no] = _safe_float(row.get("freq_test"))
 
-    table_rows: List[dict] = []
+    paired_rows: List[dict] = []
     comparable_error_ratios: List[float] = []
-    for index, fem_mode_no in enumerate(fem_mode_order):
-        test_mode_no = test_mode_order[index] if index < len(test_mode_order) else None
+    for index, test_mode_no in enumerate(test_mode_order):
+        if index >= len(fem_mode_order):
+            break
+        fem_mode_no = fem_mode_order[index]
+        freq_test = test_freq_by_mode.get(test_mode_no)
         freq_fem = fem_freq_by_mode.get(fem_mode_no)
-        freq_test = test_freq_by_mode.get(test_mode_no) if test_mode_no is not None else None
+        pair_row = row_by_key.get((int(test_mode_no), int(fem_mode_no))) or {}
         freq_error = None
         freq_error_ratio = None
         if freq_fem is not None and freq_test is not None:
@@ -6049,25 +6147,27 @@ def get_modal_frequency_consistency_payload(project_id: int) -> dict:
             if abs(freq_test) > 1e-18:
                 freq_error_ratio = float(freq_error / freq_test)
                 comparable_error_ratios.append(abs(freq_error_ratio))
-        table_rows.append({
+        freq_error_percent = None if freq_error_ratio is None else float(freq_error_ratio * 100.0)
+        paired_rows.append({
             "order_index": index + 1,
+            "test_mode_no": int(test_mode_no),
             "fem_mode_no": int(fem_mode_no),
-            "test_mode_no": None if test_mode_no is None else int(test_mode_no),
-            "freq_fem": freq_fem,
             "freq_test": freq_test,
+            "freq_fem": freq_fem,
             "freq_error": freq_error,
             "freq_error_ratio": freq_error_ratio,
+            "freq_error_percent": freq_error_percent,
+            "mac": _safe_float(pair_row.get("mac")),
+            "dof_pair_count": int(pair_row["dof_pair_count"]) if pair_row.get("dof_pair_count") is not None else None,
+            "flip": bool(pair_row.get("flip", False)) if pair_row else False,
         })
 
     return {
-        "project_id": int(project_id),
-        "project_type": "MTXZ",
-        "chart_type": "table",
-        "rows": table_rows,
+        "rows": paired_rows,
         "summary": {
             "fem_mode_count": len(fem_mode_order),
             "test_mode_count": len(test_mode_order),
-            "compared_mode_count": len(comparable_error_ratios),
+            "compared_mode_count": len(paired_rows),
             "mean_abs_error_ratio": (
                 float(sum(comparable_error_ratios) / len(comparable_error_ratios))
                 if comparable_error_ratios else None
@@ -6076,35 +6176,97 @@ def get_modal_frequency_consistency_payload(project_id: int) -> dict:
                 float(max(comparable_error_ratios))
                 if comparable_error_ratios else None
             ),
+            "mean_abs_error_percent": (
+                float((sum(comparable_error_ratios) / len(comparable_error_ratios)) * 100.0)
+                if comparable_error_ratios else None
+            ),
+            "max_abs_error_percent": (
+                float(max(comparable_error_ratios) * 100.0)
+                if comparable_error_ratios else None
+            ),
+        },
+    }
+
+
+def get_modal_frequency_consistency_payload(project_id: int) -> dict:
+    paired = _build_modal_frequency_order_rows(int(project_id))
+    rows = list(paired["rows"])
+    xaxis = []
+    line_points = []
+    tooltip_points = []
+    for row in rows:
+        order_index = int(row["order_index"])
+        y_value = row.get("freq_error_percent")
+        if y_value is None:
+            continue
+        x_value = str(order_index)
+        xaxis.append(x_value)
+        line_points.append(y_value)
+        tooltip_points.append({
+            "x": x_value,
+            "y": y_value,
+            "tooltip": {
+                "order_index": order_index,
+                "test_mode_no": int(row["test_mode_no"]),
+                "fem_mode_no": int(row["fem_mode_no"]),
+                "freq_test": row.get("freq_test"),
+                "freq_fem": row.get("freq_fem"),
+                "freq_error": row.get("freq_error"),
+                "freq_error_ratio": row.get("freq_error_ratio"),
+                "freq_error_percent": y_value,
+                "mac": row.get("mac"),
+            },
+        })
+    return {
+        "project_id": int(project_id),
+        "project_type": "MTXZ",
+        "chart_type": "line",
+        "x_label": "mode_order",
+        "y_label": "frequency_error_percent",
+        "data": [
+            {
+                "label": "frequency_consistency_error",
+                "xaxis": xaxis,
+                "data": line_points,
+                "points": tooltip_points,
+            }
+        ],
+        "rows": rows,
+        "summary": {
+            **dict(paired["summary"]),
+            "point_count": len(line_points),
         },
     }
 
 
 def get_modal_correlation_all_scatter_payload(project_id: int) -> dict:
-    rows = _ensure_modal_correlation_rows(int(project_id))
-    if not rows:
-        raise ValueError("未找到模态相关性结果，请先完成 MAC 计算")
+    paired = _build_modal_frequency_order_rows(int(project_id))
+    rows = list(paired["rows"])
 
     scatter_points = []
     tooltip_points = []
     xaxis = []
     mac_values = []
     for row in rows:
-        fem_mode_no = int(row["fem_mode_no"])
-        test_mode_no = int(row["test_mode_no"])
+        freq_fem = _safe_float(row.get("freq_fem"))
+        freq_test = _safe_float(row.get("freq_test"))
+        if freq_fem is None or freq_test is None:
+            continue
+        x_value = f"{float(freq_fem):.3f}"
+        y_value = float(freq_test)
         mac = float(row["mac"]) if row.get("mac") is not None else None
-        xaxis.append(str(fem_mode_no))
-        scatter_points.append([fem_mode_no, test_mode_no])
+        xaxis.append(x_value)
+        scatter_points.append([x_value, y_value])
         tooltip_points.append({
-            "x": fem_mode_no,
-            "y": test_mode_no,
+            "x": x_value,
+            "y": y_value,
             "value": mac,
             "tooltip": {
-                "fem_mode_no": fem_mode_no,
-                "test_mode_no": test_mode_no,
+                "fem_mode_no": int(row["fem_mode_no"]),
+                "test_mode_no": int(row["test_mode_no"]),
                 "mac": mac,
-                "freq_fem": _safe_float(row.get("freq_fem")),
-                "freq_test": _safe_float(row.get("freq_test")),
+                "freq_fem": x_value,
+                "freq_test": y_value,
                 "freq_error_ratio": _safe_float(row.get("freq_error_ratio")),
                 "dof_pair_count": int(row["dof_pair_count"]) if row.get("dof_pair_count") is not None else None,
                 "flip": bool(row.get("flip", False)),
@@ -6116,12 +6278,12 @@ def get_modal_correlation_all_scatter_payload(project_id: int) -> dict:
     return {
         "project_id": int(project_id),
         "chart_type": "scatter",
-        "x_label": "fem_mode_no",
-        "y_label": "test_mode_no",
+        "x_label": "calculated_modal_frequency",
+        "y_label": "test_modal_frequency",
         "value_label": "mac",
         "data": [
             {
-                "label": "all_correlations",
+                "label": "frequency_order_pairs",
                 "xaxis": xaxis,
                 "data": scatter_points,
                 "points": tooltip_points,
@@ -6129,24 +6291,11 @@ def get_modal_correlation_all_scatter_payload(project_id: int) -> dict:
         ],
         "summary": {
             "point_count": len(scatter_points),
-            "fem_mode_count": len({int(row["fem_mode_no"]) for row in rows}),
-            "test_mode_count": len({int(row["test_mode_no"]) for row in rows}),
+            **dict(paired["summary"]),
             "max_mac": float(max(mac_values)) if mac_values else None,
             "min_mac": float(min(mac_values)) if mac_values else None,
         },
-        "rows": [
-            {
-                "fem_mode_no": int(row["fem_mode_no"]),
-                "test_mode_no": int(row["test_mode_no"]),
-                "mac": float(row["mac"]) if row.get("mac") is not None else None,
-                "freq_fem": _safe_float(row.get("freq_fem")),
-                "freq_test": _safe_float(row.get("freq_test")),
-                "freq_error_ratio": _safe_float(row.get("freq_error_ratio")),
-                "dof_pair_count": int(row["dof_pair_count"]) if row.get("dof_pair_count") is not None else None,
-                "flip": bool(row.get("flip", False)),
-            }
-            for row in rows
-        ],
+        "rows": rows,
     }
 
 

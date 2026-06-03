@@ -19,6 +19,7 @@ from services.model_update.analysis.inp_service import (
     create_design_response_catalog_entry,
     create_optimization_parameter,
     get_fe_response_catalog,
+    get_modal_frequency_response_options,
     list_optimization_parameters,
     list_design_response_catalog_entries,
     remove_optimization_parameters_from_update,
@@ -48,6 +49,7 @@ from ..models import (
     CreateSol200ResponseConfigRequest,
     DesignResponseCatalogRequest,
     FeResponseCatalogRequest,
+    ModalFrequencyResponseOptionsRequest,
     ModalFrequencyResponseFromMatchRequest,
     ModalMatchResponseSelectRequest,
     ModalFrequencyBayesianModelUpdateRequest,
@@ -542,6 +544,22 @@ async def select_modal_match_response_api(request: Request, body: ModalMatchResp
             selected_pairs=[model_to_dict(item) for item in body.selected_pairs],
         )
         return success_response(data, "模态匹配对正式响应已保存")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/response/modal_frequency/options")
+async def modal_frequency_response_options_api(request: Request, body: ModalFrequencyResponseOptionsRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = get_modal_frequency_response_options(
+            project_id=body.project_id,
+            response_source=body.response_source,
+        )
+        return success_response(data, "获取频率响应数据成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
