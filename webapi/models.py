@@ -74,6 +74,7 @@ class CreateOptimizationParameterRequest(BaseModel):
     project_id: int
     set_name: Optional[Union[str, List[str]]] = None
     element_labels: Optional[List[int]] = None
+    all_elements_e: bool = False
     quantity_code: Optional[str] = None
     candidate_code: Optional[str] = None
     lower: float
@@ -818,6 +819,10 @@ class NastranSol200RunAndStoreRequest(BaseModel):
     extra_args: List[str] = Field(default_factory=list)
     parameter_names: Optional[List[str]] = None
     response_names: Optional[List[str]] = None
+    write_cloud_result: bool = True
+    cloud_result_group: Optional[str] = None
+    cloud_step_name: str = "Sensitivity"
+    cloud_field_name: str = "SENSITIVITY_CLOUD"
     async_submit: bool = False
 
 

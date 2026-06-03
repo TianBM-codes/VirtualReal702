@@ -1835,6 +1835,252 @@ def _resolve_manual_element_current_values(
     return value_map
 
 
+def _safe_parameter_token(raw: Optional[str], fallback: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_]+", "_", str(raw or "").strip()).strip("_")
+    return token or str(fallback)
+
+
+def _create_all_elements_e_parameters(
+        cursor,
+        *,
+        project_id: int,
+        quantity_code: str,
+        lower: float,
+        upper: float,
+        prob_id: int,
+        selection_mode: Optional[str],
+        parameter_name: Optional[str],
+        scatter: float,
+        description: str,
+        usage_scope: Sequence[str],
+        current_value: Optional[float],
+) -> dict:
+    if str(quantity_code).upper() != "E":
+        raise ValidationError(
+            "all_elements_e only supports quantity_code=E",
+            {"quantity_code": quantity_code},
+        )
+    if current_value is not None:
+        raise ValidationError(
+            "all_elements_e does not support overriding current_value",
+            {"current_value": current_value},
+        )
+    resolved_mode = _normalize_selection_mode(selection_mode or "LOCAL")
+    if resolved_mode != "LOCAL":
+        raise ValidationError(
+            "all_elements_e only supports LOCAL selection_mode",
+            {"selection_mode": selection_mode, "resolved_selection_mode": resolved_mode},
+        )
+
+    cursor.execute(
+        """
+        SELECT set_name, set_type, set_scope, instance_name, part_name, set_role, current_value, extra_json
+        FROM t_mt_py_fem_quantity_set_capability
+        WHERE pid = %s AND quantity_code = %s AND supports_local = 1
+        ORDER BY
+            CASE WHEN set_scope = 'ASSEMBLY' THEN 0 ELSE 1 END,
+            CASE WHEN set_role = 'PROPERTY_SET' THEN 0 ELSE 1 END,
+            set_name, instance_name, part_name
+        """,
+        (int(project_id), "E"),
+    )
+    capability_rows = cursor.fetchall() or []
+    if not capability_rows:
+        raise ValidationError(
+            "no local E capability rows were found; import the inp catalog first",
+            {"project_id": int(project_id), "quantity_code": "E"},
+        )
+
+    parameter_group_name = str(parameter_name or "ALL_ELEMENTS_E").strip() or "ALL_ELEMENTS_E"
+    virtual_set_name = f"ALL_ELEMENTS_E::{_safe_parameter_token(parameter_group_name, 'ALL_ELEMENTS_E')}"
+    deduped_targets: Dict[str, dict] = {}
+    for capability_row in capability_rows:
+        capability_extra = _json_loads(capability_row.get("extra_json")) or {}
+        target_keys_by_label = {
+            str(key): [str(item) for item in (value or []) if str(item or "").strip()]
+            for key, value in dict(capability_extra.get("target_keys_by_label") or {}).items()
+        }
+        element_values = {
+            str(key): _safe_float(value)
+            for key, value in dict(capability_extra.get("element_values") or {}).items()
+        }
+        shared_value = _safe_float(capability_row.get("current_value"))
+        for raw_label, raw_target_keys in target_keys_by_label.items():
+            element_label = int(raw_label)
+            current_element_value = element_values.get(str(element_label), shared_value)
+            if current_element_value is None:
+                continue
+            for target_key in raw_target_keys:
+                target_key = str(target_key).strip()
+                if not target_key:
+                    continue
+                scope, scope_name, _ = target_key.split("::", 2)
+                item = deduped_targets.get(target_key)
+                if item is None:
+                    deduped_targets[target_key] = {
+                        "target_key": target_key,
+                        "element_label": element_label,
+                        "set_scope": "ASSEMBLY" if scope == "INST" else "PART",
+                        "instance_name": scope_name if scope == "INST" else None,
+                        "part_name": scope_name if scope == "PART" else capability_row.get("part_name"),
+                        "current_value": float(current_element_value),
+                        "source_set_names": [str(capability_row.get("set_name") or "")],
+                    }
+                    continue
+                existing_value = _safe_float(item.get("current_value"))
+                if existing_value is not None and not np.isclose(existing_value, current_element_value):
+                    raise ValidationError(
+                        "conflicting E values were resolved for the same element target",
+                        {
+                            "target_key": target_key,
+                            "existing_value": existing_value,
+                            "incoming_value": float(current_element_value),
+                        },
+                    )
+                source_set_names = set(item.get("source_set_names") or [])
+                source_set_names.add(str(capability_row.get("set_name") or ""))
+                item["source_set_names"] = sorted(source_set_names)
+
+    if not deduped_targets:
+        raise ValidationError(
+            "all_elements_e did not resolve any element targets from the imported inp catalog",
+            {"project_id": int(project_id), "quantity_code": "E"},
+        )
+
+    cursor.execute(
+        """
+        SELECT set_scope, instance_name, part_name, element_label, extra_json
+        FROM t_mt_py_fem_selected_parameter
+        WHERE pid = %s AND quantity_code = %s
+        """,
+        (int(project_id), "E"),
+    )
+    existing_target_keys = set()
+    existing_scope_keys = set()
+    for row in cursor.fetchall() or []:
+        existing_target_keys.update(_extract_target_keys(row.get("extra_json")))
+        element_label = row.get("element_label")
+        if element_label is None:
+            continue
+        existing_scope_keys.add((
+            str(row.get("set_scope") or "").upper(),
+            str(row.get("instance_name") or ""),
+            str(row.get("part_name") or ""),
+            int(element_label),
+        ))
+
+    for target_key, item in deduped_targets.items():
+        if target_key in existing_target_keys:
+            raise ValidationError(
+                "all_elements_e overlaps with an existing E parameter",
+                {"target_key": target_key},
+            )
+        scope_key = (
+            str(item.get("set_scope") or "").upper(),
+            str(item.get("instance_name") or ""),
+            str(item.get("part_name") or ""),
+            int(item["element_label"]),
+        )
+        if scope_key in existing_scope_keys:
+            raise ValidationError(
+                "all_elements_e overlaps with an existing E parameter",
+                {
+                    "set_scope": item.get("set_scope"),
+                    "instance_name": item.get("instance_name"),
+                    "part_name": item.get("part_name"),
+                    "element_label": int(item["element_label"]),
+                },
+            )
+
+    insert_sql = """
+    INSERT INTO t_mt_py_fem_selected_parameter
+    (pid, parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
+     instance_name, part_name, element_label, current_value, lower, upper, prob_id, scatter, description, usage_scope, extra_json)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    created_parameters = []
+    insert_rows = []
+    for item in sorted(
+            deduped_targets.values(),
+            key=lambda row: (
+                str(row.get("set_scope") or ""),
+                str(row.get("instance_name") or ""),
+                str(row.get("part_name") or ""),
+                int(row["element_label"]),
+            ),
+    ):
+        scope_token = _safe_parameter_token(
+            item.get("instance_name") or item.get("part_name"),
+            item.get("set_scope") or "ELEMENT",
+        )
+        resolved_parameter_name = f"{parameter_group_name}_{scope_token}_EL{int(item['element_label'])}"
+        extra_json = {
+            "target_keys": [str(item["target_key"])],
+            "element_labels": [int(item["element_label"])],
+            "set_source": "all_elements_e",
+            "virtual_set_name": virtual_set_name,
+            "source_set_names": list(item.get("source_set_names") or []),
+        }
+        insert_rows.append((
+            int(project_id),
+            parameter_group_name,
+            resolved_parameter_name,
+            "E",
+            resolved_mode,
+            virtual_set_name,
+            "AUTO_ALL_ELEMENTS_E",
+            item["set_scope"],
+            item.get("instance_name"),
+            item.get("part_name"),
+            int(item["element_label"]),
+            float(item["current_value"]),
+            float(lower),
+            float(upper),
+            int(prob_id),
+            float(scatter),
+            description or "",
+            _json_dumps(list(usage_scope or [])),
+            _json_dumps(extra_json),
+        ))
+        created_parameters.append({
+            "parameter_name": resolved_parameter_name,
+            "element_label": int(item["element_label"]),
+            "set_scope": item["set_scope"],
+            "instance_name": item.get("instance_name"),
+            "part_name": item.get("part_name"),
+            "current_value": float(item["current_value"]),
+        })
+
+    if len(insert_rows) == 1:
+        cursor.execute(insert_sql, insert_rows[0])
+    elif hasattr(cursor, "executemany"):
+        cursor.executemany(insert_sql, insert_rows)
+    else:
+        for row in insert_rows:
+            cursor.execute(insert_sql, row)
+
+    return {
+        "project_id": int(project_id),
+        "parameter_group_name": parameter_group_name,
+        "quantity_code": "E",
+        "selection_mode": resolved_mode,
+        "set_name": virtual_set_name,
+        "set_type": "AUTO_ALL_ELEMENTS_E",
+        "set_scope": "MIXED",
+        "instance_name": None,
+        "part_name": None,
+        "lower": float(lower),
+        "upper": float(upper),
+        "prob_id": int(prob_id),
+        "scatter": float(scatter),
+        "description": description or "",
+        "usage_scope": list(usage_scope or []),
+        "created_parameter_count": len(created_parameters),
+        "created_parameters_preview": created_parameters[:20],
+        "all_elements_e": True,
+    }
+
+
 def _normalize_response_variables(raw_variables) -> List[str]:
     if not isinstance(raw_variables, (list, tuple, set)):
         raise ValidationError("variables must be a non-empty list", {"variables": raw_variables})
@@ -1856,7 +2102,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                                   description="", set_type=None, set_scope=None,
                                   instance_name=None, part_name=None,
                                   element_labels=None, current_value=None,
-                                  usage_scope=None):
+                                  usage_scope=None, all_elements_e: bool = False):
     # This API turns a generic candidate type plus one cataloged set into a
     # concrete optimization parameter record that Bayesian update can address.
     ensure_tables_exist()
@@ -1880,7 +2126,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         has_manual_elements = bool(provided_element_labels)
         if has_manual_elements and set_name:
             raise ValueError("set_name and element_labels cannot be provided together")
-        if not has_manual_elements and not set_name:
+        if not all_elements_e and not has_manual_elements and not set_name:
             raise ValueError("set_name is required when element_labels is not provided")
 
         resolved_scatter = float(
@@ -1889,6 +2135,23 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         resolved_usage_scope = _normalize_parameter_usage_scope(usage_scope)
         if resolved_scatter <= 0:
             raise ValueError("scatter must be > 0")
+        if all_elements_e:
+            result = _create_all_elements_e_parameters(
+                cursor,
+                project_id=int(project_id),
+                quantity_code=resolved_quantity_code,
+                lower=resolved_lower,
+                upper=resolved_upper,
+                prob_id=resolved_prob_id,
+                selection_mode=selection_mode,
+                parameter_name=parameter_name,
+                scatter=resolved_scatter,
+                description=description,
+                usage_scope=resolved_usage_scope,
+                current_value=current_value,
+            )
+            conn.commit()
+            return result
 
         if has_manual_elements:
             resolved_mode = _normalize_selection_mode(selection_mode or "LOCAL")

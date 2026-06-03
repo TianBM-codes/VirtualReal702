@@ -3,18 +3,27 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import meshio
 import numpy as np
 from pyNastran.bdf.bdf import BDF
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from services.model_update.importers.op2_service import store_op2_sensitivity_cloud
 
 
 RUN_CONFIG = {
     "nastran_command": r"C:/MSC.Software/MSC_Nastran/20180/bin/nastran.exe",
     "input_bdf": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_py.bdf",
     "output_bdf": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_all_elem_e_sol200.bdf",
+    "project_id": 3,
+    "batch_no": "sol200_all_elements_e",
+    "case_name": "nastran_sol200_phase1",
     "parameter_preset": {
         "preset": "all_elements_e",
         "lower_scale": 0.8,
@@ -36,12 +45,9 @@ RUN_CONFIG = {
     "run_solver": True,
     "timeout_sec": 1800,
     "extra_args": [],
-}
-
-EXPORT_CONFIG = {
-    "input_bdf": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_py.bdf",
-    "output_vtu": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_freq1_all_elem_e.vtu",
-    "response_name": "FREQ1",
+    "cloud_result_group": "sol200_all_elements_e",
+    "cloud_step_name": "Sensitivity",
+    "cloud_field_name": "SENSITIVITY_CLOUD",
 }
 
 
@@ -105,6 +111,9 @@ def run_sol200_frequency_sensitivity(config: Dict[str, Any]) -> Dict[str, Any]:
     )
     return {
         "workflow": "sol200_freq_sensitivity",
+        "project_id": int(config["project_id"]),
+        "batch_no": str(config["batch_no"]),
+        "case_name": str(config.get("case_name") or "nastran_sol200_phase1"),
         "input_bdf": input_bdf,
         "localized_input_bdf": localized_input_bdf,
         "output_bdf": generated["output_bdf"],
@@ -152,53 +161,30 @@ def extract_sensitivity_results(
     }
 
 
-def export_sensitivity_to_vtu(
-    export_config: Dict[str, Any],
-    sensitivity_payload: Dict[str, Any],
+def store_sensitivity_to_system(
+    config: Dict[str, Any],
+    run_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
-    input_bdf = _abs_file(export_config["input_bdf"], "input_bdf")
-    output_vtu = str(Path(export_config["output_vtu"]).expanduser().resolve())
-    response_name = str(export_config["response_name"]).strip()
-    if not response_name:
-        raise RuntimeError("response_name is required")
+    project_id = int(config["project_id"])
+    batch_no = str(config["batch_no"])
+    case_name = str(config.get("case_name") or "nastran_sol200_phase1")
+    response_names = [str(item["name"]) for item in (config.get("responses") or []) if str(item.get("name") or "").strip()]
+    cloud_result_group = str(config.get("cloud_result_group") or "").strip() or None
+    cloud_step_name = str(config.get("cloud_step_name") or "Sensitivity").strip() or "Sensitivity"
+    cloud_field_name = str(config.get("cloud_field_name") or "SENSITIVITY_CLOUD").strip() or "SENSITIVITY_CLOUD"
 
-    row_labels = [str(item) for item in sensitivity_payload["row_labels"]]
-    matrix = np.asarray(sensitivity_payload["matrix"], dtype=np.float64)
-    try:
-        row_index = row_labels.index(response_name)
-    except ValueError as exc:
-        raise RuntimeError(f"response_name {response_name!r} not found in sensitivity matrix") from exc
-
-    parameter_columns = [dict(item) for item in sensitivity_payload["parameter_columns"]]
-    parameter_by_element = {
-        int(item["element_id"]): float(matrix[row_index, col_idx])
-        for col_idx, item in enumerate(parameter_columns)
-        if item.get("element_id") is not None
-    }
-
-    points, cells, cell_element_ids = _build_mesh_from_bdf(input_bdf)
-    cell_values: List[np.ndarray] = []
-    for block_ids in cell_element_ids:
-        values = np.full(len(block_ids), np.nan, dtype=np.float64)
-        for idx, element_id in enumerate(block_ids.tolist()):
-            if int(element_id) in parameter_by_element:
-                values[idx] = float(parameter_by_element[int(element_id)])
-        cell_values.append(values)
-
-    mesh = meshio.Mesh(
-        points=points,
-        cells=cells,
-        cell_data={"sensitivity": cell_values},
+    return store_op2_sensitivity_cloud(
+        project_id=project_id,
+        batch_no=batch_no,
+        case_name=case_name,
+        matrix_path=str(run_payload["sensitivity_csv"]),
+        bdf_path=str(run_payload["input_bdf"]),
+        metadata_json=str(run_payload["metadata_json"]),
+        response_names=response_names or None,
+        cloud_result_group=cloud_result_group,
+        cloud_step_name=cloud_step_name,
+        cloud_field_name=cloud_field_name,
     )
-    Path(output_vtu).parent.mkdir(parents=True, exist_ok=True)
-    meshio.write(output_vtu, mesh)
-    return {
-        "workflow": "sol200_freq_sensitivity_vtu",
-        "output_vtu": output_vtu,
-        "response_name": response_name,
-        "point_count": int(len(points)),
-        "cell_block_count": len(cells),
-    }
 
 
 def _localize_all_elements_e(
@@ -746,7 +732,7 @@ def _abs_file(path: str, field_name: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Standalone SOL200 frequency sensitivity -> VTU workflow")
+    parser = argparse.ArgumentParser(description="Standalone SOL200 frequency sensitivity -> system h5 workflow")
     parser.add_argument("--skip-solver", action="store_true", help="Reuse existing sensitivity csv instead of running Nastran")
     args = parser.parse_args()
 
@@ -755,13 +741,18 @@ def main() -> None:
         run_config["run_solver"] = False
 
     run_result = run_sol200_frequency_sensitivity(run_config)
-    export_result = export_sensitivity_to_vtu(EXPORT_CONFIG, run_result["sensitivity"])
+    store_result = store_sensitivity_to_system(run_config, run_result)
 
     print("SOL200 workflow finished")
     print(f"  analysis_bdf : {run_result['output_bdf']}")
     print(f"  metadata_json: {run_result['metadata_json']}")
     print(f"  sensitivity  : {run_result['sensitivity_csv']}")
-    print(f"  output_vtu   : {export_result['output_vtu']}")
+    print(f"  project_id   : {run_result['project_id']}")
+    print(f"  batch_no     : {run_result['batch_no']}")
+    print(f"  result_group : {store_result['cloud_result']['result_group']}")
+    print(f"  step         : {store_result['cloud_result']['step']}")
+    print(f"  field        : {store_result['cloud_result']['field']}")
+    print(f"  workspace    : {store_result['workspace']}")
 
 
 if __name__ == "__main__":

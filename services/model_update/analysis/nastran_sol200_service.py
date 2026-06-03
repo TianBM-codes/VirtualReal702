@@ -1227,6 +1227,10 @@ def run_sol200_and_store_workflow(
     extra_args: Optional[List[str]] = None,
     parameter_names: Optional[Sequence[str]] = None,
     response_names: Optional[Sequence[str]] = None,
+    write_cloud_result: bool = False,
+    cloud_result_group: Optional[str] = None,
+    cloud_step_name: str = "Sensitivity",
+    cloud_field_name: str = "SENSITIVITY_CLOUD",
 ) -> dict:
     run_payload = run_sol200_workflow(
         project_id=int(project_id),
@@ -1245,7 +1249,7 @@ def run_sol200_and_store_workflow(
     )
 
     op2_path = _resolve_generated_sol200_op2_path(run_payload)
-    matrix_path = None if op2_path else _resolve_generated_sol200_matrix_path(run_payload)
+    matrix_path = _resolve_generated_sol200_matrix_path(run_payload)
     if not op2_path and not matrix_path:
         raise ValidationError(
             "SOL200 solve completed but no OP2 or matrix result file was found for sensitivity import",
@@ -1266,17 +1270,33 @@ def run_sol200_and_store_workflow(
         Path(str(run_payload.get("output_bdf") or "")).expanduser().resolve()
     )
 
-    store_payload = store_sol200_sensitivity(
-        project_id=int(project_id),
-        batch_no=str(batch_no),
-        case_name=str(case_name),
-        op2_path=op2_path,
-        matrix_path=matrix_path,
-        bdf_path=bdf_path,
-        metadata_json=metadata_json,
-        parameter_names=parameter_names,
-        response_names=response_names,
-    )
+    if write_cloud_result:
+        store_payload = store_sol200_sensitivity_cloud(
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            op2_path=op2_path,
+            matrix_path=matrix_path,
+            bdf_path=bdf_path,
+            metadata_json=metadata_json,
+            parameter_names=parameter_names,
+            response_names=response_names,
+            cloud_result_group=cloud_result_group,
+            cloud_step_name=cloud_step_name,
+            cloud_field_name=cloud_field_name,
+        )
+    else:
+        store_payload = store_sol200_sensitivity(
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            op2_path=op2_path,
+            matrix_path=matrix_path,
+            bdf_path=bdf_path,
+            metadata_json=metadata_json,
+            parameter_names=parameter_names,
+            response_names=response_names,
+        )
     return {
         "workflow": "nastran_sol200_run_and_store",
         "project_id": int(project_id),
@@ -1289,6 +1309,7 @@ def run_sol200_and_store_workflow(
         "metadata_json": metadata_json,
         "run": run_payload,
         "store": store_payload,
+        "write_cloud_result": bool(write_cloud_result),
         "warnings": list(run_payload.get("warnings") or []),
     }
 

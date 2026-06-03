@@ -333,6 +333,17 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
         field_name="output_bdf",
         default_name=f"{Path(input_bdf).stem}_sol200.bdf",
     )
+    settings = dict(body.settings or {})
+    settings.setdefault("sol200.deck_mode", "include")
+    settings.setdefault("sol200.sensitivity_csv", True)
+    settings.setdefault("result.target", "OP2")
+    parameter_preset = model_to_dict(body.parameter_preset) if body.parameter_preset else None
+    if not body.parameters and not parameter_preset:
+        parameter_preset = {
+            "preset": "all_elements_e",
+            "lower_scale": 0.8,
+            "upper_scale": 1.2,
+        }
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,
@@ -340,15 +351,19 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
         "input_bdf": input_bdf,
         "output_bdf": output_bdf,
         "parameters": [model_to_dict(item) for item in body.parameters],
-        "parameter_preset": model_to_dict(body.parameter_preset) if body.parameter_preset else None,
+        "parameter_preset": parameter_preset,
         "responses": [model_to_dict(item) for item in body.responses],
-        "settings": body.settings,
+        "settings": settings,
         "nastran": body.nastran,
         "run_solver": body.run_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
         "parameter_names": body.parameter_names,
         "response_names": body.response_names,
+        "write_cloud_result": body.write_cloud_result,
+        "cloud_result_group": body.cloud_result_group,
+        "cloud_step_name": body.cloud_step_name,
+        "cloud_field_name": body.cloud_field_name,
     }
 
 

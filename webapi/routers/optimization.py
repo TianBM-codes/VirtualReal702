@@ -315,12 +315,22 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
     try:
         set_names = _normalize_set_names(body.set_name)
         element_labels = _normalize_element_labels(body.element_labels)
+        all_elements_e = bool(body.all_elements_e)
         if not body.candidate_code and not body.quantity_code:
             raise ValidationError(
                 "project_id、优化参数类型不能为空；"
                 "请优先使用 quantity_code，candidate_code 仅作为兼容别名"
             )
-        if bool(set_names) == bool(element_labels):
+        if all_elements_e and (set_names or element_labels):
+            raise ValidationError(
+                "all_elements_e 模式下不能同时传 set_name 或 element_labels",
+                {
+                    "all_elements_e": True,
+                    "set_name_count": len(set_names),
+                    "element_label_count": len(element_labels),
+                },
+            )
+        if not all_elements_e and bool(set_names) == bool(element_labels):
             raise ValidationError(
                 "set_name 和 element_labels 必须二选一，且不能同时传入",
                 {
@@ -328,6 +338,28 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
                     "element_label_count": len(element_labels),
                 },
             )
+
+        if all_elements_e:
+            result = create_optimization_parameter(
+                project_id=body.project_id,
+                candidate_code=body.candidate_code,
+                quantity_code=body.quantity_code,
+                lower=body.lower,
+                upper=body.upper,
+                prob_id=body.prob_id,
+                selection_mode=body.selection_mode,
+                parameter_name=body.parameter_name,
+                scatter=body.scatter,
+                description=body.description,
+                set_type=body.set_type,
+                set_scope=body.set_scope,
+                instance_name=body.instance_name,
+                part_name=body.part_name,
+                current_value=body.current_value,
+                usage_scope=body.usage_scope,
+                all_elements_e=True,
+            )
+            return success_response(result, "优化参数创建成功")
 
         if element_labels:
             result = create_optimization_parameter(
