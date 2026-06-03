@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 
 from services.model_update.analysis.bayesian_service import (
     run_modal_frequency_bayesian_update_workflow,
+    run_sol200_modal_frequency_bayesian_update_workflow,
     run_bayesian_update_from_text,
     run_bayesian_update_workflow,
 )
@@ -53,6 +54,7 @@ from ..models import (
     ModalFrequencyResponseFromMatchRequest,
     ModalMatchResponseSelectRequest,
     ModalFrequencyBayesianModelUpdateRequest,
+    Sol200ModalFrequencyBayesianModelUpdateRequest,
     OptimizationParameterCatalogRequest,
     OptimizationParameterRemoveFromUpdateRequest,
     OptimizationParameterSelectForUpdateRequest,
@@ -158,6 +160,7 @@ def _compact_modal_bayesian_run_response(payload: dict) -> dict:
         "history_dir": payload.get("saved_artifacts", {}).get("history_dir"),
         "history_html": payload.get("saved_artifacts", {}).get("files", {}).get("overview_html"),
         "final_modal_output": payload.get("final_modal_output"),
+        "cloud_result": payload.get("cloud_result"),
         "iteration_dirs": iteration_dirs,
     }
 
@@ -284,6 +287,71 @@ def _run_modal_bayesian_update_task(task_id: str, **kwargs) -> dict:
         project_id,
         lambda: _compact_modal_bayesian_run_response(
             run_modal_frequency_bayesian_update_workflow(progress_callback=_progress_callback, **kwargs)
+        ),
+    )
+
+
+def _sol200_modal_bayesian_run_kwargs(body: Sol200ModalFrequencyBayesianModelUpdateRequest) -> dict:
+    input_bdf = None
+    if str(body.input_bdf or "").strip() or str(body.input_bdf_name or "").strip():
+        input_bdf = str(
+            resolve_project_input_file(
+                int(body.project_id),
+                explicit_path=body.input_bdf,
+                file_name=body.input_bdf_name,
+                field_name="input_bdf",
+            )
+        )
+    settings = dict(body.settings or {})
+    settings.setdefault("sol200.deck_mode", "include")
+    settings.setdefault("sol200.sensitivity_csv", True)
+    settings.setdefault("result.target", "OP2")
+    return {
+        "project_id": body.project_id,
+        "batch_no": body.batch_no,
+        "sensitivity_batch_no": body.sensitivity_batch_no,
+        "input_bdf": input_bdf,
+        "parameter_scatter": body.parameter_scatter,
+        "response_scatter": body.response_scatter,
+        "output_dir": resolve_project_cal_subdir(int(body.project_id), "bayesian", "sol200_modal_frequency"),
+        "save_results": body.save_results,
+        "iterations": body.iterations,
+        "exit_diff_percent": body.exit_diff_percent,
+        "damping": body.damping,
+        "step_scale": body.step_scale,
+        "lower_bound": body.lower_bound,
+        "upper_bound": body.upper_bound,
+        "mac_threshold": body.mac_threshold,
+        "max_freq_error_ratio": body.max_freq_error_ratio,
+        "matching_method": body.matching_method,
+        "settings": settings,
+        "nastran": body.nastran,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
+        "write_cloud_result": body.write_cloud_result,
+        "cloud_result_group": body.cloud_result_group,
+        "cloud_step_name": body.cloud_step_name,
+        "cloud_field_name": body.cloud_field_name,
+    }
+
+
+def _run_sol200_modal_bayesian_update_workflow_compact(**kwargs) -> dict:
+    project_id = int(kwargs["project_id"])
+    return _sens._run_with_project_sensitivity_status(
+        project_id,
+        lambda: _compact_modal_bayesian_run_response(run_sol200_modal_frequency_bayesian_update_workflow(**kwargs)),
+    )
+
+
+def _run_sol200_modal_bayesian_update_task(task_id: str, **kwargs) -> dict:
+    def _progress_callback(progress: dict) -> None:
+        update_background_task(task_id, progress=progress)
+
+    project_id = int(kwargs["project_id"])
+    return _sens._run_with_project_sensitivity_status(
+        project_id,
+        lambda: _compact_modal_bayesian_run_response(
+            run_sol200_modal_frequency_bayesian_update_workflow(progress_callback=_progress_callback, **kwargs)
         ),
     )
 
@@ -773,6 +841,30 @@ async def run_modal_bayesian_update_api(request: Request, body: ModalFrequencyBa
             return success_response(data, "模态频率 Bayesian 模型修正任务已提交")
         data = _run_modal_bayesian_update_workflow_compact(**kwargs)
         return success_response(data, "模态频率 Bayesian 模型修正执行成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/bayesian/sol200/modal_frequency/run")
+async def run_sol200_modal_bayesian_update_api(request: Request, body: Sol200ModalFrequencyBayesianModelUpdateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _sol200_modal_bayesian_run_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="optimization.bayesian.sol200.modal_frequency.run",
+                fn=_run_sol200_modal_bayesian_update_task,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                pass_task_id=True,
+                task_kind="external_solver",
+            )
+            return success_response(data, "SOL200 模态频率 Bayesian 模型修正任务已提交")
+        data = _run_sol200_modal_bayesian_update_workflow_compact(**kwargs)
+        return success_response(data, "SOL200 模态频率 Bayesian 模型修正执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

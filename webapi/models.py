@@ -207,6 +207,35 @@ class ModalFrequencyBayesianModelUpdateRequest(BaseModel):
     async_submit: bool = False
 
 
+class Sol200ModalFrequencyBayesianModelUpdateRequest(BaseModel):
+    project_id: int
+    batch_no: int = Field(default=1, ge=1)
+    sensitivity_batch_no: Optional[int] = Field(default=None, ge=1)
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
+    parameter_scatter: Any = None
+    response_scatter: Any = None
+    save_results: bool = False
+    iterations: int = Field(default=1, ge=1)
+    exit_diff_percent: Optional[float] = Field(default=None, ge=0)
+    damping: float = 1e-8
+    step_scale: float = 1.0
+    lower_bound: Optional[Any] = None
+    upper_bound: Optional[Any] = None
+    mac_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
+    matching_method: str = "greedy"
+    settings: Optional[Dict[str, Any]] = None
+    nastran: Optional[str] = None
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    write_cloud_result: bool = True
+    cloud_result_group: Optional[str] = None
+    cloud_step_name: str = "BayesianUpdate"
+    cloud_field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT"
+    async_submit: bool = False
+
+
 class OptimizationParameterCatalogRequest(BaseModel):
     project_id: int
 

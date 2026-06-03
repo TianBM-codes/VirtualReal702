@@ -476,6 +476,52 @@ def _materialize_requested_sensitivity_csv(
     solver_payload["artifacts"] = artifacts
 
 
+def _cleanup_sol200_intermediate_artifacts(
+    *,
+    workdir: Path,
+    generated_files: Dict[str, str],
+    solver_payload: Dict[str, Any],
+) -> List[str]:
+    deleted: List[str] = []
+    candidates: List[Path] = []
+    assign_name = str(generated_files.get("sensitivity_csv_assign_name") or "").strip()
+    target_csv = str(generated_files.get("sensitivity_csv") or "").strip()
+    target_csv_path = Path(target_csv).expanduser().resolve() if target_csv else None
+
+    if assign_name:
+        candidates.append((workdir / assign_name).resolve())
+    for extra_name in ("fort.11", "fort.51", "fort.91", "fort.92"):
+        candidates.append((workdir / extra_name).resolve())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate_text = str(candidate)
+        if candidate_text in seen:
+            continue
+        seen.add(candidate_text)
+        if target_csv_path is not None and candidate == target_csv_path:
+            continue
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            candidate.unlink()
+            deleted.append(str(candidate))
+        except OSError:
+            continue
+
+    if deleted:
+        artifacts = dict(solver_payload.get("artifacts") or {})
+        deleted_set = set(deleted)
+        artifacts = {
+            key: value
+            for key, value in artifacts.items()
+            if str(value) not in deleted_set
+        }
+        solver_payload["artifacts"] = artifacts
+        solver_payload["artifacts_summary"] = _summarize_nastran_artifacts(artifacts)
+    return deleted
+
+
 def _summarize_nastran_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "has_f06": False,
@@ -792,6 +838,11 @@ def run_nastran_sol200_job(
             timeout_sec=timeout_sec,
         )
         _materialize_requested_sensitivity_csv(
+            workdir=output_path.parent,
+            generated_files=payload.get("generated_files") or {},
+            solver_payload=payload["solver"],
+        )
+        payload["solver"]["cleanup_deleted"] = _cleanup_sol200_intermediate_artifacts(
             workdir=output_path.parent,
             generated_files=payload.get("generated_files") or {},
             solver_payload=payload["solver"],

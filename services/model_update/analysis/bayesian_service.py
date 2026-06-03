@@ -32,6 +32,7 @@ from . import solver_service as _solver
 
 _PARAMETER_ASSIGNMENT_RE = re.compile(r"^\s*([^=\s,]+)\s*=\s*(.+?)\s*$")
 _ITERATION_CLEANUP_SUFFIXES = (".com", ".prt", ".pmg", ".pes", ".par", ".msg", ".sta", ".dat")
+_DEFAULT_SOL200_BAYESIAN_RESULT_GROUP = "bayesian_sol200"
 
 
 def _format_scalar(value: float) -> str:
@@ -1234,6 +1235,296 @@ def _resolve_cloud_scalar_value(
         "unsupported cloud_value_mode",
         {"cloud_value_mode": mode, "allowed": ["updated_value", "delta_value", "relative_change"]},
     )
+
+
+def _resolve_cloud_scalar_percent_value(
+        *,
+        updated_value: float,
+        baseline_value: float,
+) -> float:
+    baseline = float(baseline_value)
+    if np.isclose(baseline, 0.0):
+        if np.isclose(float(updated_value), baseline):
+            return 0.0
+        raise ValidationError(
+            "relative delta percent cloud mode requires a non-zero baseline parameter value",
+            {"baseline_value": baseline_value, "updated_value": updated_value},
+        )
+    return ((float(updated_value) - baseline) / baseline) * 100.0
+
+
+def _extract_sol200_modal_response_values(
+        *,
+        op2_path: str,
+        response_rows: Sequence[dict],
+) -> np.ndarray:
+    from services.model_update.importers.op2_service import _extract_mode_frequency, _read_op2
+
+    resolved_op2 = _solver._abs_file(op2_path, "op2_path")
+    op2 = _read_op2(str(resolved_op2))
+    eigenvectors = getattr(op2, "eigenvectors", {}) or {}
+    if not eigenvectors:
+        raise ValidationError(
+            "modal eigenvectors were not found in the SOL200 OP2 result",
+            {"op2_path": str(resolved_op2)},
+        )
+    first_subcase_id = sorted(int(key) for key in eigenvectors.keys())[0]
+    eigen_data = eigenvectors[first_subcase_id]
+    modes_array = np.asarray(getattr(eigen_data, "modes", []), dtype=np.int64)
+    if modes_array.size == 0:
+        raise ValidationError(
+            "modal mode numbers were not found in the SOL200 OP2 result",
+            {"op2_path": str(resolved_op2), "subcase_id": first_subcase_id},
+        )
+    response_values: List[float] = []
+    missing_modes: List[int] = []
+    for row in response_rows or []:
+        mode_number = row.get("mode_number")
+        if mode_number is None:
+            raise ValidationError(
+                "mode_number is required for SOL200 modal Bayesian responses",
+                {"response_row": dict(row or {})},
+            )
+        found = np.where(modes_array == int(mode_number))[0]
+        if len(found) == 0:
+            missing_modes.append(int(mode_number))
+            continue
+        mode_index = int(found[0])
+        frequency, _eigenvalue, warnings = _extract_mode_frequency(eigen_data, mode_index)
+        if warnings:
+            raise ValidationError(
+                "failed to resolve modal frequency from the SOL200 OP2 result",
+                {
+                    "op2_path": str(resolved_op2),
+                    "subcase_id": first_subcase_id,
+                    "mode_number": int(mode_number),
+                    "warnings": warnings,
+                },
+            )
+        response_values.append(float(frequency))
+    if missing_modes:
+        raise ValidationError(
+            "some requested modal frequency responses were not found in the SOL200 OP2 result",
+            {
+                "op2_path": str(resolved_op2),
+                "subcase_id": first_subcase_id,
+                "missing_mode_numbers": missing_modes,
+            },
+        )
+    return np.asarray(response_values, dtype=np.float64)
+
+
+def _build_sol200_parameter_rows(parameter_columns: Sequence[dict], parameter_values: Sequence[float]) -> List[dict]:
+    rows: List[dict] = []
+    values = list(parameter_values or [])
+    for index, raw_row in enumerate(parameter_columns or []):
+        row = dict(raw_row or {})
+        row["parameter_name"] = str(
+            row.get("parameter_name")
+            or row.get("param_name")
+            or row.get("field")
+            or f"parameter_{index + 1}"
+        ).strip() or f"parameter_{index + 1}"
+        row["parameter_type"] = str(row.get("param_type") or row.get("parameter_type") or row.get("type") or "").upper()
+        row["initial"] = float(values[index])
+        if row.get("lower_bound") is not None:
+            row["lower"] = float(row["lower_bound"])
+        elif row.get("lower") is not None:
+            row["lower"] = float(row["lower"])
+        if row.get("upper_bound") is not None:
+            row["upper"] = float(row["upper_bound"])
+        elif row.get("upper") is not None:
+            row["upper"] = float(row["upper"])
+        rows.append(row)
+    return rows
+
+
+def _build_sol200_response_rows(response_rows: Sequence[dict]) -> List[dict]:
+    rows: List[dict] = []
+    for index, raw_row in enumerate(response_rows or [], start=1):
+        row = dict(raw_row or {})
+        response_type = str(row.get("response_type") or row.get("type") or "").upper()
+        mode_number = row.get("mode_number")
+        if response_type not in {"FREQ", "MODAL_FREQUENCY"} or mode_number is None:
+            raise ValidationError(
+                "SOL200 modal Bayesian only supports modal frequency responses",
+                {"response_row": row, "index": index},
+            )
+        rows.append(
+            {
+                "name": str(row.get("response_name") or f"FREQ_MODE_{int(mode_number)}").strip(),
+                "type": "FREQ",
+                "mode_number": int(mode_number),
+            }
+        )
+    return rows
+
+
+def _build_sol200_final_parameter_cloud_request(
+        *,
+        batch_no: int,
+        parameter_columns: Sequence[dict],
+        parameter_mappings: Sequence[dict],
+        initial_parameter_values: Sequence[float],
+        final_parameter_values: Sequence[float],
+        result_group: Optional[str] = None,
+        step_name: str = "BayesianUpdate",
+        field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+) -> tuple[dict, dict]:
+    resolved_result_group = str(result_group or _DEFAULT_SOL200_BAYESIAN_RESULT_GROUP).strip() or _DEFAULT_SOL200_BAYESIAN_RESULT_GROUP
+    resolved_step_name = str(step_name or "BayesianUpdate").strip() or "BayesianUpdate"
+    resolved_field_name = str(field_name or "PARAMETER_RELATIVE_DELTA_PERCENT").strip() or "PARAMETER_RELATIVE_DELTA_PERCENT"
+
+    if len(parameter_columns or []) != len(parameter_mappings or []):
+        raise ValidationError(
+            "parameter mapping length does not match parameter column count",
+            {"parameter_count": len(parameter_columns or []), "mapping_count": len(parameter_mappings or [])},
+        )
+
+    per_instance_labels: Dict[str, Dict[int, float]] = {}
+    instance_counts: Dict[str, int] = {}
+
+    for index, raw_mapping in enumerate(parameter_mappings or []):
+        mapping = dict(raw_mapping or {})
+        if str(mapping.get("target_kind") or "").lower() not in {"cell", ""}:
+            raise ValidationError(
+                "SOL200 Bayesian cloud export currently supports element targets only",
+                {"parameter_name": mapping.get("parameter_name"), "target_kind": mapping.get("target_kind")},
+            )
+        scalar_value = _resolve_cloud_scalar_percent_value(
+            updated_value=float(final_parameter_values[index]),
+            baseline_value=float(initial_parameter_values[index]),
+        )
+        for scope_name, labels in dict(mapping.get("targets_by_scope") or {}).items():
+            instance_name = str(scope_name or "").strip()
+            if not instance_name:
+                continue
+            label_map = per_instance_labels.setdefault(instance_name, {})
+            for label in labels or []:
+                element_label = int(label)
+                existing_value = label_map.get(element_label)
+                if existing_value is not None:
+                    raise ValidationError(
+                        "parameter relative delta cloud export found duplicate element assignments",
+                        {
+                            "batch_no": int(batch_no),
+                            "instance_name": instance_name,
+                            "element_label": element_label,
+                            "existing_value": existing_value,
+                            "new_value": scalar_value,
+                        },
+                    )
+                label_map[element_label] = float(scalar_value)
+
+    if not per_instance_labels:
+        raise ValidationError("no element targets were resolved for SOL200 parameter cloud export")
+
+    instances_payload = []
+    for instance_name, label_map in sorted(per_instance_labels.items()):
+        frame_entry = {
+            "frame_idx": 0,
+            "frame_value": 1.0,
+            "description": "Final Relative Delta Percent",
+            "data": [
+                {"label": int(label), "values": [float(value)]}
+                for label, value in sorted(label_map.items())
+            ],
+        }
+        instances_payload.append({"instance": instance_name, "frames": [frame_entry]})
+        instance_counts[instance_name] = len(frame_entry["data"])
+
+    request_body = {
+        "step_name": resolved_step_name,
+        "field_name": resolved_field_name,
+        "components": ["RELATIVE_DELTA_PERCENT"],
+        "result_group": resolved_result_group,
+        "type": "element",
+        "instances": instances_payload,
+    }
+    metadata = {
+        "result_group": resolved_result_group,
+        "step": resolved_step_name,
+        "field": resolved_field_name,
+        "position": "ELEMENT_NODAL",
+        "value_mode": "relative_delta_percent",
+        "frame_count": 1,
+        "frames": [
+            {
+                "frame_idx": 0,
+                "frame_value": 1.0,
+                "description": "Final Relative Delta Percent",
+            }
+        ],
+        "components": ["RELATIVE_DELTA_PERCENT"],
+        "instances": [str(item["instance"]) for item in instances_payload],
+        "instance_element_counts": {name: int(count) for name, count in sorted(instance_counts.items())},
+    }
+    return request_body, metadata
+
+
+def _write_sol200_final_parameter_cloud_result(
+        *,
+        odb_id: str,
+        base_url: Optional[str],
+        batch_no: int,
+        parameter_columns: Sequence[dict],
+        parameter_mappings: Sequence[dict],
+        initial_parameter_values: Sequence[float],
+        final_parameter_values: Sequence[float],
+        result_group: Optional[str] = None,
+        step_name: str = "BayesianUpdate",
+        field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+        timeout: int = 60,
+) -> dict:
+    resolved_odb_id = str(odb_id or "").strip()
+    if not resolved_odb_id:
+        raise ValidationError("odb_id is required for cloud export via external-field api")
+
+    request_body, metadata = _build_sol200_final_parameter_cloud_request(
+        batch_no=batch_no,
+        parameter_columns=parameter_columns,
+        parameter_mappings=parameter_mappings,
+        initial_parameter_values=initial_parameter_values,
+        final_parameter_values=final_parameter_values,
+        result_group=result_group,
+        step_name=step_name,
+        field_name=field_name,
+    )
+    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
+    client = _sens.ODBClient(base_url=resolved_base_url, timeout=timeout)
+    try:
+        write_response = client.post_external_field(resolved_odb_id, request_body)
+    except ODBClientError as exc:
+        details = {
+            "odb_id": resolved_odb_id,
+            "base_url": resolved_base_url,
+            "status_code": exc.status_code,
+        }
+        if exc.status_code == 404:
+            raise NotFoundError("external-field api target odb was not found", details) from exc
+        raise ValidationError(
+            "external-field api request failed",
+            {**details, "detail": exc.detail},
+        ) from exc
+
+    result = dict(metadata)
+    result.update(
+        {
+            "odb_id": resolved_odb_id,
+            "base_url": resolved_base_url,
+            "write_response": write_response,
+            "query_hint": {
+                "endpoint": "/api/odb/{odb_id}/results/frame-scalars",
+                "odb_id": resolved_odb_id,
+                "result_group": metadata["result_group"],
+                "step": metadata["step"],
+                "field": metadata["field"],
+                "frame": 0,
+                "component_idx": 0,
+            },
+        }
+    )
+    return result
 
 
 def _resolve_loaded_odb_id_for_workspace(workspace: Optional[str]) -> Optional[str]:
@@ -3634,6 +3925,435 @@ def run_modal_frequency_bayesian_update_workflow(
         safe_write_console_event(
             int(project_id),
             "模态频率模型修正完成",
+            [
+                f"批次号: {resolved_batch_no}",
+                f"灵敏度批次: {resolved_sensitivity_batch_no}",
+                f"迭代次数: {len(iteration_results)}",
+                f"提前终止: {'是' if stopped_early else '否'}",
+                f"输出目录: {str(root_dir) if save_results else '-'}",
+            ],
+        )
+        return result
+    finally:
+        if cleanup_root_dir is not None:
+            shutil.rmtree(cleanup_root_dir, ignore_errors=True)
+
+
+def run_sol200_modal_frequency_bayesian_update_workflow(
+        *,
+        project_id: int,
+        batch_no: int = 1,
+        sensitivity_batch_no: Optional[int] = None,
+        input_bdf: Optional[str] = None,
+        parameter_scatter: Any = None,
+        response_scatter: Any = None,
+        output_dir: Optional[str] = None,
+        save_results: bool = False,
+        iterations: int = 1,
+        exit_diff_percent: Optional[float] = None,
+        damping: float = 1e-8,
+        step_scale: float = 1.0,
+        lower_bound: Any = None,
+        upper_bound: Any = None,
+        mac_threshold: float = 0.7,
+        max_freq_error_ratio: Optional[float] = 0.2,
+        matching_method: str = "greedy",
+        settings: Optional[Dict[str, Any]] = None,
+        nastran: Optional[str] = None,
+        timeout_sec: Optional[int] = None,
+        extra_args: Optional[List[str]] = None,
+        write_cloud_result: bool = True,
+        cloud_result_group: Optional[str] = None,
+        cloud_step_name: str = "BayesianUpdate",
+        cloud_field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+        progress_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    from services.model_update.analysis.nastran_sol200_service import run_sol200_and_store_workflow
+    from services.model_update.analysis.project_path_service import resolve_project_workspace
+    from services.model_update.importers.op2_service import _build_op2_parameter_columns_with_mappings
+
+    resolved_batch_no = _normalize_batch_no(batch_no)
+    resolved_sensitivity_batch_no = _normalize_batch_no(sensitivity_batch_no or batch_no)
+    if int(iterations) <= 0:
+        raise ValidationError("iterations must be > 0", {"iterations": iterations})
+    if exit_diff_percent is not None and float(exit_diff_percent) < 0:
+        raise ValidationError("exit_diff_percent must be >= 0", {"exit_diff_percent": exit_diff_percent})
+
+    cleanup_result = _clear_bayesian_run_outputs(
+        project_id=int(project_id),
+        batch_no=resolved_batch_no,
+    )
+
+    stored_payload = _sens._load_stored_sensitivity_run(
+        project_id=int(project_id),
+        batch_no=str(resolved_sensitivity_batch_no),
+    )
+    current_parameter_columns = _normalize_modal_parameter_columns(stored_payload.get("parameter_columns") or [])
+    if not current_parameter_columns:
+        raise ValidationError(
+            "stored SOL200 sensitivity run does not contain any parameters",
+            {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
+        )
+
+    modal_payload = _build_modal_response_payload(
+        project_id=int(project_id),
+        stored_response_rows=stored_payload.get("response_rows") or [],
+        matrix=stored_payload.get("matrix") or [],
+        mac_threshold=float(mac_threshold),
+        max_freq_error_ratio=max_freq_error_ratio,
+        matching_method=str(matching_method or "greedy"),
+    )
+    response_rows = [dict(row) for row in (modal_payload.get("response_rows") or [])]
+    for index, row in enumerate(response_rows):
+        row["target_value"] = float(modal_payload["target_values"][index])
+    if not response_rows:
+        raise ValidationError(
+            "no matched modal frequency responses are available for SOL200 Bayesian update",
+            {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
+        )
+
+    source = dict(stored_payload.get("source") or {})
+    metadata_source_bdf = None
+    metadata_path = _normalize_optional_path(source.get("metadata_path"))
+    if metadata_path and os.path.exists(metadata_path):
+        try:
+            metadata_json = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+            metadata_source_bdf = (
+                metadata_json.get("localized_input_bdf")
+                or metadata_json.get("source_input_bdf")
+            )
+        except Exception:
+            metadata_source_bdf = None
+    source_bdf_path = (
+        _normalize_optional_path(input_bdf)
+        or _normalize_optional_path(metadata_source_bdf)
+        or _normalize_optional_path(source.get("bdf_path"))
+    )
+    if not source_bdf_path:
+        raise ValidationError(
+            "SOL200 Bayesian update requires an input_bdf or a stored sensitivity source bdf_path",
+            {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
+        )
+    source_op2_path = _normalize_optional_path(source.get("op2_path"))
+    if not source_op2_path:
+        raise ValidationError(
+            "stored SOL200 sensitivity run does not contain an OP2 path for modal response extraction",
+            {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
+        )
+
+    root_dir: Path
+    cleanup_root_dir: Optional[Path] = None
+    input_base_stem = Path(source_bdf_path).stem
+    if save_results:
+        root_dir = _solver._abs_dir(output_dir, Path(tempfile.gettempdir()) / f"{input_base_stem}_sol200_bayesian")
+    else:
+        root_dir = Path(tempfile.mkdtemp(prefix=f"{input_base_stem}_sol200_bayesian_")).resolve()
+        cleanup_root_dir = root_dir
+
+    settings_payload = dict(settings or {})
+    settings_payload.setdefault("sol200.deck_mode", "include")
+    settings_payload.setdefault("sol200.sensitivity_csv", True)
+    settings_payload.setdefault("result.target", "OP2")
+
+    safe_write_console_event(
+        int(project_id),
+        "SOL200 模态频率模型修正开始",
+        [
+            f"批次号: {resolved_batch_no}",
+            f"灵敏度批次: {resolved_sensitivity_batch_no}",
+            f"匹配模态对数: {len(response_rows)}",
+            "已先清空上一轮模型修正结果",
+        ],
+    )
+
+    try:
+        current_parameter_values = np.asarray(
+            [float(row.get("parameter_value")) for row in current_parameter_columns],
+            dtype=np.float64,
+        )
+        initial_parameter_values = current_parameter_values.copy()
+        normalized_matrix = np.asarray(stored_payload.get("matrix") or [], dtype=np.float64)
+        current_response_values = _extract_sol200_modal_response_values(
+            op2_path=source_op2_path,
+            response_rows=response_rows,
+        )
+        initial_response_values = current_response_values.copy()
+        target_response_values = np.asarray(modal_payload["target_values"], dtype=np.float64)
+
+        p_scatter = _resolve_scatter_vector(
+            parameter_scatter,
+            current_parameter_columns,
+            label="parameter_scatter",
+            key_candidates=("parameter_name", "param_name", "param_code"),
+            default_value=_sens._DEFAULT_PARAMETER_SCATTER,
+        )
+        r_scatter = _resolve_scatter_vector(
+            response_scatter,
+            response_rows,
+            label="response_scatter",
+            key_candidates=("tracking_name", "response_name", "response_code"),
+            default_value=_sens._DEFAULT_RESPONSE_SCATTER,
+        )
+        lower_bound_values = _metadata_bound_vector(
+            current_parameter_columns,
+            request_value=lower_bound,
+            label="lower_bound",
+            key_candidates=("parameter_name", "param_name", "param_code"),
+            metadata_key="lower_bound",
+            fallback=-float("inf"),
+        )
+        upper_bound_values = _metadata_bound_vector(
+            current_parameter_columns,
+            request_value=upper_bound,
+            label="upper_bound",
+            key_candidates=("parameter_name", "param_name", "param_code"),
+            metadata_key="upper_bound",
+            fallback=float("inf"),
+        )
+
+        current_bdf_path = str(source_bdf_path)
+        iteration_results = []
+        stopped_early = False
+        final_sensitivity_payload = stored_payload
+        final_output_bdf = None
+        cloud_export_base_url: Optional[str] = None
+
+        for iteration_index in range(int(iterations)):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "phase": "iteration",
+                        "current_iteration": int(iteration_index) + 1,
+                        "total_iterations": int(iterations),
+                    }
+                )
+
+            update_payload = bayesian_update_normalized(
+                p_current=current_parameter_values,
+                r_model=current_response_values,
+                r_target=target_response_values,
+                S_norm=normalized_matrix,
+                p_scatter=p_scatter,
+                r_scatter=r_scatter,
+                damping=damping,
+                step_scale=float(step_scale),
+                lower_bound=lower_bound_values,
+                upper_bound=upper_bound_values,
+                p_ref=current_parameter_values,
+            )
+
+            iteration_dir = _iteration_dir(root_dir, iteration_index + 1)
+            updated_bdf_path = iteration_dir / Path(current_bdf_path).name
+            updated_bdf_result = _update_bdf_parameter_values(
+                input_bdf=current_bdf_path,
+                parameter_columns=current_parameter_columns,
+                updated_parameter_values=update_payload["p_new"],
+                output_bdf=str(updated_bdf_path),
+            )
+            sol200_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol200_iter{iteration_index + 1}.bdf"
+            sensitivity_run_no = f"{resolved_batch_no}_iter_{iteration_index + 1}"
+            rerun_payload = run_sol200_and_store_workflow(
+                project_id=int(project_id),
+                batch_no=str(sensitivity_run_no),
+                case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
+                input_bdf=str(updated_bdf_path),
+                output_bdf=str(sol200_output_bdf),
+                parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
+                responses=_build_sol200_response_rows(response_rows),
+                settings=settings_payload,
+                nastran=nastran,
+                run_solver=True,
+                timeout_sec=timeout_sec,
+                extra_args=list(extra_args or []),
+                write_cloud_result=False,
+            )
+
+            rerun_stored_payload = _sens._load_stored_sensitivity_run(
+                project_id=int(project_id),
+                batch_no=str(sensitivity_run_no),
+            )
+            rerun_source = dict(rerun_stored_payload.get("source") or {})
+            rerun_op2_path = _normalize_optional_path(
+                rerun_source.get("op2_path")
+                or rerun_payload.get("op2_path")
+                or (rerun_payload.get("run") or {}).get("op2_path")
+            )
+            if not rerun_op2_path:
+                raise ValidationError(
+                    "SOL200 rerun did not produce an OP2 path for modal response extraction",
+                    {"project_id": int(project_id), "batch_no": sensitivity_run_no},
+                )
+            updated_response_values = _extract_sol200_modal_response_values(
+                op2_path=rerun_op2_path,
+                response_rows=response_rows,
+            )
+            normalized_matrix = np.asarray(rerun_stored_payload.get("matrix") or [], dtype=np.float64)
+            rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
+            workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
+            parameter_mappings = _build_op2_parameter_columns_with_mappings(
+                workspace=workspace_path,
+                bdf_path=str(updated_bdf_path),
+                parameter_columns=rerun_parameter_columns,
+            )
+
+            iteration_metrics = _build_iteration_metrics(
+                response_values=updated_response_values.tolist(),
+                target_values=target_response_values.tolist(),
+                response_scatter=r_scatter.tolist(),
+                parameter_step=update_payload["dp"],
+            )
+            exit_check = _evaluate_exit_condition(
+                updated_response_values.tolist(),
+                target_response_values.tolist(),
+                exit_diff_percent=exit_diff_percent,
+            )
+            iteration_result = {
+                "iteration": iteration_index + 1,
+                "analysis_run_id": rerun_stored_payload.get("analysis_run_id"),
+                "input_bdf": str(current_bdf_path) if save_results else None,
+                "sensitivity_batch_no": str(sensitivity_run_no),
+                "response_values_before_update": current_response_values.tolist(),
+                "response_values": updated_response_values.tolist(),
+                "target_responses": target_response_values.tolist(),
+                "parameter_values": current_parameter_values.tolist(),
+                "parameter_scatter": p_scatter.tolist(),
+                "response_scatter": r_scatter.tolist(),
+                "parameter_columns": rerun_parameter_columns,
+                "parameter_element_mapping": [
+                    {
+                        **dict(item),
+                        "updated_parameter_value": float(update_payload["p_new"][index]),
+                        "parameter_value": float(initial_parameter_values[index]),
+                    }
+                    for index, item in enumerate(parameter_mappings)
+                ],
+                "response_rows": response_rows,
+                "sensitivity_matrix": normalized_matrix.tolist(),
+                "bayesian": _clone_jsonable(update_payload),
+                "metrics": _clone_jsonable(iteration_metrics),
+                "exit_check": _clone_jsonable(exit_check),
+                "updated_bdf": str(updated_bdf_path) if save_results else None,
+                "updated_bdf_result": updated_bdf_result if save_results else None,
+                "solver": rerun_payload if save_results else None,
+            }
+            if save_results:
+                iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)
+            iteration_results.append(iteration_result)
+
+            _write_bayesian_iteration_console_log(
+                project_id=int(project_id),
+                batch_no=resolved_batch_no,
+                iteration_result=iteration_result,
+                stopped_early=bool(exit_check.get("converged")),
+            )
+            _persist_bayesian_tracking_results(
+                project_id=project_id,
+                batch_no=resolved_batch_no,
+                iteration_results=iteration_results,
+            )
+
+            current_parameter_values = np.asarray(update_payload["p_new"], dtype=np.float64)
+            current_parameter_columns = rerun_parameter_columns
+            current_response_values = np.asarray(updated_response_values, dtype=np.float64)
+            current_bdf_path = str(updated_bdf_path)
+            final_output_bdf = str(updated_bdf_path) if save_results else None
+            final_sensitivity_payload = rerun_stored_payload
+            cloud_export_base_url = cloud_export_base_url or None
+            stopped_early = bool(exit_check.get("converged"))
+            if stopped_early:
+                break
+
+        final_iteration = iteration_results[-1]
+        saved_artifacts = (
+            _save_bayesian_history_artifacts(
+                root_dir=root_dir,
+                project_id=project_id,
+                batch_no=resolved_batch_no,
+                iteration_results=iteration_results,
+            )
+            if save_results
+            else {}
+        )
+        final_modal_output = _persist_final_iteration_modal_outputs(
+            project_id=project_id,
+            batch_no=resolved_batch_no,
+            response_rows=response_rows,
+            initial_response_values=initial_response_values.tolist(),
+            updated_response_values=current_response_values.tolist(),
+        )
+        cloud_result = None
+        if write_cloud_result:
+            workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
+            resolved_cloud_odb_id = _resolve_loaded_odb_id_for_workspace(workspace_path)
+            if not resolved_cloud_odb_id:
+                raise ValidationError(
+                    "cloud export via external-field api requires the project workspace to be loaded in the L3 registry",
+                    {"project_id": int(project_id), "workspace": workspace_path},
+                )
+            parameter_mappings = _build_op2_parameter_columns_with_mappings(
+                workspace=workspace_path,
+                bdf_path=str(current_bdf_path),
+                parameter_columns=current_parameter_columns,
+            )
+            cloud_result = _write_sol200_final_parameter_cloud_result(
+                odb_id=resolved_cloud_odb_id,
+                base_url=cloud_export_base_url,
+                batch_no=resolved_batch_no,
+                parameter_columns=current_parameter_columns,
+                parameter_mappings=parameter_mappings,
+                initial_parameter_values=initial_parameter_values.tolist(),
+                final_parameter_values=current_parameter_values.tolist(),
+                result_group=cloud_result_group,
+                step_name=cloud_step_name,
+                field_name=cloud_field_name,
+            )
+
+        matched_payload = modal_payload.get("matched_payload") or {}
+        update_work_condition_project_status(
+            int(project_id),
+            fixes_cal_status=1,
+            fixes_result_status=1,
+        )
+        result = {
+            "project_id": int(project_id),
+            "batch_no": str(resolved_batch_no),
+            "sensitivity_batch_no": str(resolved_sensitivity_batch_no),
+            "cleanup_result": cleanup_result,
+            "input_bdf": str(source_bdf_path),
+            "output_dir": str(root_dir) if save_results else None,
+            "save_results": bool(save_results),
+            "iterations": len(iteration_results),
+            "requested_iterations": int(iterations),
+            "stopped_early": bool(stopped_early),
+            "exit_diff_percent": None if exit_diff_percent is None else float(exit_diff_percent),
+            "final_updated_bdf": final_output_bdf,
+            "final_parameter_values": current_parameter_values.tolist(),
+            "parameter_columns": [
+                {
+                    **dict(column),
+                    "parameter_name": str(column.get("parameter_name") or f"parameter_{index + 1}"),
+                    "initial_value": float(initial_parameter_values[index]),
+                    "final_value": float(current_parameter_values[index]),
+                    "relative_delta_percent": _resolve_cloud_scalar_percent_value(
+                        updated_value=float(current_parameter_values[index]),
+                        baseline_value=float(initial_parameter_values[index]),
+                    ),
+                }
+                for index, column in enumerate(current_parameter_columns)
+            ],
+            "response_rows": response_rows,
+            "matched_modal_rows": matched_payload.get("rows") or [],
+            "matched_pair_count": len(response_rows),
+            "iteration_results": iteration_results,
+            "saved_artifacts": saved_artifacts,
+            "final_modal_output": final_modal_output,
+            "cloud_result": cloud_result,
+            "skipped_response_rows_preview": modal_payload.get("skipped_rows", [])[:20],
+            "final_sensitivity_analysis_run_id": final_sensitivity_payload.get("analysis_run_id"),
+        }
+        safe_write_console_event(
+            int(project_id),
+            "SOL200 模态频率模型修正完成",
             [
                 f"批次号: {resolved_batch_no}",
                 f"灵敏度批次: {resolved_sensitivity_batch_no}",
