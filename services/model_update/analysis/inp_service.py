@@ -92,6 +92,7 @@ _DEFAULT_PARAMETER_USAGE_SCOPE = ("SENSITIVITY", "UPDATE")
 _ALLOWED_RESPONSE_SOLVER_SCOPE = {"DSA", "SOL200", "BAYESIAN"}
 _DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE = ("SOL200", "BAYESIAN")
 _ALLOWED_MODAL_RESPONSE_TYPES = {"MODAL_FREQUENCY", "MODAL_MAC"}
+_DEFAULT_RESPONSE_SCATTER = 0.05
 
 
 def _normalize_string_scope(
@@ -3272,6 +3273,7 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
                     "fem_node_label": None,
                     "component": "FREQ",
                     "unit": "Hz",
+                    "scatter": _DEFAULT_RESPONSE_SCATTER,
                     "seq_no": seq_no,
                     "source_table": "t_mt_py_test_modal_frequency",
                     "extra_json": {"test_frequency": _safe_float(row["frequency"])},
@@ -3309,6 +3311,7 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
                     "fem_node_label": int(row["fem_node_label"]),
                     "component": row["fem_dof"],
                     "unit": None,
+                    "scatter": _DEFAULT_RESPONSE_SCATTER,
                     "seq_no": seq_no,
                     "source_table": "t_mt_py_fem_dof_match",
                     "extra_json": {
@@ -3322,8 +3325,8 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
         insert_sql = """
         INSERT INTO t_mt_py_fem_response_catalog
         (pid, response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
-         instance_name, part_name, fem_node_label, component, unit, seq_no, source_table, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         instance_name, part_name, fem_node_label, component, unit, scatter, seq_no, source_table, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             response_name = VALUES(response_name),
             response_type = VALUES(response_type),
@@ -3335,6 +3338,7 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
             fem_node_label = VALUES(fem_node_label),
             component = VALUES(component),
             unit = VALUES(unit),
+            scatter = VALUES(scatter),
             seq_no = VALUES(seq_no),
             source_table = VALUES(source_table),
             extra_json = VALUES(extra_json),
@@ -3354,6 +3358,7 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
                 item["fem_node_label"],
                 item["component"],
                 item["unit"],
+                item.get("scatter", _DEFAULT_RESPONSE_SCATTER),
                 item["seq_no"],
                 item["source_table"],
                 _json_dumps(item["extra_json"]),
@@ -3382,7 +3387,7 @@ def get_fe_response_catalog(project_id):
     try:
         cursor.execute("""
             SELECT response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
-                   instance_name, part_name, fem_node_label, component, unit, seq_no, enabled,
+                   instance_name, part_name, fem_node_label, component, unit, scatter, seq_no, enabled,
                    selection_source, solver_scope, source_table, extra_json, created_at, updated_at
             FROM t_mt_py_fem_response_catalog
             WHERE pid = %s
@@ -3394,6 +3399,7 @@ def get_fe_response_catalog(project_id):
             default_scope = _DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE if response_type.startswith("MODAL_") else ("DSA",)
             responses.append({
                 **dict(row),
+                "scatter": _safe_float(row.get("scatter")),
                 "enabled": bool(row.get("enabled", 1)),
                 "solver_scope": _parse_json_list(row.get("solver_scope"), default_values=default_scope),
                 "extra_json": _parse_optional_json_object(row.get("extra_json")),
@@ -3598,6 +3604,13 @@ def _normalize_modal_mac_threshold_value(mac_threshold: Optional[float]) -> Opti
     raise ValidationError("mac_threshold must be <= 100", {"mac_threshold": mac_threshold})
 
 
+def _resolve_response_scatter_value(scatter: Optional[float]) -> float:
+    resolved = float(_DEFAULT_RESPONSE_SCATTER if scatter is None else scatter)
+    if resolved <= 0:
+        raise ValidationError("scatter must be > 0", {"scatter": scatter})
+    return resolved
+
+
 def _delete_response_catalog_entries_by_types(cursor, project_id: int, response_types: Sequence[str]) -> None:
     resolved_types = [str(item).strip().upper() for item in list(response_types or []) if str(item).strip()]
     if not resolved_types:
@@ -3619,6 +3632,7 @@ def _build_modal_response_catalog_row(
         matching_method: str,
         solver_scope: Sequence[str],
         selection_source: str,
+        scatter: Optional[float] = None,
 ) -> dict:
     fem_mode_no = int(row["fem_mode_no"])
     test_mode_no = int(row["test_mode_no"])
@@ -3646,6 +3660,7 @@ def _build_modal_response_catalog_row(
         "test_mode_no": test_mode_no,
         "component": component,
         "unit": unit,
+        "scatter": _resolve_response_scatter_value(scatter),
         "seq_no": int(seq_no),
         "enabled": True,
         "selection_source": str(selection_source or "manual_modal_match"),
@@ -3759,9 +3774,9 @@ def _insert_response_catalog_rows(cursor, project_id: int, rows: Sequence[dict])
     insert_sql = """
     INSERT INTO t_mt_py_fem_response_catalog
     (pid, response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
-     instance_name, part_name, fem_node_label, component, unit, seq_no, enabled, selection_source,
+     instance_name, part_name, fem_node_label, component, unit, scatter, seq_no, enabled, selection_source,
      solver_scope, source_table, extra_json)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON DUPLICATE KEY UPDATE
         response_name = VALUES(response_name),
         response_type = VALUES(response_type),
@@ -3769,6 +3784,7 @@ def _insert_response_catalog_rows(cursor, project_id: int, rows: Sequence[dict])
         test_mode_no = VALUES(test_mode_no),
         component = VALUES(component),
         unit = VALUES(unit),
+        scatter = VALUES(scatter),
         seq_no = VALUES(seq_no),
         enabled = VALUES(enabled),
         selection_source = VALUES(selection_source),
@@ -3793,6 +3809,7 @@ def _insert_response_catalog_rows(cursor, project_id: int, rows: Sequence[dict])
                 None,
                 payload["component"],
                 payload["unit"],
+                payload.get("scatter", _DEFAULT_RESPONSE_SCATTER),
                 payload["seq_no"],
                 1 if payload.get("enabled", True) else 0,
                 payload.get("selection_source"),
@@ -3811,9 +3828,11 @@ def create_modal_frequency_response_catalog_from_match(
         max_freq_error_ratio: Optional[float] = 0.2,
         solver_scope: Optional[Sequence[str]] = None,
         matching_method: str = "greedy",
+        scatter: Optional[float] = None,
 ) -> dict:
     ensure_tables_exist()
     resolved_mac_threshold = _normalize_modal_mac_threshold_value(mac_threshold)
+    resolved_scatter = _resolve_response_scatter_value(scatter)
     resolved_solver_scope = _normalize_response_solver_scope(
         solver_scope,
         default_values=_DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE,
@@ -3851,6 +3870,7 @@ def create_modal_frequency_response_catalog_from_match(
                     matching_method=str(matching_method or "greedy"),
                     solver_scope=resolved_solver_scope,
                     selection_source="auto_modal_match",
+                    scatter=resolved_scatter,
                 )
             )
         _insert_response_catalog_rows(cursor, int(project_id), rows)
@@ -3862,6 +3882,7 @@ def create_modal_frequency_response_catalog_from_match(
             "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
             "matching_method": str(matching_method or "greedy"),
             "solver_scope": resolved_solver_scope,
+            "scatter": resolved_scatter,
             "responses_preview": rows[:20],
         }
     except Exception:
@@ -3880,8 +3901,10 @@ def create_modal_match_response_catalog_entries(
         solver_scope: Optional[Sequence[str]] = None,
         overwrite: bool = False,
         matching_method: str = "manual_select",
+        scatter: Optional[float] = None,
 ) -> dict:
     ensure_tables_exist()
+    resolved_scatter = _resolve_response_scatter_value(scatter)
     resolved_pairs = []
     seen_pairs = set()
     for item in list(selected_pairs or []):
@@ -3942,6 +3965,7 @@ def create_modal_match_response_catalog_entries(
                         matching_method=str(matching_method or "manual_select"),
                         solver_scope=resolved_solver_scope,
                         selection_source="manual_modal_match",
+                        scatter=resolved_scatter,
                     )
                 )
                 seq_no += 1
@@ -3956,6 +3980,7 @@ def create_modal_match_response_catalog_entries(
             "overwrite": bool(overwrite),
             "response_types": resolved_response_types,
             "solver_scope": resolved_solver_scope,
+            "scatter": resolved_scatter,
             "selected_pair_count": len(resolved_pairs),
             "response_count": len(ordered_rows),
             "responses_preview": ordered_rows[:20],

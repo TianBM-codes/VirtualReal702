@@ -435,6 +435,7 @@ async def create_modal_frequency_response_from_match_api(request: Request, body:
             max_freq_error_ratio=body.max_freq_error_ratio,
             solver_scope=body.solver_scope,
             matching_method=body.matching_method,
+            scatter=body.scatter,
         )
         return success_response(data, "模态频率响应目录创建成功")
     except AppError as exc:
@@ -541,6 +542,7 @@ async def select_modal_match_response_api(request: Request, body: ModalMatchResp
             overwrite=body.overwrite,
             response_types=body.response_types,
             solver_scope=body.solver_scope,
+            scatter=body.scatter,
             selected_pairs=[model_to_dict(item) for item in body.selected_pairs],
         )
         return success_response(data, "模态匹配对正式响应已保存")

@@ -567,6 +567,7 @@ CREATE_TABLE_SQL_LIST = [
         fem_node_label BIGINT NULL COMMENT '有限元节点号',
         component VARCHAR(32) NULL COMMENT '响应分量',
         unit VARCHAR(50) NULL COMMENT '单位',
+        scatter FLOAT NOT NULL DEFAULT 0.05 COMMENT '响应离散度',
         seq_no INT NULL COMMENT '显示顺序',
         source_table VARCHAR(100) NULL COMMENT '来源数据表',
         extra_json JSON NULL COMMENT '扩展信息',
@@ -1213,6 +1214,11 @@ def ensure_tables_exist():
             "t_mt_py_fem_response_catalog",
             "solver_scope",
             "solver_scope JSON NULL COMMENT 'response solver scope'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_response_catalog",
+            "scatter",
+            "scatter FLOAT NOT NULL DEFAULT 0.05 COMMENT 'response scatter'",
         )
         _ensure_column(
             "t_mt_py_fem_response_catalog",

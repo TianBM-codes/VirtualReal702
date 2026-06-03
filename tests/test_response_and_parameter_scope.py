@@ -109,9 +109,11 @@ def test_create_modal_match_response_catalog_entries_writes_selected_pairs(monke
     second_insert = insert_calls[1][1]
     assert first_insert[2] == "FREQ_MODE_2"
     assert second_insert[2] == "MAC_MODE_2"
-    assert json.loads(first_insert[15]) == ["SOL200"]
-    assert json.loads(second_insert[17])["mac"] == 97.5
+    assert first_insert[12] == 0.05
+    assert json.loads(first_insert[16]) == ["SOL200"]
+    assert json.loads(second_insert[18])["mac"] == 97.5
     assert result["response_count"] == 2
+    assert result["scatter"] == 0.05
     assert fake_conn.committed is True
 
 

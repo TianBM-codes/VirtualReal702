@@ -238,6 +238,7 @@ class ModalFrequencyResponseFromMatchRequest(BaseModel):
     max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
     matching_method: str = "greedy"
     solver_scope: Optional[List[str]] = None
+    scatter: float = Field(default=0.05, gt=0.0)
 
 
 class ModalMatchPairRequest(BaseModel):
@@ -250,6 +251,7 @@ class ModalMatchResponseSelectRequest(BaseModel):
     overwrite: bool = False
     response_types: List[str] = Field(default_factory=lambda: ["MODAL_FREQUENCY"])
     solver_scope: Optional[List[str]] = None
+    scatter: float = Field(default=0.05, gt=0.0)
     selected_pairs: List[ModalMatchPairRequest]
 
 
