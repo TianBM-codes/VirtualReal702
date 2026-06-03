@@ -305,7 +305,8 @@ def _sol200_modal_bayesian_run_kwargs(body: Sol200ModalFrequencyBayesianModelUpd
     settings = dict(body.settings or {})
     settings.setdefault("sol200.deck_mode", "include")
     settings.setdefault("sol200.sensitivity_csv", True)
-    settings.setdefault("result.target", "OP2")
+    settings.setdefault("result.target", "F06")
+    settings.setdefault("post", -1)
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,

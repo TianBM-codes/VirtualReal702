@@ -336,7 +336,8 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
     settings = dict(body.settings or {})
     settings.setdefault("sol200.deck_mode", "include")
     settings.setdefault("sol200.sensitivity_csv", True)
-    settings.setdefault("result.target", "OP2")
+    settings.setdefault("result.target", "F06")
+    settings.setdefault("post", -1)
     parameter_preset = model_to_dict(body.parameter_preset) if body.parameter_preset else None
     if not body.parameters and not parameter_preset:
         parameter_preset = {

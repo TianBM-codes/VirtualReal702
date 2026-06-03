@@ -1253,10 +1253,11 @@ def _resolve_cloud_scalar_percent_value(
     return ((float(updated_value) - baseline) / baseline) * 100.0
 
 
-def _extract_sol200_modal_response_values(
+def _extract_modal_response_values_from_op2(
         *,
         op2_path: str,
         response_rows: Sequence[dict],
+        source_label: str = "modal",
 ) -> np.ndarray:
     from services.model_update.importers.op2_service import _extract_mode_frequency, _read_op2
 
@@ -1265,16 +1266,16 @@ def _extract_sol200_modal_response_values(
     eigenvectors = getattr(op2, "eigenvectors", {}) or {}
     if not eigenvectors:
         raise ValidationError(
-            "modal eigenvectors were not found in the SOL200 OP2 result",
-            {"op2_path": str(resolved_op2)},
+            f"modal eigenvectors were not found in the {source_label} OP2 result",
+            {"op2_path": str(resolved_op2), "source_label": source_label},
         )
     first_subcase_id = sorted(int(key) for key in eigenvectors.keys())[0]
     eigen_data = eigenvectors[first_subcase_id]
     modes_array = np.asarray(getattr(eigen_data, "modes", []), dtype=np.int64)
     if modes_array.size == 0:
         raise ValidationError(
-            "modal mode numbers were not found in the SOL200 OP2 result",
-            {"op2_path": str(resolved_op2), "subcase_id": first_subcase_id},
+            f"modal mode numbers were not found in the {source_label} OP2 result",
+            {"op2_path": str(resolved_op2), "subcase_id": first_subcase_id, "source_label": source_label},
         )
     response_values: List[float] = []
     missing_modes: List[int] = []
@@ -1282,8 +1283,8 @@ def _extract_sol200_modal_response_values(
         mode_number = row.get("mode_number")
         if mode_number is None:
             raise ValidationError(
-                "mode_number is required for SOL200 modal Bayesian responses",
-                {"response_row": dict(row or {})},
+                "mode_number is required for modal Bayesian responses",
+                {"response_row": dict(row or {}), "source_label": source_label},
             )
         found = np.where(modes_array == int(mode_number))[0]
         if len(found) == 0:
@@ -1293,25 +1294,86 @@ def _extract_sol200_modal_response_values(
         frequency, _eigenvalue, warnings = _extract_mode_frequency(eigen_data, mode_index)
         if warnings:
             raise ValidationError(
-                "failed to resolve modal frequency from the SOL200 OP2 result",
+                f"failed to resolve modal frequency from the {source_label} OP2 result",
                 {
                     "op2_path": str(resolved_op2),
                     "subcase_id": first_subcase_id,
                     "mode_number": int(mode_number),
                     "warnings": warnings,
+                    "source_label": source_label,
                 },
             )
         response_values.append(float(frequency))
     if missing_modes:
         raise ValidationError(
-            "some requested modal frequency responses were not found in the SOL200 OP2 result",
+            f"some requested modal frequency responses were not found in the {source_label} OP2 result",
             {
                 "op2_path": str(resolved_op2),
                 "subcase_id": first_subcase_id,
                 "missing_mode_numbers": missing_modes,
+                "source_label": source_label,
             },
         )
     return np.asarray(response_values, dtype=np.float64)
+
+
+def _resolve_solver_op2_path(solver_payload: Dict[str, Any], *, source_label: str) -> str:
+    solver = dict(solver_payload.get("solver") or {})
+    if not bool(solver.get("ok", False)):
+        raise ValidationError(
+            f"{source_label} solve failed",
+            {"source_label": source_label, "solver": solver},
+        )
+    summary = dict(solver.get("artifacts_summary") or {})
+    for path_text in list(summary.get("op2_files") or []):
+        text = str(path_text or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser().resolve()
+        if path.exists() and path.is_file():
+            return str(path)
+    raise ValidationError(
+        f"{source_label} solve did not produce an OP2 file",
+        {
+            "source_label": source_label,
+            "artifacts_summary": summary,
+            "warnings": solver_payload.get("warnings") or [],
+        },
+    )
+
+
+def _run_sol103_modal_response_values(
+        *,
+        input_bdf: str,
+        response_rows: Sequence[dict],
+        output_bdf: str,
+        settings: Optional[Dict[str, Any]] = None,
+        nastran: Optional[str] = None,
+        timeout_sec: Optional[int] = None,
+        extra_args: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    from services.model_update.analysis.solver_service import run_nastran_sol103_job
+
+    sol103_payload = run_nastran_sol103_job(
+        input_bdf=input_bdf,
+        output_bdf=output_bdf,
+        settings=dict(settings or {}),
+        nastran=nastran,
+        run_solver=True,
+        timeout_sec=timeout_sec,
+        extra_args=list(extra_args or []),
+    )
+    op2_path = _resolve_solver_op2_path(sol103_payload, source_label="SOL103 modal")
+    response_values = _extract_modal_response_values_from_op2(
+        op2_path=op2_path,
+        response_rows=response_rows,
+        source_label="SOL103 modal",
+    )
+    return {
+        "solver_payload": sol103_payload,
+        "op2_path": op2_path,
+        "response_values": response_values,
+    }
 
 
 def _build_sol200_parameter_rows(parameter_columns: Sequence[dict], parameter_values: Sequence[float]) -> List[dict]:
@@ -4034,12 +4096,6 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             "SOL200 Bayesian update requires an input_bdf or a stored sensitivity source bdf_path",
             {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
         )
-    source_op2_path = _normalize_optional_path(source.get("op2_path"))
-    if not source_op2_path:
-        raise ValidationError(
-            "stored SOL200 sensitivity run does not contain an OP2 path for modal response extraction",
-            {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
-        )
 
     root_dir: Path
     cleanup_root_dir: Optional[Path] = None
@@ -4053,7 +4109,11 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
     settings_payload = dict(settings or {})
     settings_payload.setdefault("sol200.deck_mode", "include")
     settings_payload.setdefault("sol200.sensitivity_csv", True)
-    settings_payload.setdefault("result.target", "OP2")
+    settings_payload.setdefault("result.target", "F06")
+    settings_payload.setdefault("post", -1)
+    sol103_settings = dict(settings or {})
+    sol103_settings.setdefault("result.target", "OP2")
+    sol103_settings.setdefault("post", -1)
 
     safe_write_console_event(
         int(project_id),
@@ -4073,10 +4133,16 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         )
         initial_parameter_values = current_parameter_values.copy()
         normalized_matrix = np.asarray(stored_payload.get("matrix") or [], dtype=np.float64)
-        current_response_values = _extract_sol200_modal_response_values(
-            op2_path=source_op2_path,
+        initial_modal_run = _run_sol103_modal_response_values(
+            input_bdf=str(source_bdf_path),
             response_rows=response_rows,
+            output_bdf=str(root_dir / f"{input_base_stem}_initial_sol103.bdf"),
+            settings=sol103_settings,
+            nastran=nastran,
+            timeout_sec=timeout_sec,
+            extra_args=extra_args,
         )
+        current_response_values = np.asarray(initial_modal_run["response_values"], dtype=np.float64)
         initial_response_values = current_response_values.copy()
         target_response_values = np.asarray(modal_payload["target_values"], dtype=np.float64)
 
@@ -4150,6 +4216,16 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 updated_parameter_values=update_payload["p_new"],
                 output_bdf=str(updated_bdf_path),
             )
+            sol103_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol103_iter{iteration_index + 1}.bdf"
+            modal_run = _run_sol103_modal_response_values(
+                input_bdf=str(updated_bdf_path),
+                response_rows=response_rows,
+                output_bdf=str(sol103_output_bdf),
+                settings=sol103_settings,
+                nastran=nastran,
+                timeout_sec=timeout_sec,
+                extra_args=extra_args,
+            )
             sol200_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol200_iter{iteration_index + 1}.bdf"
             sensitivity_run_no = f"{resolved_batch_no}_iter_{iteration_index + 1}"
             rerun_payload = run_sol200_and_store_workflow(
@@ -4172,21 +4248,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 project_id=int(project_id),
                 batch_no=str(sensitivity_run_no),
             )
-            rerun_source = dict(rerun_stored_payload.get("source") or {})
-            rerun_op2_path = _normalize_optional_path(
-                rerun_source.get("op2_path")
-                or rerun_payload.get("op2_path")
-                or (rerun_payload.get("run") or {}).get("op2_path")
-            )
-            if not rerun_op2_path:
-                raise ValidationError(
-                    "SOL200 rerun did not produce an OP2 path for modal response extraction",
-                    {"project_id": int(project_id), "batch_no": sensitivity_run_no},
-                )
-            updated_response_values = _extract_sol200_modal_response_values(
-                op2_path=rerun_op2_path,
-                response_rows=response_rows,
-            )
+            updated_response_values = np.asarray(modal_run["response_values"], dtype=np.float64)
             normalized_matrix = np.asarray(rerun_stored_payload.get("matrix") or [], dtype=np.float64)
             rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
             workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
@@ -4234,6 +4296,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 "exit_check": _clone_jsonable(exit_check),
                 "updated_bdf": str(updated_bdf_path) if save_results else None,
                 "updated_bdf_result": updated_bdf_result if save_results else None,
+                "modal_solver": modal_run["solver_payload"] if save_results else None,
                 "solver": rerun_payload if save_results else None,
             }
             if save_results:
