@@ -22,8 +22,8 @@ async def request_validation_error_handler(
     errors = exc.errors()
     parts = [f"{' -> '.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors]
     return JSONResponse(
-        status_code=422,
-        content={"code": 422, "data": None, "message": "; ".join(parts)},
+        status_code=500,
+        content={"code": 500, "data": None, "message": "; ".join(parts)},
     )
 
 
