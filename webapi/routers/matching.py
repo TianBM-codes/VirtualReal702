@@ -2,7 +2,9 @@ from fastapi import APIRouter, Request
 
 from services.model_update.analysis.inp_service import (
     evaluate_static_correlation,
+    get_modal_correlation_all_scatter_payload,
     get_dof_matches,
+    get_modal_frequency_consistency_payload,
     get_modal_match_frequency_scatter_payload,
     get_pair_node_point_result,
     match_test_dofs,
@@ -21,6 +23,7 @@ from ..models import (
     MatchDofsRequest,
     MatchNodeParametersRequest,
     MatchNodesRequest,
+    ModalCorrelationScatterRequest,
     ModalMatchScatterRequest,
     PairNodePointResultRequest,
     TransformAutoInfoRequest,
@@ -115,13 +118,24 @@ async def get_match_node_parameters_api(request: Request, body: MatchNodeParamet
 async def evaluate_correlation_api(request: Request, body: CorrelationEvaluateRequest):
     await log_request(request, model_to_dict(body))
     try:
-        result = evaluate_static_correlation(
-            project_id=body.project_id,
-            load_case_no=body.load_case_no,
-            result_no=body.result_no,
-            components=body.components,
-            include_rotations=body.include_rotations,
-        )
+        project_type = str(body.project_type or "JLXZ").strip().upper()
+        if project_type == "JLXZ":
+            result = evaluate_static_correlation(
+                project_id=body.project_id,
+                load_case_no=body.load_case_no,
+                result_no=body.result_no,
+                components=body.components,
+                include_rotations=body.include_rotations,
+            )
+        elif project_type == "MTXZ":
+            result = get_modal_frequency_consistency_payload(body.project_id)
+        else:
+            raise AppError(
+                message="unsupported project_type",
+                status_code=400,
+                code="VALIDATION_ERROR",
+                details={"project_type": body.project_type, "allowed": ["JLXZ", "MTXZ"]},
+            )
         return success_response(result, "一致性评价成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
@@ -141,6 +155,19 @@ async def modal_match_frequency_scatter_api(request: Request, body: ModalMatchSc
             method=body.method,
         )
         return success_response(result, "模态频率匹配散点图获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/correlation/modal/all_scatter")
+async def modal_correlation_all_scatter_api(request: Request, body: ModalCorrelationScatterRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_modal_correlation_all_scatter_payload(project_id=body.project_id)
+        return success_response(result, "频率相关性散点图计算成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

@@ -255,7 +255,7 @@ async def compute_modal_correlation_api(request: Request):
         result = compute_modal_correlation(
             project_id=int(body["project_id"]),
             overwrite=bool(body.get("overwrite", True)),
-            mac_threshold=body.get("mac_threshold"),
+            mac_threshold=body.get("mac_threshold", 70),
         )
         return success_response(result, "模态相关性计算成功")
     except Exception as exc:
@@ -317,7 +317,7 @@ async def match_modal_api(request: Request):
         subcase_name = await _get_step_names_from_src(int(body["project_id"]))
         result = match_modal_modes(
             int(body["project_id"]),
-            mac_threshold=float(body.get("mac_threshold", 0.7)),
+            mac_threshold=float(body.get("mac_threshold", 70)),
             max_freq_error_ratio=(
                 None if body.get("max_freq_error_ratio") is None
                 else float(body.get("max_freq_error_ratio"))
@@ -337,7 +337,7 @@ async def modal_match_frequency_scatter_api(request: Request):
         subcase_name = await _get_step_names_from_src(int(body["project_id"]))
         result = get_modal_match_frequency_scatter_payload(
             int(body["project_id"]),
-            mac_threshold=float(body.get("mac_threshold", 0.7)),
+            mac_threshold=float(body.get("mac_threshold", 60)),
             max_freq_error_ratio=(
                 None if body.get("max_freq_error_ratio") is None
                 else float(body.get("max_freq_error_ratio"))

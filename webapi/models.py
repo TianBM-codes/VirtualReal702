@@ -333,6 +333,7 @@ class DofMatchResultRequest(BaseModel):
 
 class CorrelationEvaluateRequest(BaseModel):
     project_id: int
+    project_type: str = "JLXZ"
     load_case_no: Optional[int] = None
     result_no: Optional[int] = None
     components: Optional[List[str]] = None
@@ -344,6 +345,10 @@ class ModalMatchScatterRequest(BaseModel):
     mac_threshold: float = 0.7
     max_freq_error_ratio: Optional[float] = 0.2
     method: str = "greedy"
+
+
+class ModalCorrelationScatterRequest(BaseModel):
+    project_id: int
 
 
 class TransformOperationRequest(BaseModel):

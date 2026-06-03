@@ -57,3 +57,93 @@ def test_modal_match_frequency_scatter_route(monkeypatch):
         "max_freq_error_ratio": 0.15,
         "method": "greedy",
     }
+
+
+def test_modal_correlation_all_scatter_route(monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import matching
+
+    captured = {}
+
+    def fake_get_modal_correlation_all_scatter_payload(**kwargs):
+        captured.update(kwargs)
+        return {
+            "project_id": kwargs["project_id"],
+            "chart_type": "scatter",
+            "value_label": "mac",
+            "data": [
+                {
+                    "label": "all_correlations",
+                    "xaxis": ["1"],
+                    "data": [[1, 2]],
+                    "points": [{"x": 1, "y": 2, "value": 97.5, "tooltip": {"mac": 97.5}}],
+                }
+            ],
+            "summary": {"point_count": 1},
+        }
+
+    monkeypatch.setattr(
+        matching,
+        "get_modal_correlation_all_scatter_payload",
+        fake_get_modal_correlation_all_scatter_payload,
+    )
+
+    app = FastAPI()
+    app.include_router(matching.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/correlation/modal/all_scatter",
+        json={"project_id": 18},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["value_label"] == "mac"
+    assert payload["data"]["data"][0]["points"][0]["tooltip"]["mac"] == 97.5
+    assert captured == {"project_id": 18}
+
+
+def test_evaluate_correlation_route_uses_modal_branch_for_mtxz(monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import matching
+
+    captured = {}
+
+    monkeypatch.setattr(
+        matching,
+        "get_modal_frequency_consistency_payload",
+        lambda project_id: captured.update({"project_id": project_id}) or {
+            "project_id": int(project_id),
+            "project_type": "MTXZ",
+            "rows": [],
+            "summary": {"compared_mode_count": 0},
+        },
+    )
+    monkeypatch.setattr(
+        matching,
+        "evaluate_static_correlation",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("static branch should not be used")),
+    )
+
+    app = FastAPI()
+    app.include_router(matching.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/correlation/evaluate",
+        json={"project_id": 18, "project_type": "MTXZ"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["project_type"] == "MTXZ"
+    assert captured == {"project_id": 18}
