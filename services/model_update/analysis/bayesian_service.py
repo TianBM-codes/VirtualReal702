@@ -1378,16 +1378,20 @@ def _run_sol103_modal_response_values(
 
 def _build_sol200_parameter_rows(parameter_columns: Sequence[dict], parameter_values: Sequence[float]) -> List[dict]:
     rows: List[dict] = []
-    values = list(parameter_values or [])
+    values = list(parameter_values) if parameter_values is not None else []
     for index, raw_row in enumerate(parameter_columns or []):
         row = dict(raw_row or {})
-        row["parameter_name"] = str(
+        resolved_name = str(
             row.get("parameter_name")
             or row.get("param_name")
             or row.get("field")
             or f"parameter_{index + 1}"
         ).strip() or f"parameter_{index + 1}"
-        row["parameter_type"] = str(row.get("param_type") or row.get("parameter_type") or row.get("type") or "").upper()
+        resolved_type = str(row.get("param_type") or row.get("parameter_type") or row.get("type") or "").upper()
+        row["parameter_name"] = resolved_name
+        row["name"] = resolved_name
+        row["parameter_type"] = resolved_type
+        row["type"] = resolved_type
         row["initial"] = float(values[index])
         if row.get("lower_bound") is not None:
             row["lower"] = float(row["lower_bound"])
@@ -1447,7 +1451,10 @@ def _build_sol200_final_parameter_cloud_request(
     instance_counts: Dict[str, int] = {}
 
     for index, raw_mapping in enumerate(parameter_mappings or []):
-        mapping = dict(raw_mapping or {})
+        raw_mapping_dict = dict(raw_mapping or {})
+        mapping = dict(raw_mapping_dict.get("element_mapping") or raw_mapping_dict)
+        if "parameter_name" not in mapping and raw_mapping_dict.get("parameter_name") is not None:
+            mapping["parameter_name"] = raw_mapping_dict.get("parameter_name")
         if str(mapping.get("target_kind") or "").lower() not in {"cell", ""}:
             raise ValidationError(
                 "SOL200 Bayesian cloud export currently supports element targets only",
@@ -1651,7 +1658,15 @@ def _build_bayesian_cloud_request(
 
         per_instance_labels: Dict[str, Dict[int, List[float]]] = {}
 
-        for component_index, mapping in enumerate(mappings):
+        for component_index, raw_mapping in enumerate(mappings):
+            raw_mapping_dict = dict(raw_mapping or {})
+            mapping = dict(raw_mapping_dict.get("element_mapping") or raw_mapping_dict)
+            if "parameter_name" not in mapping and raw_mapping_dict.get("parameter_name") is not None:
+                mapping["parameter_name"] = raw_mapping_dict.get("parameter_name")
+            if "updated_parameter_value" not in mapping and raw_mapping_dict.get("updated_parameter_value") is not None:
+                mapping["updated_parameter_value"] = raw_mapping_dict.get("updated_parameter_value")
+            if "parameter_value" not in mapping and raw_mapping_dict.get("parameter_value") is not None:
+                mapping["parameter_value"] = raw_mapping_dict.get("parameter_value")
             target_kind = str(mapping.get("target_kind") or "").lower()
             if target_kind not in {"cell", ""}:
                 raise ValidationError(
@@ -4185,7 +4200,11 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             dtype=np.float64,
         )
         initial_parameter_values = current_parameter_values.copy()
-        normalized_matrix = np.asarray(modal_payload.get("matrix") or [], dtype=np.float64)
+        modal_matrix = modal_payload.get("matrix")
+        if modal_matrix is None:
+            normalized_matrix = np.asarray([], dtype=np.float64)
+        else:
+            normalized_matrix = np.asarray(modal_matrix, dtype=np.float64)
         initial_modal_run = _run_sol103_modal_response_values(
             input_bdf=str(source_bdf_path),
             response_rows=response_rows,
@@ -4302,11 +4321,15 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 batch_no=str(sensitivity_run_no),
             )
             updated_response_values = np.asarray(modal_run["response_values"], dtype=np.float64)
-            normalized_matrix = _select_modal_frequency_matrix_rows(
-                stored_response_rows=rerun_stored_payload.get("response_rows") or [],
-                matrix=rerun_stored_payload.get("matrix") or [],
-                response_rows=response_rows,
-            )
+            rerun_matrix = rerun_stored_payload.get("matrix")
+            if rerun_matrix is None:
+                normalized_matrix = np.asarray([], dtype=np.float64)
+            else:
+                normalized_matrix = _select_modal_frequency_matrix_rows(
+                    stored_response_rows=rerun_stored_payload.get("response_rows") or [],
+                    matrix=rerun_matrix,
+                    response_rows=response_rows,
+                )
             rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
             workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
             parameter_mappings = _build_op2_parameter_columns_with_mappings(
