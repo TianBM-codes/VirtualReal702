@@ -1545,9 +1545,12 @@ def _write_sol200_final_parameter_cloud_result(
         field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
         timeout: int = 60,
 ) -> dict:
+    from src.l3.core.state import registry
+    from src.l3.services.external_result_writer import ExternalResultWriter
+
     resolved_odb_id = str(odb_id or "").strip()
     if not resolved_odb_id:
-        raise ValidationError("odb_id is required for cloud export via external-field api")
+        raise ValidationError("odb_id is required for local cloud export")
 
     request_body, metadata = _build_sol200_final_parameter_cloud_request(
         batch_no=batch_no,
@@ -1559,28 +1562,52 @@ def _write_sol200_final_parameter_cloud_result(
         step_name=step_name,
         field_name=field_name,
     )
-    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
-    client = _sens.ODBClient(base_url=resolved_base_url, timeout=timeout)
-    try:
-        write_response = client.post_external_field(resolved_odb_id, request_body)
-    except ODBClientError as exc:
-        details = {
-            "odb_id": resolved_odb_id,
-            "base_url": resolved_base_url,
-            "status_code": exc.status_code,
-        }
-        if exc.status_code == 404:
-            raise NotFoundError("external-field api target odb was not found", details) from exc
-        raise ValidationError(
-            "external-field api request failed",
-            {**details, "detail": exc.detail},
-        ) from exc
+    registry_entry = registry.get(resolved_odb_id)
+    if registry_entry is None:
+        raise NotFoundError(
+            "cloud export target odb was not found in the local registry",
+            {"odb_id": resolved_odb_id},
+        )
+
+    writer = ExternalResultWriter(registry_entry.workspace, metadata["result_group"])
+    total_frames = 0
+    instances_written = 0
+    for inst_data in request_body.get("instances", []):
+        frames_raw = []
+        for frame in inst_data.get("frames", []):
+            frames_raw.append(
+                {
+                    "frame_idx": int(frame["frame_idx"]),
+                    "frame_value": float(frame.get("frame_value", 0.0)),
+                    "description": frame.get("description"),
+                    "data": [
+                        {"label": int(entry["label"]), "values": list(entry.get("values") or [])}
+                        for entry in frame.get("data", [])
+                    ],
+                }
+            )
+        written = writer.write_element(
+            instance=str(inst_data.get("instance") or ""),
+            step=metadata["step"],
+            field=metadata["field"],
+            components=list(request_body.get("components") or []),
+            frames=frames_raw,
+        )
+        total_frames = max(total_frames, int(written))
+        instances_written += 1
+    write_response = {
+        "field_name": metadata["field"],
+        "step_name": metadata["step"],
+        "instances_written": int(instances_written),
+        "frames_written": int(total_frames),
+        "source": "external_local",
+    }
 
     result = dict(metadata)
     result.update(
         {
             "odb_id": resolved_odb_id,
-            "base_url": resolved_base_url,
+            "base_url": None,
             "write_response": write_response,
             "query_hint": {
                 "endpoint": "/api/odb/{odb_id}/results/frame-scalars",
