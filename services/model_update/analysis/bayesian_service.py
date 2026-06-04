@@ -3165,6 +3165,40 @@ def _predict_updated_response_values(
     return np.asarray(predicted, dtype=np.float64).reshape(-1)
 
 
+def _normalize_absolute_modal_sensitivity_matrix(
+        *,
+        absolute_sensitivity: Sequence[Sequence[float]],
+        response_values: Sequence[float],
+        parameter_values: Sequence[float],
+        eps: float = 1e-12,
+) -> np.ndarray:
+    sensitivity = np.asarray(absolute_sensitivity, dtype=np.float64)
+    r_model = np.asarray(response_values, dtype=np.float64).reshape(-1)
+    p_current = np.asarray(parameter_values, dtype=np.float64).reshape(-1)
+    if sensitivity.ndim != 2:
+        raise ValidationError(
+            "absolute modal sensitivity matrix must be two-dimensional",
+            {"matrix_shape": list(sensitivity.shape)},
+        )
+    if sensitivity.shape != (len(r_model), len(p_current)):
+        raise ValidationError(
+            "absolute modal sensitivity matrix shape does not match modal response and parameter sizes",
+            {
+                "matrix_shape": list(sensitivity.shape),
+                "response_count": len(r_model),
+                "parameter_count": len(p_current),
+            },
+        )
+
+    safe_response = np.where(
+        np.abs(r_model) > float(eps),
+        r_model,
+        np.where(r_model >= 0.0, float(eps), -float(eps)),
+    )
+    normalized = sensitivity * p_current.reshape(1, -1) / safe_response.reshape(-1, 1)
+    return np.asarray(normalized, dtype=np.float64)
+
+
 def _update_bdf_parameter_values(
         *,
         input_bdf: str,
@@ -4247,10 +4281,6 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         )
         initial_parameter_values = current_parameter_values.copy()
         modal_matrix = modal_payload.get("matrix")
-        if modal_matrix is None:
-            normalized_matrix = np.asarray([], dtype=np.float64)
-        else:
-            normalized_matrix = np.asarray(modal_matrix, dtype=np.float64)
         initial_modal_run = _run_sol103_modal_response_values(
             input_bdf=str(update_source_bdf_path),
             response_rows=response_rows,
@@ -4263,6 +4293,14 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         current_response_values = np.asarray(initial_modal_run["response_values"], dtype=np.float64)
         initial_response_values = current_response_values.copy()
         target_response_values = np.asarray(modal_payload["target_values"], dtype=np.float64)
+        if modal_matrix is None:
+            normalized_matrix = np.asarray([], dtype=np.float64)
+        else:
+            normalized_matrix = _normalize_absolute_modal_sensitivity_matrix(
+                absolute_sensitivity=modal_matrix,
+                response_values=current_response_values,
+                parameter_values=current_parameter_values,
+            )
 
         p_scatter = _resolve_scatter_vector(
             parameter_scatter,
@@ -4371,10 +4409,15 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             if rerun_matrix is None:
                 normalized_matrix = np.asarray([], dtype=np.float64)
             else:
-                normalized_matrix = _select_modal_frequency_matrix_rows(
+                absolute_matrix = _select_modal_frequency_matrix_rows(
                     stored_response_rows=rerun_stored_payload.get("response_rows") or [],
                     matrix=rerun_matrix,
                     response_rows=response_rows,
+                )
+                normalized_matrix = _normalize_absolute_modal_sensitivity_matrix(
+                    absolute_sensitivity=absolute_matrix,
+                    response_values=updated_response_values,
+                    parameter_values=np.asarray(update_payload["p_new"], dtype=np.float64),
                 )
             rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
             workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
