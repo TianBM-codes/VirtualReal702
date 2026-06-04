@@ -182,8 +182,107 @@ def build_eigrl_fields(settings):
     }
 
 
-def build_sol103_controls(settings):
-    eigrl = build_eigrl_fields(settings)
+def _split_bdf_fields(line):
+    stripped = str(line or "").rstrip("\n")
+    if "," in stripped:
+        return [part.strip() for part in stripped.split(",")]
+    chunks = [stripped[i:i + 8].strip() for i in range(0, len(stripped), 8)]
+    while chunks and chunks[-1] == "":
+        chunks.pop()
+    return chunks
+
+
+def _parse_eigrl_card(line):
+    fields = _split_bdf_fields(line)
+    if not fields:
+        return None
+    if str(fields[0]).strip().upper() != "EIGRL":
+        return None
+
+    def _field(index):
+        return str(fields[index]).strip() if index < len(fields) else ""
+
+    return {
+        "sid": _field(1) or "1",
+        "v1": _field(2),
+        "v2": _field(3),
+        "nd": _field(4),
+        "maxset": _field(6),
+        "shfscl": _field(7),
+        "normalization": _field(8) or "MASS",
+    }
+
+
+def _find_existing_eigrl_fields(bulk_lines):
+    for line in list(bulk_lines or []):
+        card = normalize_card_name(line)
+        if card != "EIGRL":
+            continue
+        parsed = _parse_eigrl_card(line)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _resolve_sol103_eigrl_fields(settings, *, bulk_lines=None):
+    existing = _find_existing_eigrl_fields(list(bulk_lines or []))
+    if existing is None:
+        return build_eigrl_fields(settings)
+
+    resolved = dict(existing)
+    if "dynamic.sid" in settings and settings.get("dynamic.sid") not in (None, ""):
+        resolved["sid"] = str(int(settings.get("dynamic.sid")))
+    if "dynamic.fmin" in settings and settings.get("dynamic.fmin") not in (None, ""):
+        resolved["v1"] = format_float_like_bas(float(settings.get("dynamic.fmin")))
+    if "dynamic.fmax" in settings:
+        fmax_raw = settings.get("dynamic.fmax")
+        if fmax_raw in (None, ""):
+            resolved["v2"] = ""
+        else:
+            fmax = float(fmax_raw)
+            resolved["v2"] = "" if fmax <= 0 else format_float_like_bas(fmax)
+    if "dynamic.vectors" in settings:
+        vectors_raw = settings.get("dynamic.vectors")
+        if vectors_raw in (None, ""):
+            resolved["nd"] = ""
+        else:
+            vectors = int(vectors_raw)
+            resolved["nd"] = "" if vectors <= 0 else str(vectors)
+    if "dynamic.size" in settings:
+        size_raw = settings.get("dynamic.size")
+        size = 0 if size_raw in (None, "") else int(size_raw)
+        resolved["maxset"] = str(size) if size > 0 else ""
+    if "dynamic.norm" in settings and settings.get("dynamic.norm") not in (None, ""):
+        resolved["normalization"] = resolve_dynamic_norm(settings.get("dynamic.norm", 2))
+    else:
+        resolved["normalization"] = resolve_dynamic_norm(resolved.get("normalization", "MASS"))
+    return resolved
+
+
+def extract_sol103_settings_from_bdf(input_bdf):
+    lines = read_lines(input_bdf)
+    _, bulk_lines = split_bdf(lines)
+    eigrl = _find_existing_eigrl_fields(bulk_lines)
+    if eigrl is None:
+        return {}
+    settings = {}
+    if eigrl.get("sid"):
+        settings["dynamic.sid"] = int(eigrl["sid"])
+    if eigrl.get("v1") not in (None, ""):
+        settings["dynamic.fmin"] = float(str(eigrl["v1"]).replace("D", "E"))
+    if eigrl.get("v2") not in (None, ""):
+        settings["dynamic.fmax"] = float(str(eigrl["v2"]).replace("D", "E"))
+    if eigrl.get("nd") not in (None, ""):
+        settings["dynamic.vectors"] = int(eigrl["nd"])
+    if eigrl.get("maxset") not in (None, ""):
+        settings["dynamic.size"] = int(eigrl["maxset"])
+    if eigrl.get("normalization") not in (None, ""):
+        settings["dynamic.norm"] = resolve_dynamic_norm(eigrl["normalization"])
+    return settings
+
+
+def build_sol103_controls(settings, *, bulk_lines=None):
+    eigrl = _resolve_sol103_eigrl_fields(settings, bulk_lines=bulk_lines)
 
     echo = settings.get("echo", "NONE")
     displacement = settings.get("displacement", "ALL")
@@ -280,7 +379,7 @@ def convert_to_sol103(input_bdf, output_bdf, settings):
     lines = read_lines(input_bdf)
     _, bulk_lines = split_bdf(lines)
 
-    controls, has_bailout = build_sol103_controls(settings)
+    controls, has_bailout = build_sol103_controls(settings, bulk_lines=bulk_lines)
     filtered_bulk = filter_bulk_lines(bulk_lines, has_bailout)
 
     output_lines = controls + filtered_bulk
