@@ -3008,6 +3008,59 @@ def _build_modal_response_payload(
     }
 
 
+def _select_modal_frequency_matrix_rows(
+        *,
+        stored_response_rows: Sequence[dict],
+        matrix: Sequence[Sequence[float]],
+        response_rows: Sequence[dict],
+) -> np.ndarray:
+    selected_indexes: List[int] = []
+    expected_pairs = [
+        (
+            str(item.get("response_type") or item.get("type") or "").upper(),
+            int(item.get("mode_number")),
+        )
+        for item in (response_rows or [])
+        if item.get("mode_number") is not None
+    ]
+    stored_pairs = [
+        (
+            str(item.get("response_type") or item.get("type") or "").upper(),
+            int(item.get("mode_number")),
+        )
+        if item.get("mode_number") is not None else None
+        for item in (stored_response_rows or [])
+    ]
+    used_indexes: set[int] = set()
+    for expected_type, expected_mode in expected_pairs:
+        match_index = None
+        for index, pair in enumerate(stored_pairs):
+            if index in used_indexes or pair is None:
+                continue
+            if pair == (expected_type, expected_mode):
+                match_index = index
+                break
+        if match_index is None:
+            raise ValidationError(
+                "failed to align modal frequency sensitivity rows with the selected response rows",
+                {
+                    "expected_response_type": expected_type,
+                    "expected_mode_number": expected_mode,
+                    "available_preview": [pair for pair in stored_pairs[:20] if pair is not None],
+                },
+            )
+        used_indexes.add(match_index)
+        selected_indexes.append(match_index)
+
+    matrix_arr = np.asarray(matrix, dtype=np.float64)
+    if matrix_arr.ndim != 2:
+        raise ValidationError(
+            "stored modal sensitivity matrix must be two-dimensional",
+            {"matrix_shape": list(matrix_arr.shape)},
+        )
+    return np.asarray(matrix_arr[selected_indexes, :], dtype=np.float64)
+
+
 def _metadata_bound_vector(
         parameter_columns: Sequence[dict],
         *,
@@ -4132,7 +4185,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             dtype=np.float64,
         )
         initial_parameter_values = current_parameter_values.copy()
-        normalized_matrix = np.asarray(stored_payload.get("matrix") or [], dtype=np.float64)
+        normalized_matrix = np.asarray(modal_payload.get("matrix") or [], dtype=np.float64)
         initial_modal_run = _run_sol103_modal_response_values(
             input_bdf=str(source_bdf_path),
             response_rows=response_rows,
@@ -4249,7 +4302,11 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 batch_no=str(sensitivity_run_no),
             )
             updated_response_values = np.asarray(modal_run["response_values"], dtype=np.float64)
-            normalized_matrix = np.asarray(rerun_stored_payload.get("matrix") or [], dtype=np.float64)
+            normalized_matrix = _select_modal_frequency_matrix_rows(
+                stored_response_rows=rerun_stored_payload.get("response_rows") or [],
+                matrix=rerun_stored_payload.get("matrix") or [],
+                response_rows=response_rows,
+            )
             rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
             workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
             parameter_mappings = _build_op2_parameter_columns_with_mappings(
