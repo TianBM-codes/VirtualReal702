@@ -56,11 +56,16 @@ async def list_model_update_result_groups(odb_id: str):
     return ok({"result_groups": groups})
 
 
+@router.get("/model-update/step")
+async def step():
+    return ok([{"label": "Bayesian-Update", "value": "Bayesian-Update", "frame": 0}])
+
+
 @router.get("/model-update/fields")
 async def list_model_update_fields(
-    odb_id: str,
-    result_group: str = Query(..., description="bayesian_* result group name"),
-    step: Optional[str] = Query(default=None, description="analysis step name"),
+        odb_id: str,
+        result_group: str = Query(..., description="bayesian_* result group name"),
+        step: Optional[str] = Query(default=None, description="analysis step name"),
 ):
     idx = registry.get(odb_id)
     if idx is None:
