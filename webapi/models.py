@@ -380,7 +380,7 @@ class CorrelationEvaluateRequest(BaseModel):
 class ModalMatchScatterRequest(BaseModel):
     project_id: int
     mac_threshold: float = 0.7
-    max_freq_error_ratio: Optional[float] = 0.2
+    max_freq_error_ratio: Optional[float] = 0.9
     method: str = "greedy"
 
 

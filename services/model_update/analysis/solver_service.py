@@ -94,6 +94,8 @@ _NASTRAN_BINARY_SUFFIXES = {
     ".bin",
 }
 
+_DSA_RESPONSE_TOKEN_RE = re.compile(r"^d_([A-Z0-9_]+?)(?:_[A-Z]+)?_?$", re.IGNORECASE)
+
 
 def _normalize_result_group_name(value: str) -> str:
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
@@ -109,6 +111,16 @@ def _default_solver_project_result_group(job_name: str) -> str:
     )
 
 
+def _field_prefix_response_token(field_prefix: Optional[str]) -> Optional[str]:
+    prefix = str(field_prefix or "").strip()
+    if not prefix:
+        return None
+    match = _DSA_RESPONSE_TOKEN_RE.fullmatch(prefix)
+    if not match:
+        return None
+    return str(match.group(1)).upper()
+
+
 def _build_project_result_parse_options(
         *,
         step: Optional[str],
@@ -121,7 +133,12 @@ def _build_project_result_parse_options(
         "frames": [int(frame)] if frame is not None else "all",
         "invariants": "none",
     }
-    if field_prefix:
+
+    # DSA uploads need both the sensitivity fields (for example d_U_T1) and
+    # their base response field (for example U). Filtering by the DSA prefix
+    # here strips the response field from the extracted workspace and breaks
+    # later normalization/merge logic.
+    if field_prefix and _field_prefix_response_token(field_prefix) is None:
         parse_options["field_prefix"] = str(field_prefix)
     return {key: value for key, value in parse_options.items() if value is not None}
 
