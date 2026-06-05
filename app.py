@@ -12,6 +12,7 @@ from src.l3.api.routes.meta import list_steps as list_src_steps
 from webapi.routes import router as model_update_router
 from webapi.background_jobs import recover_background_tasks
 from webapi.common import error_response, server_error, success_response
+from src.modal_service.middleware import add_test_mesh_route_rewrite_middleware
 from src.modal_service.routes import router as modal_router
 from src.l3.core.errors import AppError
 from services.model_update.analysis.inp_service import (
@@ -35,6 +36,7 @@ from services.model_update.analysis.inp_service import (
 
 app.include_router(model_update_router)
 app.include_router(modal_router)
+add_test_mesh_route_rewrite_middleware(app)
 
 
 _base_lifespan = app.router.lifespan_context

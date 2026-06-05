@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .middleware import add_test_mesh_route_rewrite_middleware
 from .routes import router
 
 app = FastAPI(
@@ -42,3 +43,4 @@ if _tools_dir.exists():
 
 # 注册路由
 app.include_router(router)
+add_test_mesh_route_rewrite_middleware(app)
