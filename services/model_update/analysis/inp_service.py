@@ -6505,7 +6505,7 @@ def get_modal_frequency_consistency_payload(project_id: int) -> dict:
                 "mac": row.get("mac"),
             },
         })
-    return {
+    result = {
         "project_id": int(project_id),
         "project_type": "MTXZ",
         "chart_type": "line",
@@ -6525,6 +6525,11 @@ def get_modal_frequency_consistency_payload(project_id: int) -> dict:
             "point_count": len(line_points),
         },
     }
+    update_work_condition_project_status(
+        int(project_id),
+        consistency_status=1,
+    )
+    return result
 
 
 def get_modal_correlation_all_scatter_payload(project_id: int) -> dict:

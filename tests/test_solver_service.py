@@ -2,6 +2,7 @@ from pathlib import Path
 
 from services.model_update.analysis.solver_service import (
     _build_abaqus_command,
+    _build_project_result_parse_options,
     _build_nastran_command,
     run_abaqus_adjoint_job,
     run_abaqus_sensitivity_job,
@@ -190,6 +191,29 @@ def test_build_nastran_command_keeps_relative_bdf_name():
         "scr=yes",
         "old=no",
     ]
+
+
+def test_build_project_result_parse_options_omits_dsa_field_prefix():
+    options = _build_project_result_parse_options(
+        step="Step-1",
+        frame=0,
+        field_prefix="d_U_",
+    )
+
+    assert options["steps"] == ["Step-1"]
+    assert options["frames"] == [0]
+    assert options["invariants"] == "none"
+    assert "field_prefix" not in options
+
+
+def test_build_project_result_parse_options_keeps_non_dsa_field_prefix():
+    options = _build_project_result_parse_options(
+        step="Step-1",
+        frame=0,
+        field_prefix="SENS",
+    )
+
+    assert options["field_prefix"] == "SENS"
 
 
 def test_run_nastran_sol103_and_store_modal_results_uses_generated_bdf_for_op2_import(monkeypatch):

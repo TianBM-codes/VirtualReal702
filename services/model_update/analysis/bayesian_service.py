@@ -1545,9 +1545,12 @@ def _write_sol200_final_parameter_cloud_result(
         field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
         timeout: int = 60,
 ) -> dict:
+    from src.l3.core.state import registry
+    from src.l3.services.external_result_writer import ExternalResultWriter
+
     resolved_odb_id = str(odb_id or "").strip()
     if not resolved_odb_id:
-        raise ValidationError("odb_id is required for cloud export via external-field api")
+        raise ValidationError("odb_id is required for local cloud export")
 
     request_body, metadata = _build_sol200_final_parameter_cloud_request(
         batch_no=batch_no,
@@ -1559,28 +1562,52 @@ def _write_sol200_final_parameter_cloud_result(
         step_name=step_name,
         field_name=field_name,
     )
-    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
-    client = _sens.ODBClient(base_url=resolved_base_url, timeout=timeout)
-    try:
-        write_response = client.post_external_field(resolved_odb_id, request_body)
-    except ODBClientError as exc:
-        details = {
-            "odb_id": resolved_odb_id,
-            "base_url": resolved_base_url,
-            "status_code": exc.status_code,
-        }
-        if exc.status_code == 404:
-            raise NotFoundError("external-field api target odb was not found", details) from exc
-        raise ValidationError(
-            "external-field api request failed",
-            {**details, "detail": exc.detail},
-        ) from exc
+    registry_entry = registry.get(resolved_odb_id)
+    if registry_entry is None:
+        raise NotFoundError(
+            "cloud export target odb was not found in the local registry",
+            {"odb_id": resolved_odb_id},
+        )
+
+    writer = ExternalResultWriter(registry_entry.workspace, metadata["result_group"])
+    total_frames = 0
+    instances_written = 0
+    for inst_data in request_body.get("instances", []):
+        frames_raw = []
+        for frame in inst_data.get("frames", []):
+            frames_raw.append(
+                {
+                    "frame_idx": int(frame["frame_idx"]),
+                    "frame_value": float(frame.get("frame_value", 0.0)),
+                    "description": frame.get("description"),
+                    "data": [
+                        {"label": int(entry["label"]), "values": list(entry.get("values") or [])}
+                        for entry in frame.get("data", [])
+                    ],
+                }
+            )
+        written = writer.write_element(
+            instance=str(inst_data.get("instance") or ""),
+            step=metadata["step"],
+            field=metadata["field"],
+            components=list(request_body.get("components") or []),
+            frames=frames_raw,
+        )
+        total_frames = max(total_frames, int(written))
+        instances_written += 1
+    write_response = {
+        "field_name": metadata["field"],
+        "step_name": metadata["step"],
+        "instances_written": int(instances_written),
+        "frames_written": int(total_frames),
+        "source": "external_local",
+    }
 
     result = dict(metadata)
     result.update(
         {
             "odb_id": resolved_odb_id,
-            "base_url": resolved_base_url,
+            "base_url": None,
             "write_response": write_response,
             "query_hint": {
                 "endpoint": "/api/odb/{odb_id}/results/frame-scalars",
@@ -3138,6 +3165,40 @@ def _predict_updated_response_values(
     return np.asarray(predicted, dtype=np.float64).reshape(-1)
 
 
+def _normalize_absolute_modal_sensitivity_matrix(
+        *,
+        absolute_sensitivity: Sequence[Sequence[float]],
+        response_values: Sequence[float],
+        parameter_values: Sequence[float],
+        eps: float = 1e-12,
+) -> np.ndarray:
+    sensitivity = np.asarray(absolute_sensitivity, dtype=np.float64)
+    r_model = np.asarray(response_values, dtype=np.float64).reshape(-1)
+    p_current = np.asarray(parameter_values, dtype=np.float64).reshape(-1)
+    if sensitivity.ndim != 2:
+        raise ValidationError(
+            "absolute modal sensitivity matrix must be two-dimensional",
+            {"matrix_shape": list(sensitivity.shape)},
+        )
+    if sensitivity.shape != (len(r_model), len(p_current)):
+        raise ValidationError(
+            "absolute modal sensitivity matrix shape does not match modal response and parameter sizes",
+            {
+                "matrix_shape": list(sensitivity.shape),
+                "response_count": len(r_model),
+                "parameter_count": len(p_current),
+            },
+        )
+
+    safe_response = np.where(
+        np.abs(r_model) > float(eps),
+        r_model,
+        np.where(r_model >= 0.0, float(eps), -float(eps)),
+    )
+    normalized = sensitivity * p_current.reshape(1, -1) / safe_response.reshape(-1, 1)
+    return np.asarray(normalized, dtype=np.float64)
+
+
 def _update_bdf_parameter_values(
         *,
         input_bdf: str,
@@ -4101,6 +4162,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
     from services.model_update.analysis.nastran_sol200_service import run_sol200_and_store_workflow
     from services.model_update.analysis.project_path_service import resolve_project_workspace
     from services.model_update.importers.op2_service import _build_op2_parameter_columns_with_mappings
+    from services.model_update.solver_prep.nastran_sol103 import extract_sol103_settings_from_bdf
 
     resolved_batch_no = _normalize_batch_no(batch_no)
     resolved_sensitivity_batch_no = _normalize_batch_no(sensitivity_batch_no or batch_no)
@@ -4144,22 +4206,35 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
 
     source = dict(stored_payload.get("source") or {})
     metadata_source_bdf = None
+    metadata_localized_bdf = None
     metadata_path = _normalize_optional_path(source.get("metadata_path"))
     if metadata_path and os.path.exists(metadata_path):
         try:
             metadata_json = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
-            metadata_source_bdf = (
-                metadata_json.get("localized_input_bdf")
-                or metadata_json.get("source_input_bdf")
-            )
+            metadata_localized_bdf = metadata_json.get("localized_input_bdf")
+            metadata_source_bdf = metadata_json.get("source_input_bdf")
         except Exception:
+            metadata_localized_bdf = None
             metadata_source_bdf = None
-    source_bdf_path = (
+    # modal_reference_bdf_path:
+    # keeps the caller's original modal-control intent (especially EIGRL),
+    # but is not used as the writable model for parameter updates.
+    modal_reference_bdf_path = (
         _normalize_optional_path(input_bdf)
         or _normalize_optional_path(metadata_source_bdf)
+        or _normalize_optional_path(metadata_localized_bdf)
         or _normalize_optional_path(source.get("bdf_path"))
     )
-    if not source_bdf_path:
+    # update_source_bdf_path:
+    # the actual writable/updateable model used by Bayesian iterations.
+    # For all_elements_e this should prefer the localized BDF produced during
+    # SOL200 sensitivity preparation so material/property IDs remain consistent.
+    update_source_bdf_path = (
+        _normalize_optional_path(metadata_localized_bdf)
+        or _normalize_optional_path(source.get("bdf_path"))
+        or _normalize_optional_path(input_bdf)
+    )
+    if not update_source_bdf_path:
         raise ValidationError(
             "SOL200 Bayesian update requires an input_bdf or a stored sensitivity source bdf_path",
             {"project_id": int(project_id), "batch_no": resolved_sensitivity_batch_no},
@@ -4167,7 +4242,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
 
     root_dir: Path
     cleanup_root_dir: Optional[Path] = None
-    input_base_stem = Path(source_bdf_path).stem
+    input_base_stem = Path(update_source_bdf_path).stem
     if save_results:
         root_dir = _solver._abs_dir(output_dir, Path(tempfile.gettempdir()) / f"{input_base_stem}_sol200_bayesian")
     else:
@@ -4180,6 +4255,11 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
     settings_payload.setdefault("result.target", "F06")
     settings_payload.setdefault("post", -1)
     sol103_settings = dict(settings or {})
+    if modal_reference_bdf_path:
+        # Reuse EIGRL from the caller-provided/reference BDF unless the API
+        # explicitly overrides dynamic.* settings.
+        for key, value in extract_sol103_settings_from_bdf(str(modal_reference_bdf_path)).items():
+            sol103_settings.setdefault(key, value)
     sol103_settings.setdefault("result.target", "OP2")
     sol103_settings.setdefault("post", -1)
 
@@ -4201,12 +4281,8 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         )
         initial_parameter_values = current_parameter_values.copy()
         modal_matrix = modal_payload.get("matrix")
-        if modal_matrix is None:
-            normalized_matrix = np.asarray([], dtype=np.float64)
-        else:
-            normalized_matrix = np.asarray(modal_matrix, dtype=np.float64)
         initial_modal_run = _run_sol103_modal_response_values(
-            input_bdf=str(source_bdf_path),
+            input_bdf=str(update_source_bdf_path),
             response_rows=response_rows,
             output_bdf=str(root_dir / f"{input_base_stem}_initial_sol103.bdf"),
             settings=sol103_settings,
@@ -4217,6 +4293,14 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         current_response_values = np.asarray(initial_modal_run["response_values"], dtype=np.float64)
         initial_response_values = current_response_values.copy()
         target_response_values = np.asarray(modal_payload["target_values"], dtype=np.float64)
+        if modal_matrix is None:
+            normalized_matrix = np.asarray([], dtype=np.float64)
+        else:
+            normalized_matrix = _normalize_absolute_modal_sensitivity_matrix(
+                absolute_sensitivity=modal_matrix,
+                response_values=current_response_values,
+                parameter_values=current_parameter_values,
+            )
 
         p_scatter = _resolve_scatter_vector(
             parameter_scatter,
@@ -4249,7 +4333,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             fallback=float("inf"),
         )
 
-        current_bdf_path = str(source_bdf_path)
+        current_bdf_path = str(update_source_bdf_path)
         iteration_results = []
         stopped_early = False
         final_sensitivity_payload = stored_payload
@@ -4325,10 +4409,15 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             if rerun_matrix is None:
                 normalized_matrix = np.asarray([], dtype=np.float64)
             else:
-                normalized_matrix = _select_modal_frequency_matrix_rows(
+                absolute_matrix = _select_modal_frequency_matrix_rows(
                     stored_response_rows=rerun_stored_payload.get("response_rows") or [],
                     matrix=rerun_matrix,
                     response_rows=response_rows,
+                )
+                normalized_matrix = _normalize_absolute_modal_sensitivity_matrix(
+                    absolute_sensitivity=absolute_matrix,
+                    response_values=updated_response_values,
+                    parameter_values=np.asarray(update_payload["p_new"], dtype=np.float64),
                 )
             rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
             workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
@@ -4462,7 +4551,8 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             "batch_no": str(resolved_batch_no),
             "sensitivity_batch_no": str(resolved_sensitivity_batch_no),
             "cleanup_result": cleanup_result,
-            "input_bdf": str(source_bdf_path),
+            "input_bdf": str(update_source_bdf_path),
+            "modal_reference_bdf": str(modal_reference_bdf_path) if modal_reference_bdf_path else None,
             "output_dir": str(root_dir) if save_results else None,
             "save_results": bool(save_results),
             "iterations": len(iteration_results),

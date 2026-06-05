@@ -19,6 +19,7 @@ from .solver_service import (
     run_nastran_sol200_job,
 )
 from .console_log_service import safe_write_console_event
+from .project_status_service import update_work_condition_project_status
 
 
 # This module is the dedicated orchestration layer for the phase-1 Nastran
@@ -1297,6 +1298,10 @@ def run_sol200_and_store_workflow(
             parameter_names=parameter_names,
             response_names=response_names,
         )
+    update_work_condition_project_status(
+        int(project_id),
+        sensitivity_status=1,
+    )
     return {
         "workflow": "nastran_sol200_run_and_store",
         "project_id": int(project_id),
