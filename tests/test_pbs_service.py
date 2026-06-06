@@ -388,6 +388,11 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
     monkeypatch.setattr(pbs_service, "PBSClient", _FakeClient)
     monkeypatch.setattr(
         pbs_service,
+        "update_work_condition_project_status",
+        lambda project_id, **fields: captured.setdefault("status_updates", []).append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        pbs_service,
         "_submit_local_project_result_group_and_wait",
         lambda **kwargs: captured.update({"local_parse_kwargs": kwargs}) or {
             "result_group": kwargs["result_group"] or kwargs["default_result_group"],
@@ -411,3 +416,109 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
     assert captured["local_parse_kwargs"]["source_path"] == str(odb_file.resolve())
     assert captured["local_parse_kwargs"]["parse_options"]["steps"] == ["Step-1"]
     assert captured["local_parse_kwargs"]["parse_options"]["frames"] == "all"
+    assert captured["status_updates"][-1] == (32, {"simulation_result_status": 1})
+
+
+def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_abaqus_failure(monkeypatch, tmp_path):
+    input_file = tmp_path / "model.inp"
+    input_file.write_text("*Heading\n", encoding="utf-8")
+    odb_file = tmp_path / "job_a.odb"
+    odb_file.write_text("odb", encoding="utf-8")
+
+    captured = {}
+
+    monkeypatch.setattr(
+        pbs_service,
+        "_load_project_pbs_settings",
+        lambda project_id: {
+            "env": "prod",
+            "ApplicationId": "Abaqus",
+            "ApplicationName": "Abaqus",
+            "VERSION": "2022",
+            "CORES": 48,
+            "HOSTS": 1,
+            "PLATFORM": "queue-a",
+            "PRECISION": "off",
+        },
+    )
+    monkeypatch.setattr(
+        pbs_service,
+        "load_pbs_environment_config",
+        lambda env: pbs_service.PBSEnvironmentConfig(
+            name=str(env),
+            base_url="https://pbs.example.com",
+            server_name="a4mgt1",
+            stage_path_template="/stage/${USER}",
+            username="user",
+            password="pass",
+            verify_ssl=False,
+            api_paths={
+                "login": "/api/login",
+                "expand_vars": "/api/expandvars",
+                "create_dir": "/api/dir/create",
+                "upload_file": "/api/files/upload",
+                "file_exists": "/api/files/exists",
+                "submit_job": "/api/jobs",
+                "job_status": "/api/jobs/{job_id}",
+                "list_files": "/api/files/list",
+                "download_file": "/api/files/download",
+            },
+            applications={
+                "Abaqus": {
+                    "application_id": "Abaqus",
+                    "application_name": "Abaqus",
+                    "version": "2022",
+                    "platform": "queue-a",
+                    "cores": 8,
+                    "hosts": 1,
+                    "precision": "off",
+                    "primary_file_exts": [".inp"],
+                    "result_exts": [".odb"],
+                }
+            },
+        ),
+    )
+
+    class _FakeClient:
+        def __init__(self, config, *, timeout):
+            pass
+
+        def get_application_config(self, application):
+            return {
+                "application_id": "Abaqus",
+                "application_name": "Abaqus",
+                "version": "2022",
+                "platform": "queue-a",
+                "primary_file_exts": [".inp"],
+                "result_exts": [".odb"],
+            }
+
+        def run_job(self, **kwargs):
+            return {
+                "job_id": "pbs-001",
+                "resolved_job_state": "C",
+                "downloaded_files": [str(odb_file)],
+            }
+
+    monkeypatch.setattr(pbs_service, "PBSClient", _FakeClient)
+    monkeypatch.setattr(
+        pbs_service,
+        "update_work_condition_project_status",
+        lambda project_id, **fields: captured.setdefault("status_updates", []).append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        pbs_service,
+        "_submit_local_project_result_group_and_wait",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("parse failed")),
+    )
+
+    with pytest.raises(RuntimeError):
+        pbs_service.run_pbs_solver_job(
+            project_id=32,
+            application="Abaqus",
+            input_file=str(input_file),
+            job_name="job_a",
+            wait=True,
+        )
+
+    assert captured["status_updates"][-1] == (32, {"simulation_result_status": 2})

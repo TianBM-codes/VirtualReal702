@@ -18,6 +18,7 @@ from src.l3.infra.registry_repo import RegistryRepo
 from config import _load_service_config
 from .project_file_service import resolve_project_output_dir
 from .project_log_service import log_project_error, log_project_info, log_project_step
+from .project_status_service import update_work_condition_project_status
 from .solver_service import (
     _submit_generic_project_result_group_and_wait,
 )
@@ -138,6 +139,15 @@ def _normalize_result_group_name(value: str) -> str:
     if not text:
         raise ValidationError("result_group name cannot be empty", {"value": value})
     return text[:96]
+
+
+def _update_simulation_result_status(project_id: Optional[int], status: int) -> None:
+    if project_id is None:
+        return
+    update_work_condition_project_status(
+        int(project_id),
+        simulation_result_status=int(status),
+    )
 
 
 def _submit_local_project_result_group_and_wait(
@@ -959,6 +969,7 @@ def run_pbs_solver_job(
         timeout_sec: int = 60,
         submit_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    resolved_application = str(application or "").strip()
     try:
         if project_id is not None:
             log_project_step(
@@ -997,7 +1008,6 @@ def run_pbs_solver_job(
         project_pbs_settings = _ensure_project_pbs_settings(project_id, _load_project_pbs_settings(project_id))
         resolved_env = _resolve_project_pbs_env(env, project_pbs_settings)
         config = load_pbs_environment_config(resolved_env)
-        resolved_application = str(application or "").strip()
         config = _apply_project_pbs_settings(
             config,
             application=resolved_application,
@@ -1092,6 +1102,7 @@ def run_pbs_solver_job(
                         parse_options=parse_options,
                         default_result_group="default_result",
                     )
+                    _update_simulation_result_status(project_id, 1)
                     result["upload"] = upload
                     result["uploaded_result_file"] = odb_path
             elif resolved_application == "Nastran":
@@ -1131,6 +1142,11 @@ def run_pbs_solver_job(
                 )
         return result
     except Exception as exc:
+        if resolved_application == "Abaqus":
+            try:
+                _update_simulation_result_status(project_id, 2)
+            except Exception:
+                pass
         if project_id is not None:
             log_project_error(
                 int(project_id),
