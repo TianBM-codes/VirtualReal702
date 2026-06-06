@@ -12,7 +12,7 @@ import requests
 
 from db import get_connection
 from src.l3.core.config import settings
-from src.l3.core.errors import NotFoundError, ValidationError
+from src.l3.core.errors import ConflictError, NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from config import _load_service_config
@@ -20,7 +20,6 @@ from .project_file_service import resolve_project_output_dir
 from .project_log_service import log_project_error, log_project_info, log_project_step
 from .solver_service import (
     _submit_generic_project_result_group_and_wait,
-    _submit_project_result_group_and_wait,
 )
 
 DEFAULT_PBS_APPLICATIONS = {
@@ -130,6 +129,124 @@ def _resolve_project_input_file(project_id: int, path: str, field_name: str) -> 
     if not resolved.exists() or not resolved.is_file():
         raise NotFoundError(field_name, {field_name: str(resolved), "project_id": int(project_id)})
     return resolved
+
+
+def _normalize_result_group_name(value: str) -> str:
+    text = str(value or "").strip()
+    text = "".join(ch if ch.isalnum() or ch in "_.-" else "_" for ch in text)
+    text = text.strip("._-")
+    if not text:
+        raise ValidationError("result_group name cannot be empty", {"value": value})
+    return text[:96]
+
+
+def _submit_local_project_result_group_and_wait(
+        *,
+        project_id: int,
+        source_path: str,
+        job_name: str,
+        result_group: Optional[str],
+        display_name: Optional[str],
+        parse_options: Optional[dict],
+        default_result_group: Optional[str] = None,
+) -> dict:
+    resolved_source_path = os.path.abspath(str(source_path))
+    if not os.path.exists(resolved_source_path):
+        raise NotFoundError("result file not found", {"source_path": resolved_source_path})
+
+    project_key = str(int(project_id))
+    repo = RegistryRepo(settings.registry_db_path)
+    project_row = repo.get_project(project_key)
+    if project_row is None:
+        raise NotFoundError("project", {"project_id": int(project_id)})
+
+    geom_status = str(project_row["geom_status"] or "").strip().lower()
+    if geom_status != "ready":
+        raise ValidationError(
+            "project geometry must be ready before importing a local result group",
+            {
+                "project_id": int(project_id),
+                "geom_status": geom_status,
+            },
+        )
+
+    resolved_result_group = _normalize_result_group_name(
+        result_group or default_result_group or f"solver_result_{job_name}_{int(time.time())}"
+    )
+    resolved_display_name = str(
+        display_name or Path(resolved_source_path).stem or resolved_result_group
+    ).strip() or resolved_result_group
+    resolved_workspace = str(_project_workspace(int(project_id)))
+
+    parse_options_payload = dict(parse_options or {})
+    parse_options_payload["display_name"] = resolved_display_name
+    parse_options_json = json.dumps(parse_options_payload) if parse_options_payload else None
+    source_file = os.path.basename(resolved_source_path)
+
+    existing = repo.get_result_group(project_key, resolved_result_group)
+    if existing is not None:
+        if str(existing["status"] or "").strip().lower() == "running":
+            raise ConflictError(
+                f"result_group '{resolved_result_group}' is currently being processed",
+                {
+                    "project_id": int(project_id),
+                    "result_group": resolved_result_group,
+                },
+            )
+        repo.reset_result_group_for_resubmit(
+            project_key,
+            resolved_result_group,
+            resolved_source_path,
+            source_file,
+            resolved_display_name,
+            parse_options_json,
+        )
+    else:
+        repo.create_result_group(
+            project_id=project_key,
+            result_group=resolved_result_group,
+            display_name=resolved_display_name,
+            source_path=resolved_source_path,
+            source_file=source_file,
+            parse_options=parse_options_json,
+        )
+
+    from src import job_runner as local_job_runner
+
+    local_job_runner._cleanup_result_group(resolved_workspace, resolved_result_group)
+    local_job_runner._update_result_group_status(project_key, resolved_result_group, "running")
+    ok = local_job_runner._run_result_group(
+        project_key,
+        resolved_result_group,
+        resolved_source_path,
+        parse_options_json,
+        resolved_workspace,
+    )
+    group_row = repo.get_result_group(project_key, resolved_result_group)
+    group_payload = dict(group_row) if group_row is not None else None
+    status = str((group_payload or {}).get("status") or ("ready" if ok else "error"))
+    if not ok or status != "ready":
+        raise ValidationError(
+            "local project result-group parsing failed",
+            {
+                "project_id": int(project_id),
+                "result_group": resolved_result_group,
+                "status": status,
+                "source_path": resolved_source_path,
+                "project_result_group": group_payload,
+            },
+        )
+
+    return {
+        "result_group": resolved_result_group,
+        "display_name": resolved_display_name,
+        "status": status,
+        "project_id": int(project_id),
+        "source_path": resolved_source_path,
+        "parse_options": parse_options_payload,
+        "workspace": resolved_workspace,
+        "project_result_group": group_payload,
+    }
 
 
 @dataclass
@@ -956,19 +1073,24 @@ def run_pbs_solver_job(
             if resolved_application == "Abaqus":
                 odb_path = _pick_downloaded_result_file(downloaded_files, (".odb",))
                 if odb_path:
-                    upload = _submit_project_result_group_and_wait(
+                    parse_options = {
+                        "consistency_check": "count-only",
+                        "invariants": "none",
+                    }
+                    if step:
+                        parse_options["steps"] = [str(step)]
+                    if frame is not None:
+                        parse_options["frames"] = [int(frame)]
+                    else:
+                        parse_options["frames"] = "all"
+                    upload = _submit_local_project_result_group_and_wait(
                         project_id=int(project_id),
-                        odb_path=odb_path,
+                        source_path=odb_path,
                         job_name=resolved_job_name,
                         result_group=result_group,
                         display_name=display_name,
-                        base_url=base_url,
-                        step=step,
-                        frame=frame,
-                        field_prefix=field_prefix,
-                        timeout=upload_timeout,
-                        wait_timeout_sec=wait_timeout_sec,
-                        poll_interval_sec=poll_interval_sec,
+                        parse_options=parse_options,
+                        default_result_group="default_result",
                     )
                     result["upload"] = upload
                     result["uploaded_result_file"] = odb_path
