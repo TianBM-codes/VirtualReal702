@@ -1,8 +1,8 @@
-"""Facade for INP/FEM workflows.
+"""INP/FEM workflow coordination layer.
 
-This module keeps the historical import path stable while delegating
-catalog/parameter, matching, response, result, and correlation
-responsibilities into smaller modules.
+This module keeps the historical `inp_service` import path stable while using
+plain, explicit imports to expose the split catalog / matching / result /
+correlation services.
 """
 
 from . import fem_catalog_service as _catalog
@@ -10,17 +10,35 @@ from . import fem_matching_service as _matching
 from . import fem_response_service as _response
 from . import fem_result_service as _result
 from . import fem_correlation_service as _correlation
-from .fem_catalog_service import *
-from .fem_matching_service import *
-from .fem_response_service import *
-from .fem_result_service import *
-from .fem_correlation_service import *
 
-_ORIGINAL_RESULT_REGISTRY_REPO = _result._registry_repo
+# Shared dependencies kept here for backward compatibility with existing code
+# and tests that import or monkeypatch them from inp_service directly.
+os = _catalog.os
+np = _catalog.np
+json = _catalog.json
+parse_inp = _catalog.parse_inp
+get_connection = _catalog.get_connection
+ensure_tables_exist = _catalog.ensure_tables_exist
+settings = _catalog.settings
+ValidationError = _catalog.ValidationError
+NotFoundError = _catalog.NotFoundError
+RegistryRepo = _catalog.RegistryRepo
+safe_write_console_event = _catalog.safe_write_console_event
+log_project_error = _catalog.log_project_error
+log_project_info = _catalog.log_project_info
+log_project_step = _catalog.log_project_step
+get_test_data_mode = _catalog.get_test_data_mode
+get_node_match_parameter_context = _catalog.get_node_match_parameter_context
+save_fem_model_dimensions = _catalog.save_fem_model_dimensions
+resolve_project_cal_subdir = _catalog.resolve_project_cal_subdir
+resolve_project_source_inp_path = _catalog.resolve_project_source_inp_path
+update_work_condition_project_status = _catalog.update_work_condition_project_status
 
-# Compatibility aliases for historical direct imports from inp_service.
-# `from module import *` does not re-export underscore-prefixed names, but
-# several callers still import these helpers/constants from inp_service.
+# Historical private helpers/constants that other modules still import from
+# inp_service. Keep them as explicit aliases instead of relying on `import *`.
+_sens = _catalog._sens
+_parse_id_list = _catalog._parse_id_list
+_parse_optional_json_object = _catalog._parse_optional_json_object
 _SUPPORTED_CORRECTION_QUANTITIES = _catalog._SUPPORTED_CORRECTION_QUANTITIES
 _clear_import_inp_catalog_tables = _catalog._clear_import_inp_catalog_tables
 _extract_legacy_material_rows = _catalog._extract_legacy_material_rows
@@ -36,308 +54,72 @@ _require_modal_project = _catalog._require_modal_project
 _require_non_modal_project = _catalog._require_non_modal_project
 _required_operation_error = _catalog._required_operation_error
 _DEFAULT_RESPONSE_SCATTER = _catalog._DEFAULT_RESPONSE_SCATTER
+_get_latest_octree_meta = _matching._get_latest_octree_meta
+_ensure_octree_cache_file = _matching._ensure_octree_cache_file
+_ensure_node_matches = _correlation._ensure_node_matches
+_ensure_static_node_matches = _correlation._ensure_static_node_matches
 _resolve_modal_mac_mode = _correlation._resolve_modal_mac_mode
 _load_test_modal_frequencies = _correlation._load_test_modal_frequencies
 _compute_dac_dsf = _correlation._compute_dac_dsf
-
-
-def _sync_catalog_dependencies():
-    _catalog.ensure_tables_exist = ensure_tables_exist
-    _catalog.get_connection = get_connection
-    _catalog.parse_inp = parse_inp
-    _catalog.safe_write_console_event = safe_write_console_event
-    _catalog.log_project_error = log_project_error
-    _catalog.log_project_info = log_project_info
-    _catalog.log_project_step = log_project_step
-    _catalog.get_test_data_mode = get_test_data_mode
-    _catalog.get_node_match_parameter_context = get_node_match_parameter_context
-    _catalog.save_fem_model_dimensions = save_fem_model_dimensions
-    _catalog.resolve_project_cal_subdir = resolve_project_cal_subdir
-    _catalog.resolve_project_source_inp_path = resolve_project_source_inp_path
-    _catalog.update_work_condition_project_status = update_work_condition_project_status
-    _catalog.settings = settings
-    _catalog._sens = _sens
-    _catalog._parse_id_list = _parse_id_list
-    _catalog._parse_optional_json_object = _parse_optional_json_object
-    return _catalog
-
-
-def _sync_matching_dependencies():
-    _matching.ensure_tables_exist = ensure_tables_exist
-    _matching.get_connection = get_connection
-    _matching.parse_inp = parse_inp
-    _matching.get_test_data_mode = get_test_data_mode
-    _matching.resolve_project_cal_subdir = resolve_project_cal_subdir
-    _matching.save_fem_model_dimensions = save_fem_model_dimensions
-    _matching._save_octree_cache = _save_octree_cache
-    _matching._load_octree_cache = _load_octree_cache
-    _matching._cache_part_lookup = _cache_part_lookup
-    _matching._required_operation_error = _required_operation_error
-    return _matching
-
-
-def _sync_response_dependencies():
-    _sync_matching_dependencies()
-    _response.ensure_tables_exist = ensure_tables_exist
-    _response.get_connection = get_connection
-    _response.safe_write_console_event = safe_write_console_event
-    return _response
-
-
-def _sync_result_dependencies():
-    _sync_response_dependencies()
-    _result.ensure_tables_exist = ensure_tables_exist
-    _result.get_connection = get_connection
-    _result.log_project_step = log_project_step
-    _result.log_project_info = log_project_info
-    _result.log_project_error = log_project_error
-    facade_registry_repo = globals().get("_registry_repo")
-    if facade_registry_repo is _registry_repo:
-        _result._registry_repo = _ORIGINAL_RESULT_REGISTRY_REPO
-    else:
-        _result._registry_repo = facade_registry_repo
-    _result._sens = _sens
-    return _result
-
-
-def _sync_correlation_dependencies():
-    _sync_result_dependencies()
-    _correlation.ensure_tables_exist = ensure_tables_exist
-    _correlation.get_connection = get_connection
-    _correlation.get_test_data_mode = get_test_data_mode
-    _correlation.safe_write_console_event = safe_write_console_event
-    _correlation.log_project_step = log_project_step
-    _correlation.log_project_info = log_project_info
-    _correlation.log_project_error = log_project_error
-    _correlation._require_modal_project = _require_modal_project
-    _correlation._require_non_modal_project = _require_non_modal_project
-    _correlation._ensure_node_matches = _ensure_node_matches
-    _correlation._ensure_static_node_matches = _ensure_static_node_matches
-    _correlation._resolve_modal_mac_mode = _resolve_modal_mac_mode
-    _correlation._load_test_modal_frequencies = _load_test_modal_frequencies
-    _correlation._compute_dac_dsf = _compute_dac_dsf
-    return _correlation
-
-
-def import_inp_catalog(*args, **kwargs):
-    return _sync_catalog_dependencies().import_inp_catalog(*args, **kwargs)
-
-
-def get_inp_catalog(*args, **kwargs):
-    return _sync_catalog_dependencies().get_inp_catalog(*args, **kwargs)
-
-
-def get_inp_parameter_options(*args, **kwargs):
-    return _sync_catalog_dependencies().get_inp_parameter_options(*args, **kwargs)
-
-
-def create_optimization_parameter(*args, **kwargs):
-    return _sync_catalog_dependencies().create_optimization_parameter(*args, **kwargs)
-
-
-def create_design_response_catalog_entry(*args, **kwargs):
-    return _sync_catalog_dependencies().create_design_response_catalog_entry(*args, **kwargs)
-
-
-def list_design_response_catalog_entries(*args, **kwargs):
-    return _sync_catalog_dependencies().list_design_response_catalog_entries(*args, **kwargs)
-
-
-def clear_design_response_catalog_entries(*args, **kwargs):
-    return _sync_catalog_dependencies().clear_design_response_catalog_entries(*args, **kwargs)
-
-
-def list_optimization_parameters(*args, **kwargs):
-    return _sync_catalog_dependencies().list_optimization_parameters(*args, **kwargs)
-
-
-def update_optimization_parameter_usage(*args, **kwargs):
-    return _sync_catalog_dependencies().update_optimization_parameter_usage(*args, **kwargs)
-
-
-def select_optimization_parameters_for_update(*args, **kwargs):
-    return _sync_catalog_dependencies().select_optimization_parameters_for_update(*args, **kwargs)
-
-
-def remove_optimization_parameters_from_update(*args, **kwargs):
-    return _sync_catalog_dependencies().remove_optimization_parameters_from_update(*args, **kwargs)
-
-
-def _get_latest_octree_meta(*args, **kwargs):
-    return _sync_matching_dependencies()._get_latest_octree_meta(*args, **kwargs)
-
-
-def _ensure_octree_cache_file(*args, **kwargs):
-    return _sync_matching_dependencies()._ensure_octree_cache_file(*args, **kwargs)
-
-
-def match_test_nodes(*args, **kwargs):
-    return _sync_matching_dependencies().match_test_nodes(*args, **kwargs)
-
-
-def get_pair_node_point_result(*args, **kwargs):
-    return _sync_matching_dependencies().get_pair_node_point_result(*args, **kwargs)
-
-
-def save_transform_operation(*args, **kwargs):
-    return _sync_matching_dependencies().save_transform_operation(*args, **kwargs)
-
-
-def get_transform_auto_info(*args, **kwargs):
-    return _sync_matching_dependencies().get_transform_auto_info(*args, **kwargs)
-
-
-def match_test_dofs(*args, **kwargs):
-    return _sync_matching_dependencies().match_test_dofs(*args, **kwargs)
-
-
-def get_dof_matches(*args, **kwargs):
-    return _sync_matching_dependencies().get_dof_matches(*args, **kwargs)
-
-
-def _ensure_node_matches(*args, **kwargs):
-    return _sync_matching_dependencies()._ensure_node_matches(*args, **kwargs)
-
-
-def _ensure_static_node_matches(*args, **kwargs):
-    return _sync_matching_dependencies()._ensure_static_node_matches(*args, **kwargs)
-
-
-def build_fe_response_catalog(*args, **kwargs):
-    return _sync_response_dependencies().build_fe_response_catalog(*args, **kwargs)
-
-
-def get_fe_response_catalog(*args, **kwargs):
-    return _sync_response_dependencies().get_fe_response_catalog(*args, **kwargs)
-
-
-def get_modal_frequency_response_options(*args, **kwargs):
-    return _sync_response_dependencies().get_modal_frequency_response_options(*args, **kwargs)
-
-
-def create_modal_frequency_response_catalog_from_match(*args, **kwargs):
-    return _sync_response_dependencies().create_modal_frequency_response_catalog_from_match(*args, **kwargs)
-
-
-def create_modal_match_response_catalog_entries(*args, **kwargs):
-    return _sync_response_dependencies().create_modal_match_response_catalog_entries(*args, **kwargs)
-
-
-def _load_modal_payload(*args, **kwargs):
-    return _sync_result_dependencies()._load_modal_payload(*args, **kwargs)
-
-
-def _resolve_modal_node_identity(*args, **kwargs):
-    return _sync_result_dependencies()._resolve_modal_node_identity(*args, **kwargs)
-
-
-def import_fe_modal_results(*args, **kwargs):
-    return _sync_result_dependencies().import_fe_modal_results(*args, **kwargs)
-
-
-def get_fe_modal_results(*args, **kwargs):
-    return _sync_result_dependencies().get_fe_modal_results(*args, **kwargs)
-
-
-def _manifest_result_group_clause(*args, **kwargs):
-    return _sync_result_dependencies()._manifest_result_group_clause(*args, **kwargs)
-
-
-def _registry_repo(*args, **kwargs):
-    return _sync_result_dependencies()._registry_repo(*args, **kwargs)
-
-
-def _resolve_project_result_workspace(*args, **kwargs):
-    return _sync_result_dependencies()._resolve_project_result_workspace(*args, **kwargs)
-
-
-def _collect_project_result_static_rows(*args, **kwargs):
-    return _sync_result_dependencies()._collect_project_result_static_rows(*args, **kwargs)
-
-
-def _load_static_result_rows_from_txt(*args, **kwargs):
-    return _sync_result_dependencies()._load_static_result_rows_from_txt(*args, **kwargs)
-
-
-def _load_static_result_payload(*args, **kwargs):
-    return _sync_result_dependencies()._load_static_result_payload(*args, **kwargs)
-
-
-def _persist_fe_static_results(*args, **kwargs):
-    return _sync_result_dependencies()._persist_fe_static_results(*args, **kwargs)
-
-
-def import_fe_static_results(*args, **kwargs):
-    return _sync_result_dependencies().import_fe_static_results(*args, **kwargs)
-
-
-def import_fe_static_results_from_project_result(*args, **kwargs):
-    return _sync_result_dependencies().import_fe_static_results_from_project_result(*args, **kwargs)
-
-
-def get_fe_static_results(*args, **kwargs):
-    return _sync_result_dependencies().get_fe_static_results(*args, **kwargs)
-
-
-def _build_static_alignment(*args, **kwargs):
-    return _sync_correlation_dependencies()._build_static_alignment(*args, **kwargs)
-
-
-def _build_static_analysis_error_rows(*args, **kwargs):
-    return _sync_correlation_dependencies()._build_static_analysis_error_rows(*args, **kwargs)
-
-
-def store_updated_static_analysis_error(*args, **kwargs):
-    return _sync_correlation_dependencies().store_updated_static_analysis_error(*args, **kwargs)
-
-
-def compute_static_correlation(*args, **kwargs):
-    return _sync_correlation_dependencies().compute_static_correlation(*args, **kwargs)
-
-
-def evaluate_static_correlation(*args, **kwargs):
-    return _sync_correlation_dependencies().evaluate_static_correlation(*args, **kwargs)
-
-
-def _load_modal_correlation_rows(*args, **kwargs):
-    return _sync_correlation_dependencies()._load_modal_correlation_rows(*args, **kwargs)
-
-
-def _ensure_modal_correlation_rows(*args, **kwargs):
-    return _sync_correlation_dependencies()._ensure_modal_correlation_rows(*args, **kwargs)
-
-
-def compute_modal_correlation(*args, **kwargs):
-    return _sync_correlation_dependencies().compute_modal_correlation(*args, **kwargs)
-
-
-def get_modal_correlation(*args, **kwargs):
-    return _sync_correlation_dependencies().get_modal_correlation(*args, **kwargs)
-
-
-def get_modal_correlation_matrix_payload(*args, **kwargs):
-    return _sync_correlation_dependencies().get_modal_correlation_matrix_payload(*args, **kwargs)
-
-
-def get_modal_correlation_table_payload(*args, **kwargs):
-    return _sync_correlation_dependencies().get_modal_correlation_table_payload(*args, **kwargs)
-
-
-def get_modal_match_frequency_scatter_payload(*args, **kwargs):
-    return _sync_correlation_dependencies().get_modal_match_frequency_scatter_payload(*args, **kwargs)
-
-
-def get_modal_frequency_consistency_payload(*args, **kwargs):
-    return _sync_correlation_dependencies().get_modal_frequency_consistency_payload(*args, **kwargs)
-
-
-def get_modal_correlation_all_scatter_payload(*args, **kwargs):
-    return _sync_correlation_dependencies().get_modal_correlation_all_scatter_payload(*args, **kwargs)
-
-
-def preview_modal_match(*args, **kwargs):
-    return _sync_correlation_dependencies().preview_modal_match(*args, **kwargs)
-
-
-def match_modal_modes(*args, **kwargs):
-    return _sync_correlation_dependencies().match_modal_modes(*args, **kwargs)
+_load_modal_payload = _result._load_modal_payload
+_resolve_modal_node_identity = _result._resolve_modal_node_identity
+_manifest_result_group_clause = _result._manifest_result_group_clause
+_registry_repo = _result._registry_repo
+_resolve_project_result_workspace = _result._resolve_project_result_workspace
+_collect_project_result_static_rows = _result._collect_project_result_static_rows
+_load_static_result_rows_from_txt = _result._load_static_result_rows_from_txt
+_load_static_result_payload = _result._load_static_result_payload
+_persist_fe_static_results = _result._persist_fe_static_results
+_build_static_alignment = _correlation._build_static_alignment
+_build_static_analysis_error_rows = _correlation._build_static_analysis_error_rows
+_load_modal_correlation_rows = _correlation._load_modal_correlation_rows
+_ensure_modal_correlation_rows = _correlation._ensure_modal_correlation_rows
+
+# Catalog / parameter workflows.
+import_inp_catalog = _catalog.import_inp_catalog
+get_inp_catalog = _catalog.get_inp_catalog
+get_inp_parameter_options = _catalog.get_inp_parameter_options
+create_optimization_parameter = _catalog.create_optimization_parameter
+create_design_response_catalog_entry = _catalog.create_design_response_catalog_entry
+list_design_response_catalog_entries = _catalog.list_design_response_catalog_entries
+clear_design_response_catalog_entries = _catalog.clear_design_response_catalog_entries
+
+# Matching workflows.
+match_test_nodes = _matching.match_test_nodes
+get_pair_node_point_result = _matching.get_pair_node_point_result
+save_transform_operation = _matching.save_transform_operation
+get_transform_auto_info = _matching.get_transform_auto_info
+match_test_dofs = _matching.match_test_dofs
+get_dof_matches = _matching.get_dof_matches
+
+# Response catalog workflows.
+build_fe_response_catalog = _response.build_fe_response_catalog
+get_fe_response_catalog = _response.get_fe_response_catalog
+list_optimization_parameters = _response.list_optimization_parameters
+update_optimization_parameter_usage = _response.update_optimization_parameter_usage
+select_optimization_parameters_for_update = _response.select_optimization_parameters_for_update
+remove_optimization_parameters_from_update = _response.remove_optimization_parameters_from_update
+get_modal_frequency_response_options = _response.get_modal_frequency_response_options
+create_modal_frequency_response_catalog_from_match = _response.create_modal_frequency_response_catalog_from_match
+create_modal_match_response_catalog_entries = _response.create_modal_match_response_catalog_entries
+
+# Result import workflows.
+import_fe_modal_results = _result.import_fe_modal_results
+get_fe_modal_results = _result.get_fe_modal_results
+import_fe_static_results = _result.import_fe_static_results
+import_fe_static_results_from_project_result = _result.import_fe_static_results_from_project_result
+get_fe_static_results = _result.get_fe_static_results
+
+# Correlation / evaluation workflows.
+store_updated_static_analysis_error = _correlation.store_updated_static_analysis_error
+compute_static_correlation = _correlation.compute_static_correlation
+evaluate_static_correlation = _correlation.evaluate_static_correlation
+compute_modal_correlation = _correlation.compute_modal_correlation
+get_modal_correlation = _correlation.get_modal_correlation
+get_modal_correlation_matrix_payload = _correlation.get_modal_correlation_matrix_payload
+get_modal_correlation_table_payload = _correlation.get_modal_correlation_table_payload
+get_modal_match_frequency_scatter_payload = _correlation.get_modal_match_frequency_scatter_payload
+get_modal_frequency_consistency_payload = _correlation.get_modal_frequency_consistency_payload
+get_modal_correlation_all_scatter_payload = _correlation.get_modal_correlation_all_scatter_payload
+preview_modal_match = _correlation.preview_modal_match
+match_modal_modes = _correlation.match_modal_modes

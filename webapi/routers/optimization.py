@@ -458,6 +458,8 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
             resolved_parameter_name = body.parameter_name
             if multi_set and resolved_parameter_name:
                 resolved_parameter_name = f"{resolved_parameter_name}@{set_name}"
+            else:
+                resolved_parameter_name = f"{body.quantity_code}@{set_name}"
             results.append(
                 create_optimization_parameter(
                     project_id=body.project_id,

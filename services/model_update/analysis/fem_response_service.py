@@ -1,6 +1,26 @@
 """FEM response catalog helpers."""
 
 from .fem_matching_service import *
+from .fem_catalog_service import (
+    _ALLOWED_MODAL_RESPONSE_TYPES,
+    _DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE,
+    _DEFAULT_PARAMETER_USAGE_SCOPE,
+    _DEFAULT_RESPONSE_SCATTER,
+    _json_dumps,
+    _normalize_modal_response_types,
+    _normalize_parameter_usage_scope,
+    _normalize_response_solver_scope,
+    _parse_json_list,
+    _safe_float,
+    _scope_contains,
+)
+from services.model_update.analysis.sensitivity_service import _parse_optional_json_object
+
+
+def _ensure_modal_correlation_rows_for_response(project_id: int):
+    from .fem_correlation_service import _ensure_modal_correlation_rows
+
+    return _ensure_modal_correlation_rows(project_id)
 
 def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=True, include_node_dofs=True):
     # Build a normalized response directory that mixes modal frequencies and
@@ -489,7 +509,7 @@ def get_modal_frequency_response_options(project_id: int, response_source: str) 
             },
         }
 
-    rows = _ensure_modal_correlation_rows(int(project_id))
+    rows = _ensure_modal_correlation_rows_for_response(int(project_id))
     candidates = sorted(
         [dict(row) for row in rows],
         key=lambda item: (

@@ -1,6 +1,50 @@
 """FEM node/DOF matching and octree cache helpers."""
 
 from .fem_catalog_service import *
+from .fem_catalog_service import (
+    _apply_transform,
+    _cache_part_lookup,
+    _collect_global_nodes,
+    _estimate_rigid_transform_icp,
+    _estimate_translation,
+    _is_modal_unv_project,
+    _json_dumps,
+    _json_loads,
+    _load_octree_cache,
+    _load_test_nodes_for_matching,
+    _normalize_matrix4,
+    _normalize_stored_path,
+    _octree_nearest,
+    _required_operation_error,
+    _rotation_from_matrix,
+    _rotation_to_matrix,
+    _save_octree_cache,
+)
+
+_STATIC_TEST_DATA_DISPLACEMENT_TYPES = {"21", "位移", "位移传感器", "displacement", "displacement_sensor"}
+
+
+def _normalize_static_test_sensor_type(value) -> str:
+    text = str(value or "").strip().lower()
+    if text.isdigit():
+        return text
+    return text.replace(" ", "_")
+
+
+def _is_displacement_static_test_sensor_type(value) -> bool:
+    return _normalize_static_test_sensor_type(value) in _STATIC_TEST_DATA_DISPLACEMENT_TYPES
+
+
+def _load_test_mode_vectors_for_matching(cursor, project_id: int):
+    from .fem_correlation_service import _load_test_mode_vectors
+
+    return _load_test_mode_vectors(cursor, project_id)
+
+
+def _ensure_node_matches_for_matching(project_id: int):
+    from .fem_correlation_service import _ensure_node_matches
+
+    return _ensure_node_matches(project_id)
 
 def _get_latest_octree_meta(cursor, project_id):
     cursor.execute("""
@@ -464,7 +508,7 @@ def _build_modal_unv_dof_amplitudes(cursor, project_id: int) -> Dict[Tuple[str, 
     # Use the maximum measured modal amplitude of each translational direction
     # as the DOF availability score. If one direction stays below the threshold
     # across all imported modes, that direction is treated as unusable.
-    modes = _load_test_mode_vectors(cursor, int(project_id))
+    modes = _load_test_mode_vectors_for_matching(cursor, int(project_id))
     amplitudes: Dict[Tuple[str, str], float] = {}
     for mode_map in modes.values():
         for point_id, vec in mode_map.items():
@@ -478,7 +522,7 @@ def _build_modal_unv_dof_amplitudes(cursor, project_id: int) -> Dict[Tuple[str, 
 
 def match_test_dofs(project_id, overwrite=True, min_match_score=None):
     ensure_tables_exist()
-    auto_created_node_match = _ensure_node_matches(int(project_id))
+    auto_created_node_match = _ensure_node_matches_for_matching(int(project_id))
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:

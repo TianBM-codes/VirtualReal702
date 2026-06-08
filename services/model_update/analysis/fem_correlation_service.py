@@ -1,6 +1,15 @@
 """FEM static/modal correlation helpers."""
 
 from .fem_result_service import *
+from .fem_catalog_service import (
+    _json_dumps,
+    _json_loads,
+    _required_operation_error,
+    _require_modal_project,
+    _require_non_modal_project,
+    _safe_float,
+)
+from .fem_result_service import _STATIC_TEST_DATA_DISPLACEMENT_TYPES
 
 def _normalize_static_test_sensor_type(value) -> str:
     text = str(value or "").strip().lower()

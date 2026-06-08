@@ -1,6 +1,8 @@
 """FEM modal/static result import helpers."""
 
 from .fem_response_service import *
+from .fem_catalog_service import _json_dumps, _safe_float
+from . import sensitivity_service as _sens
 
 def _load_modal_payload(file_path=None, modes=None) -> List[dict]:
     if file_path:
