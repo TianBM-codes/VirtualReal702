@@ -339,12 +339,6 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
     settings.setdefault("result.target", "F06")
     settings.setdefault("post", -1)
     parameter_preset = model_to_dict(body.parameter_preset) if body.parameter_preset else None
-    if not body.parameters and not parameter_preset:
-        parameter_preset = {
-            "preset": "all_elements_e",
-            "lower_scale": 0.8,
-            "upper_scale": 1.2,
-        }
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,

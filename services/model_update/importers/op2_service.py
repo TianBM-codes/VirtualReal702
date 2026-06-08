@@ -1063,7 +1063,11 @@ def _build_op2_parameter_columns_with_mappings(
                 element = model.elements.get(int(eid))
                 if element is None:
                     continue
-                if _element_material_id(element, model) == target_mid:
+                prop = getattr(element, "pid_ref", None)
+                if prop is None:
+                    pid = _element_property_id(element)
+                    prop = model.properties.get(pid) if pid is not None else None
+                if prop is not None and target_mid in _property_material_ids(prop):
                     targets.append(int(eid))
         else:
             raise ValidationError(
@@ -1237,6 +1241,23 @@ def _element_property_id(element: Any) -> Optional[int]:
         return int(pid) if pid is not None else None
 
 
+def _property_material_ids(prop: Any) -> List[int]:
+    material_ids: List[int] = []
+    for name in ("mid", "mid1", "mid2", "mid3", "mid4"):
+        value = getattr(prop, name, None)
+        if hasattr(value, "mid"):
+            value = value.mid
+        if value in (None, ""):
+            continue
+        try:
+            material_id = int(value)
+        except Exception:
+            continue
+        if material_id not in material_ids:
+            material_ids.append(material_id)
+    return material_ids
+
+
 def _element_material_id(element: Any, bdf_model: BDF) -> Optional[int]:
     try:
         prop = getattr(element, "pid_ref", None)
@@ -1245,11 +1266,9 @@ def _element_material_id(element: Any, bdf_model: BDF) -> Optional[int]:
             if pid is None:
                 return None
             prop = bdf_model.properties.get(pid)
-        mid = getattr(prop, "mid", None)
-        if hasattr(mid, "mid"):
-            return int(mid.mid)
-        if mid is not None:
-            return int(mid)
+        material_ids = _property_material_ids(prop)
+        if material_ids:
+            return int(material_ids[0])
     except Exception:
         return None
     return None
@@ -1307,7 +1326,10 @@ def export_sensitivity_to_vtu(
             if element is None:
                 continue
             pid = _element_property_id(element)
-            mid = _element_material_id(element, bdf_model)
+            prop = getattr(element, "pid_ref", None)
+            if prop is None and pid is not None:
+                prop = bdf_model.properties.get(pid)
+            mids = _property_material_ids(prop) if prop is not None else []
             candidates: List[float] = []
             for col_idx, param_name in enumerate(col_names):
                 meta = parameter_by_name.get(str(param_name))
@@ -1318,7 +1340,7 @@ def export_sensitivity_to_vtu(
                     candidates.append(float(matrix[row_index, col_idx]))
                 elif ptype == "H" and meta.get("property_id") is not None and pid == int(meta["property_id"]):
                     candidates.append(float(matrix[row_index, col_idx]))
-                elif ptype in {"E", "RHO"} and meta.get("material_id") is not None and mid == int(meta["material_id"]):
+                elif ptype in {"E", "RHO"} and meta.get("material_id") is not None and int(meta["material_id"]) in mids:
                     candidates.append(float(matrix[row_index, col_idx]))
             if candidates:
                 values[cell_idx] = float(max(candidates, key=lambda item: abs(item)))
