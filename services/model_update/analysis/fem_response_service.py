@@ -22,6 +22,12 @@ def _ensure_modal_correlation_rows_for_response(project_id: int):
 
     return _ensure_modal_correlation_rows(project_id)
 
+
+def _match_modal_modes_for_response(project_id: int, **kwargs):
+    from .fem_correlation_service import match_modal_modes
+
+    return match_modal_modes(project_id, **kwargs)
+
 def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=True, include_node_dofs=True):
     # Build a normalized response directory that mixes modal frequencies and
     # matched nodal DOFs into one table for optimization/correlation consumers.
@@ -604,6 +610,119 @@ def _insert_response_catalog_rows(cursor, project_id: int, rows: Sequence[dict])
         )
 
 
+def create_modal_frequency_response_catalog_from_fem(
+        project_id: int,
+        *,
+        mode_numbers: Optional[Sequence[int]] = None,
+        overwrite: bool = True,
+        solver_scope: Optional[Sequence[str]] = None,
+        scatter: Optional[float] = None,
+        response_name_prefix: str = "FREQ_MODE_",
+) -> dict:
+    ensure_tables_exist()
+    resolved_solver_scope = _normalize_response_solver_scope(
+        solver_scope,
+        default_values=_DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE,
+    )
+    resolved_scatter = _resolve_response_scatter_value(scatter)
+    resolved_prefix = str(response_name_prefix or "FREQ_MODE_").strip() or "FREQ_MODE_"
+    requested_mode_numbers = sorted({int(item) for item in list(mode_numbers or [])})
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT mode_no, frequency
+            FROM t_mt_py_fem_modal_result
+            WHERE pid = %s
+            GROUP BY mode_no, frequency
+            ORDER BY mode_no
+            """,
+            (int(project_id),),
+        )
+        source_rows = [dict(row) for row in (cursor.fetchall() or [])]
+        if not source_rows:
+            raise ValidationError(
+                "no FEM modal results were found; import modal results before creating frequency responses",
+                {"project_id": int(project_id)},
+            )
+
+        available_by_mode = {
+            int(row["mode_no"]): {
+                "mode_no": int(row["mode_no"]),
+                "frequency": _safe_float(row.get("frequency")),
+            }
+            for row in source_rows
+        }
+        if requested_mode_numbers:
+            missing_modes = [mode_no for mode_no in requested_mode_numbers if mode_no not in available_by_mode]
+            if missing_modes:
+                raise ValidationError(
+                    "some requested mode_numbers were not found in FEM modal results",
+                    {"project_id": int(project_id), "missing_mode_numbers": missing_modes[:20]},
+                )
+            selected_modes = requested_mode_numbers
+        else:
+            selected_modes = sorted(available_by_mode)
+
+        if overwrite:
+            _delete_response_catalog_entries_by_types(cursor, int(project_id), ["MODAL_FREQUENCY"])
+
+        cursor.execute(
+            """
+            SELECT COALESCE(MAX(seq_no), 0) AS max_seq_no
+            FROM t_mt_py_fem_response_catalog
+            WHERE pid = %s
+            """,
+            (int(project_id),),
+        )
+        next_seq_no = int((cursor.fetchone() or {}).get("max_seq_no") or 0) + 1
+
+        rows = []
+        for offset, mode_no in enumerate(selected_modes):
+            modal_row = available_by_mode[int(mode_no)]
+            rows.append({
+                "response_code": f"MODE_FREQ:FEM:{int(mode_no)}",
+                "response_name": f"{resolved_prefix}{int(mode_no)}",
+                "response_type": "MODAL_FREQUENCY",
+                "entity_type": "MODE",
+                "test_mode_no": None,
+                "component": "FREQ",
+                "unit": "Hz",
+                "scatter": resolved_scatter,
+                "seq_no": next_seq_no + offset,
+                "enabled": True,
+                "selection_source": "manual_fem_modal",
+                "solver_scope": list(resolved_solver_scope or []),
+                "source_table": "t_mt_py_fem_modal_result",
+                "extra_json": {
+                    "mode_number": int(mode_no),
+                    "fem_mode_no": int(mode_no),
+                    "freq_fem": modal_row.get("frequency"),
+                    "selection_source": "manual_fem_modal",
+                },
+            })
+
+        _insert_response_catalog_rows(cursor, int(project_id), rows)
+        conn.commit()
+        return {
+            "project_id": int(project_id),
+            "overwrite": bool(overwrite),
+            "response_count": len(rows),
+            "mode_numbers": selected_modes,
+            "solver_scope": resolved_solver_scope,
+            "scatter": resolved_scatter,
+            "responses_preview": rows[:20],
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def create_modal_frequency_response_catalog_from_match(
         project_id: int,
         *,
@@ -621,7 +740,7 @@ def create_modal_frequency_response_catalog_from_match(
         solver_scope,
         default_values=_DEFAULT_MODAL_RESPONSE_SOLVER_SCOPE,
     )
-    matched = match_modal_modes(
+    matched = _match_modal_modes_for_response(
         int(project_id),
         mac_threshold=0.0 if resolved_mac_threshold is None else float(resolved_mac_threshold),
         max_freq_error_ratio=max_freq_error_ratio,
@@ -709,6 +828,7 @@ def create_modal_match_response_catalog_entries(
     )
 
     conn = get_connection()
+    write_cursor = None
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute(

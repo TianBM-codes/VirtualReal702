@@ -15,6 +15,7 @@ from services.model_update.analysis.project_file_service import resolve_project_
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
 from services.model_update.analysis.inp_service import (
     clear_design_response_catalog_entries,
+    create_modal_frequency_response_catalog_from_fem,
     create_modal_match_response_catalog_entries,
     create_modal_frequency_response_catalog_from_match,
     create_design_response_catalog_entry,
@@ -42,9 +43,12 @@ from ..background_jobs import get_background_task, submit_background_task, updat
 from ..common import error_response, server_error, success_response
 from ..models import (
     AddResponseRequest,
+    AbaqusStaticResponseCatalogRequest,
     BayesianModelUpdateRequest,
     BayesianTextCheckRequest,
+    CreateAbaqusStaticResponseRequest,
     CreateDesignResponseRequest,
+    CreateModalFrequencyResponseCatalogRequest,
     CreateOptimizationParameterRequest,
     CreateSol200ParameterConfigRequest,
     CreateSol200ResponseConfigRequest,
@@ -107,6 +111,36 @@ def _normalize_node_labels(raw_value) -> list[int]:
         seen.add(label)
         result.append(label)
     return result
+
+
+def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseRequest):
+    node_labels = _normalize_node_labels(body.node_labels)
+    element_labels = _normalize_element_labels(body.element_labels)
+    return create_design_response_catalog_entry(
+        project_id=body.project_id,
+        region_type=body.region_type,
+        variables=body.variables,
+        set_name=body.set_name,
+        set_scope=body.set_scope,
+        instance_name=body.instance_name,
+        part_name=body.part_name,
+        node_labels=node_labels or None,
+        element_labels=element_labels or None,
+        step_name=body.step_name,
+        frequency=body.frequency,
+        response_name=body.response_name,
+    )
+
+
+def _create_modal_frequency_response_catalog(body: CreateModalFrequencyResponseCatalogRequest):
+    return create_modal_frequency_response_catalog_from_fem(
+        project_id=body.project_id,
+        mode_numbers=body.mode_numbers,
+        overwrite=body.overwrite,
+        solver_scope=body.solver_scope,
+        scatter=body.scatter,
+        response_name_prefix=body.response_name_prefix,
+    )
 
 
 def _compact_bayesian_run_response(payload: dict) -> dict:
@@ -499,26 +533,31 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/optimization/response/create")
+@router.post(
+    "/optimization/abaqus/static_response/create",
+    summary="创建 Abaqus 静力响应目录",
+)
+async def create_abaqus_static_response_api(request: Request, body: CreateAbaqusStaticResponseRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = _create_abaqus_static_response_catalog(body)
+        return success_response(data, "Abaqus 静力响应目录创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/response/create",
+    deprecated=True,
+    summary="创建设计响应目录（旧接口，建议改用 /optimization/abaqus/static_response/create）",
+)
 async def create_design_response_api(request: Request, body: CreateDesignResponseRequest):
     await log_request(request, model_to_dict(body))
     try:
-        node_labels = _normalize_node_labels(body.node_labels)
-        element_labels = _normalize_element_labels(body.element_labels)
-        data = create_design_response_catalog_entry(
-            project_id=body.project_id,
-            region_type=body.region_type,
-            variables=body.variables,
-            set_name=body.set_name,
-            set_scope=body.set_scope,
-            instance_name=body.instance_name,
-            part_name=body.part_name,
-            node_labels=node_labels or None,
-            element_labels=element_labels or None,
-            step_name=body.step_name,
-            frequency=body.frequency,
-            response_name=body.response_name,
-        )
+        data = _create_abaqus_static_response_catalog(body)
         return success_response(data, "设计响应创建成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
@@ -527,7 +566,66 @@ async def create_design_response_api(request: Request, body: CreateDesignRespons
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/optimization/response/modal_frequency/create_from_match")
+@router.post(
+    "/optimization/nastran/modal_frequency_response/create",
+    summary="创建 Nastran 模态频率响应目录（无需试验匹配）",
+)
+async def create_modal_frequency_response_api(request: Request, body: CreateModalFrequencyResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = _create_modal_frequency_response_catalog(body)
+        return success_response(data, "Nastran 模态频率响应目录创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/response/modal_frequency/create",
+    summary="创建模态频率响应目录（无需试验匹配）",
+)
+async def create_modal_frequency_response_legacy_prefix_api(request: Request, body: CreateModalFrequencyResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = _create_modal_frequency_response_catalog(body)
+        return success_response(data, "模态频率响应目录创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/nastran/modal_frequency_response/create_from_match",
+    summary="从模态匹配结果创建 Nastran 模态频率响应目录",
+)
+async def create_nastran_modal_frequency_response_from_match_api(request: Request, body: ModalFrequencyResponseFromMatchRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = create_modal_frequency_response_catalog_from_match(
+            project_id=body.project_id,
+            overwrite=body.overwrite,
+            mac_threshold=body.mac_threshold,
+            max_freq_error_ratio=body.max_freq_error_ratio,
+            solver_scope=body.solver_scope,
+            matching_method=body.matching_method,
+            scatter=body.scatter,
+        )
+        return success_response(data, "Nastran 模态频率响应目录创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/response/modal_frequency/create_from_match",
+    summary="从模态匹配结果创建模态频率响应目录",
+)
 async def create_modal_frequency_response_from_match_api(request: Request, body: ModalFrequencyResponseFromMatchRequest):
     await log_request(request, model_to_dict(body))
     try:
@@ -610,7 +708,27 @@ async def remove_optimization_parameter_from_update_api(request: Request, body: 
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/optimization/response")
+@router.post(
+    "/optimization/abaqus/static_response",
+    summary="加载 Abaqus 静力响应目录",
+)
+async def list_abaqus_static_response_api(request: Request, body: AbaqusStaticResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = list_design_response_catalog_entries(body.project_id)
+        return success_response(data, "Abaqus 静力响应目录加载成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/response",
+    deprecated=True,
+    summary="加载设计响应目录（旧接口，建议改用 /optimization/abaqus/static_response）",
+)
 async def list_design_response_api(request: Request, body: DesignResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
@@ -672,7 +790,27 @@ async def modal_frequency_response_options_api(request: Request, body: ModalFreq
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/optimization/response/clear")
+@router.post(
+    "/optimization/abaqus/static_response/clear",
+    summary="清空 Abaqus 静力响应目录",
+)
+async def clear_abaqus_static_response_api(request: Request, body: AbaqusStaticResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = clear_design_response_catalog_entries(body.project_id)
+        return success_response(data, "Abaqus 静力响应目录已清空")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/response/clear",
+    deprecated=True,
+    summary="清空设计响应目录（旧接口，建议改用 /optimization/abaqus/static_response/clear）",
+)
 async def clear_design_response_api(request: Request, body: DesignResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:

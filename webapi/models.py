@@ -100,7 +100,7 @@ class AddResponseRequest(BaseModel):
     step: Optional[str] = None
 
 
-class CreateDesignResponseRequest(BaseModel):
+class CreateAbaqusStaticResponseRequest(BaseModel):
     project_id: int
     region_type: str
     variables: List[str]
@@ -115,8 +115,14 @@ class CreateDesignResponseRequest(BaseModel):
     response_name: Optional[str] = None
 
 
-class DesignResponseCatalogRequest(BaseModel):
+CreateDesignResponseRequest = CreateAbaqusStaticResponseRequest
+
+
+class AbaqusStaticResponseCatalogRequest(BaseModel):
     project_id: int
+
+
+DesignResponseCatalogRequest = AbaqusStaticResponseCatalogRequest
 
 
 class Sol200ConfigCatalogRequest(BaseModel):
@@ -142,6 +148,15 @@ class CreateSol200ResponseConfigRequest(BaseModel):
     response_type: str
     mode_number: Optional[int] = None
     extra_json: Optional[Dict[str, Any]] = None
+
+
+class CreateModalFrequencyResponseCatalogRequest(BaseModel):
+    project_id: int
+    mode_numbers: Optional[List[int]] = None
+    overwrite: bool = True
+    solver_scope: Optional[List[str]] = None
+    scatter: Optional[float] = None
+    response_name_prefix: str = "FREQ_MODE_"
 
 
 class BayesianModelUpdateRequest(BaseModel):
