@@ -1,6 +1,6 @@
 """FEM node/DOF matching and octree cache helpers."""
 
-from .inp_catalog_service import *
+from .fem_catalog_service import *
 
 def _get_latest_octree_meta(cursor, project_id):
     cursor.execute("""
@@ -759,4 +759,3 @@ def get_dof_matches(project_id):
     finally:
         cursor.close()
         conn.close()
-
