@@ -18,6 +18,28 @@ from .fem_correlation_service import *
 
 _ORIGINAL_RESULT_REGISTRY_REPO = _result._registry_repo
 
+# Compatibility aliases for historical direct imports from inp_service.
+# `from module import *` does not re-export underscore-prefixed names, but
+# several callers still import these helpers/constants from inp_service.
+_SUPPORTED_CORRECTION_QUANTITIES = _catalog._SUPPORTED_CORRECTION_QUANTITIES
+_clear_import_inp_catalog_tables = _catalog._clear_import_inp_catalog_tables
+_extract_legacy_material_rows = _catalog._extract_legacy_material_rows
+_extract_legacy_property_rows = _catalog._extract_legacy_property_rows
+_extract_legacy_boundary_rows = _catalog._extract_legacy_boundary_rows
+_quantity_description = _catalog._quantity_description
+_build_inp_parameter_options = _catalog._build_inp_parameter_options
+_extract_quantity_set_capabilities = _catalog._extract_quantity_set_capabilities
+_save_octree_cache = _catalog._save_octree_cache
+_load_octree_cache = _catalog._load_octree_cache
+_cache_part_lookup = _catalog._cache_part_lookup
+_require_modal_project = _catalog._require_modal_project
+_require_non_modal_project = _catalog._require_non_modal_project
+_required_operation_error = _catalog._required_operation_error
+_DEFAULT_RESPONSE_SCATTER = _catalog._DEFAULT_RESPONSE_SCATTER
+_resolve_modal_mac_mode = _correlation._resolve_modal_mac_mode
+_load_test_modal_frequencies = _correlation._load_test_modal_frequencies
+_compute_dac_dsf = _correlation._compute_dac_dsf
+
 
 def _sync_catalog_dependencies():
     _catalog.ensure_tables_exist = ensure_tables_exist
