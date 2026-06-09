@@ -128,7 +128,14 @@ async def list_sensitivity_result_groups(
         is_external_sensitivity = rg_text in external_sensitivity_groups
         if not is_legacy_sensitivity and not is_external_sensitivity:
             continue
-        if merge_only and is_legacy_sensitivity and _rg_kind(rg_text) != "merge":
+        # Keep hiding legacy raw DSA groups by default, but still surface
+        # externally written sensitivity clouds such as sensitivity_batch_*.
+        if (
+            merge_only
+            and is_legacy_sensitivity
+            and _rg_kind(rg_text) != "merge"
+            and not is_external_sensitivity
+        ):
             continue
         groups.append(rg_text)
 

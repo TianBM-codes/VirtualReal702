@@ -1160,6 +1160,36 @@ def _write_element_cloud_result_to_workspace(
     return result
 
 
+def _register_external_sensitivity_result_group(
+    *,
+    project_id: int,
+    preview_source: dict,
+    cloud_result: dict,
+) -> None:
+    from src.l3.core.config import settings
+    from src.l3.infra.registry_repo import RegistryRepo
+
+    result_group = str(cloud_result.get("result_group") or "").strip()
+    if not result_group:
+        return
+
+    source_path = str(
+        preview_source.get("op2_path")
+        or preview_source.get("matrix_path")
+        or preview_source.get("bdf_path")
+        or ""
+    ).strip()
+    source_file = os.path.basename(source_path) if source_path else None
+
+    RegistryRepo(settings.registry_db_path).adopt_default_result_group(
+        str(int(project_id)),
+        result_group,
+        result_group,
+        source_path,
+        source_file,
+    )
+
+
 def store_op2_sensitivity_cloud(
     *,
     project_id: int,
@@ -1222,6 +1252,11 @@ def store_op2_sensitivity_cloud(
         result_group=cloud_result_group,
         step_name=cloud_step_name,
         field_name=cloud_field_name,
+    )
+    _register_external_sensitivity_result_group(
+        project_id=int(project_id),
+        preview_source=dict(preview.get("source") or {}),
+        cloud_result=cloud_result,
     )
     return {
         "workflow": "op2_sensitivity_store_cloud",
