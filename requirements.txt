@@ -32,6 +32,7 @@ pydantic==2.13.3
 pydantic_core==2.46.3
 Pygments==2.20.0
 pyNastran==1.4.1
+ansys-mapdl-reader==0.56.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 requests==2.32.5
