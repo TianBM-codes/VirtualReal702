@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import json
 from collections import defaultdict
 from typing import Dict, Literal, Optional, Tuple
 
@@ -16,7 +17,7 @@ import numpy as np
 
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
-from ..infra.colormap import apply_jet
+from ..infra.colormap import apply_jet, apply_jet_with_neutral
 from ..infra.manifest_repo import ManifestRepo
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,40 @@ def _manifest_result_h5_path(workspace: str, step: str, field: str,
     return _result_h5_path(workspace, step, field, result_group)
 
 
+def _should_force_flat_external_element_render(
+    workspace: str,
+    step: str,
+    field: str,
+    result_group: str = None,
+) -> bool:
+    """
+    External element-only fields such as sparse sensitivity clouds should keep
+    unassigned elements as no-data instead of being smoothed across shared
+    surface vertices. Force flat rendering for those fields.
+    """
+    try:
+        manifest = ManifestRepo(workspace)
+        rf = manifest.get_result_file(step, field, result_group)
+        if rf is None and result_group is not None:
+            rf = manifest.get_result_file(step, field, None)
+        if rf is None:
+            return False
+
+        source = str(rf["source"] or "").strip().lower()
+        if source != "external":
+            return False
+
+        positions_raw = rf["positions"]
+        try:
+            positions = json.loads(positions_raw) if isinstance(positions_raw, str) else list(positions_raw or [])
+        except Exception:
+            positions = []
+        positions = [str(item or "").strip().upper() for item in positions]
+        return "ELEMENT_NODAL" in positions and "NODAL" not in positions
+    except Exception:
+        return False
+
+
 def _scalar_from_nodal(f, instance: str, frame_idx: int, component: Component):
     """
     Read NODAL data → scalar per node [N_nodes].
@@ -340,6 +375,11 @@ def frame_colors(
             f"Result file not found for step='{step}' field='{field}'",
             {"step": step, "field": field},
         )
+    effective_render_mode = render_mode
+    if render_mode != "flat" and _should_force_flat_external_element_render(
+        idx.workspace, step, field, result_group
+    ):
+        effective_render_mode = "flat"
 
     scalar_vertex = None
     num_frames = None
@@ -358,7 +398,7 @@ def frame_colors(
                 extended[:n_result_nodes] = scalar_node
                 scalar_node = extended
 
-            if render_mode == "flat" and src_elem_row is not None:
+            if effective_render_mode == "flat" and src_elem_row is not None:
                 # Average node values per face, then average per (etype, elem_row) element.
                 # Must use composite key: src_elem_row is per-etype-local, not globally unique.
                 face_node_vals = scalar_node[src_node_rows]   # [Nt, 3]
@@ -430,20 +470,28 @@ def frame_colors(
             vtx_idx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
             scalar_vertex = scalar_vertex[vtx_idx]
 
-    # Replace any NaN (unmapped faces) with 0
-    scalar_vertex = np.nan_to_num(scalar_vertex, nan=0.0)
-
-    val_min = float(scalar_vertex.min())
-    val_max = float(scalar_vertex.max())
+    finite = scalar_vertex[np.isfinite(scalar_vertex)]
+    if finite.size > 0:
+        val_min = float(finite.min())
+        val_max = float(finite.max())
+    else:
+        val_min = 0.0
+        val_max = 0.0
     legend_range = np.array([val_min, val_max], dtype=np.float32)
 
     span = val_max - val_min
-    if span < 1e-12:
-        normalized = np.zeros_like(scalar_vertex)
+    if np.isfinite(scalar_vertex).all():
+        if span < 1e-12:
+            normalized = np.zeros_like(scalar_vertex)
+        else:
+            normalized = (scalar_vertex - val_min) / span
+        color_per_vertex = apply_jet(normalized)   # [Nt_subset*3, 4] uint8
     else:
-        normalized = (scalar_vertex - val_min) / span
-
-    color_per_vertex = apply_jet(normalized)   # [Nt_subset*3, 4] uint8
+        color_per_vertex = apply_jet_with_neutral(
+            scalar_vertex.astype(np.float32),
+            val_min,
+            val_max,
+        )
 
     return color_per_vertex, legend_range
 
@@ -507,6 +555,11 @@ def compute_scalar_range(
                 f"Result file not found for step='{step}' field='{field}'",
                 {"step": step, "field": field},
             )
+    effective_render_mode = render_mode
+    if render_mode != "flat" and _should_force_flat_external_element_render(
+        idx.workspace, step, field, result_group
+    ):
+        effective_render_mode = "flat"
 
     _manifest = ManifestRepo(idx.workspace)
     geom_h5_path = _manifest.get_geom_path(instance)
@@ -668,7 +721,7 @@ def frame_scalars(
             if finite_nodes.size > 0:
                 global_range = (float(finite_nodes.min()), float(finite_nodes.max()))
 
-            if render_mode == "flat" and src_elem_row is not None:
+            if effective_render_mode == "flat" and src_elem_row is not None:
                 # Per-element average of node values
                 face_node_vals = scalar_node[src_node_rows]   # [Nt, 3]
                 face_vals = face_node_vals.mean(axis=1)        # [Nt]
@@ -699,7 +752,7 @@ def frame_scalars(
             render_idx     = idx.render_indices.get(instance)
             avd            = idx.averaging_data.get(instance)
 
-            if (render_mode != "flat"
+            if (effective_render_mode != "flat"
                     and local_node_idx is not None and render_idx is not None
                     and avd is not None and vtx_nr is not None):
                 fa = feature_angle if use_geometry_split else None
