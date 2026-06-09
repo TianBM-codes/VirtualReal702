@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-05-28（新增 vertex-displacements、deformed-normals 接口）
+更新时间：2026-06-09（POST /api/projects 新增 source_type：cdb / rst，支持 Ansys CDB 几何与 RST 几何+结果）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -443,6 +443,8 @@ async function pollLogs(odbId) {
 | `odb` | `abaqus_dump → l1_pack → ingest` | 全量 ODB 解析，不触发 model-update 导入 |
 | `bdf` | `bdf_pack → ingest → model_update BDF 导入` | Nastran BDF 几何，解析完自动导入 model_update |
 | `op2` | `op2_geom_pack → ingest`（仅含几何 OP2）或 `op2_geom_pack → ingest → op2_pack`（含几何+结果）| 自动检测 OP2 是否含 GEOM1/GEOM2；不含几何时拒绝，应改用追加结果组接口 |
+| `cdb` | `cdb_pack → ingest → model_update CDB 导入` | Ansys MAPDL CDB 几何（无结果），解析完自动导入 model_update |
+| `rst` | `rst_pack → ingest → 注册 default_result → model_update RST 导入` | Ansys RST 几何+结果，自包含（不走一致性校验/叠加），结果直接作为 `default_result` 结果组 |
 
 **BDF+OP2 典型流程：**
 

@@ -43,6 +43,8 @@ INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
 BDF_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "bdf_pack.py"
 OP2_GEOM_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "op2_geom_pack.py"
 OP2_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "op2_pack.py"
+CDB_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "cdb_pack.py"
+RST_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "rst_pack.py"
 INGEST_SCRIPT   = REPO_ROOT / "src" / "l2" / "ingest.py"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -1161,6 +1163,173 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
     return ok
 
 
+def _run_cdb_project(project_id: str, cdb_path: str, workspace: str) -> bool:
+    """Ansys CDB（纯几何）：cdb_pack → L2 ingest → model_update 导入。"""
+    if not cdb_path:
+        msg = "No CDB path stored for project {}".format(project_id)
+        logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    if not os.path.exists(cdb_path):
+        msg = "CDB file not found: {}".format(cdb_path)
+        logger.error("[%s] %s", project_id, msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    logger.info("[%s] CDB project: cdb_pack.py", project_id)
+    _log_job(project_id, "step",
+             f"{_kw('L1 解析')}：CDB 几何提取（cdb_pack.py）启动",
+             stage="l1_cdb", percent=5)
+    rc1, tail1 = _run_streaming(
+        [sys.executable, str(CDB_PACK_SCRIPT), "--cdb", cdb_path, "--workspace", workspace],
+        project_id, "l1_cdb",
+    )
+    if rc1 != 0:
+        msg = "cdb_pack failed: " + tail1
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 f"{_bad('CDB 解析失败')} (rc={rc1})：{_esc(tail1[-500:])}", stage="l1_cdb")
+        logger.error("[%s] CDB project phase 1 failed (rc=%d)", project_id, rc1)
+        return False
+
+    _log_elem_type_summary(project_id, workspace, "CDB", os.path.basename(cdb_path), "l1_cdb")
+    _log_job(project_id, "step",
+             f"{_kw('CDB 解析完成')}，开始 L2 预处理", stage="l1_done", percent=50)
+
+    logger.info("[%s] CDB project: ingest.py (L2)", project_id)
+    _log_job(project_id, "step",
+             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=55)
+    rc2, tail2 = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        project_id, "l2_ingest",
+    )
+    if rc2 != 0:
+        msg = "ingest failed: " + tail2[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 f"{_bad('L2 预处理失败')} (rc={rc2})：{_esc(tail2[-500:])}", stage="l2_ingest")
+        logger.error("[%s] CDB project L2 failed (rc=%d)", project_id, rc2)
+        return False
+
+    _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", _good("CDB 几何解析完成，已就绪"),
+             stage="l2_done", percent=85)
+    logger.info("[%s] CDB project ready", project_id)
+
+    # ── 自动导入 model_update ──────────────────────────────────────────────────
+    _log_job(project_id, "step", f"{_kw('自动导入 CDB')} 到 model_update",
+             stage="mu_import_cdb", percent=90)
+    try:
+        from services.model_update.importers.cdb_service import import_cdb_data
+        import_cdb_data(cdb_path, int(project_id), clear_before_insert=True)
+        _log_job(project_id, "step", _good("CDB 导入 model_update 完成"),
+                 stage="mu_import_cdb", percent=100)
+        logger.info("[%s] model_update CDB import done", project_id)
+    except Exception as exc:
+        _log_job(project_id, "warn",
+                 f"{_ws('model_update CDB 导入失败（非致命）')}：{_esc(str(exc))}",
+                 stage="mu_import_cdb", percent=100)
+        logger.warning("[%s] model_update CDB import failed: %s", project_id, exc)
+
+    return True
+
+
+def _run_rst_project(project_id: str, rst_path: str, workspace: str) -> bool:
+    """Ansys RST（几何+结果，自包含）：rst_pack 一次性提几何与结果 →
+    L2 ingest → 注册 default_result（ready）→ model_update 导入。不走叠加流程。"""
+    if not rst_path:
+        msg = "No RST path stored for project {}".format(project_id)
+        logger.error(msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    if not os.path.exists(rst_path):
+        msg = "RST file not found: {}".format(rst_path)
+        logger.error("[%s] %s", project_id, msg)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+
+    logger.info("[%s] RST project: rst_pack.py", project_id)
+    _log_job(project_id, "step",
+             f"{_kw('L1 解析')}：RST 几何+结果提取（rst_pack.py）启动",
+             stage="l1_rst", percent=5)
+    rc1, tail1 = _run_streaming(
+        [sys.executable, str(RST_PACK_SCRIPT), "--rst", rst_path,
+         "--workspace", workspace, "--result-group", "default_result",
+         "--display-name", os.path.splitext(os.path.basename(rst_path))[0]],
+        project_id, "l1_rst",
+    )
+    if rc1 != 0:
+        msg = "rst_pack failed: " + tail1
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 f"{_bad('RST 解析失败')} (rc={rc1})：{_esc(tail1[-500:])}", stage="l1_rst")
+        logger.error("[%s] RST project phase 1 failed (rc=%d)", project_id, rc1)
+        return False
+
+    _log_elem_type_summary(project_id, workspace, "RST", os.path.basename(rst_path), "l1_rst")
+    _log_job(project_id, "step",
+             f"{_kw('RST 解析完成')}，开始 L2 预处理", stage="l1_done", percent=50)
+
+    logger.info("[%s] RST project: ingest.py (L2)", project_id)
+    _log_job(project_id, "step",
+             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
+             stage="l2_ingest", percent=55)
+    rc2, tail2 = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+        project_id, "l2_ingest",
+    )
+    if rc2 != 0:
+        msg = "ingest failed: " + tail2[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error",
+                 f"{_bad('L2 预处理失败')} (rc={rc2})：{_esc(tail2[-500:])}", stage="l2_ingest")
+        logger.error("[%s] RST project L2 failed (rc=%d)", project_id, rc2)
+        return False
+
+    _update_project_geom_status(project_id, "ready")
+
+    # rst_pack 已把结果写进 manifest（result_group='default_result'），
+    # 这里只需在 registry.db 登记 result_group 行（status='ready'）让前端可见。
+    rg_name = "default_result"
+    display_name = os.path.splitext(os.path.basename(rst_path))[0]
+    source_file = os.path.basename(rst_path)
+    try:
+        now = _now_iso()
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO result_groups"
+                " (project_id, result_group, display_name, source_path, source_file,"
+                "  status, parse_options, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
+                (project_id, rg_name, display_name, rst_path, source_file, now, now),
+            )
+        logger.info("[%s] Registered result_group='%s' (status=ready)", project_id, rg_name)
+    except Exception as exc:
+        logger.warning("[%s] RST result_group registration failed: %s", project_id, exc)
+
+    _log_job(project_id, "step", _good("RST 几何+结果解析完成，已就绪"),
+             stage="l2_done", percent=85)
+    logger.info("[%s] RST project ready", project_id)
+
+    # ── 自动导入 model_update ──────────────────────────────────────────────────
+    _log_job(project_id, "step", f"{_kw('自动导入 RST')} 到 model_update",
+             stage="mu_import_rst", percent=90)
+    try:
+        from services.model_update.importers.rst_service import import_rst_data
+        import_rst_data(rst_path, int(project_id), clear_before_insert=True)
+        _log_job(project_id, "step", _good("RST 导入 model_update 完成"),
+                 stage="mu_import_rst", percent=100)
+        logger.info("[%s] model_update RST import done", project_id)
+    except Exception as exc:
+        _log_job(project_id, "warn",
+                 f"{_ws('model_update RST 导入失败（非致命）')}：{_esc(str(exc))}",
+                 stage="mu_import_rst", percent=100)
+        logger.warning("[%s] model_update RST import failed: %s", project_id, exc)
+
+    return True
+
+
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
     if source_type == "odb":
         return _run_odb_project(project_id, source_path, workspace)
@@ -1168,6 +1337,10 @@ def _run_project(project_id: str, source_path: str, source_type: str, workspace:
         return _run_bdf_project(project_id, source_path, workspace)
     if source_type == "op2":
         return _run_op2_project(project_id, source_path, workspace)
+    if source_type == "cdb":
+        return _run_cdb_project(project_id, source_path, workspace)
+    if source_type == "rst":
+        return _run_rst_project(project_id, source_path, workspace)
     return _run_geom_project(project_id, source_path, workspace)
 
 
