@@ -90,8 +90,9 @@ async def get_legend_entries(
 
     Each entry: {legend_key, default_title, display_name, color_r/g/b,
                  user_color, user_name, face_count, elem_count}
-    face_count = visible surface faces; elem_count = distinct elements on the
-    surface (a single element can own several faces).
+    face_count = visible surface faces; elem_count = actual total element count
+    from L1 (incl. interior elements). Exception: scheme=section regions are a
+    surface-only concept, so elem_count there is the distinct surface element count.
     Used by the LegendEditor floating panel.
     Pass all=true to get entries for all instances (each entry has an extra 'instance' field).
     """

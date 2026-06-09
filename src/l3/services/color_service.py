@@ -702,20 +702,21 @@ def _compute_labels_and_legend(
 # Legend entries (for LegendEditor floating panel)
 # ---------------------------------------------------------------------------
 
-def _elem_counts_per_label(
+def _surface_elem_counts_per_label(
     labels: List[str],
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
 ):
-    """Count distinct source *elements* per label.
+    """Count distinct *surface* elements per label.
 
     `labels` is per-render-face (length Rf), so Counter(labels) over-counts: a
     single element can contribute several surface faces. Every face of one
-    element carries the same label (labels are derived per element), so we
-    deduplicate faces by their source element key (etype, elem_row) and tally
-    one element per unique key.
+    element carries the same label, so we deduplicate faces by their source
+    element key (etype, elem_row) and tally one element per unique key.
 
-    Returns a Counter {label: distinct element count}.
+    Only sees elements exposed on the render surface — used for the `section`
+    scheme, whose regions are themselves a surface-only concept (averaging
+    domains built by union-find over surface adjacency).
     """
     from collections import Counter
     Rf = len(labels)
@@ -730,6 +731,130 @@ def _elem_counts_per_label(
     )
     _, first_face_of_elem = np.unique(pairs, axis=0, return_index=True)
     return Counter(labels_arr[first_face_of_elem].tolist())
+
+
+def _l1_etype_counts(idx: ModelIndex, instance: str) -> Dict[str, int]:
+    """Total element count per element type from L1 geometry (all elements,
+    incl. interior). Keyed by the etype string (== the legend_key for scheme=etype)."""
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    counts: Dict[str, int] = {}
+    if not os.path.exists(geom_h5):
+        return counts
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            for etype_str in f.get("elements", {}):
+                grp = f[f"elements/{etype_str}"]
+                if "labels" in grp:
+                    counts[etype_str] = int(grp["labels"].shape[0])
+    except Exception:
+        pass
+    return counts
+
+
+def _l1_attr_counts(idx: ModelIndex, instance: str, attr_name: str) -> Dict[str, int]:
+    """Total element count per attribute value (material_name / section_type)
+    from L1 geometry, over ALL elements. Vectorized with np.unique per etype group."""
+    from collections import Counter
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    counts: Counter = Counter()
+    if not os.path.exists(geom_h5):
+        return dict(counts)
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            for etype_str in f.get("elements", {}):
+                grp = f[f"elements/{etype_str}"]
+                n_elem = int(grp["labels"].shape[0]) if "labels" in grp else 0
+                if attr_name not in grp:
+                    if n_elem:
+                        counts["(none)"] += n_elem
+                    continue
+                vals, cnts = np.unique(grp[attr_name][:], return_counts=True)
+                for v, c in zip(vals, cnts):
+                    s = v.tobytes().rstrip(b"\x00").decode("ascii", errors="replace") or "(none)"
+                    counts[s] += int(c)
+    except Exception:
+        pass
+    return dict(counts)
+
+
+def _full_element_arrays(idx: ModelIndex, instance: str):
+    """Build per-element (etype_arr [T] S-bytes, elem_row_arr [T] int32) covering
+    ALL elements of the instance, grouped by etype. elem_row is the 0-based row
+    within each etype's L1 datasets. Lets the per-face label helpers be reused to
+    label every element (not just surface faces). Returns (None, None) if missing."""
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    if not os.path.exists(geom_h5):
+        return None, None
+    etype_chunks: List[np.ndarray] = []
+    row_chunks: List[np.ndarray] = []
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            for etype_str in f.get("elements", {}):
+                grp = f[f"elements/{etype_str}"]
+                if "labels" not in grp:
+                    continue
+                n = int(grp["labels"].shape[0])
+                if n == 0:
+                    continue
+                etype_chunks.append(np.full(n, etype_str.encode("ascii"), dtype="S16"))
+                row_chunks.append(np.arange(n, dtype=np.int32))
+    except Exception:
+        return None, None
+    if not etype_chunks:
+        return np.empty(0, dtype="S16"), np.empty(0, dtype=np.int32)
+    return np.concatenate(etype_chunks), np.concatenate(row_chunks)
+
+
+def _total_elem_counts_per_label(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]],
+    surface_counts,
+):
+    """Actual element count per label over ALL elements (incl. interior).
+
+    - etype / material / section_type: counted directly from L1 per-element
+      datasets — exact totals.
+    - elset: relabel every element (reusing _labels_from_elsets) and tally.
+    - section: regions are a surface-only concept, so fall back to surface_counts.
+
+    Results (other than section) are memoized on idx.legend_scan_cache since L1 is
+    immutable.
+    """
+    from collections import Counter
+    if scheme == "section":
+        return surface_counts
+
+    set_key = tuple(set_names) if set_names else ()
+    cache_key = ("total_counts", instance, scheme, set_key)
+    cached = idx.legend_scan_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if scheme == "etype":
+        counts = _l1_etype_counts(idx, instance)
+    elif scheme in ("material", "section_type"):
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        counts = _l1_attr_counts(idx, instance, attr_name)
+    elif scheme == "elset":
+        full_etype, full_row = _full_element_arrays(idx, instance)
+        if full_etype is None or len(full_etype) == 0:
+            counts = {}
+        else:
+            labels = _labels_from_elsets(idx, instance, full_etype, full_row, set_names or [])
+            counts = dict(Counter(labels))
+    else:
+        counts = dict(surface_counts)
+
+    idx.legend_scan_cache[cache_key] = counts
+    return counts
 
 
 def get_all_legend_entries(
@@ -807,7 +932,12 @@ def get_legend_entries(
 
     from collections import Counter
     face_counts = Counter(labels)
-    elem_counts = _elem_counts_per_label(labels, etype_arr, elem_row_arr)
+    # elem_count = actual total elements per label (incl. interior, from L1),
+    # except scheme=section where regions are surface-defined.
+    surface_elem_counts = _surface_elem_counts_per_label(labels, etype_arr, elem_row_arr)
+    elem_counts = _total_elem_counts_per_label(
+        idx, instance, scheme, set_names, surface_elem_counts
+    )
 
     if scheme == "elset" and set_names:
         ordered   = list(set_names) + ["other"]

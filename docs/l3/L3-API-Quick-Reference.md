@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-09（legend-entries 新增 elem_count 字段——可见表面去重单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) H5 重复扫描的慢查询）
+更新时间：2026-06-09（legend-entries 新增 elem_count 字段——实际单元数（含内部，来自 L1；section 例外为表面单元数）；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) H5 重复扫描的慢查询）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1665,9 +1665,11 @@ const legend = res.data?.legend ?? []
 | `user_color` | bool | true = 颜色来自用户覆盖 |
 | `user_name` | bool | true = 名称来自用户覆盖 |
 | `face_count` | int | 该条目对应的可见表面渲染面数 |
-| `elem_count` | int | 该条目对应的可见表面**单元数**（去重后；一个单元可拥有多个面）|
+| `elem_count` | int | 该条目对应的**实际单元数**（来自 L1，含模型内部单元，非仅可见表面）|
 
 > LegendEditor 浮窗的「单元数」列显示 `elem_count`。`face_count` 仍保留供其它用途。
+> `elem_count` 对 etype / material / section_type 直接从 L1 逐单元数据精确统计；elset 按全部单元归属集合统计；
+> **section 例外**：区域（Region N）是按表面邻接 union-find 得到的"表面概念"，没有内部单元含义，故此时 `elem_count` 为去重后的可见表面单元数。
 
 ### `POST /api/odb/{odb_id}/color-code/{instance}/legend-entries`
 
