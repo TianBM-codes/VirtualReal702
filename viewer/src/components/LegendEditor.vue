@@ -23,7 +23,7 @@
               <th></th>
               <th>ID</th>
               <th>名称</th>
-              <th style="text-align:right">面数</th>
+              <th style="text-align:right">单元数</th>
               <th>颜色</th>
             </tr>
           </thead>
@@ -41,7 +41,7 @@
                        v-model="e._name"
                        :placeholder="e.default_title || e.legend_key" />
               </td>
-              <td class="le-count">{{ e.face_count.toLocaleString() }}</td>
+              <td class="le-count">{{ (e.elem_count ?? e.face_count ?? 0).toLocaleString() }}</td>
               <td @click.stop style="text-align:center">
                 <div class="le-swatch"
                      :style="{ background: effectiveCss(e) }"

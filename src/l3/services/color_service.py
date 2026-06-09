@@ -137,11 +137,25 @@ def _build_global_color_map(idx: "ModelIndex", scheme: str) -> Dict[str, Tuple[f
     Collects every possible value across all instances (sorted alphabetically by
     instance name) so that the same etype/material/section_type/region/set always
     gets the same palette colour regardless of which instance is being rendered.
+
+    The map is independent of which instance is requested and derived purely from
+    immutable L1 data, so it is memoized per scheme on the ModelIndex. Without this,
+    get_all_legend_entries (which calls get_legend_entries once per instance) would
+    rebuild the whole-model scan N times → O(N²) H5 opens.
     """
+    cache_key = ("colormap", scheme)
+    cached = idx.legend_scan_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     if scheme == "section":
-        return _build_global_section_color_map(idx)
+        result = _build_global_section_color_map(idx)
+        idx.legend_scan_cache[cache_key] = result
+        return result
     if scheme == "elset":
-        return _build_global_elset_color_map(idx)
+        result = _build_global_elset_color_map(idx)
+        idx.legend_scan_cache[cache_key] = result
+        return result
 
     seen: Dict[str, None] = {}
     if scheme == "etype":
@@ -156,7 +170,9 @@ def _build_global_color_map(idx: "ModelIndex", scheme: str) -> Dict[str, Tuple[f
                 if v:
                     seen.setdefault(v, None)
 
-    return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(seen)}
+    result = {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(seen)}
+    idx.legend_scan_cache[cache_key] = result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -546,10 +562,16 @@ def _all_unique_vals_from_l1(idx: ModelIndex, instance: str, attr_name: str) -> 
     groups in the L1 geometry H5, returning every unique non-empty value.
     Used to ensure the legend lists model-level values, not just surface-visible ones.
     """
+    cache_key = ("l1_vals", instance, attr_name)
+    cached = idx.legend_scan_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from ..infra.manifest_repo import ManifestRepo
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
     if not os.path.exists(geom_h5):
+        idx.legend_scan_cache[cache_key] = []
         return []
     vals: list = []
     try:
@@ -568,21 +590,31 @@ def _all_unique_vals_from_l1(idx: ModelIndex, instance: str, attr_name: str) -> 
     seen: dict = {}
     for v in vals:
         seen.setdefault(v, None)
-    return list(seen)
+    result = list(seen)
+    idx.legend_scan_cache[cache_key] = result
+    return result
 
 
 def _all_etypes_from_l1(idx: ModelIndex, instance: str) -> List[str]:
     """Return every element-type group name present in the L1 geometry H5."""
+    cache_key = ("l1_etypes", instance)
+    cached = idx.legend_scan_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from ..infra.manifest_repo import ManifestRepo
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
     if not os.path.exists(geom_h5):
+        idx.legend_scan_cache[cache_key] = []
         return []
     try:
         with h5py.File(geom_h5, "r") as f:
-            return sorted(f.get("elements", {}).keys())
+            result = sorted(f.get("elements", {}).keys())
     except Exception:
-        return []
+        result = []
+    idx.legend_scan_cache[cache_key] = result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +702,36 @@ def _compute_labels_and_legend(
 # Legend entries (for LegendEditor floating panel)
 # ---------------------------------------------------------------------------
 
+def _elem_counts_per_label(
+    labels: List[str],
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+):
+    """Count distinct source *elements* per label.
+
+    `labels` is per-render-face (length Rf), so Counter(labels) over-counts: a
+    single element can contribute several surface faces. Every face of one
+    element carries the same label (labels are derived per element), so we
+    deduplicate faces by their source element key (etype, elem_row) and tally
+    one element per unique key.
+
+    Returns a Counter {label: distinct element count}.
+    """
+    from collections import Counter
+    Rf = len(labels)
+    if Rf == 0:
+        return Counter()
+    labels_arr = np.asarray(labels)
+    # Encode the S8 etype bytes to small int codes, then dedup (etype, elem_row).
+    _, etype_codes = np.unique(etype_arr, return_inverse=True)
+    pairs = np.stack(
+        [etype_codes.astype(np.int64), np.asarray(elem_row_arr, dtype=np.int64)],
+        axis=1,
+    )
+    _, first_face_of_elem = np.unique(pairs, axis=0, return_index=True)
+    return Counter(labels_arr[first_face_of_elem].tolist())
+
+
 def get_all_legend_entries(
     idx: ModelIndex,
     scheme: str,
@@ -701,6 +763,7 @@ def get_all_legend_entries(
                 merged[key] = dict(e)
             else:
                 merged[key]["face_count"] = merged[key].get("face_count", 0) + e.get("face_count", 0)
+                merged[key]["elem_count"] = merged[key].get("elem_count", 0) + e.get("elem_count", 0)
         all_entries = list(merged.values())
     return all_entries
 
@@ -744,6 +807,7 @@ def get_legend_entries(
 
     from collections import Counter
     face_counts = Counter(labels)
+    elem_counts = _elem_counts_per_label(labels, etype_arr, elem_row_arr)
 
     if scheme == "elset" and set_names:
         ordered   = list(set_names) + ["other"]
@@ -799,6 +863,7 @@ def get_legend_entries(
             "user_color":    user_color,
             "user_name":     user_name,
             "face_count":    face_counts.get(val, 0),
+            "elem_count":    elem_counts.get(val, 0),
         })
     return entries
 

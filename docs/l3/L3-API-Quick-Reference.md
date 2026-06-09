@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-09（POST /api/projects 的 source_path 改为自适应：URL 走下载、非 URL 按本地文件处理；local_path 仍仅限本地文件）
+更新时间：2026-06-09（legend-entries 新增 elem_count 字段——可见表面去重单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) H5 重复扫描的慢查询）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1664,7 +1664,10 @@ const legend = res.data?.legend ?? []
 | `color_r/g/b` | float | 当前实际颜色（已合并用户覆盖或调色板自动分配） |
 | `user_color` | bool | true = 颜色来自用户覆盖 |
 | `user_name` | bool | true = 名称来自用户覆盖 |
-| `face_count` | int | 该条目对应的渲染面数 |
+| `face_count` | int | 该条目对应的可见表面渲染面数 |
+| `elem_count` | int | 该条目对应的可见表面**单元数**（去重后；一个单元可拥有多个面）|
+
+> LegendEditor 浮窗的「单元数」列显示 `elem_count`。`face_count` 仍保留供其它用途。
 
 ### `POST /api/odb/{odb_id}/color-code/{instance}/legend-entries`
 

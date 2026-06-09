@@ -89,7 +89,9 @@ async def get_legend_entries(
     """Return legend entries for the given scheme with face counts and user overrides.
 
     Each entry: {legend_key, default_title, display_name, color_r/g/b,
-                 user_color, user_name, face_count}
+                 user_color, user_name, face_count, elem_count}
+    face_count = visible surface faces; elem_count = distinct elements on the
+    surface (a single element can own several faces).
     Used by the LegendEditor floating panel.
     Pass all=true to get entries for all instances (each entry has an extra 'instance' field).
     """

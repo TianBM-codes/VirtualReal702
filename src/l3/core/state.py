@@ -62,6 +62,13 @@ class ModelIndex:
         #   leaf_offsets  [N+1]  int32     slice bounds into face_indices per node
         self.octree: Dict[str, dict] = {}
 
+        # Read-only cache for legend/color-code computations. L1 geometry data
+        # is immutable once the ODB is loaded, so the expensive per-instance H5
+        # scans (unique etypes / materials / section_types) and the global color
+        # map can be memoized. Keyed by tuples, see color_service. NOT used for
+        # anything that depends on user-editable state (legend overrides).
+        self.legend_scan_cache: Dict[tuple, object] = {}
+
     def load_l2_render_data(self):
         """Called when status == 'ready'. Loads L2 HDF5 buffers into memory."""
         l2_render_dir = os.path.join(self.workspace, "l2", "render")
