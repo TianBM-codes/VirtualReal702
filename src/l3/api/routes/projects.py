@@ -93,12 +93,13 @@ def _resolve_create_project_source(body: CreateProjectRequest) -> str:
     if bool(source_path) == bool(local_path):
         raise ValidationError("Pass exactly one of source_path or local_path")
     if source_path:
-        if not _is_http_url(source_path):
-            raise ValidationError(
-                "source_path must be an http(s) URL; use local_path for server-local files",
-                {"source_path": source_path},
-            )
+        # source_path 自适应：http(s) URL 直接放行；否则按服务器本地文件校验。
+        if _is_http_url(source_path):
+            return source_path
+        if not os.path.isfile(source_path):
+            raise ValidationError(f"File not found on server: {source_path}")
         return source_path
+    # local_path：仅服务器本地文件（保留原有显式语义）。
     if not os.path.isfile(local_path):
         raise ValidationError(f"File not found on server: {local_path}")
     return local_path

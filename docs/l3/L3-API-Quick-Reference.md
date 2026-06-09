@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-09（POST /api/projects 新增 source_type：cdb / rst，支持 Ansys CDB 几何与 RST 几何+结果）
+更新时间：2026-06-09（POST /api/projects 的 source_path 改为自适应：URL 走下载、非 URL 按本地文件处理；local_path 仍仅限本地文件）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -429,8 +429,8 @@ async function pollLogs(odbId) {
 
 说明：
 
-- `source_path` 现在专门表示内网 HTTP URL。
-- `local_path` 专门表示后端机器本地可访问的文件路径。
+- `source_path` 自适应：传 `http://` / `https://` 开头则当内网 HTTP URL（下载到 workspace）；否则按后端机器本地文件路径处理（文件不存在则报错）。
+- `local_path` 专门表示后端机器本地可访问的文件路径（仅本地，不接受 URL）。
 - 两者必须二选一，不能同时传，也不能都不传。
 - `source_type` 仍可显式指定；不传时会按 `source_path` 或 `local_path` 的扩展名自动推断。
 - 解析真正开始前，后端会把源文件复制到该 project 的 workspace 里；也就是说，`source_path` 下载后的文件和 `local_path` 指向的本地文件，后续都会统一改用 workspace 内副本继续解析。
