@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/odb/{odb_id}", tags=["color_code"])
 async def get_display_names(
     odb_id: str,
     instance: str,
-    scheme: str = Query(None, description="etype | material | section_type | section | elset; 省略时返回所有 scheme"),
+    scheme: str = Query(None, description="etype | material | section_type | section | section_assignment | elset; 省略时返回所有 scheme"),
 ):
     """Return user-defined display names.
 
@@ -63,7 +63,7 @@ async def get_display_names(
 @router.get("/color-code/legend-entries")
 async def get_all_legend_entries(
     odb_id: str,
-    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    scheme: str = Query(..., description="etype | material | section_type | section | section_assignment | elset"),
     set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
 ):
     """Return legend entries for all instances.
@@ -82,7 +82,7 @@ async def get_all_legend_entries(
 async def get_legend_entries(
     odb_id: str,
     instance: str,
-    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    scheme: str = Query(..., description="etype | material | section_type | section | section_assignment | elset"),
     set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
     all: bool = Query(False, description="Return entries for all instances instead of just this one"),
 ):
@@ -111,7 +111,7 @@ async def get_legend_entries(
 async def post_legend_entries(
     odb_id: str,
     instance: str,
-    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    scheme: str = Query(..., description="etype | material | section_type | section | section_assignment | elset"),
     body: List[dict] = Body(..., description="[{legend_key, display_name?, color_r/g/b?}, ...]"),
     all: bool = Query(False, description="Route each entry to its instance parsed from legend_key"),
 ):
@@ -152,7 +152,7 @@ async def post_legend_entries(
 async def get_legend(
     odb_id: str,
     instance: str,
-    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    scheme: str = Query(..., description="etype | material | section_type | section | section_assignment | elset"),
     set_names: str = Query("", description="Comma-separated set names (scheme=elset only)"),
 ):
     """Return only the color legend without building vertex colors.
@@ -174,7 +174,7 @@ async def get_legend(
 async def post_display_names(
     odb_id: str,
     instance: str,
-    scheme: str = Query(..., description="etype | material | section_type | section | elset"),
+    scheme: str = Query(..., description="etype | material | section_type | section | section_assignment | elset"),
     body: Dict[str, str] = Body(..., description="{legend_key: display_name, ...}"),
 ):
     """Upsert user-defined display names for legend items."""

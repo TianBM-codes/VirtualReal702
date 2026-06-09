@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Dict, List, Optional, Tuple
 
 import h5py
@@ -156,6 +157,14 @@ def _build_global_color_map(idx: "ModelIndex", scheme: str) -> Dict[str, Tuple[f
         result = _build_global_elset_color_map(idx)
         idx.legend_scan_cache[cache_key] = result
         return result
+    if scheme == "section_assignment":
+        seen_sa: Dict[str, None] = {}
+        for inst in sorted(idx.source_elem_etype.keys()):
+            for name in _section_assignments(idx, inst).keys():
+                seen_sa.setdefault(name, None)
+        result = {n: _PALETTE[i % len(_PALETTE)] for i, n in enumerate(seen_sa)}
+        idx.legend_scan_cache[cache_key] = result
+        return result
 
     seen: Dict[str, None] = {}
     if scheme == "etype":
@@ -218,6 +227,11 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
         schemes.append("material")
     if has_sec:
         schemes.append("section_type")
+
+    # section_assignment: color by actual Abaqus section assignment (distinct
+    # from "section" above, which is averaging regions).
+    if _has_section_assignments(idx, instance):
+        schemes.append("section_assignment")
 
     elsets_seen: Dict[str, None] = {}
     sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
@@ -350,6 +364,8 @@ def region_face_mask(
     try:
         if scheme == "section":
             labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+        elif scheme == "section_assignment":
+            labels = _labels_from_section_assignment(idx, instance, etype_arr, elem_row_arr)
         elif scheme == "etype":
             labels = _labels_from_etype(etype_arr)
         elif scheme in ("material", "section_type"):
@@ -553,6 +569,150 @@ def _labels_from_elsets(
 
 
 # ---------------------------------------------------------------------------
+# Section assignment helpers (scheme="section_assignment")
+#
+# IMPORTANT: this is a different concept from the existing scheme="section",
+# which colors by *averaging regions* (surface union-find domains, "Region N").
+# Here we color by the actual Abaqus *section assignment*: each element belongs
+# to exactly one section (via that section's element_set), so element counts are
+# well-defined for ALL elements incl. interior — they are the element_set sizes.
+# ---------------------------------------------------------------------------
+
+def _safe_set_name(name: str) -> str:
+    """Mirror the L1/L2 set-name sanitizer used for instance_sets keys."""
+    return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
+
+
+def _clean_section_name(grp_key: str) -> str:
+    """L1 stores section groups as '{i}__{safe(name)}' (new) or the raw name
+    (old). Strip the leading numeric index for a human-readable label."""
+    m = re.match(r"^\d+__(.+)$", grp_key)
+    return m.group(1) if m else grp_key
+
+
+def _section_assignments(idx: ModelIndex, instance: str):
+    """Return OrderedDict {section_name: element_label_array} for *instance*,
+    read from L1 geometry: each section group's element_set → its element labels.
+    Covers ALL elements (incl. interior). Memoized on the ModelIndex."""
+    from collections import OrderedDict
+    cache_key = ("section_assign", instance)
+    cached = idx.legend_scan_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    out: "OrderedDict[str, np.ndarray]" = OrderedDict()
+    if not os.path.exists(geom_h5):
+        idx.legend_scan_cache[cache_key] = out
+        return out
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            sg_root = f.get("sections")
+            if sg_root is not None:
+                for grp_key in sg_root:
+                    eset = f[f"sections/{grp_key}"].attrs.get("element_set", "")
+                    if isinstance(eset, bytes):
+                        eset = eset.decode("utf-8", errors="replace")
+                    if not eset:
+                        continue
+                    key = f"instance_sets/element_sets/{_safe_set_name(eset)}"
+                    if key not in f:
+                        continue
+                    name   = _clean_section_name(grp_key)
+                    labels = f[key][:]
+                    if name in out:
+                        out[name] = np.concatenate([out[name], labels])
+                    else:
+                        out[name] = labels
+    except Exception:
+        pass
+    idx.legend_scan_cache[cache_key] = out
+    return out
+
+
+def _has_section_assignments(idx: ModelIndex, instance: str) -> bool:
+    """Lightweight check (attrs + key existence only, no array loads) used by
+    get_schemes to decide whether to expose the section_assignment scheme."""
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+    if not os.path.exists(geom_h5):
+        return False
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            sg_root = f.get("sections")
+            if sg_root is None:
+                return False
+            for grp_key in sg_root:
+                eset = f[f"sections/{grp_key}"].attrs.get("element_set", "")
+                if isinstance(eset, bytes):
+                    eset = eset.decode("utf-8", errors="replace")
+                if eset and f"instance_sets/element_sets/{_safe_set_name(eset)}" in f:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _section_assignment_counts(idx: ModelIndex, instance: str) -> Dict[str, int]:
+    """{section_name: total element count} over ALL elements (incl. interior)."""
+    return {
+        name: int(np.unique(labels).size)
+        for name, labels in _section_assignments(idx, instance).items()
+    }
+
+
+def _labels_from_section_assignment(
+    idx: ModelIndex,
+    instance: str,
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+) -> List[str]:
+    """Per-face label = the section name whose element_set owns the face's
+    element, else '(none)'. Each element belongs to one section; first match
+    wins (assignments are normally non-overlapping)."""
+    assignments = _section_assignments(idx, instance)
+    Rf = len(etype_arr)
+    if not assignments:
+        return ["(none)"] * Rf
+
+    from ..infra.manifest_repo import ManifestRepo
+    geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
+              os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+
+    names = list(assignments.keys())
+    code  = np.zeros(Rf, dtype=np.int32)   # 0 = "(none)"
+    etype_strs = np.array([
+        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+        for b in etype_arr
+    ])
+    try:
+        with h5py.File(geom_h5, "r") as f:
+            for etype_str in np.unique(etype_strs):
+                mask = (etype_strs == etype_str)
+                grp  = f.get(f"elements/{etype_str}")
+                if grp is None or "labels" not in grp:
+                    continue
+                elem_labels      = grp["labels"][:]
+                face_elem_labels = elem_labels[elem_row_arr[mask]]
+                # Reverse order so names[0] wins on overlap.
+                for si in range(len(names) - 1, -1, -1):
+                    hit            = np.isin(face_elem_labels, assignments[names[si]])
+                    code_mask      = code[mask]
+                    code_mask[hit] = si + 1
+                    code[mask]     = code_mask
+    except Exception:
+        return ["(none)"] * Rf
+
+    code_to_name = {0: "(none)"}
+    for si, n in enumerate(names):
+        code_to_name[si + 1] = n
+    return [code_to_name[int(c)] for c in code]
+
+
+# ---------------------------------------------------------------------------
 # L1 complete-value helpers (for legend completeness)
 # ---------------------------------------------------------------------------
 
@@ -640,6 +800,8 @@ def _compute_labels_and_legend(
         labels = _labels_from_etype(etype_arr)
     elif scheme == "section":
         labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme == "section_assignment":
+        labels = _labels_from_section_assignment(idx, instance, etype_arr, elem_row_arr)
     elif scheme in ("material", "section_type"):
         attr_name = "material_name" if scheme == "material" else "section_type"
         labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
@@ -657,8 +819,9 @@ def _compute_labels_and_legend(
     else:
         # Surface-derived labels (in appearance order)
         unique_vals = list(dict.fromkeys(labels))
-        # For etype / material / section_type: append any values that only
-        # exist on interior (non-surface) elements so the legend is complete.
+        # For etype / material / section_type / section_assignment: append any
+        # values that only exist on interior (non-surface) elements so the
+        # legend is complete.
         if scheme in ("etype", "material", "section_type"):
             if scheme == "etype":
                 all_l1 = _all_etypes_from_l1(idx, instance)
@@ -667,6 +830,12 @@ def _compute_labels_and_legend(
                 all_l1 = _all_unique_vals_from_l1(idx, instance, attr_name)
             surface_set = set(unique_vals)
             for v in all_l1:
+                if v and v not in surface_set:
+                    unique_vals.append(v)
+                    surface_set.add(v)
+        elif scheme == "section_assignment":
+            surface_set = set(unique_vals)
+            for v in _section_assignments(idx, instance).keys():
                 if v and v not in surface_set:
                     unique_vals.append(v)
                     surface_set.add(v)
@@ -822,6 +991,7 @@ def _total_elem_counts_per_label(
 
     - etype / material / section_type: counted directly from L1 per-element
       datasets — exact totals.
+    - section_assignment: element_set size per section (exact totals).
     - elset: relabel every element (reusing _labels_from_elsets) and tally.
     - section: regions are a surface-only concept, so fall back to surface_counts.
 
@@ -843,6 +1013,8 @@ def _total_elem_counts_per_label(
     elif scheme in ("material", "section_type"):
         attr_name = "material_name" if scheme == "material" else "section_type"
         counts = _l1_attr_counts(idx, instance, attr_name)
+    elif scheme == "section_assignment":
+        counts = _section_assignment_counts(idx, instance)
     elif scheme == "elset":
         full_etype, full_row = _full_element_arrays(idx, instance)
         if full_etype is None or len(full_etype) == 0:
@@ -864,8 +1036,9 @@ def get_all_legend_entries(
 ) -> List[dict]:
     """Return legend entries for all instances.
 
-    For section scheme: each region label is unique per instance, returned as-is with
-    an 'instance' field on each entry.
+    For section / section_assignment schemes: labels are instance-scoped (a region
+    or a section name may differ between instances), so entries are kept per
+    instance with an 'instance' field.
     For other schemes (etype/material/section_type): legend_key is shared across instances,
     so entries are deduplicated by legend_key and face_count is summed.
     """
@@ -880,7 +1053,7 @@ def get_all_legend_entries(
             pass
 
     # For schemes where labels are globally consistent, deduplicate by legend_key
-    if scheme not in ("section", "elset"):
+    if scheme not in ("section", "section_assignment", "elset"):
         merged: Dict[str, dict] = {}
         for e in all_entries:
             key = e["legend_key"]
@@ -920,6 +1093,8 @@ def get_legend_entries(
         labels = _labels_from_etype(etype_arr)
     elif scheme == "section":
         labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme == "section_assignment":
+        labels = _labels_from_section_assignment(idx, instance, etype_arr, elem_row_arr)
     elif scheme in ("material", "section_type"):
         attr_name = "material_name" if scheme == "material" else "section_type"
         labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
@@ -955,6 +1130,12 @@ def get_legend_entries(
                 all_l1 = _all_unique_vals_from_l1(idx, instance, attr_name)
             surface_set = set(unique_vals)
             for v in all_l1:
+                if v and v not in surface_set:
+                    unique_vals.append(v)
+                    surface_set.add(v)
+        elif scheme == "section_assignment":
+            surface_set = set(unique_vals)
+            for v in _section_assignments(idx, instance).keys():
                 if v and v not in surface_set:
                     unique_vals.append(v)
                     surface_set.add(v)

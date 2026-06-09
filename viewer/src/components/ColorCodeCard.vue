@@ -104,7 +104,7 @@ const store = useViewerStore()
 const api   = useOdbApi()
 const emit  = defineEmits(['apply', 'clear', 'reset', 'region-highlight', 'clear-region-highlight'])
 
-const SCHEME_LABELS = { instance:'Instance', etype:'Element Type', section:'Averaging Regions', material:'Material', section_type:'Section Type', elset:'Elset Highlight' }
+const SCHEME_LABELS = { instance:'Instance', etype:'Element Type', section:'Averaging Regions', section_assignment:'Section Assignments', material:'Material', section_type:'Section Type', elset:'Elset Highlight' }
 
 const scheme         = ref('')
 const schemes        = ref([])

@@ -91,6 +91,7 @@ const api   = useOdbApi()
 
 const SCHEME_NAMES = {
   section:      'Averaging Regions',
+  section_assignment: 'Section Assignments',
   etype:        'Element Types',
   material:     'Materials',
   section_type: 'Section Types',

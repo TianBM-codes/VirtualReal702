@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-09（legend-entries 新增 elem_count 字段——实际单元数（含内部，来自 L1；section 例外为表面单元数）；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) H5 重复扫描的慢查询）
+更新时间：2026-06-09（新增 color-code scheme=section_assignment 按真实截面指派上色/统计，与既有 section=平均域并存互不影响；legend-entries 新增 elem_count——实际单元数含内部，来自 L1，section 例外为表面单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) 慢查询）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1494,10 +1494,13 @@ L3BE sections：
 | 值 | 说明 | 可用条件 |
 |---|---|---|
 | `etype` | 按单元类型上色 | 始终可用 |
-| `section` | 按平均域（Averaging Region）上色 | 模型有截面分区时可用（ODB 和 INP+ODB 均支持） |
+| `section` | 按**平均域（Averaging Region）**上色——表面 union-find 域（"Region N"），表面概念 | 模型有截面分区时可用（ODB 和 INP+ODB 均支持） |
+| `section_assignment` | 按**截面指派（Section Assignment）**上色——每个单元归属的真实截面（按截面的 element_set 判定），含内部单元 | L1 含 sections 且其 element_set 存在时可用 |
 | `material` | 按材料名上色 | L1 包含材料信息时可用 |
 | `section_type` | 按截面类型（SOLID/SHELL/…）上色 | L1 包含截面类型信息时可用 |
 | `elset` | 高亮指定单元集 | L1 包含 element set 时可用，需同时传 `set_names` |
+
+> ⚠️ `section`（平均域）与 `section_assignment`（截面指派）是**两个不同概念**：前者是后处理时在表面按邻接/折角算出的视觉区域，无内部单元含义；后者是模型里真实的截面指派，每个单元唯一归属，内外单元都算。两者**并存、互不影响**。
 
 ### `GET /api/odb/{odb_id}/color-code/{instance}`
 
@@ -1505,7 +1508,7 @@ L3BE sections：
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `scheme` | 是 | `etype` / `section` / `material` / `section_type` / `elset` |
+| `scheme` | 是 | `etype` / `section` / `section_assignment` / `material` / `section_type` / `elset` |
 | `set_names` | 否 | 逗号分隔，仅 `scheme=elset` 使用 |
 
 响应 body 为 L3BE 二进制，legend 嵌入 L3BE section 中（非响应头）：
@@ -1604,7 +1607,7 @@ legend 中 `name` 字段若用户已通过 display-names 接口设置过自定�
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `scheme` | 是 | etype \\| material \\| section_type \\| section \\| section_assignment \\| elset |
 | `set_names` | elset 时必填 | 逗号分隔的集合名称 |
 
 响应 `data.legend` 数组，每项：
@@ -1630,7 +1633,7 @@ const legend = res.data?.legend ?? []
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `scheme` | 是 | etype \\| material \\| section_type \\| section \\| section_assignment \\| elset |
 | `set_names` | elset 时必填 | 逗号分隔的集合名称 |
 
 响应 `data.entries` 数组，每项比单 instance 接口多：
@@ -1651,7 +1654,7 @@ const legend = res.data?.legend ?? []
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `scheme` | 是 | etype \| material \| section_type \| section \| elset |
+| `scheme` | 是 | etype \\| material \\| section_type \\| section \\| section_assignment \\| elset |
 | `set_names` | elset 时必填 | 逗号分隔的集合名称 |
 
 响应 `data.entries` 数组，每项：
@@ -1668,7 +1671,7 @@ const legend = res.data?.legend ?? []
 | `elem_count` | int | 该条目对应的**实际单元数**（来自 L1，含模型内部单元，非仅可见表面）|
 
 > LegendEditor 浮窗的「单元数」列显示 `elem_count`。`face_count` 仍保留供其它用途。
-> `elem_count` 对 etype / material / section_type 直接从 L1 逐单元数据精确统计；elset 按全部单元归属集合统计；
+> `elem_count` 对 etype / material / section_type 直接从 L1 逐单元数据精确统计；section_assignment 按每个截面的 element_set 单元数统计（含内部）；elset 按全部单元归属集合统计；
 > **section 例外**：区域（Region N）是按表面邻接 union-find 得到的"表面概念"，没有内部单元含义，故此时 `elem_count` 为去重后的可见表面单元数。
 
 ### `POST /api/odb/{odb_id}/color-code/{instance}/legend-entries`

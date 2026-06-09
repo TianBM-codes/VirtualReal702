@@ -185,7 +185,7 @@ export function useOdbApi() {
   }
 
   // ── Legend Entries ────────────────────────────────────────────────────────
-  const ALL_SCHEMES = new Set(['section', 'etype', 'material', 'section_type'])
+  const ALL_SCHEMES = new Set(['section', 'section_assignment', 'etype', 'material', 'section_type'])
 
   function fetchLegendEntries(instance, scheme, setNames) {
     const params = new URLSearchParams({ scheme })
