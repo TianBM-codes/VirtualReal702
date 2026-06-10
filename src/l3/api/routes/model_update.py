@@ -56,7 +56,7 @@ async def list_model_update_result_groups(odb_id: str):
     return ok({"result_groups": groups})
 
 
-@router.get("/model-update/step")
+@router.get("/model-update/step_frame")
 async def step():
     return ok([{"label": "Bayesian-Update", "value": "Bayesian-Update", "frame": 0}])
 

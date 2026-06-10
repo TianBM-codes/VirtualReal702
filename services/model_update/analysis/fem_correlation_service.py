@@ -1093,7 +1093,8 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
             created_at = CURRENT_TIMESTAMP
         """
 
-        results = []
+        all_results = []
+        qualified_results = []
         for test_mode_no, test_mode_map in sorted(test_modes.items()):
             for fem_mode_no, fem_mode_map in sorted(fem_modes.items()):
                 test_values = []
@@ -1176,9 +1177,9 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
                         "anchors_preview": anchors,
                     },
                 }
-                if resolved_mac_threshold is not None and float(item["mac"]) < resolved_mac_threshold:
-                    continue
-                results.append(item)
+                all_results.append(item)
+                if resolved_mac_threshold is None or float(item["mac"]) >= resolved_mac_threshold:
+                    qualified_results.append(item)
                 cursor.execute(insert_sql, (
                     project_id,
                     item["test_mode_no"],
@@ -1194,10 +1195,11 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
                     _json_dumps(item["extra_json"]),
                 ))
 
-        if not results:
+        if not all_results:
             raise ValueError("未生成有效的模态相关性配对结果")
 
-        best_pair = max(results, key=lambda row: row["dac"])
+        best_pair_pool = qualified_results if qualified_results else all_results
+        best_pair = max(best_pair_pool, key=lambda row: row["dac"])
         # Keep the single strongest modal pair in the legacy static-shape pair
         # table because some existing consumers still read that summary record.
         cursor.execute("""
@@ -1219,7 +1221,7 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
 
         conn.commit()
         best_by_test_mode = {}
-        for item in results:
+        for item in best_pair_pool:
             key = item["test_mode_no"]
             best = best_by_test_mode.get(key)
             if best is None or item["dac"] > best["dac"]:
@@ -1229,9 +1231,11 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
             "project_id": project_id,
             "mac_mode": mac_mode,
             "mac_threshold": resolved_mac_threshold,
-            "comparison_count": len(results),
+            "comparison_count": len(all_results),
+            "qualified_comparison_count": len(qualified_results),
             "best_pairs_by_test_mode": [best_by_test_mode[key] for key in sorted(best_by_test_mode)],
-            "results_preview": results[:20],
+            "results_preview": all_results[:20],
+            "qualified_results_preview": qualified_results[:20],
         }
     except Exception:
         conn.rollback()

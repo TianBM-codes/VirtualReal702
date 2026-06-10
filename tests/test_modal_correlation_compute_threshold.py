@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from services.model_update.analysis import inp_service
+from services.model_update.analysis import fem_correlation_service
 
 class _FakeCursor:
     def __init__(self):
@@ -64,15 +65,15 @@ class _FakeConnection:
         return None
 
 
-def test_compute_modal_correlation_filters_rows_below_mac_threshold(monkeypatch):
+def test_compute_modal_correlation_persists_all_rows_and_tracks_threshold_matches(monkeypatch):
     fake_conn = _FakeConnection()
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
-    monkeypatch.setattr(inp_service, "_require_modal_project", lambda project_id, cursor=None: None)
-    monkeypatch.setattr(inp_service, "_resolve_modal_mac_mode", lambda cursor, project_id, test_modes: "real")
-    monkeypatch.setattr(inp_service, "_load_test_modal_frequencies", lambda cursor, project_id: {1: 10.0})
+    monkeypatch.setattr(fem_correlation_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(fem_correlation_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(fem_correlation_service, "_require_modal_project", lambda project_id, cursor=None: None)
+    monkeypatch.setattr(fem_correlation_service, "_resolve_modal_mac_mode", lambda cursor, project_id, test_modes: "real")
+    monkeypatch.setattr(fem_correlation_service, "_load_test_modal_frequencies", lambda cursor, project_id: {1: 10.0})
     monkeypatch.setattr(
-        inp_service,
+        fem_correlation_service,
         "_load_test_mode_vectors",
         lambda cursor, project_id: {
             1: {
@@ -82,7 +83,7 @@ def test_compute_modal_correlation_filters_rows_below_mac_threshold(monkeypatch)
         },
     )
     monkeypatch.setattr(
-        inp_service,
+        fem_correlation_service,
         "_load_fem_mode_vectors",
         lambda cursor, project_id: (
             {
@@ -122,7 +123,7 @@ def test_compute_modal_correlation_filters_rows_below_mac_threshold(monkeypatch)
             "self_fem_t_abs": 1.0,
         }
 
-    monkeypatch.setattr(inp_service, "_compute_dac_dsf", _fake_compute_dac_dsf)
+    monkeypatch.setattr(fem_correlation_service, "_compute_dac_dsf", _fake_compute_dac_dsf)
 
     result = inp_service.compute_modal_correlation(project_id=18, overwrite=False, mac_threshold=70.0)
 
@@ -131,11 +132,15 @@ def test_compute_modal_correlation_filters_rows_below_mac_threshold(monkeypatch)
         for sql, params in fake_conn.cursor_obj.executed
         if "INSERT INTO t_mt_py_fem_modal_correlation" in sql
     ]
-    assert len(insert_calls) == 1
+    assert len(insert_calls) == 2
     assert insert_calls[0][2] == 1
-    assert result["comparison_count"] == 1
+    assert insert_calls[1][2] == 2
+    assert result["comparison_count"] == 2
+    assert result["qualified_comparison_count"] == 1
     assert result["mac_threshold"] == 70.0
     assert result["results_preview"][0]["mac"] == 82.0
+    assert result["results_preview"][1]["mac"] == 65.0
+    assert result["qualified_results_preview"][0]["mac"] == 82.0
     assert fake_conn.committed is True
 
 
