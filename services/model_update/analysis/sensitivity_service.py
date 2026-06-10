@@ -1819,9 +1819,7 @@ def _build_sensitivity_cloud_request(
                             instance_name,
                             _workspace_instance_element_labels(resolved_workspace, instance_name),
                         )
-                        per_instance_labels[instance_name] = {
-                            int(label): 0.0 for label in instance_label_cache[instance_name]
-                        }
+                        per_instance_labels[instance_name] = {}
                     else:
                         per_instance_labels[instance_name] = {}
                 label_map = per_instance_labels[instance_name]
