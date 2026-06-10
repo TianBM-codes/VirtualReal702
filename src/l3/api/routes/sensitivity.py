@@ -141,6 +141,9 @@ async def list_sensitivity_result_groups(
 
     return ok({"result_groups": groups})
 
+@router.get("/sensitivity/step")
+async def step():
+    return ok([{"label": "Sensitivity", "value": "Sensitivity", "frame": 0}])
 
 @router.get("/sensitivity/fields")
 async def list_sensitivity_fields(
