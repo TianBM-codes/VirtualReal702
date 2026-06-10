@@ -686,6 +686,12 @@ def frame_scalars(
                 {"step": step, "field": field},
             )
 
+    effective_render_mode = render_mode
+    if render_mode != "flat" and _should_force_flat_external_element_render(
+        idx.workspace, step, field, result_group
+    ):
+        effective_render_mode = "flat"
+
     _manifest = ManifestRepo(idx.workspace)
     geom_h5_path = _manifest.get_geom_path(instance)
 
