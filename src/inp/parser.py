@@ -584,6 +584,14 @@ class InpParser:
             self._current_part.sections.append(sec)
             return
 
+        # Section assignment inside the *Assembly block (references an
+        # instance-scoped elset). Keep it on the assembly so the exporter can
+        # resolve it per-instance; routing it to a phantom PART-1-1 would drop
+        # the material because that part has no nodes/elements.
+        if self._ctx in (CTX_ASSEMBLY, CTX_INSTANCE) and self._current_assembly is not None:
+            self._current_assembly.sections.append(sec)
+            return
+
         if "PART-1-1" not in self._model.parts:
             self._model.parts["PART-1-1"] = Part(name="PART-1-1")
         self._model.parts["PART-1-1"].sections.append(sec)

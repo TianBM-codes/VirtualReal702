@@ -272,6 +272,10 @@ class Assembly:
     surfaces:  Dict[str, Surface]           = field(default_factory=dict)
     ties:      List[TieConstraint]          = field(default_factory=list)
     couplings: List[CouplingConstraint]     = field(default_factory=list)
+    # Section assignments written inside the *Assembly block (referencing
+    # instance-scoped elsets). Native Abaqus/CAE puts sections inside *Part,
+    # but flattened / third-party INPs (Hypermesh, ANSA) often place them here.
+    sections:  List["Section"]              = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
