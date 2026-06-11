@@ -150,7 +150,8 @@ def export_l1(model: InpModel, workspace: str) -> None:
             geom_rel = os.path.join("l1", "geometry",
                                     _safe(inst_name) + ".h5")
             geom_abs = os.path.join(workspace, geom_rel)
-            bbox_min, bbox_max = _write_geometry_h5(part, geom_abs)
+            mat_map, sec_map = _build_section_maps(part, model.assembly, inst_name)
+            bbox_min, bbox_max = _write_geometry_h5(part, geom_abs, mat_map, sec_map)
             _insert_instance(db_conn, inst_name, inst.part_name,
                              geom_rel, part, bbox_min, bbox_max)
             _write_sets(part, inst_name, workspace, db_conn)
@@ -265,11 +266,73 @@ def _build_transform_matrix(inst) -> np.ndarray:
 # geometry/<inst>.h5
 # ---------------------------------------------------------------------------
 
+def _build_section_maps(
+    part: Part, assembly, inst_name: str
+) -> Tuple[Dict[int, str], Dict[int, str]]:
+    """
+    Build per-element {elem_label → material_name} / {elem_label → section_type}
+    maps for one instance.
+
+    Two sources are merged:
+      1. Sections defined inside the part (native Abaqus/CAE layout).
+      2. Sections defined inside the *Assembly block referencing an
+         instance-scoped elset (flattened / Hypermesh / ANSA layout).
+
+    Elset names are matched case-insensitively because Abaqus treats set names
+    as case-insensitive — e.g. a `*Solid Section, elset=ALLELEMS` must still
+    match `*Element, elset=AllElems`. A case-sensitive lookup here was the bug
+    that left material_name empty ("none" in the legend).
+    """
+    mat_map: Dict[int, str] = {}   # elem_label → material name
+    sec_map: Dict[int, str] = {}   # elem_label → section type (short)
+
+    def _norm_type(stype: str) -> str:
+        return stype.upper().replace(" SECTION", "").strip()
+
+    # Case-insensitive view of part-level elsets.
+    elsets_ci = {name.upper(): es for name, es in part.elsets.items()}
+
+    # --- 1. Part-level section assignments --------------------------------
+    for sec in part.sections:
+        elset = elsets_ci.get(sec.elset_name.upper())
+        if elset is None:
+            continue
+        mat   = sec.material_name or ""
+        stype = _norm_type(sec.section_type)
+        for lbl in elset.elem_labels:
+            mat_map[lbl] = mat
+            sec_map[lbl] = stype
+
+    # --- 2. Assembly-level section assignments for this instance ----------
+    if assembly is not None and getattr(assembly, "sections", None):
+        aelsets_ci = {name.upper(): es for name, es in assembly.elsets.items()}
+        for sec in assembly.sections:
+            aelset = aelsets_ci.get(sec.elset_name.upper())
+            if aelset is None:
+                continue
+            # Only apply to the instance this assembly elset belongs to.
+            # instance_name=None means assembly-wide; its labels are not
+            # instance-local so we can't safely attribute them here.
+            if aelset.instance_name != inst_name:
+                continue
+            mat   = sec.material_name or ""
+            stype = _norm_type(sec.section_type)
+            for lbl in aelset.elem_labels:
+                mat_map[lbl] = mat
+                sec_map[lbl] = stype
+
+    return mat_map, sec_map
+
+
 def _write_geometry_h5(
-    part: Part, h5_path: str
+    part: Part, h5_path: str,
+    mat_map: Dict[int, str], sec_map: Dict[int, str],
 ) -> Tuple[List[float], List[float]]:
     """
     Write nodes and face-expanded element arrays.  Returns (bbox_min, bbox_max).
+
+    *mat_map* / *sec_map* are per-element-label color-code attribute maps built
+    by :func:`_build_section_maps`.
     """
     # ---- Build sorted node arrays ----------------------------------------
     if not part.nodes:
@@ -298,21 +361,6 @@ def _write_geometry_h5(
     for elem_label, elem in part.elements.items():
         atype = elem.abaqus_type.upper()
         type_groups.setdefault(atype, []).append((elem_label, elem.node_labels))
-
-    # ---- Build per-element attribute maps from sections ------------------
-    # Section: elset_name → material_name, section_type
-    mat_map: Dict[int, str] = {}   # elem_label → material name
-    sec_map: Dict[int, str] = {}   # elem_label → section type (short)
-    for sec in part.sections:
-        elset = part.elsets.get(sec.elset_name)
-        if elset is None:
-            continue
-        mat  = sec.material_name or ""
-        # Normalize "SOLID SECTION" → "SOLID" etc.
-        stype = sec.section_type.upper().replace(" SECTION", "").strip()
-        for lbl in elset.elem_labels:
-            mat_map[lbl] = mat
-            sec_map[lbl] = stype
 
     # ---- Write HDF5 --------------------------------------------------
     with h5py.File(h5_path, "w") as f:
