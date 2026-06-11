@@ -253,6 +253,19 @@ def safe(name):
     return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
 
 
+def _canon_inst(name):
+    """Instance 名规范化：统一大写。
+
+    与 src/l1/manifest_schema.canon_instance 保持一致；此处单独定义一份，
+    因为本文件在 Abaqus Python 2.7 下运行，不依赖 src 包的可导入性。
+    凡 ODB 实例名进入流水线（原始 .npy 目录名 / meta / result_block key /
+    assembly.h5 group）的源头都过这里，保证与 INP 侧（同样大写）对齐。
+    """
+    if name is None:
+        return name
+    return name.upper()
+
+
 def mkdirs(path):
     if not os.path.exists(path):
         os.makedirs(path)
@@ -489,13 +502,13 @@ def _set_nodes_by_inst(ns):
     if inst_seq and len(inst_seq) == len(nodes_seq):
         # 新版：node_array 对应 inst_seq 中同位置的 instance
         for inst, node_array in zip(inst_seq, nodes_seq):
-            iname = inst.name if hasattr(inst, 'name') else str(inst)
+            iname = _canon_inst(inst.name if hasattr(inst, 'name') else str(inst))
             for node in node_array:
                 by_inst.setdefault(iname, []).append(node.label)
     else:
         # 旧版：每个 node 自带 instanceName
         for node in nodes_seq:
-            by_inst.setdefault(node.instanceName, []).append(node.label)
+            by_inst.setdefault(_canon_inst(node.instanceName), []).append(node.label)
     return by_inst
 
 
@@ -506,12 +519,12 @@ def _set_elems_by_inst(es):
     inst_seq  = getattr(es, 'instances', None)
     if inst_seq and len(inst_seq) == len(elems_seq):
         for inst, elem_array in zip(inst_seq, elems_seq):
-            iname = inst.name if hasattr(inst, 'name') else str(inst)
+            iname = _canon_inst(inst.name if hasattr(inst, 'name') else str(inst))
             for elem in elem_array:
                 by_inst.setdefault(iname, []).append(elem.label)
     else:
         for elem in elems_seq:
-            by_inst.setdefault(elem.instanceName, []).append(elem.label)
+            by_inst.setdefault(_canon_inst(elem.instanceName), []).append(elem.label)
     return by_inst
 
 
@@ -527,6 +540,7 @@ def dump_assembly(odb, raw_dir, meta):
     print("  Assembly ...")
     inst_meta = {}
     for inst_name, instance in assembly.instances.items():
+        inst_name = _canon_inst(inst_name)
         s = safe(inst_name)
         d = os.path.join(asm_dir, 'instances', s)
         mkdirs(d)
@@ -615,6 +629,7 @@ def dump_geometry(odb, raw_dir, meta):
 
     t_geom = time.time()
     for inst_name, instance in assembly.instances.items():
+        inst_name = _canon_inst(inst_name)
         t_inst = time.time()
         print("  Geom: {} ...".format(inst_name))
         s  = safe(inst_name)
@@ -896,6 +911,7 @@ def dump_sets(odb, raw_dir, meta):
     # Part sets (via instance node/element sets — one per part)
     seen_parts = set()
     for inst_name, instance in assembly.instances.items():
+        inst_name = _canon_inst(inst_name)
         part_name = getattr(instance, 'partName', None)
         if part_name is None and hasattr(instance, 'part') and hasattr(instance.part, 'name'):
             part_name = instance.part.name
@@ -1519,7 +1535,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             for block in first_field.bulkDataBlocks:
                 if block.instance is None:
                     continue
-                inst_name = block.instance.name
+                inst_name = _canon_inst(block.instance.name)
                 position  = _pos_str(block.position)
                 elem_type = (getattr(block, 'elementType', None)
                              or getattr(block, 'baseElementType', None))
@@ -1612,7 +1628,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     for block in _en_first.bulkDataBlocks:
                         if block.instance is None:
                             continue
-                        inst_name = block.instance.name
+                        inst_name = _canon_inst(block.instance.name)
                         if inst_name in _en_insts:
                             continue  # native EN already present
                         position  = 'ELEMENT_NODAL'
@@ -1670,7 +1686,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 for block in field_out.bulkDataBlocks:
                     if block.instance is None:
                         continue
-                    inst_name = block.instance.name
+                    inst_name = _canon_inst(block.instance.name)
                     position  = _pos_str(block.position)
                     elem_type = (getattr(block, 'elementType', None)
                                  or getattr(block, 'baseElementType', None))
@@ -1755,7 +1771,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         for block in _en_out.bulkDataBlocks:
                             if block.instance is None:
                                 continue
-                            inst_name = block.instance.name
+                            inst_name = _canon_inst(block.instance.name)
                             if inst_name in _en_insts:
                                 continue  # native EN already written
                             position  = 'ELEMENT_NODAL'
@@ -1954,6 +1970,7 @@ def _extract_sections_to_dir(odb, out_dir):
     Python 2/3 compatible (no f-strings, no walrus).
     """
     for iname, instance in odb.rootAssembly.instances.items():
+        iname = _canon_inst(iname)
         inst_safe = safe(iname)
         d = os.path.join(out_dir, 'sections', inst_safe)
 
@@ -2032,6 +2049,7 @@ def _run_consistency_check(args, odb_path, workspace):
     instances_out = {}
 
     for inst_name, instance in assembly.instances.items():
+        inst_name = _canon_inst(inst_name)
         node_count = len(instance.nodes)
         # count total elements across all types
         elem_count = len(instance.elements)
@@ -2105,6 +2123,7 @@ def _consistency_check_inline(odb, workspace, result_group, check_mode, geom_sou
     instances_out = {}
 
     for inst_name, instance in assembly.instances.items():
+        inst_name = _canon_inst(inst_name)
         node_count = len(instance.nodes)
         elem_count = len(instance.elements)
         inst_entry = {'node_count': node_count, 'elem_count': elem_count}
@@ -2162,7 +2181,10 @@ def _consistency_check_inline(odb, workspace, result_group, check_mode, geom_sou
         print("  WARNING: no instances in manifest.db, skipping validation")
         return
 
-    geom_inst = {r[0]: (r[1], r[2]) for r in _rows}
+    # 安全网：manifest 里的 instance 名规范化为大写后再比，兼容遗留数据。
+    # 正常情况下 INP 侧（exporter.canon_instance）和 ODB 侧（_canon_inst）
+    # 都已写入大写，这里只是兜底，避免漏网的大小写差异误报 mismatch。
+    geom_inst = {_canon_inst(r[0]): (r[1], r[2]) for r in _rows}
 
     if set(geom_inst) != set(instances_out):
         print("ERROR: instance list mismatch: geom={} odb={}".format(

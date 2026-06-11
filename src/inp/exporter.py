@@ -35,7 +35,7 @@ import h5py
 import numpy as np
 
 from .model import InpModel, Instance, Part
-from src.l1.manifest_schema import MANIFEST_SCHEMA
+from src.l1.manifest_schema import MANIFEST_SCHEMA, canon_instance
 
 
 def _safe(name: str) -> str:
@@ -147,6 +147,9 @@ def export_l1(model: InpModel, workspace: str) -> None:
             part = model.parts.get(inst.part_name)
             if part is None:
                 continue
+            # 统一大写：让 manifest / 几何 h5 文件名 / sets / assembly.h5 group
+            # 都用规范化后的名字，和 ODB 默认大写对齐（见 canon_instance 注释）。
+            inst_name = canon_instance(inst_name)
             geom_rel = os.path.join("l1", "geometry",
                                     _safe(inst_name) + ".h5")
             geom_abs = os.path.join(workspace, geom_rel)
@@ -179,6 +182,8 @@ def _write_assembly_h5(model: InpModel, workspace: str) -> None:
         asm = model.assembly
         if asm is not None:
             for inst_name, inst in asm.instances.items():
+                # group 名必须与 manifest.instance_name 逐字一致（L2 按它查 transform）
+                inst_name = canon_instance(inst_name)
                 grp = f.require_group("instances/{}".format(inst_name))
                 mat = _build_transform_matrix(inst)
                 grp.create_dataset("transform", data=mat)
@@ -313,7 +318,8 @@ def _build_section_maps(
             # Only apply to the instance this assembly elset belongs to.
             # instance_name=None means assembly-wide; its labels are not
             # instance-local so we can't safely attribute them here.
-            if aelset.instance_name != inst_name:
+            # inst_name 已规范化为大写，这里把 elset 的 instance 引用也规范化后再比。
+            if canon_instance(aelset.instance_name) != inst_name:
                 continue
             mat   = sec.material_name or ""
             stype = _norm_type(sec.section_type)
