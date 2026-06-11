@@ -18,6 +18,7 @@ import numpy as np
 import h5py
 
 from ..infra.manifest_repo import ManifestRepo
+from src.l1.manifest_schema import canon_instance
 
 
 class ExternalResultWriter:
@@ -69,6 +70,7 @@ class ExternalResultWriter:
 
         Returns number of frames written.
         """
+        instance = canon_instance(instance)
         geom = self._geom_h5(instance)
         if not os.path.exists(geom):
             raise FileNotFoundError(f"Geometry HDF5 not found: {geom}")
@@ -125,6 +127,7 @@ class ExternalResultWriter:
         frames: same structure as write_nodal.
         Returns number of frames written.
         """
+        instance = canon_instance(instance)
         geom = self._geom_h5(instance)
         if not os.path.exists(geom):
             raise FileNotFoundError(f"Geometry HDF5 not found: {geom}")

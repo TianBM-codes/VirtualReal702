@@ -22,6 +22,7 @@ import numpy as np
 
 from ..core.errors import NotFoundError, NotReadyError
 from ..core.state import OdbRegistry
+from src.l1.manifest_schema import canon_instance
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,7 @@ def compute_section(
         (tri_buf [T,3,3], edge_buf [E,2,3], tri_count)
         Both arrays may be empty if the plane doesn't intersect any volume element.
     """
+    instance = canon_instance(instance)
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})

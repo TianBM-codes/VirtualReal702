@@ -23,6 +23,7 @@ import numpy as np
 
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import ModelIndex
+from src.l1.manifest_schema import canon_instance
 
 # ---------------------------------------------------------------------------
 # Colour palette  (qualitative, 16 entries)
@@ -192,6 +193,7 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     """
     Return the available coloring schemes and elset names for *instance*.
     """
+    instance = canon_instance(instance)
     schemes: List[str] = ["etype"]
 
     from ..infra.manifest_repo import ManifestRepo
@@ -283,6 +285,7 @@ def get_color_code(
         colors   [Rf*3, 3] float32   — ready for Three.js colorAttr
         legend   list[{id, name, r, g, b}]
     """
+    instance = canon_instance(instance)
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
 
@@ -325,6 +328,7 @@ def get_legend(
     Returns list[{id, legend_key, name, r, g, b}] — same format as the legend
     embedded in the GET /color-code/{instance} L3BE response.
     """
+    instance = canon_instance(instance)
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
 
@@ -356,6 +360,7 @@ def region_face_mask(
     Return a bool mask [Rf] where True = render face belongs to *region*.
     Returns None if scheme is unsupported or data is missing.
     """
+    instance = canon_instance(instance)
     etype_arr    = idx.source_elem_etype.get(instance)
     elem_row_arr = idx.render_source_elem_row.get(instance)
     if etype_arr is None or elem_row_arr is None:
@@ -1078,6 +1083,7 @@ def get_legend_entries(
       user_color/user_name flags, face_count.
     Used by GET /color-code/{instance}/legend-entries.
     """
+    instance = canon_instance(instance)
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
 

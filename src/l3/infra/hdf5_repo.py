@@ -8,6 +8,8 @@ import numpy as np
 import h5py
 import os
 
+from src.l1.manifest_schema import canon_instance
+
 
 def _safe_instance_name(name: str) -> str:
     """Replicate l1_pack.safe() for fallback path construction."""
@@ -21,6 +23,7 @@ class HDF5Repo:
 
     def _geom_path(self, instance_name: str) -> str:
         """Resolve geometry path via manifest; fall back to safe-name construction."""
+        instance_name = canon_instance(instance_name)
         try:
             import sqlite3
             with sqlite3.connect(os.path.join(self.workspace, "manifest.db")) as conn:
@@ -92,6 +95,7 @@ class HDF5Repo:
         Read a scalar result value from a NODAL result HDF5 file.
         Dataset layout: [num_frames, N, num_components]
         """
+        instance_name = canon_instance(instance_name)
         with h5py.File(result_h5_path, "r") as f:
             ds = f[f"NODAL/{instance_name}/data"]
             if ds.ndim == 3:

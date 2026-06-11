@@ -12,6 +12,7 @@ from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.hdf5_repo import HDF5Repo
 from ..infra.manifest_repo import ManifestRepo
+from src.l1.manifest_schema import canon_instance
 from ..schemas.query import PickOdbInfo, PickResponse, PickResultInfo, BBoxResponse, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse, RayPickRequest
 
 logger = logging.getLogger(__name__)
@@ -367,6 +368,7 @@ def pick(
     deform_scale: float = 1.0,           # scale factor for def_coords = orig + U * scale
     result_group: str = None,
 ) -> PickResponse:
+    instance = canon_instance(instance)
     idx = _get_ready_index(registry, odb_id)
 
     # ── Resolve render_face_idx → etype + elem_row ──────────────────────────
@@ -515,6 +517,7 @@ def bbox(
     mode: str = "intersect",
     set_name: Optional[str] = None,
 ) -> BBoxResponse:
+    instance = canon_instance(instance)
     idx = _get_ready_index(registry, odb_id)
 
     coords = idx.coords_global.get(instance)

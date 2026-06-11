@@ -18,12 +18,14 @@ from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.colormap import apply_jet_with_neutral
 from ..infra.manifest_repo import ManifestRepo
+from src.l1.manifest_schema import canon_instance
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 def _geom_h5_path(workspace: str, instance: str) -> str:
     """Resolve L1 geometry path via manifest; fall back to safe-name construction."""
+    instance = canon_instance(instance)
     try:
         import sqlite3
         with sqlite3.connect(os.path.join(workspace, "manifest.db")) as conn:
@@ -52,6 +54,7 @@ def get_face_mask_for_elem_labels(
       elem_row = src_elem_row[face_i]
       label = geom_hdf5["elements/{etype}/labels"][elem_row]
     """
+    instance = canon_instance(instance)
     src_elem_row = idx.render_source_elem_row.get(instance)
     src_etype    = idx.source_elem_etype.get(instance)
 
@@ -106,6 +109,7 @@ def save_user_field(
       - element_labels must not be empty.
       - name must be a non-empty string.
     """
+    instance = canon_instance(instance)
     if not name or not name.strip():
         raise ValidationError("name must not be empty")
     if not element_labels:
@@ -186,6 +190,7 @@ def get_user_field_colors(
     color_per_vertex : [Rf*3, 4] uint8  — aligned to Triangle Soup
     legend_range     : [2] float32      — [val_min_used, val_max_used]
     """
+    instance = canon_instance(instance)
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
