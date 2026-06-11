@@ -755,8 +755,12 @@ CREATE TABLE element_sets (
   instance_name TEXT,
   h5_path       TEXT,
   element_count INTEGER,
+  is_internal   INTEGER NOT NULL DEFAULT 0,  -- 1 = Abaqus 自动生成的内部集合(_PickedSetNN)，0 = 用户命名集合
   PRIMARY KEY (set_name, instance_name)
 );
+-- is_internal 由 INP 导出链路写入：*Elset 带 internal 关键字（CAE 生成的
+-- _PickedSetNN，被 *Solid Section 引用）标记为 1，其余为 0。当前仅作信息存储，
+-- list_element_sets 接口暂不按此过滤；ODB/BDF/ANSYS 链路写入时走默认值 0。
 
 -- ── L2 文件索引 ────────────────────────────────────────────
 
@@ -1817,3 +1821,23 @@ odb.close()
 - 法向量：接受变形后略偏（不重算，方案 A）
 - 边线：同样注入 displacement shader，通过 `featureEdgeVtxIdxs` / `meshEdgeVtxIdxs` scatter 位移
 - BVH / 拾取：变形激活时（`uDeformScale ≠ 0`）禁用拾取；scale 归零时重建 BVH 并恢复拾取
+
+### 10.2 Color Code elset scheme 多 instance 兼容问题
+
+**现象**：在多 instance 模型里，用户选 `elset` scheme 并点 Apply，前端会对**所有已加载 instance** 并发请求 `/color-code/{instance}?scheme=elset&set_names=...`。但 elset 下拉列表是从 `currentInstance` 的 `/schemes` 接口拿到的，用户可能选到只属于 `currentInstance` 的 instance-level set。对没有该 set 的其他 instance，后端会返回 422 ValidationError，导致整体 Apply 失败。
+
+**根本原因**：
+- `/color-code/{instance}/schemes` 只返回该 instance 自己的 elset 列表（instance-level + 该 instance 有份额的 assembly-level）
+- `applyColorCode` 统一对所有 instance 循环，elset scheme 没有做豁免
+
+**两种 set 的行为差异**：
+
+| set 类型 | Apply 结果 |
+|---|---|
+| Assembly-level set（该 set 在多个 instance 里都有份额） | 每个 instance 各取自己的那段，全部正常着色 |
+| Instance-level set（仅属于一个 instance） | 其他 instance 找不到 → 422 → 整体失败 |
+
+**待决策的修复方向**（选一）：
+1. 前端：elset scheme Apply 时，只对 `currentInstance` 着色，其他 instance 保持灰色
+2. 前端：Apply 前过滤，只对在该 instance 的 `/schemes` 返回列表中包含该 set 的 instance 发请求
+3. 后端：找不到 set 时返回全灰而非报错，让单 instance 失败不影响其他 instance

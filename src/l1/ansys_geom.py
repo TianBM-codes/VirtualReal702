@@ -261,7 +261,9 @@ def pack_ansys_geometry(grid, section_arr, node_components, element_components,
                    (sname, inst_name, inst_name,
                     h5_rel + ':instance_sets/node_sets/' + sname, cnt))
     for sname, cnt in iset_elem_counts.items():
-        db.execute("INSERT OR REPLACE INTO element_sets VALUES (?,?,?,?,?)",
+        db.execute("INSERT OR REPLACE INTO element_sets "
+                   "(set_name, set_scope, instance_name, h5_path, elem_count) "
+                   "VALUES (?,?,?,?,?)",
                    (sname, inst_name, inst_name,
                     h5_rel + ':instance_sets/element_sets/' + sname, cnt))
     db.commit()

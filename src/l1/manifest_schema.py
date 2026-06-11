@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS element_sets (
     instance_name TEXT,
     h5_path       TEXT,
     elem_count    INTEGER,
+    is_internal   INTEGER NOT NULL DEFAULT 0,  -- 1 = Abaqus-generated (_PickedSetNN); 0 = user-named
     PRIMARY KEY (set_name, instance_name)
 );
 CREATE TABLE IF NOT EXISTS result_group_meta (

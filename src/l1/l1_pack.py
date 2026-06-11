@@ -511,7 +511,9 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
             )
         for sname, cnt in gm.get('isets_elem', {}).items():
             db_conn.execute(
-                "INSERT OR REPLACE INTO element_sets VALUES (?,?,?,?,?)",
+                "INSERT OR REPLACE INTO element_sets "
+                "(set_name, set_scope, instance_name, h5_path, elem_count) "
+                "VALUES (?,?,?,?,?)",
                 (sname, inst_name, inst_name,
                  h5_rel + ':instance_sets/element_sets/' + safe(sname), cnt)
             )
@@ -560,7 +562,9 @@ def pack_sets(raw_dir, workspace, meta, db_conn):
                                 )
                             else:
                                 db_conn.execute(
-                                    "INSERT OR REPLACE INTO element_sets VALUES (?,?,?,?,?)",
+                                    "INSERT OR REPLACE INTO element_sets "
+                                    "(set_name, set_scope, instance_name, h5_path, elem_count) "
+                                    "VALUES (?,?,?,?,?)",
                                     (set_safe, 'assembly', inst_safe,
                                      h5_rel + ':assembly_sets/{}/{}/elem_labels'.format(
                                          set_safe, inst_safe),
@@ -594,7 +598,9 @@ def pack_sets(raw_dir, workspace, meta, db_conn):
                             )
                         else:
                             db_conn.execute(
-                                "INSERT OR IGNORE INTO element_sets VALUES (?,?,?,?,?)",
+                                "INSERT OR IGNORE INTO element_sets "
+                                "(set_name, set_scope, instance_name, h5_path, elem_count) "
+                                "VALUES (?,?,?,?,?)",
                                 (sname, 'part:{}'.format(part_safe), part_safe,
                                  h5_rel + ':part_sets/{}/element_sets/{}'.format(part_safe, sname),
                                  len(arr))
