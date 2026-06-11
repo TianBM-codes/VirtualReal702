@@ -1104,6 +1104,10 @@ def _iter_elset_entries(model) -> List[dict]:
     entries = []
     for part_name, part in model.parts.items():
         for set_name, elset in part.elsets.items():
+            # Abaqus-generated internal sets (_PickedSetNN) are kept in the model
+            # so section assignments resolve, but stay out of the user catalog.
+            if getattr(elset, "internal", False):
+                continue
             labels = sorted(set(int(label) for label in (elset.elem_labels or [])))
             if not labels:
                 continue
@@ -1121,6 +1125,8 @@ def _iter_elset_entries(model) -> List[dict]:
 
     if model.assembly:
         for set_name, elset in model.assembly.elsets.items():
+            if getattr(elset, "internal", False):
+                continue
             labels = sorted(set(int(label) for label in (elset.elem_labels or [])))
             if not labels:
                 continue

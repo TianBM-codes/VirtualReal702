@@ -412,8 +412,9 @@ class InpParser:
             return
         is_generate = "generate" in block.params
         is_internal = "internal" in block.params
-        if is_internal:
-            return  # Abaqus internal sets — skip
+        # Internal sets (Abaqus-generated, e.g. _PickedSetNN) are kept — they are
+        # referenced by *Solid Section / *Surface — but flagged so the exporter
+        # hides them from the user-facing set list.
 
         instance_name = block.params.get("instance")
 
@@ -422,6 +423,8 @@ class InpParser:
             if name not in asm.nsets:
                 asm.nsets[name] = AssemblyNset(name=name, instance_name=instance_name)
             target = asm.nsets[name]
+            if is_internal:
+                target.internal = True
             labels, refs = _parse_set_data(block.data_lines, is_generate)
             target.node_labels.extend(labels)
             target.set_refs.extend(refs)
@@ -434,6 +437,8 @@ class InpParser:
             if name not in part.nsets:
                 part.nsets[name] = Nset(name=name)
             target = part.nsets[name]
+            if is_internal:
+                target.internal = True
             labels, refs = _parse_set_data(block.data_lines, is_generate)
             target.node_labels.extend(labels)
             target.set_refs.extend(refs)
@@ -444,8 +449,10 @@ class InpParser:
             return
         is_generate = "generate" in block.params
         is_internal = "internal" in block.params
-        if is_internal:
-            return
+        # Internal elsets (Abaqus-generated, e.g. _PickedSetNN) are kept — they
+        # are what *Solid Section assignments reference — but flagged so the
+        # exporter hides them from the user-facing set list. Dropping them here
+        # was the bug that left material_name empty ("none" in the legend).
 
         instance_name = block.params.get("instance")
 
@@ -454,6 +461,8 @@ class InpParser:
             if name not in asm.elsets:
                 asm.elsets[name] = AssemblyElset(name=name, instance_name=instance_name)
             target = asm.elsets[name]
+            if is_internal:
+                target.internal = True
             labels, refs = _parse_set_data(block.data_lines, is_generate)
             target.elem_labels.extend(labels)
             target.set_refs.extend(refs)
@@ -466,6 +475,8 @@ class InpParser:
             if name not in part.elsets:
                 part.elsets[name] = Elset(name=name)
             target = part.elsets[name]
+            if is_internal:
+                target.internal = True
             labels, refs = _parse_set_data(block.data_lines, is_generate)
             target.elem_labels.extend(labels)
             target.set_refs.extend(refs)

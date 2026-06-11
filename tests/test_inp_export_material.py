@@ -79,6 +79,50 @@ def test_assembly_level_section_assignment(tmp_path):
     assert _export_and_read_material(tmp_path, inp) == {b"steel"}
 
 
+def test_section_referencing_internal_elset(tmp_path):
+    # CAE emits the section's region as an `internal, generate` elset
+    # (_PickedSetNN). Dropping it left material_name empty.
+    inp = (
+        "*Part, name=PartA\n"
+        + _ONE_HEX_BODY
+        + "*Elset, elset=_PickedSet1, internal, generate\n1, 1, 1\n"
+        "*Solid Section, elset=_PickedSet1, material=Steel\n1.,\n"
+        "*End Part\n"
+        "*Assembly, name=Assembly\n"
+        "*Instance, name=PartA-1, part=PartA\n"
+        "*End Instance\n"
+        "*End Assembly\n"
+        "*Material, name=Steel\n"
+    )
+    assert _export_and_read_material(tmp_path, inp) == {b"Steel"}
+
+
+def test_internal_set_hidden_from_element_sets_table(tmp_path):
+    # The internal set must resolve the material but NOT appear in the
+    # user-facing element_sets manifest table.
+    import sqlite3
+
+    inp_path = os.path.join(str(tmp_path), "m.inp")
+    with open(inp_path, "w") as fh:
+        fh.write(
+            "*Part, name=PartA\n"
+            + _ONE_HEX_BODY
+            + "*Elset, elset=_PickedSet1, internal, generate\n1, 1, 1\n"
+            "*Solid Section, elset=_PickedSet1, material=Steel\n1.,\n"
+            "*End Part\n"
+            "*Assembly, name=Assembly\n"
+            "*Instance, name=PartA-1, part=PartA\n"
+            "*End Instance\n*End Assembly\n*Material, name=Steel\n"
+        )
+    ws = os.path.join(str(tmp_path), "ws")
+    os.makedirs(ws, exist_ok=True)
+    export_l1(parse_inp(inp_path), ws)
+    conn = sqlite3.connect(os.path.join(ws, "manifest.db"))
+    names = [r[0] for r in conn.execute("SELECT set_name FROM element_sets")]
+    conn.close()
+    assert all("PickedSet" not in n for n in names), names
+
+
 def test_flat_inp_case_insensitive_elset(tmp_path):
     inp = (
         _ONE_HEX_BODY

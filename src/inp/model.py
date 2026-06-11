@@ -161,6 +161,7 @@ class Nset:
     name: str
     node_labels: List[int] = field(default_factory=list)
     set_refs: List[str] = field(default_factory=list)   # names of other nsets to include
+    internal: bool = False   # Abaqus-generated (_PickedSetNN) — kept for section/surface resolution, hidden from user set list
 
 
 @dataclass
@@ -169,6 +170,7 @@ class Elset:
     name: str
     elem_labels: List[int] = field(default_factory=list)
     set_refs: List[str] = field(default_factory=list)   # names of other elsets to include
+    internal: bool = False   # Abaqus-generated (_PickedSetNN) — kept for section resolution, hidden from user set list
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +254,7 @@ class AssemblyNset:
     instance_name: Optional[str]            # None = assembly-wide
     node_labels: List[int] = field(default_factory=list)
     set_refs: List[str] = field(default_factory=list)
+    internal: bool = False
 
 
 @dataclass
@@ -261,6 +264,7 @@ class AssemblyElset:
     instance_name: Optional[str]
     elem_labels: List[int] = field(default_factory=list)
     set_refs: List[str] = field(default_factory=list)
+    internal: bool = False
 
 
 @dataclass

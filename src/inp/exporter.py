@@ -490,6 +490,10 @@ def _write_sets(
         for set_name, elset in part.elsets.items():
             if not elset.elem_labels:
                 continue
+            # Abaqus-generated internal sets (_PickedSetNN) are kept in the model
+            # only so section assignments resolve; don't expose them to the UI.
+            if getattr(elset, "internal", False):
+                continue
             safe_name = _safe(set_name)
             key = "element_sets/{}/{}".format(inst_name, safe_name)
             if key in f:
