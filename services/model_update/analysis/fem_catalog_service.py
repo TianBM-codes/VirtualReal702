@@ -1104,13 +1104,12 @@ def _iter_elset_entries(model) -> List[dict]:
     entries = []
     for part_name, part in model.parts.items():
         for set_name, elset in part.elsets.items():
-            # Abaqus-generated internal sets (_PickedSetNN) are kept in the model
-            # so section assignments resolve, but stay out of the user catalog.
-            if getattr(elset, "internal", False):
-                continue
             labels = sorted(set(int(label) for label in (elset.elem_labels or [])))
             if not labels:
                 continue
+            # Internal sets (_PickedSetNN) are exposed too — they are the actual
+            # section regions and thus the most meaningful tunable property sets —
+            # but flagged so the UI can tell them apart from user-named sets.
             entries.append(
                 {
                     "set_name": str(set_name),
@@ -1120,13 +1119,12 @@ def _iter_elset_entries(model) -> List[dict]:
                     "part_name": str(part_name),
                     "element_labels": labels,
                     "member_count": len(labels),
+                    "is_internal": 1 if getattr(elset, "internal", False) else 0,
                 }
             )
 
     if model.assembly:
         for set_name, elset in model.assembly.elsets.items():
-            if getattr(elset, "internal", False):
-                continue
             labels = sorted(set(int(label) for label in (elset.elem_labels or [])))
             if not labels:
                 continue
@@ -1143,6 +1141,7 @@ def _iter_elset_entries(model) -> List[dict]:
                     "part_name": str(part_name) if part_name else None,
                     "element_labels": labels,
                     "member_count": len(labels),
+                    "is_internal": 1 if getattr(elset, "internal", False) else 0,
                 }
             )
     return entries
@@ -1225,6 +1224,7 @@ def _extract_quantity_set_capabilities(model) -> List[dict]:
                     "section_type": section_type,
                     "material_name": material_name,
                     "member_count": int(set_entry["member_count"]),
+                    "is_internal": int(set_entry.get("is_internal", 0)),
                     "supports_global": bool(supports_global),
                     "supports_local": bool(supports_local),
                     "current_value": current_value,
@@ -1474,14 +1474,15 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
         INSERT INTO t_mt_py_fem_quantity_set_capability
         (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name,
          set_role, element_family, section_type, material_name, member_count,
-         supports_global, supports_local, current_value, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         is_internal, supports_global, supports_local, current_value, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             set_role = VALUES(set_role),
             element_family = VALUES(element_family),
             section_type = VALUES(section_type),
             material_name = VALUES(material_name),
             member_count = VALUES(member_count),
+            is_internal = VALUES(is_internal),
             supports_global = VALUES(supports_global),
             supports_local = VALUES(supports_local),
             current_value = VALUES(current_value),
@@ -1501,6 +1502,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 item.get("section_type"),
                 item.get("material_name"),
                 int(item["member_count"]),
+                int(item.get("is_internal", 0)),
                 1 if item.get("supports_global") else 0,
                 1 if item.get("supports_local") else 0,
                 item.get("current_value"),
@@ -1623,7 +1625,7 @@ def get_inp_catalog(project_id):
         cursor.execute("""
             SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
                    set_role, element_family, section_type, material_name, member_count,
-                   supports_global, supports_local, current_value, extra_json
+                   is_internal, supports_global, supports_local, current_value, extra_json
             FROM t_mt_py_fem_quantity_set_capability
             WHERE pid = %s
             ORDER BY quantity_code, set_scope, set_type, set_name, instance_name, part_name
@@ -1717,7 +1719,7 @@ def get_inp_parameter_options(project_id):
         cursor.execute("""
             SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
                    set_role, element_family, section_type, material_name, member_count,
-                   supports_global, supports_local, current_value, extra_json
+                   is_internal, supports_global, supports_local, current_value, extra_json
             FROM t_mt_py_fem_quantity_set_capability
             WHERE pid = %s
             ORDER BY quantity_code, set_scope, set_type, set_name, instance_name, part_name

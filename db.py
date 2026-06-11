@@ -370,6 +370,7 @@ CREATE_TABLE_SQL_LIST = [
         supports_global TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持全局参数',
         supports_local TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持局部参数',
         current_value DOUBLE NULL COMMENT '共享当前值',
+        is_internal TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否为Abaqus自动生成的内部集合(_PickedSetNN)，1=内部 0=用户',
         extra_json JSON NULL COMMENT '扩展信息',
         PRIMARY KEY (id),
         UNIQUE KEY uk_pid_quantity_set_capability (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name),
@@ -1224,6 +1225,11 @@ def ensure_tables_exist():
             "t_mt_py_fem_response_catalog",
             "updated_at",
             "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time'",
+        )
+        _ensure_column(
+            "t_mt_py_fem_quantity_set_capability",
+            "is_internal",
+            "is_internal TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否为Abaqus自动生成的内部集合(_PickedSetNN)，1=内部 0=用户'",
         )
         cursor.execute(
             """
