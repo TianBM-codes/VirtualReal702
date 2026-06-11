@@ -97,9 +97,10 @@ def test_section_referencing_internal_elset(tmp_path):
     assert _export_and_read_material(tmp_path, inp) == {b"Steel"}
 
 
-def test_internal_set_hidden_from_element_sets_table(tmp_path):
-    # The internal set must resolve the material but NOT appear in the
-    # user-facing element_sets manifest table.
+def test_internal_set_stored_with_is_internal_flag(tmp_path):
+    # The internal set resolves the material AND is stored in element_sets,
+    # flagged is_internal=1 so callers can tell it apart from user sets.
+    # (No filtering is applied here — the flag is informational.)
     import sqlite3
 
     inp_path = os.path.join(str(tmp_path), "m.inp")
@@ -108,6 +109,7 @@ def test_internal_set_hidden_from_element_sets_table(tmp_path):
             "*Part, name=PartA\n"
             + _ONE_HEX_BODY
             + "*Elset, elset=_PickedSet1, internal, generate\n1, 1, 1\n"
+            "*Elset, elset=UserSet\n1,\n"
             "*Solid Section, elset=_PickedSet1, material=Steel\n1.,\n"
             "*End Part\n"
             "*Assembly, name=Assembly\n"
@@ -118,9 +120,10 @@ def test_internal_set_hidden_from_element_sets_table(tmp_path):
     os.makedirs(ws, exist_ok=True)
     export_l1(parse_inp(inp_path), ws)
     conn = sqlite3.connect(os.path.join(ws, "manifest.db"))
-    names = [r[0] for r in conn.execute("SELECT set_name FROM element_sets")]
+    rows = dict(conn.execute("SELECT set_name, is_internal FROM element_sets"))
     conn.close()
-    assert all("PickedSet" not in n for n in names), names
+    assert rows.get("_PickedSet1") == 1, rows
+    assert rows.get("UserSet") == 0, rows
 
 
 def test_flat_inp_case_insensitive_elset(tmp_path):

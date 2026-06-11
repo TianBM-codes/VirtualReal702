@@ -490,10 +490,10 @@ def _write_sets(
         for set_name, elset in part.elsets.items():
             if not elset.elem_labels:
                 continue
-            # Abaqus-generated internal sets (_PickedSetNN) are kept in the model
-            # only so section assignments resolve; don't expose them to the UI.
-            if getattr(elset, "internal", False):
-                continue
+            # Internal sets (Abaqus-generated _PickedSetNN) are stored too, just
+            # flagged via is_internal so callers can later tell them apart from
+            # user-named sets. No filtering is applied here.
+            is_internal = 1 if getattr(elset, "internal", False) else 0
             safe_name = _safe(set_name)
             key = "element_sets/{}/{}".format(inst_name, safe_name)
             if key in f:
@@ -502,8 +502,11 @@ def _write_sets(
             f.create_dataset(key, data=arr)
 
             db_conn.execute(
-                "INSERT OR REPLACE INTO element_sets VALUES (?,?,?,?,?)",
-                (safe_name, "PART", inst_name, sets_rel, len(elset.elem_labels)),
+                "INSERT OR REPLACE INTO element_sets "
+                "(set_name, set_scope, instance_name, h5_path, elem_count, is_internal) "
+                "VALUES (?,?,?,?,?,?)",
+                (safe_name, "PART", inst_name, sets_rel,
+                 len(elset.elem_labels), is_internal),
             )
 
 

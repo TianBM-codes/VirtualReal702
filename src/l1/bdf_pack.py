@@ -713,7 +713,9 @@ def _pack_model(model, inst_name, workspace):
 
     for sname, cnt in isets_elem_counts.items():
         db_conn.execute(
-            "INSERT OR REPLACE INTO element_sets VALUES (?,?,?,?,?)",
+            "INSERT OR REPLACE INTO element_sets "
+            "(set_name, set_scope, instance_name, h5_path, elem_count) "
+            "VALUES (?,?,?,?,?)",
             (sname, inst_name, inst_name,
              h5_rel + ':instance_sets/element_sets/' + sname, cnt),
         )
