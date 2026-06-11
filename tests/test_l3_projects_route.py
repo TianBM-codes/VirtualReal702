@@ -234,3 +234,94 @@ def test_project_result_catalog_returns_result_group_names_and_manifest_metadata
     assert result_group["steps"][0]["step_name"] == "Sensitivity"
     assert result_group["steps"][0]["fields"][0]["field_name"] == "SENSITIVITY_CLOUD"
     assert result_group["fields"][0]["instances"] == ["PART-1-1"]
+
+
+def test_delete_project_purges_mysql_and_workspace(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
+    from src.l3.api.routes import projects
+
+    project_id = "254"
+    workspace = data_root / project_id
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "manifest.db").write_text("", encoding="utf-8")
+
+    with sqlite3.connect(registry_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO projects(project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (project_id, project_id, str(tmp_path / "model.inp"), "inp", "ready"),
+        )
+
+    purge_calls = []
+
+    def _fake_purge(pid: str):
+        purge_calls.append(pid)
+        return {
+            "attempted": True,
+            "project_id": pid,
+            "deleted_rows": 12,
+            "numeric_project_id": int(pid),
+        }
+
+    monkeypatch.setattr(projects, "_purge_project_mysql_records", _fake_purge)
+
+    client = TestClient(app)
+    response = client.delete(f"/api/projects/{project_id}")
+
+    assert response.status_code == 200
+    assert purge_calls == [project_id]
+    payload = response.json()["data"]
+    assert payload["project_id"] == project_id
+    assert payload["deleted"] is True
+    assert payload["orphan_workspace_deleted"] is False
+    assert payload["mysql_purged"]["deleted_rows"] == 12
+    assert not workspace.exists()
+
+    with sqlite3.connect(registry_db) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM projects WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
+
+    assert row is None
+
+
+def test_delete_project_rejects_active_project(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
+    from src.l3.api.routes import projects
+
+    project_id = "255"
+    workspace = data_root / project_id
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(registry_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO projects(project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (project_id, project_id, str(tmp_path / "active.inp"), "inp", "pending"),
+        )
+
+    purge_calls = []
+
+    def _fake_purge(pid: str):
+        purge_calls.append(pid)
+        return {"attempted": True, "project_id": pid, "deleted_rows": 0, "numeric_project_id": int(pid)}
+
+    monkeypatch.setattr(projects, "_purge_project_mysql_records", _fake_purge)
+
+    client = TestClient(app)
+    response = client.delete(f"/api/projects/{project_id}")
+
+    assert response.status_code == 409
+    assert purge_calls == []
+    assert workspace.exists()

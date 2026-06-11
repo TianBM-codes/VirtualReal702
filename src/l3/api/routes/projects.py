@@ -18,8 +18,9 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from typing import Optional
 
+from db import clear_fem_tables, clear_unv_tables, get_connection
 from ...core.config import settings
-from ...core.errors import ConflictError, NotFoundError, ValidationError
+from ...core.errors import AppError, ConflictError, NotFoundError, ValidationError
 from ...core.state import registry
 from ...infra.registry_repo import RegistryRepo
 from ...infra.manifest_repo import ManifestRepo
@@ -58,6 +59,73 @@ def _resolve_workspace(stored: str, project_id: str) -> str:
     if has_sep:
         return stored  # relative path already contains data_root prefix
     return os.path.join(settings.data_root, stored)
+
+
+_PROJECT_PURGE_TABLES = (
+    ("t_mt_py_test_coord", "pid"),
+    ("t_mt_py_project_config", "pid"),
+    ("t_mt_measuring_point_info", "project_id"),
+    ("t_mt_channel_info", "project_id"),
+    ("t_mt_py_console_log", "pid"),
+    ("t_mt_py_background_task", "project_id"),
+    ("t_mt_py_fem_sensitivity_result", "project_id"),
+    ("t_mt_py_fem_response_def", "project_id"),
+    ("t_mt_py_fem_parameter_def", "project_id"),
+    ("t_mt_py_fem_analysis_run", "project_id"),
+    ("t_mt_py_fem_response_overview", "pid"),
+    ("t_mt_py_fem_responses", "pid"),
+    ("t_mt_py_fem_displacement_responses", "pid"),
+    ("t_mt_py_fem_strain_responses", "pid"),
+    ("t_mt_py_fem_stress_responses", "pid"),
+    ("t_mt_py_fem_relative_error", "pid"),
+    ("t_mt_py_fem_confidence", "pid"),
+    ("t_mt_py_fem_displacement_scale_factor", "pid"),
+    ("t_mt_py_fem_correlation_scatter", "pid"),
+)
+
+
+def _purge_project_mysql_records(project_id: str) -> dict:
+    try:
+        numeric_project_id = int(project_id)
+    except (TypeError, ValueError):
+        return {
+            "attempted": False,
+            "project_id": project_id,
+            "deleted_rows": 0,
+            "numeric_project_id": None,
+        }
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    deleted_rows = 0
+    try:
+        clear_unv_tables(cursor, numeric_project_id)
+        clear_fem_tables(cursor, numeric_project_id)
+
+        for table_name, column_name in _PROJECT_PURGE_TABLES:
+            cursor.execute(
+                f"DELETE FROM {table_name} WHERE {column_name} = %s",
+                (numeric_project_id,),
+            )
+            deleted_rows += max(int(cursor.rowcount or 0), 0)
+
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        raise AppError(
+            f"Failed to purge MySQL records for project '{project_id}'",
+            details={"project_id": project_id},
+        ) from exc
+    finally:
+        cursor.close()
+        conn.close()
+
+    return {
+        "attempted": True,
+        "project_id": project_id,
+        "deleted_rows": deleted_rows,
+        "numeric_project_id": numeric_project_id,
+    }
 
 
 # ── Request bodies ─────────────────────────────────────────────────────────────
@@ -738,20 +806,35 @@ async def rerun_l2(project_id: str):
 @router.delete("/{project_id}", status_code=200)
 async def delete_project(project_id: str):
     """
-    删除 project：移除 model/<project_id>/ 整个目录 + registry.db 中相关行。
+    彻底删除 project：清理 registry、workspace，以及 MySQL 中按项目存储的模型修正数据。
     """
     project_id = validate_workspace_id(project_id, "project_id")
     repo = _repo()
     workspace = project_workspace(settings.data_root, project_id)
 
     proj = repo.get_project(project_id)
+    workspace_exists = workspace.exists() or workspace.is_symlink()
+    if proj is not None and repo.project_has_active_tasks(project_id):
+        raise ConflictError(
+            f"Cannot delete project '{project_id}' while geometry or result parsing is pending/running"
+        )
+    mysql_purge = _purge_project_mysql_records(project_id)
     if proj is None:
-        if workspace.exists() or workspace.is_symlink():
+        repo.delete_project(project_id)
+        if workspace_exists:
             safe_rmtree(workspace, settings.data_root, "project workspace")
             return ok({
                 "project_id": project_id,
                 "deleted": True,
                 "orphan_workspace_deleted": True,
+                "mysql_purged": mysql_purge,
+            })
+        if mysql_purge["deleted_rows"] > 0:
+            return ok({
+                "project_id": project_id,
+                "deleted": True,
+                "orphan_workspace_deleted": False,
+                "mysql_purged": mysql_purge,
             })
         raise NotFoundError(f"Project '{project_id}' not found")
 
@@ -765,4 +848,5 @@ async def delete_project(project_id: str):
         "project_id": project_id,
         "deleted": True,
         "orphan_workspace_deleted": False,
+        "mysql_purged": mysql_purge,
     })
