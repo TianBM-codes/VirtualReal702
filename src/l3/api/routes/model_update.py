@@ -44,6 +44,35 @@ def _list_model_update_groups(manifest: ManifestRepo) -> set[str]:
     return groups
 
 
+def _discover_model_update_step(manifest: ManifestRepo) -> Optional[str]:
+    groups = _list_model_update_groups(manifest)
+    if not groups:
+        return None
+    try:
+        with manifest._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT step_name
+                  FROM result_files
+                 WHERE result_group IS NOT NULL
+                   AND step_name IS NOT NULL
+                   AND step_name <> ''
+                """
+            ).fetchall()
+    except Exception:
+        return None
+
+    for row in rows:
+        step_name = str(row["step_name"] or "").strip()
+        if step_name == "BayesianUpdate":
+            return step_name
+    for row in rows:
+        step_name = str(row["step_name"] or "").strip()
+        if step_name:
+            return step_name
+    return None
+
+
 @router.get("/model-update/result_groups")
 async def list_model_update_result_groups(odb_id: str):
     idx = registry.get(odb_id)
@@ -57,8 +86,13 @@ async def list_model_update_result_groups(odb_id: str):
 
 
 @router.get("/model-update/step_frame")
-async def step():
-    return ok([{"label": "Bayesian-Update", "value": "Bayesian-Update", "frame": 0}])
+async def step(odb_id: str):
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    manifest = ManifestRepo(idx.workspace)
+    resolved_step = _discover_model_update_step(manifest) or "BayesianUpdate"
+    return ok([{"label": "Bayesian-Update", "value": resolved_step, "frame": 0}])
 
 
 @router.get("/model-update/fields")

@@ -155,6 +155,163 @@ def _build_project_response(proj, repo) -> dict:
     }
 
 
+def _safe_json_loads(value, default):
+    if value in (None, ""):
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def _build_project_result_catalog(proj, repo) -> dict:
+    project_id = str(proj["project_id"])
+    workspace = _resolve_workspace(proj["workspace"], project_id)
+    source_type = proj["source_type"] if "source_type" in proj.keys() else "inp"
+    result_group_rows = repo.list_result_groups(project_id)
+
+    catalog = {
+        "project_id": project_id,
+        "source_type": source_type,
+        "geom_status": proj["geom_status"],
+        "workspace": workspace,
+        "result_groups": [],
+    }
+
+    if not os.path.exists(os.path.join(workspace, "manifest.db")):
+        for rg in result_group_rows:
+            catalog["result_groups"].append(
+                {
+                    "result_group": rg["result_group"],
+                    "display_name": rg["display_name"],
+                    "status": rg["status"],
+                    "error_message": rg["error_message"],
+                    "source_file": rg["source_file"],
+                    "source_path": rg["source_path"],
+                    "instances": [],
+                    "steps": [],
+                    "fields": [],
+                }
+            )
+        return catalog
+
+    manifest = ManifestRepo(workspace)
+    all_instances = {
+        str(item.get("instance_name") or ""): {
+            "instance_name": str(item.get("instance_name") or ""),
+            "part_name": item.get("part_name"),
+        }
+        for item in manifest.list_instances()
+        if item.get("instance_name")
+    }
+
+    for rg in result_group_rows:
+        result_group = str(rg["result_group"])
+        steps_payload = []
+        fields_payload = []
+        instance_names = set()
+
+        with manifest._get_conn() as conn:
+            step_rows = [
+                dict(row) for row in conn.execute(
+                    """
+                    SELECT step_name, step_number, procedure, num_frames, description
+                    FROM steps
+                    WHERE result_group=?
+                    ORDER BY step_number, step_name
+                    """,
+                    (result_group,),
+                ).fetchall()
+            ]
+            field_rows = [
+                dict(row) for row in conn.execute(
+                    """
+                    SELECT rf.step_name, rf.field_name, rf.components, rf.invariants,
+                           rf.positions, rf.source, rb.instance_name
+                    FROM result_files rf
+                    LEFT JOIN result_blocks rb
+                      ON rf.result_group IS rb.result_group
+                     AND rf.step_name = rb.step_name
+                     AND rf.field_name = rb.field_name
+                    WHERE rf.result_group=?
+                    ORDER BY rf.step_name, rf.field_name, rb.instance_name
+                    """,
+                    (result_group,),
+                ).fetchall()
+            ]
+
+        field_map = {}
+        for row in field_rows:
+            key = (str(row["step_name"] or ""), str(row["field_name"] or ""))
+            item = field_map.get(key)
+            if item is None:
+                item = {
+                    "step_name": key[0],
+                    "field_name": key[1],
+                    "components": _safe_json_loads(row.get("components"), []),
+                    "invariants": _safe_json_loads(row.get("invariants"), []),
+                    "positions": _safe_json_loads(row.get("positions"), []),
+                    "source": str(row.get("source") or "odb"),
+                    "instances": [],
+                }
+                field_map[key] = item
+            instance_name = str(row.get("instance_name") or "").strip()
+            if instance_name:
+                item["instances"].append(instance_name)
+                instance_names.add(instance_name)
+
+        for item in field_map.values():
+            item["instances"] = sorted(set(item["instances"]))
+            fields_payload.append(item)
+
+        fields_by_step = {}
+        for item in fields_payload:
+            fields_by_step.setdefault(item["step_name"], []).append(
+                {
+                    "field_name": item["field_name"],
+                    "components": item["components"],
+                    "invariants": item["invariants"],
+                    "positions": item["positions"],
+                    "source": item["source"],
+                    "instances": item["instances"],
+                }
+            )
+
+        for row in step_rows:
+            step_name = str(row.get("step_name") or "")
+            steps_payload.append(
+                {
+                    "step_name": step_name,
+                    "step_number": row.get("step_number"),
+                    "procedure": row.get("procedure"),
+                    "num_frames": row.get("num_frames"),
+                    "description": row.get("description"),
+                    "fields": fields_by_step.get(step_name, []),
+                }
+            )
+
+        catalog["result_groups"].append(
+            {
+                "result_group": result_group,
+                "display_name": rg["display_name"],
+                "status": rg["status"],
+                "error_message": rg["error_message"],
+                "source_file": rg["source_file"],
+                "source_path": rg["source_path"],
+                "instances": [
+                    all_instances.get(name, {"instance_name": name, "part_name": None})
+                    for name in sorted(instance_names)
+                ],
+                "steps": steps_payload,
+                "fields": fields_payload,
+            }
+        )
+
+    return catalog
+
+
 def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str:
     allowed = {"inp", "odb", "bdf", "op2", "cdb", "rst"}
     if explicit is not None:
@@ -476,6 +633,16 @@ async def get_project(project_id: str):
 
 
 # ── PATCH /api/projects/{project_id}/results/{result_group} ───────────────────
+
+@router.get("/{project_id}/result-catalog")
+async def get_project_result_catalog(project_id: str):
+    """Return all result groups and their instances/steps/fields for one project."""
+    repo = _repo()
+    proj = repo.get_project(project_id)
+    if proj is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+    return ok(_build_project_result_catalog(proj, repo))
+
 
 @router.patch("/{project_id}/results/{result_group}")
 async def rename_result_group(project_id: str, result_group: str,

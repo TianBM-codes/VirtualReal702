@@ -131,3 +131,22 @@ def test_model_update_fields(monkeypatch, tmp_path: Path):
             "frame_description": "Final",
         },
     ]
+
+
+def test_model_update_step_frame_returns_actual_step_value(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = _make_model_update_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.get("/api/odb/demo/model-update/step_frame")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == [
+        {
+            "label": "Bayesian-Update",
+            "value": "BayesianUpdate",
+            "frame": 0,
+        }
+    ]

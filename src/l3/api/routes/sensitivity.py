@@ -65,6 +65,38 @@ def _list_external_sensitivity_groups(manifest: ManifestRepo) -> set[str]:
     return groups
 
 
+def _discover_sensitivity_step(manifest: ManifestRepo) -> Optional[str]:
+    sensitivity_groups = _list_external_sensitivity_groups(manifest)
+    try:
+        with manifest._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT step_name, result_group
+                  FROM result_files
+                 WHERE step_name IS NOT NULL
+                   AND step_name <> ''
+                """
+            ).fetchall()
+    except Exception:
+        return None
+
+    for row in rows:
+        result_group = str(row["result_group"] or "").strip()
+        step_name = str(row["step_name"] or "").strip()
+        if step_name == "Sensitivity" and (
+            result_group.startswith(_SENSITIVITY_PREFIX) or result_group in sensitivity_groups
+        ):
+            return step_name
+    for row in rows:
+        result_group = str(row["result_group"] or "").strip()
+        step_name = str(row["step_name"] or "").strip()
+        if step_name and (
+            result_group.startswith(_SENSITIVITY_PREFIX) or result_group in sensitivity_groups
+        ):
+            return step_name
+    return None
+
+
 def _make_frame_alias(field_name: str, frame_idx: int) -> str:
     return f"{str(field_name)}__FRAME_{int(frame_idx):04d}"
 
@@ -142,8 +174,13 @@ async def list_sensitivity_result_groups(
     return ok({"result_groups": groups})
 
 @router.get("/sensitivity/step_frame")
-async def step():
-    return ok([{"label": "Sensitivity", "value": "Sensitivity", "frame": 0}])
+async def step(odb_id: str):
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    manifest = ManifestRepo(idx.workspace)
+    resolved_step = _discover_sensitivity_step(manifest) or "Sensitivity"
+    return ok([{"label": "Sensitivity", "value": resolved_step, "frame": 0}])
 
 @router.get("/sensitivity/fields")
 async def list_sensitivity_fields(

@@ -8,12 +8,15 @@ GET /api/odb/{odb_id}/results/frame-scalars
 
 Pick 单面精确值复用已有 /query/pick 接口，无需重复实现。
 """
+import re
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
 
+from ...core.errors import NotFoundError as CoreNotFoundError
 from ...core.state import registry
+from ...infra.manifest_repo import ManifestRepo
 from ...infra.l3be import build as l3be_build
 from ..response import ok
 from ...services.result_service import (
@@ -30,6 +33,95 @@ from ...services.result_service import (
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 
 Component = Literal["U1", "U2", "U3"]
+_FRAME_ALIAS_RE = re.compile(r"^(?P<field>.+)__FRAME_(?P<frame>\d+)$")
+
+
+def _normalize_step_token(value: Optional[str]) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _source_field_name(field: str) -> str:
+    match = _FRAME_ALIAS_RE.match(str(field or ""))
+    if not match:
+        return str(field or "")
+    return str(match.group("field"))
+
+
+def _resolve_result_targets(
+    *,
+    odb_id: str,
+    step: str,
+    field: str,
+    requested_result_groups: Optional[List[Optional[str]]] = None,
+) -> List[tuple[Optional[str], str]]:
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise CoreNotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    manifest = ManifestRepo(idx.workspace)
+    requested_groups = list(requested_result_groups or [])
+    source_field = _source_field_name(field)
+    field_names = [str(field)]
+    if source_field != str(field):
+        field_names.append(source_field)
+    normalized_step = _normalize_step_token(step)
+
+    with manifest._get_conn() as conn:
+        sql = [
+            "SELECT DISTINCT result_group, step_name",
+            "FROM result_files",
+            f"WHERE field_name IN ({', '.join(['?'] * len(field_names))})",
+        ]
+        params: List[object] = list(field_names)
+        if requested_groups:
+            null_requested = any(group is None for group in requested_groups)
+            explicit_groups = [str(group) for group in requested_groups if group is not None]
+            clauses: List[str] = []
+            if explicit_groups:
+                clauses.append(f"result_group IN ({', '.join(['?'] * len(explicit_groups))})")
+                params.extend(explicit_groups)
+            if null_requested:
+                clauses.append("result_group IS NULL")
+            if clauses:
+                sql.append(f"AND ({' OR '.join(clauses)})")
+        rows = conn.execute("\n".join(sql), params).fetchall()
+
+    if not rows:
+        fallback_groups = requested_groups or [None]
+        return [(group, str(step)) for group in fallback_groups]
+
+    candidates = [(row["result_group"], str(row["step_name"] or "")) for row in rows]
+    exact = [item for item in candidates if item[1] == str(step)]
+    if exact:
+        return exact
+
+    normalized = [item for item in candidates if _normalize_step_token(item[1]) == normalized_step]
+    if normalized:
+        return normalized
+
+    unique_steps = {item[1] for item in candidates if item[1]}
+    if len(unique_steps) == 1:
+        only_step = next(iter(unique_steps))
+        fallback_groups = requested_groups or [item[0] for item in candidates]
+        return [(group, only_step) for group in fallback_groups]
+
+    fallback_groups = requested_groups or [item[0] for item in candidates]
+    return [(group, str(step)) for group in fallback_groups]
+
+
+def _resolve_single_result_target(
+    *,
+    odb_id: str,
+    step: str,
+    field: str,
+    result_group: Optional[str],
+) -> tuple[Optional[str], str]:
+    return _resolve_result_targets(
+        odb_id=odb_id,
+        step=step,
+        field=field,
+        requested_result_groups=[result_group],
+    )[0]
 
 
 @router.get("/results/frame-colors")
@@ -44,16 +136,22 @@ async def get_frame_colors(
     result_group: Optional[str] = Query(None, description="Result group (project mode)"),
     set: Optional[str] = Query(None, description="User set name to filter triangles"),
 ):
+    resolved_result_group, resolved_step = _resolve_single_result_target(
+        odb_id=odb_id,
+        step=step,
+        field=field,
+        result_group=result_group,
+    )
     colors, legend = frame_colors(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
-        step=step,
+        step=resolved_step,
         field=field,
         frame_idx=frame,
         component=component,
         render_mode=mode,
-        result_group=result_group,
+        result_group=resolved_result_group,
         set_name=set,
     )
 
@@ -117,16 +215,22 @@ async def get_frame_scalars(
     global_min/global_max: when both provided, skip per-instance range and normalize
                            against the supplied global range (multi-instance mode).
     """
+    resolved_result_group, resolved_step = _resolve_single_result_target(
+        odb_id=odb_id,
+        step=step,
+        field=field,
+        result_group=result_group,
+    )
     u, legend, result_position = frame_scalars(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
-        step=step,
+        step=resolved_step,
         field=field,
         frame_idx=frame,
         component_idx=component_idx,
         render_mode=mode,
-        result_group=result_group,
+        result_group=resolved_result_group,
         set_name=set,
         feature_angle=feature_angle,
         average_threshold=average_threshold,
@@ -186,8 +290,6 @@ async def get_frame_scalar_range(
     """
     from ...core.errors import NotFoundError as _NFE
 
-    rg_list: List[Optional[str]] = result_group if result_group else [None]
-
     inst_list = [s.strip() for s in instances.split(",") if s.strip()]
     instance_ranges: dict = {}
     global_min = float("inf")
@@ -195,13 +297,19 @@ async def get_frame_scalar_range(
 
     for inst in inst_list:
         rng = None
-        for rg in rg_list:
+        targets = _resolve_result_targets(
+            odb_id=odb_id,
+            step=step,
+            field=field,
+            requested_result_groups=result_group,
+        )
+        for rg, resolved_step in targets:
             try:
                 rng = compute_scalar_range(
                     registry=registry,
                     odb_id=odb_id,
                     instance=inst,
-                    step=step,
+                    step=resolved_step,
                     field=field,
                     frame_idx=frame,
                     component_idx=component_idx,
