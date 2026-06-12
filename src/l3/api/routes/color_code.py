@@ -100,7 +100,12 @@ async def get_legend_entries(
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     parsed_sets = [s.strip() for s in set_names.split(",") if s.strip()]
-    if all:
+    # elset set names are instance-scoped and exposed model-wide as 'INSTANCE.setname',
+    # so the editor must always see every instance's selected sets (each instance picks
+    # out only its own). We therefore force the all-instances path for elset regardless
+    # of the `all` flag — this keeps the front-end unchanged (it doesn't send all=true
+    # for elset) while still enabling cross-instance rename/recolor.
+    if all or scheme == "elset":
         entries = color_service.get_all_legend_entries(idx, scheme, parsed_sets or None)
     else:
         entries = color_service.get_legend_entries(idx, instance, scheme, parsed_sets or None)
@@ -121,15 +126,31 @@ async def post_legend_entries(
     Pass null to clear an override.
     With all=true: instance is parsed from each entry's legend_key (format '{inst}.Region_N'),
     so entries from multiple instances can be saved in one call.
+    scheme=elset is always multi-instance: each override is routed to the instance parsed
+    from its 'INSTANCE.setname' legend_key (no all=true needed from the caller).
     """
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     repo = ManifestRepo(idx.workspace)
-    if all:
+    # elset is always multi-instance (see GET above): each entry's legend_key is
+    # 'INSTANCE.setname', so an override must land under its OWNING instance — not the
+    # URL placeholder instance. We force this routing for elset regardless of `all`.
+    if scheme == "elset":
+        # legend_key format: "{instance}.setname" — route each entry to its owner.
+        known = set(idx.source_elem_etype.keys())
+        by_inst: dict = {}
+        for entry in body:
+            key = entry.get("legend_key", "")
+            owner, _ = color_service._split_instance_prefix(key, known)
+            inst = owner or instance   # "other"/unrecognised → URL instance (harmless)
+            by_inst.setdefault(inst, []).append(entry)
+        for inst, entries in by_inst.items():
+            repo.set_legend_overrides(inst, scheme, entries)
+    elif all:
         if scheme == "section":
             # legend_key format: "{instance}.Region_N" — route each entry to its instance
-            by_inst: dict = {}
+            by_inst = {}
             for entry in body:
                 key = entry.get("legend_key", "")
                 sep = ".Region_"
