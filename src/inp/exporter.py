@@ -157,7 +157,7 @@ def export_l1(model: InpModel, workspace: str) -> None:
             bbox_min, bbox_max = _write_geometry_h5(part, geom_abs, mat_map, sec_map)
             _insert_instance(db_conn, inst_name, inst.part_name,
                              geom_rel, part, bbox_min, bbox_max)
-            _write_sets(part, inst_name, workspace, db_conn)
+            _write_sets(part, inst_name, workspace, db_conn, model.assembly)
             geom_paths.append((geom_abs, part))
         db_conn.commit()
 
@@ -479,26 +479,49 @@ def _compute_elem_and_faces(
 # ---------------------------------------------------------------------------
 
 def _write_sets(
-    part: Part, inst_name: str, workspace: str, db_conn: sqlite3.Connection
+    part: Part, inst_name: str, workspace: str, db_conn: sqlite3.Connection,
+    assembly=None,
 ) -> None:
     """
-    Write part-level Elsets to l1/sets/sets.h5 and manifest.db element_sets.
+    Write this instance's element sets to l1/sets/sets.h5 and manifest.db.
 
     HDF5 layout:  element_sets/{inst_name}/{set_name}  →  sorted int32 labels
-    """
-    if not part.elsets:
-        return
 
+    Two sources are merged, both keyed under the instance:
+      1. Part-level Elsets (native CAE layout, mostly Abaqus-generated
+         _PickedSetNN property sets).
+      2. Assembly-level Elsets whose `instance_name` resolves to this instance
+         (flattened / CAE assembly layout). In a CAE-exported INP the
+         user-named sets (CDM_FIX, QA_TEST, XSYMM, …) and almost all surface
+         sets (_Head-Seal_S3, _PickedSet352, …) live here — skipping them left
+         the color-code elset list showing only the few part-level sets.
+
+    Assembly elset labels are instance-local (same convention as part labels and
+    as _build_section_maps), so they map straight onto this instance's element
+    label index without any offset.
+    """
     sets_h5 = os.path.join(workspace, "l1", "sets", "sets.h5")
     sets_rel = os.path.join("l1", "sets", "sets.h5")
 
+    # (set_name, elset, scope) tuples to write under this instance.
+    items: List[Tuple[str, object, str]] = [
+        (sn, es, "PART") for sn, es in part.elsets.items()
+    ]
+    if assembly is not None:
+        for sn, es in assembly.elsets.items():
+            if canon_instance(getattr(es, "instance_name", "") or "") == inst_name:
+                items.append((sn, es, "ASSEMBLY"))
+
+    if not items:
+        return
+
     with h5py.File(sets_h5, "a") as f:
-        for set_name, elset in part.elsets.items():
+        for set_name, elset, scope in items:
             if not elset.elem_labels:
                 continue
-            # Internal sets (Abaqus-generated _PickedSetNN) are stored too, just
-            # flagged via is_internal so callers can later tell them apart from
-            # user-named sets. No filtering is applied here.
+            # Internal sets (Abaqus-generated _PickedSetNN / surface _SN sets)
+            # are stored too, just flagged via is_internal so callers can later
+            # tell them apart from user-named sets. No filtering is applied here.
             is_internal = 1 if getattr(elset, "internal", False) else 0
             safe_name = _safe(set_name)
             key = "element_sets/{}/{}".format(inst_name, safe_name)
@@ -511,7 +534,7 @@ def _write_sets(
                 "INSERT OR REPLACE INTO element_sets "
                 "(set_name, set_scope, instance_name, h5_path, elem_count, is_internal) "
                 "VALUES (?,?,?,?,?,?)",
-                (safe_name, "PART", inst_name, sets_rel,
+                (safe_name, scope, inst_name, sets_rel,
                  len(elset.elem_labels), is_internal),
             )
 
