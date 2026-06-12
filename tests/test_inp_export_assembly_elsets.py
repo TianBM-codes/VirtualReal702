@@ -51,9 +51,11 @@ def test_assembly_elsets_written_to_sets_h5(tmp_path):
         names = set(f["element_sets/PARTA-1"].keys())
 
     # Part-level internal set (always was written) plus both assembly-level sets.
-    assert "_PickedSet1" in names
-    assert "UserBC" in names      # user-named assembly set — previously dropped
-    assert "_Surf_S3" in names    # internal assembly surface set — previously dropped
+    # Set names are uppercased on export to match the ODB side (Abaqus stores set
+    # names uppercase), so '_PickedSet1' → '_PICKEDSET1', 'UserBC' → 'USERBC', etc.
+    assert "_PICKEDSET1" in names
+    assert "USERBC" in names      # user-named assembly set — previously dropped
+    assert "_SURF_S3" in names    # internal assembly surface set — previously dropped
 
     # manifest carries scope + is_internal flag.
     con = sqlite3.connect(os.path.join(ws, "manifest.db"))
@@ -64,6 +66,6 @@ def test_assembly_elsets_written_to_sets_h5(tmp_path):
             "WHERE instance_name='PARTA-1'"
         )
     }
-    assert rows["UserBC"] == ("ASSEMBLY", 0)
-    assert rows["_Surf_S3"] == ("ASSEMBLY", 1)
-    assert rows["_PickedSet1"] == ("PART", 1)
+    assert rows["USERBC"] == ("ASSEMBLY", 0)
+    assert rows["_SURF_S3"] == ("ASSEMBLY", 1)
+    assert rows["_PICKEDSET1"] == ("PART", 1)

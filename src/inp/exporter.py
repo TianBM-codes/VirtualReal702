@@ -485,7 +485,8 @@ def _write_sets(
     """
     Write this instance's element sets to l1/sets/sets.h5 and manifest.db.
 
-    HDF5 layout:  element_sets/{inst_name}/{set_name}  →  sorted int32 labels
+    HDF5 layout:  element_sets/{inst_name}/{SET_NAME}  →  sorted int32 labels
+    (both inst_name and set_name are uppercased to match the ODB side).
 
     Two sources are merged, both keyed under the instance:
       1. Part-level Elsets (native CAE layout, mostly Abaqus-generated
@@ -519,7 +520,16 @@ def _write_sets(
         for set_name, elset, scope in items:
             if not elset.elem_labels:
                 continue
-            # Internal sets (Abaqus-generated _PickedSetNN / surface _SN sets)
+            # Normalize the set name to UPPERCASE to match the ODB side: Abaqus
+            # stores every set name uppercase inside the ODB (irreversibly), so an
+            # INP-sourced workspace must do the same or the same model imported as
+            # INP vs ODB would disagree (e.g. INP '_PickedSet6' vs ODB
+            # '_PICKEDSET6'). Symmetric with the instance-name uppercase convention
+            # (canon_instance). Only the display key changes — element membership
+            # (integer labels) is untouched, and section→elset resolution already
+            # matches case-insensitively.
+            set_name = set_name.upper()
+            # Internal sets (Abaqus-generated _PICKEDSETNN / surface _SN sets)
             # are stored too, just flagged via is_internal so callers can later
             # tell them apart from user-named sets. No filtering is applied here.
             is_internal = 1 if getattr(elset, "internal", False) else 0

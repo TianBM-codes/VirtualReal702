@@ -90,9 +90,10 @@ def test_schemes_returns_qualified_elsets(tmp_path):
     assert "elset" in res["schemes"]
     elsets = set(res["elsets"])
     # Every set is instance-qualified, and both instances are represented.
-    assert "PA-1.UserA" in elsets
-    assert "PA-2.UserB" in elsets
-    assert "PA-1._PickedSet1" in elsets and "PA-2._PickedSet1" in elsets
+    # Set names are uppercased on export to match ODB (UserA → USERA, etc.).
+    assert "PA-1.USERA" in elsets
+    assert "PA-2.USERB" in elsets
+    assert "PA-1._PICKEDSET1" in elsets and "PA-2._PICKEDSET1" in elsets
 
 
 def test_labels_pick_own_sets_and_tolerate_foreign(tmp_path):
@@ -101,13 +102,13 @@ def test_labels_pick_own_sets_and_tolerate_foreign(tmp_path):
 
     # Broadcast both instances' sets to PA-1: only PA-1's own set colors anything,
     # the PA-2 entry is silently ignored (no exception).
-    labels = C._labels_from_elsets(idx, "PA-1", et, row, ["PA-1.UserA", "PA-2.UserB"])
-    assert "PA-1.UserA" in labels          # element 1 → its own set
+    labels = C._labels_from_elsets(idx, "PA-1", et, row, ["PA-1.USERA", "PA-2.USERB"])
+    assert "PA-1.USERA" in labels          # element 1 → its own set
     assert "other" in labels               # element 2 → unlabeled
-    assert "PA-2.UserB" not in labels      # foreign set never applied here
+    assert "PA-2.USERB" not in labels      # foreign set never applied here
 
     # Only-foreign selection → all "other", still no error.
-    only_foreign = C._labels_from_elsets(idx, "PA-1", et, row, ["PA-2.UserB"])
+    only_foreign = C._labels_from_elsets(idx, "PA-1", et, row, ["PA-2.USERB"])
     assert set(only_foreign) == {"other"}
 
 
@@ -117,18 +118,18 @@ def test_missing_own_set_still_raises(tmp_path):
     # A set qualified to THIS instance but absent is a real error.
     import pytest
     with pytest.raises(Exception):
-        C._labels_from_elsets(idx, "PA-1", et, row, ["PA-1.NoSuchSet"])
+        C._labels_from_elsets(idx, "PA-1", et, row, ["PA-1.NOSUCHSET"])
 
 
 def test_legend_entries_elset_prefixed(tmp_path):
     idx = _build(tmp_path)
     # Broadcast both instances' sets to PA-1's legend: only PA-1's own set shows,
     # with a real (non-grey) palette color; the foreign entry is dropped.
-    entries = C.get_legend_entries(idx, "PA-1", "elset", ["PA-1.UserA", "PA-2.UserB"])
+    entries = C.get_legend_entries(idx, "PA-1", "elset", ["PA-1.USERA", "PA-2.USERB"])
     keys = {e["legend_key"] for e in entries}
-    assert "PA-1.UserA" in keys
-    assert "PA-2.UserB" not in keys
-    ua = next(e for e in entries if e["legend_key"] == "PA-1.UserA")
+    assert "PA-1.USERA" in keys
+    assert "PA-2.USERB" not in keys
+    ua = next(e for e in entries if e["legend_key"] == "PA-1.USERA")
     assert (ua["color_r"], ua["color_g"], ua["color_b"]) != (0.35, 0.35, 0.35)  # not grey
     assert ua["face_count"] > 0
 
@@ -136,5 +137,5 @@ def test_legend_entries_elset_prefixed(tmp_path):
 def test_legend_entries_only_foreign_is_graceful(tmp_path):
     idx = _build(tmp_path)
     # Previously raised "Set not found"; now returns gracefully (just "other").
-    entries = C.get_legend_entries(idx, "PA-1", "elset", ["PA-2.UserB"])
+    entries = C.get_legend_entries(idx, "PA-1", "elset", ["PA-2.USERB"])
     assert all(e["legend_key"] in ("other", "(none)") for e in entries)

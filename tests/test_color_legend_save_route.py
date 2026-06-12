@@ -121,11 +121,13 @@ def test_elset_legend_entries_get_lists_all_instances(monkeypatch, tmp_path):
 
     # Editor broadcasts both instances' sets; the GET (no all=true) must still return
     # entries for every instance so the panel can rename/recolor across instances.
+    # Set names are uppercased on export (UserA → USERA), so the schemes list — and
+    # therefore the broadcast set_names — are uppercase.
     resp = client.get(
         "/api/odb/t/color-code/PA-1/legend-entries",
-        params={"scheme": "elset", "set_names": "PA-1.UserA,PA-2.UserB"},
+        params={"scheme": "elset", "set_names": "PA-1.USERA,PA-2.USERB"},
     )
     assert resp.status_code == 200, resp.text
     keys = {e["legend_key"] for e in resp.json()["data"]["entries"]}
-    assert "PA-1.UserA" in keys
-    assert "PA-2.UserB" in keys
+    assert "PA-1.USERA" in keys
+    assert "PA-2.USERB" in keys
