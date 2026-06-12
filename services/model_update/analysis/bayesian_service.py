@@ -19,13 +19,13 @@ from db import ensure_tables_exist, get_connection
 from src.inp import parse_inp
 from src.inp.parameter_mapping import build_parameter_target_map
 from src.l3.core.errors import NotFoundError, ValidationError
-from tools.odb_client import ODBClientError
 
 from . import inp_service as _inp
 from .ccmetrics import build_ccdis as _build_ccdis
 from .ccmetrics import build_ccmean as _build_ccmean
 from .ccmetrics import build_cctot as _build_cctot
 from .console_log_service import safe_write_console_event
+from .l3_local_bridge_service import write_external_field_local
 from .project_status_service import update_work_condition_project_status
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
@@ -1801,25 +1801,8 @@ def _write_bayesian_cloud_result(
         field_name=field_name,
         value_mode=value_mode,
     )
-    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
-    client = _sens.ODBClient(base_url=resolved_base_url, timeout=timeout)
-    try:
-        write_response = client.post_external_field(resolved_odb_id, request_body)
-    except ODBClientError as exc:
-        details = {
-            "odb_id": resolved_odb_id,
-            "base_url": resolved_base_url,
-            "status_code": exc.status_code,
-        }
-        if exc.status_code == 404:
-            raise NotFoundError(
-                "external-field api target odb was not found",
-                details,
-            ) from exc
-        raise ValidationError(
-            "external-field api request failed",
-            {**details, "detail": exc.detail},
-        ) from exc
+    resolved_base_url = str(base_url or "").strip().rstrip("/")
+    write_response = write_external_field_local(resolved_odb_id, request_body)
 
     result = dict(metadata)
     result.update(
@@ -2197,7 +2180,7 @@ def build_dsa_normalized_sensitivity_matrix(
             position=position,
         )
         source_mode = "workspace"
-    elif odb_id and not base_url:
+    elif odb_id and (not base_url or _sens.registry.get(str(odb_id)) is not None):
         discovery = _sens._discover_sensitivity_fields_from_registry(
             odb_id,
             step=step,

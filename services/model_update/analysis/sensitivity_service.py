@@ -24,7 +24,7 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.manifest_repo import ManifestRepo
 from src.l3.infra.registry_repo import RegistryRepo
 from src.l3.services.node_table_service import get_instance_fields
-from tools.odb_client import ODBClient, ODBClientError, _select_component_values
+from tools.odb_client import ODBClient, _select_component_values
 
 from .abaqusDSAInpGenerator import (
     COMMENT_EMPTY_SECTION,
@@ -39,6 +39,10 @@ from .abaqusDSAInpGenerator import (
     remove_blank_lines,
 )
 from .console_log_service import safe_write_console_event
+from .l3_local_bridge_service import (
+    submit_project_result_group_and_wait as _submit_local_project_result_group_and_wait,
+    write_external_field_local,
+)
 from .model_update_meta_service import resolve_abaqus_command
 from .project_path_service import resolve_project_cal_subdir, resolve_project_workspace
 from .project_source_service import resolve_project_source_inp_path
@@ -1507,108 +1511,33 @@ def _submit_project_result_group_and_wait(
     resolved_result_group = _normalize_result_group_name(
         result_group or _default_project_result_group(batch_no, job_name)
     )
-    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
-    resolved_timeout = max(int(timeout or 0), 60)
-    resolved_wait_timeout_sec = max(int(wait_timeout_sec or 0), 1)
-    resolved_poll_interval = max(float(poll_interval_sec or 0), 0.1)
 
     parse_options = _build_project_result_parse_options(
         step=step,
         frame=frame,
         field_prefix=field_prefix,
     )
-
-    client = ODBClient(base_url=resolved_base_url, timeout=resolved_timeout)
-    try:
-        submit_response = client.add_project_result_group(
-            str(project_id),
-            source_path=resolved_odb_path,
-            result_group=resolved_result_group,
-            display_name=display_name or resolved_result_group,
-            parse_options=parse_options,
-        )
-    except ODBClientError as exc:
-        details = {
+    result = _submit_local_project_result_group_and_wait(
+        project_id=int(project_id),
+        source_path=resolved_odb_path,
+        result_group=resolved_result_group,
+        display_name=display_name or resolved_result_group,
+        parse_options=parse_options,
+    )
+    result.update(
+        {
             "project_id": int(project_id),
-            "result_group": resolved_result_group,
-            "base_url": resolved_base_url,
-            "status_code": exc.status_code,
-            "detail": exc.detail,
-            "odb_path": resolved_odb_path,
+            "workspace": _workspace_path(result["workspace"]),
+            "base_url": str(base_url or "").strip().rstrip("/"),
+            "parse_options": parse_options,
+            "submit_response": {"status": "ready"},
+            "waited_seconds": 0.0,
+            "wait_timeout_sec": max(int(wait_timeout_sec or 0), 1),
+            "poll_interval_sec": max(float(poll_interval_sec or 0), 0.1),
+            "timeout": max(int(timeout or 0), 60),
         }
-        if exc.status_code == 404:
-            raise NotFoundError("project result-group api target project was not found", details) from exc
-        raise ValidationError("project result-group api request failed", details) from exc
-
-    started_at = time.monotonic()
-    last_status = str(submit_response.get("status") or "pending")
-    last_error_message = None
-    while True:
-        try:
-            project_payload = client.get_project(str(project_id))
-        except ODBClientError as exc:
-            details = {
-                "project_id": int(project_id),
-                "result_group": resolved_result_group,
-                "base_url": resolved_base_url,
-                "status_code": exc.status_code,
-                "detail": exc.detail,
-            }
-            if exc.status_code == 404:
-                raise NotFoundError("project was not found while polling result-group status", details) from exc
-            raise ValidationError("failed to poll project result-group status", details) from exc
-
-        matched_group = None
-        for row in list(project_payload.get("result_groups") or []):
-            if str(row.get("result_group") or "") == resolved_result_group:
-                matched_group = dict(row)
-                break
-
-        if matched_group is not None:
-            last_status = str(matched_group.get("status") or last_status or "pending")
-            last_error_message = matched_group.get("error_message")
-            if last_status == "ready":
-                workspace = _workspace_path(_project_workspace_path(project_id))
-                return {
-                    "project_id": int(project_id),
-                    "result_group": resolved_result_group,
-                    "display_name": display_name or resolved_result_group,
-                    "status": last_status,
-                    "workspace": workspace,
-                    "base_url": resolved_base_url,
-                    "parse_options": parse_options,
-                    "submit_response": submit_response,
-                    "waited_seconds": round(time.monotonic() - started_at, 3),
-                }
-            if last_status == "error":
-                raise ValidationError(
-                    "project result-group extraction failed",
-                    {
-                        "project_id": int(project_id),
-                        "result_group": resolved_result_group,
-                        "status": last_status,
-                        "error_message": last_error_message,
-                        "base_url": resolved_base_url,
-                        "parse_options": parse_options,
-                    },
-                )
-
-        if (time.monotonic() - started_at) >= resolved_wait_timeout_sec:
-            raise ValidationError(
-                "timed out waiting for project result-group to become ready",
-                {
-                    "project_id": int(project_id),
-                    "result_group": resolved_result_group,
-                    "status": last_status,
-                    "error_message": last_error_message,
-                    "base_url": resolved_base_url,
-                    "wait_timeout_sec": resolved_wait_timeout_sec,
-                    "poll_interval_sec": resolved_poll_interval,
-                    "parse_options": parse_options,
-                },
-            )
-
-        time.sleep(resolved_poll_interval)
+    )
+    return result
 
 
 def _finalize_sensitivity_store_result(
@@ -1919,22 +1848,8 @@ def _write_sensitivity_cloud_result(
         step_name=step_name,
         field_name=field_name,
     )
-    resolved_base_url = str(base_url or get_local_service_base_url()).strip().rstrip("/")
-    client = ODBClient(base_url=resolved_base_url, timeout=timeout)
-    try:
-        write_response = client.post_external_field(resolved_odb_id, request_body)
-    except ODBClientError as exc:
-        details = {
-            "odb_id": resolved_odb_id,
-            "base_url": resolved_base_url,
-            "status_code": exc.status_code,
-        }
-        if exc.status_code == 404:
-            raise NotFoundError("external-field api target odb was not found", details) from exc
-        raise ValidationError(
-            "external-field api request failed",
-            {**details, "detail": exc.detail},
-        ) from exc
+    resolved_base_url = str(base_url or "").strip().rstrip("/")
+    write_response = write_external_field_local(resolved_odb_id, request_body)
 
     result = dict(metadata)
     result.update(
@@ -4236,7 +4151,7 @@ def _export_sensitivity_vtu(
             position=position,
         )
         source_mode = "workspace"
-    elif odb_id and not base_url:
+    elif odb_id and (not base_url or registry.get(str(odb_id)) is not None):
         discovery = _discover_sensitivity_fields_from_registry(
             odb_id,
             step=step,

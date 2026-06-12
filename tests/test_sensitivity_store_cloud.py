@@ -15,23 +15,18 @@ from webapi.routers import sensitivity as sensitivity_router
 def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch):
     captured = {}
 
-    class FakeClient:
-        def __init__(self, base_url: str, timeout: int):
-            captured["base_url"] = base_url
-            captured["timeout"] = timeout
+    def fake_write_external_field_local(odb_id: str, body: dict):
+        captured["odb_id"] = odb_id
+        captured["body"] = body
+        return {
+            "field_name": body["field_name"],
+            "step_name": body["step_name"],
+            "instances_written": len(body["instances"]),
+            "frames_written": len(body["instances"][0]["frames"]),
+            "source": "external_local",
+        }
 
-        def post_external_field(self, odb_id: str, body: dict):
-            captured["odb_id"] = odb_id
-            captured["body"] = body
-            return {
-                "field_name": body["field_name"],
-                "step_name": body["step_name"],
-                "instances_written": len(body["instances"]),
-                "frames_written": len(body["instances"][0]["frames"]),
-                "source": "external",
-            }
-
-    monkeypatch.setattr(sensitivity_service, "ODBClient", FakeClient)
+    monkeypatch.setattr(sensitivity_service, "write_external_field_local", fake_write_external_field_local)
     monkeypatch.setattr(
         sensitivity_service,
         "_workspace_instance_element_labels",
@@ -75,8 +70,6 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
     )
 
     assert captured["odb_id"] == "odb-demo"
-    assert captured["base_url"] == "http://127.0.0.1:18765"
-    assert captured["timeout"] == 33
     assert captured["body"]["type"] == "element"
     assert captured["body"]["components"] == ["SENSITIVITY"]
     assert captured["body"]["result_group"] == "viz_rg"
@@ -605,40 +598,20 @@ def test_submit_project_result_group_and_wait_omits_dsa_field_prefix_filter(monk
 
     captured = {}
 
-    class FakeClient:
-        def __init__(self, base_url: str, timeout: int):
-            captured["base_url"] = base_url
-            captured["timeout"] = timeout
+    def fake_submit_local(**kwargs):
+        captured.update(kwargs)
+        return {
+            "result_group": kwargs["result_group"],
+            "display_name": kwargs["display_name"],
+            "status": "ready",
+            "project_id": kwargs["project_id"],
+            "source_path": kwargs["source_path"],
+            "parse_options": dict(kwargs.get("parse_options") or {}),
+            "workspace": str(project_workspace),
+            "project_result_group": {"status": "ready"},
+        }
 
-        def add_project_result_group(
-            self,
-            project_id: str,
-            *,
-            source_path: str,
-            result_group: str,
-            display_name: str = "",
-            parse_options: dict | None = None,
-        ):
-            captured["project_id"] = project_id
-            captured["source_path"] = source_path
-            captured["result_group"] = result_group
-            captured["display_name"] = display_name
-            captured["parse_options"] = dict(parse_options or {})
-            return {"status": "pending"}
-
-        def get_project(self, project_id: str):
-            return {
-                "result_groups": [
-                    {
-                        "result_group": captured["result_group"],
-                        "status": "ready",
-                        "error_message": None,
-                    }
-                ]
-            }
-
-    monkeypatch.setattr(sensitivity_service, "ODBClient", FakeClient)
-    monkeypatch.setattr(sensitivity_service.settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(sensitivity_service, "_submit_local_project_result_group_and_wait", fake_submit_local)
 
     result = sensitivity_service._submit_project_result_group_and_wait(
         project_id=1001,
@@ -656,7 +629,7 @@ def test_submit_project_result_group_and_wait_omits_dsa_field_prefix_filter(monk
         poll_interval_sec=0.01,
     )
 
-    assert captured["project_id"] == "1001"
+    assert captured["project_id"] == 1001
     assert captured["source_path"] == str(odb_path)
     assert captured["parse_options"]["steps"] == ["Step-1"]
     assert captured["parse_options"]["frames"] == [0]
@@ -804,15 +777,13 @@ def test_generate_sensitivity_inp_and_store_uses_project_defaults_when_paths_omi
 
 
 def test_write_sensitivity_cloud_result_rejects_non_finite_matrix_values(monkeypatch):
-    class FakeClient:
-        def __init__(self, base_url: str, timeout: int):
-            self.base_url = base_url
-            self.timeout = timeout
-
-        def post_external_field(self, odb_id: str, body: dict):
-            raise AssertionError("post_external_field should not be called for non-finite values")
-
-    monkeypatch.setattr(sensitivity_service, "ODBClient", FakeClient)
+    monkeypatch.setattr(
+        sensitivity_service,
+        "write_external_field_local",
+        lambda odb_id, body: (_ for _ in ()).throw(
+            AssertionError("write_external_field_local should not be called for non-finite values")
+        ),
+    )
 
     try:
         sensitivity_service._write_sensitivity_cloud_result(
