@@ -187,11 +187,21 @@ async def post_display_names(
 
 @router.get("/color-code/{instance}/schemes")
 async def get_color_schemes(odb_id: str, instance: str):
-    """List available coloring schemes and element set names for this instance."""
+    """List available coloring schemes + element-set names.
+
+    Returns the **model-wide** union (the ``{instance}`` path segment is kept for
+    URL/caller compatibility but does not scope the result): schemes are unioned
+    across all instances, and every element set is returned as a qualified
+    ``INSTANCE.setname`` string in ``elsets``. Set names are only unique within
+    an instance, so qualifying them lets the caller show every instance's sets at
+    once; the elset color/legend endpoints recognise the prefix and route each
+    selection back to its owning instance. Shape is unchanged
+    ({schemes, elsets}) so existing callers keep working.
+    """
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    return ok(color_service.get_schemes(idx, instance))
+    return ok(color_service.get_all_schemes(idx))
 
 
 @router.get("/color-code/{instance}")

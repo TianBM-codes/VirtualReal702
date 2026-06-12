@@ -1,6 +1,8 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-09（新增 color-code scheme=section_assignment 按真实截面指派上色/统计，与既有 section=平均域并存互不影响；legend-entries 新增 elem_count——实际单元数含内部，来自 L1，section 例外为表面单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) 慢查询）
+更新时间：2026-06-12（color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
+
+历史：2026-06-09（新增 color-code scheme=section_assignment 按真实截面指派上色/统计，与既有 section=平均域并存互不影响；legend-entries 新增 elem_count——实际单元数含内部，来自 L1，section 例外为表面单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) 慢查询）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1476,6 +1478,10 @@ L3BE sections：
 
 ### `GET /api/odb/{odb_id}/color-code/{instance}/schemes`
 
+返回**整模型**的可用上色方案与单元集列表（路径里的 `{instance}` 仅为兼容保留，不再限定范围）。`schemes` 是所有 instance 的并集；`elsets` 里每个单元集都带 `instance.` 前缀（如 `OMEGA-1._PickedSet6`）。
+
+> 为什么带前缀：单元集名只在单个 instance 内唯一，同名 `_PickedSet6` 在不同 instance 上是不同的单元组。带上 instance 前缀后，前端一次就能列出/勾选全模型所有 instance 的集合；上色/legend 接口会识别前缀，把每个集合只发回它所属的那个 instance。响应结构 `{schemes, elsets}` 不变，老调用方无需改动。
+
 响应：
 
 ```json
@@ -1483,7 +1489,7 @@ L3BE sections：
   "code": 200,
   "data": {
     "schemes": ["etype", "section", "material", "section_type", "elset"],
-    "elsets": ["SET_A", "SET_B"]
+    "elsets": ["HEAD-1._PickedSet6", "OMEGA-1._PickedSet6", "HEAD-1.QA_TEST"]
   },
   "message": ""
 }
@@ -1509,7 +1515,7 @@ L3BE sections：
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `scheme` | 是 | `etype` / `section` / `section_assignment` / `material` / `section_type` / `elset` |
-| `set_names` | 否 | 逗号分隔，仅 `scheme=elset` 使用 |
+| `set_names` | 否 | 逗号分隔，仅 `scheme=elset` 使用。接受 `INSTANCE.setname` 限定名；本 instance 用 schemes 返回的前缀名即可，属于别的 instance 的条目会被自动忽略（不会报错），所以可把整份勾选广播给每个 instance |
 
 响应 body 为 L3BE 二进制，legend 嵌入 L3BE section 中（非响应头）：
 
