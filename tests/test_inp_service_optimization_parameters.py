@@ -102,6 +102,13 @@ class _CreateParameterConnection:
         return None
 
 
+def _patch_catalog_connection(monkeypatch, connection):
+    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service, "get_connection", lambda: connection)
+    monkeypatch.setattr(inp_service._catalog, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service._catalog, "get_connection", lambda: connection)
+
+
 def test_extract_quantity_set_capabilities_marks_assembly_property_sets_as_global(tmp_path: Path):
     inp_path = tmp_path / "assembly_property_set.inp"
     inp_path.write_text(
@@ -186,8 +193,7 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
         }
     ]
     fake_conn = _CreateParameterConnection(capability_rows)
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    _patch_catalog_connection(monkeypatch, fake_conn)
 
     result = inp_service.create_optimization_parameter(
         project_id=101,
@@ -220,10 +226,131 @@ def test_create_optimization_parameter_local_expands_one_row_per_element(monkeyp
     assert result["prob_id"] == 2
 
 
+def test_create_optimization_parameter_autofills_scope_from_unique_set_name(monkeypatch):
+    capability_rows = [
+        {
+            "quantity_code": "E",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 2,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": 210000.0,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [1, 2],
+                    "target_keys": ["PART::P1::1", "PART::P1::2"],
+                    "target_keys_by_label": {
+                        "1": ["PART::P1::1"],
+                        "2": ["PART::P1::2"],
+                    },
+                    "element_values": {
+                        "1": 210000.0,
+                        "2": 220000.0,
+                    },
+                }
+            ),
+        }
+    ]
+    fake_conn = _CreateParameterConnection(capability_rows)
+    _patch_catalog_connection(monkeypatch, fake_conn)
+
+    result = inp_service.create_optimization_parameter(
+        project_id=101,
+        quantity_code="E",
+        lower=100000.0,
+        upper=300000.0,
+        selection_mode="GLOBAL",
+        set_name="SET_SHELL",
+        parameter_name="E_GROUP",
+    )
+
+    assert result["created_parameter_count"] == 1
+    assert result["set_type"] == "ELSET"
+    assert result["set_scope"] == "PART"
+    assert result["part_name"] == "P1"
+    inserted = fake_conn.cursor_obj.inserted[0]
+    assert inserted[6] == "ELSET"
+    assert inserted[7] == "PART"
+    assert inserted[9] == "P1"
+
+
+def test_create_optimization_parameter_requires_disambiguation_for_duplicate_set_name(monkeypatch):
+    capability_rows = [
+        {
+            "quantity_code": "E",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "PART",
+            "instance_name": None,
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 1,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": 210000.0,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [1],
+                    "target_keys": ["PART::P1::1"],
+                    "target_keys_by_label": {"1": ["PART::P1::1"]},
+                    "element_values": {"1": 210000.0},
+                }
+            ),
+        },
+        {
+            "quantity_code": "E",
+            "set_name": "SET_SHELL",
+            "set_type": "ELSET",
+            "set_scope": "ASSEMBLY",
+            "instance_name": "INST-1",
+            "part_name": "P1",
+            "set_role": "PROPERTY_SET",
+            "element_family": "SHELL",
+            "section_type": "SHELL",
+            "material_name": "MAT1",
+            "member_count": 1,
+            "supports_global": 1,
+            "supports_local": 1,
+            "current_value": 210000.0,
+            "extra_json": json.dumps(
+                {
+                    "element_labels": [1],
+                    "target_keys": ["INST::INST-1::1"],
+                    "target_keys_by_label": {"1": ["INST::INST-1::1"]},
+                    "element_values": {"1": 210000.0},
+                }
+            ),
+        },
+    ]
+    fake_conn = _CreateParameterConnection(capability_rows)
+    _patch_catalog_connection(monkeypatch, fake_conn)
+
+    with pytest.raises(ValueError, match="multiple quantity/set capabilities matched"):
+        inp_service.create_optimization_parameter(
+            project_id=101,
+            quantity_code="E",
+            lower=100000.0,
+            upper=300000.0,
+            selection_mode="GLOBAL",
+            set_name="SET_SHELL",
+            parameter_name="E_GROUP",
+        )
+
+
 def test_create_optimization_parameter_manual_local_creates_virtual_set(monkeypatch):
     fake_conn = _CreateParameterConnection([])
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    _patch_catalog_connection(monkeypatch, fake_conn)
 
     result = inp_service.create_optimization_parameter(
         project_id=101,
@@ -251,8 +378,7 @@ def test_create_optimization_parameter_manual_local_creates_virtual_set(monkeypa
 
 def test_create_optimization_parameter_manual_global_keeps_group_parameter(monkeypatch):
     fake_conn = _CreateParameterConnection([])
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    _patch_catalog_connection(monkeypatch, fake_conn)
 
     result = inp_service.create_optimization_parameter(
         project_id=101,
@@ -271,7 +397,7 @@ def test_create_optimization_parameter_manual_global_keeps_group_parameter(monke
     assert result["created_parameters_preview"][0]["parameter_name"] == "T_GLOBAL_TEST"
     inserted = fake_conn.cursor_obj.inserted[0]
     assert inserted[10] is None
-    assert '"element_labels": [101, 102, 103]' in inserted[17]
+    assert '"element_labels": [101, 102, 103]' in inserted[18]
 
 
 def test_create_optimization_parameter_manual_local_auto_resolves_current_value(monkeypatch):
@@ -304,8 +430,7 @@ def test_create_optimization_parameter_manual_local_auto_resolves_current_value(
         }
     ]
     fake_conn = _CreateParameterConnection(capability_rows)
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    _patch_catalog_connection(monkeypatch, fake_conn)
 
     result = inp_service.create_optimization_parameter(
         project_id=101,
@@ -350,8 +475,7 @@ def test_create_optimization_parameter_manual_global_requires_unique_auto_value(
         }
     ]
     fake_conn = _CreateParameterConnection(capability_rows)
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    _patch_catalog_connection(monkeypatch, fake_conn)
 
     with pytest.raises(ValueError, match="manual GLOBAL parameter spans multiple current values"):
         inp_service.create_optimization_parameter(
@@ -410,8 +534,7 @@ def test_create_optimization_parameter_rejects_same_quantity_overlap(monkeypatch
         }
     ]
     fake_conn = _CreateParameterConnection(capability_rows, existing_rows=existing_rows)
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    _patch_catalog_connection(monkeypatch, fake_conn)
 
     with pytest.raises(ValueError, match="overlaps with an existing parameter"):
         inp_service.create_optimization_parameter(
@@ -506,8 +629,7 @@ def test_create_optimization_parameter_rejects_overlap_with_existing_global_para
         }
     ]
     fake_conn = _CreateParameterConnection(capability_rows, existing_rows=existing_rows)
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    _patch_catalog_connection(monkeypatch, fake_conn)
 
     with pytest.raises(ValueError, match="overlaps with an existing parameter"):
         inp_service.create_optimization_parameter(
@@ -636,6 +758,7 @@ def test_get_inp_parameter_options_reads_from_database(monkeypatch):
     e_description = inp_service._quantity_description("E", "E")
     t_description = inp_service._quantity_description("T", "T")
     monkeypatch.setattr(inp_service, "get_connection", lambda: _InpOptionsConnection())
+    monkeypatch.setattr(inp_service._catalog, "get_connection", lambda: _InpOptionsConnection())
 
     result = inp_service.get_inp_parameter_options(101)
 

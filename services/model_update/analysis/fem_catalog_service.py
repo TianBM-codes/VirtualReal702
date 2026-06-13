@@ -1774,6 +1774,54 @@ def _resolve_selection_mode_from_capability(capability_row: dict, requested_mode
     return mode
 
 
+def _resolve_quantity_set_capability_for_parameter_create(
+        cursor,
+        *,
+        project_id: int,
+        quantity_code_candidates: List[str],
+        set_name: str,
+        set_type: Optional[str] = None,
+        set_scope: Optional[str] = None,
+        instance_name: Optional[str] = None,
+        part_name: Optional[str] = None,
+) -> dict:
+    # Parameter creation accepts a short "quantity + set" reference from the
+    # caller, then resolves it into one concrete capability row. That row is
+    # the shared bridge from Abaqus/Nastran selection semantics to the formal
+    # selected-parameter record used by sensitivity/update workflows.
+    query = f"""
+        SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
+               set_role, element_family, section_type, material_name, member_count,
+               supports_global, supports_local, current_value, extra_json
+        FROM t_mt_py_fem_quantity_set_capability
+        WHERE pid = %s AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))}) AND set_name = %s
+    """
+    params = [int(project_id), *quantity_code_candidates, set_name]
+    if set_type:
+        query += " AND set_type = %s"
+        params.append(set_type)
+    if set_scope:
+        query += " AND set_scope = %s"
+        params.append(set_scope)
+    if instance_name:
+        query += " AND instance_name = %s"
+        params.append(instance_name)
+    if part_name:
+        query += " AND part_name = %s"
+        params.append(part_name)
+    query += " ORDER BY set_scope, set_type, instance_name, part_name"
+
+    cursor.execute(query, tuple(params))
+    capability_rows = cursor.fetchall() or []
+    if not capability_rows:
+        raise ValueError(f"quantity/set capability not found: {quantity_code_candidates[0]} @ {set_name}")
+    if len(capability_rows) > 1:
+        raise ValueError(
+            "multiple quantity/set capabilities matched; specify set_scope/set_type/instance_name/part_name"
+        )
+    return dict(capability_rows[0])
+
+
 def _safe_manual_set_name(quantity_code: str, selection_mode: str, parameter_name: Optional[str]) -> str:
     raw = str(parameter_name or f"{quantity_code}_{selection_mode}").strip()
     token = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_") or f"{quantity_code}_{selection_mode}"
@@ -2017,10 +2065,10 @@ def _create_all_elements_e_parameters(
     for item in sorted(
             deduped_targets.values(),
             key=lambda row: (
-                str(row.get("set_scope") or ""),
-                str(row.get("instance_name") or ""),
-                str(row.get("part_name") or ""),
-                int(row["element_label"]),
+                    str(row.get("set_scope") or ""),
+                    str(row.get("instance_name") or ""),
+                    str(row.get("part_name") or ""),
+                    int(row["element_label"]),
             ),
     ):
         scope_token = _safe_parameter_token(
@@ -2210,7 +2258,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             )
             for row in cursor.fetchall() or []:
                 if incoming_element_label_set & _row_element_labels(row):
-                    raise ValueError("the selected set overlaps with an existing parameter of the same quantity")
+                    raise ValueError("已存在相同集合的相同修正量，重复定义")
 
             insert_sql = """
             INSERT INTO t_mt_py_fem_selected_parameter
@@ -2237,13 +2285,13 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                     resolved_current_value,
                     resolved_lower,
                     resolved_upper,
-                        resolved_prob_id,
-                        resolved_scatter,
-                        description or "",
-                        _json_dumps(resolved_usage_scope),
-                        _json_dumps({
-                            "target_keys": [],
-                            "element_labels": provided_element_labels,
+                    resolved_prob_id,
+                    resolved_scatter,
+                    description or "",
+                    _json_dumps(resolved_usage_scope),
+                    _json_dumps({
+                        "target_keys": [],
+                        "element_labels": provided_element_labels,
                         "set_source": "manual",
                         "virtual_set_name": manual_set_name,
                         "current_value": resolved_current_value,
@@ -2328,37 +2376,16 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
                 "manual_set_created": True,
             }
 
-        query = f"""
-            SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
-                   set_role, element_family, section_type, material_name, member_count,
-                   supports_global, supports_local, current_value, extra_json
-            FROM t_mt_py_fem_quantity_set_capability
-            WHERE pid = %s AND quantity_code IN ({", ".join(["%s"] * len(quantity_code_candidates))}) AND set_name = %s
-        """
-        params = [project_id, *quantity_code_candidates, set_name]
-        if set_type:
-            query += " AND set_type = %s"
-            params.append(set_type)
-        if set_scope:
-            query += " AND set_scope = %s"
-            params.append(set_scope)
-        if instance_name:
-            query += " AND instance_name = %s"
-            params.append(instance_name)
-        if part_name:
-            query += " AND part_name = %s"
-            params.append(part_name)
-        query += " ORDER BY set_scope, set_type, instance_name, part_name"
-
-        cursor.execute(query, tuple(params))
-        capability_rows = cursor.fetchall() or []
-        if not capability_rows:
-            raise ValueError(f"quantity/set capability not found: {resolved_quantity_code} @ {set_name}")
-        if len(capability_rows) > 1:
-            raise ValueError(
-                "multiple quantity/set capabilities matched; specify set_scope/set_type/instance_name/part_name"
-            )
-        capability_row = capability_rows[0]
+        capability_row = _resolve_quantity_set_capability_for_parameter_create(
+            cursor,
+            project_id=int(project_id),
+            quantity_code_candidates=quantity_code_candidates,
+            set_name=str(set_name),
+            set_type=str(set_type) if set_type else None,
+            set_scope=str(set_scope) if set_scope else None,
+            instance_name=str(instance_name) if instance_name else None,
+            part_name=str(part_name) if part_name else None,
+        )
 
         resolved_mode = _resolve_selection_mode_from_capability(capability_row, selection_mode)
         parameter_group_name = str(parameter_name or _default_parameter_group_name(resolved_quantity_code, capability_row["set_name"]))
@@ -2516,12 +2543,12 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             "part_name": capability_row["part_name"],
             "lower": resolved_lower,
             "upper": resolved_upper,
-        "prob_id": resolved_prob_id,
-        "scatter": resolved_scatter,
-        "description": description or "",
-        "usage_scope": resolved_usage_scope,
-        "created_parameter_count": len(created_parameters),
-        "created_parameters_preview": created_parameters[:20],
+            "prob_id": resolved_prob_id,
+            "scatter": resolved_scatter,
+            "description": description or "",
+            "usage_scope": resolved_usage_scope,
+            "created_parameter_count": len(created_parameters),
+            "created_parameters_preview": created_parameters[:20],
         }
     except Exception:
         conn.rollback()
@@ -2754,4 +2781,3 @@ def clear_design_response_catalog_entries(project_id: int) -> dict:
         "project_id": int(project_id),
         "deleted_count": deleted,
     }
-
