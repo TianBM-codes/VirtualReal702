@@ -234,17 +234,64 @@ def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> Li
 
 def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
     rtype = str(response.get("type") or "").upper()
-    if rtype != "FREQ":
+    if rtype == "MODAL_FREQUENCY":
+        rtype = "FREQ"
+    elif rtype in {"MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"}:
+        rtype = "DISP"
+    if rtype not in {"FREQ", "DISP"}:
         raise ValidationError(
             "unsupported SOL200 response type",
-            {"supported_types": ["FREQ"], "response_type": rtype},
+            {"supported_types": ["FREQ", "MODAL_FREQUENCY", "DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"], "response_type": rtype},
         )
     mode_number = response.get("mode_number")
     if mode_number is None:
-        raise ValidationError("FREQ response requires mode_number", {"response": response})
-    name = str(response.get("name") or f"FREQ_MODE_{int(mode_number)}").strip()
+        raise ValidationError(f"{rtype} response requires mode_number", {"response": response})
+
+    if rtype == "FREQ":
+        name = str(response.get("name") or f"FREQ_MODE_{int(mode_number)}").strip()
+        return [
+            f"DRESP1,{int(index)},{name},FREQ,STRUC,,{int(mode_number)}",
+            f"DCONSTR,1,{int(index)},-1.0E30,1.0E30",
+        ]
+
+    node_id = response.get("node_id")
+    if node_id is None:
+        node_id = response.get("fem_node_label")
+    if node_id is None:
+        raise ValidationError("DISP response requires node_id", {"response": response})
+
+    component = response.get("component")
+    if component is None:
+        component = response.get("dof")
+    if component is None:
+        raise ValidationError("DISP response requires component", {"response": response})
+    component_text = str(component).strip().upper()
+    component_map = {
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "X": "1",
+        "Y": "2",
+        "Z": "3",
+        "U1": "1",
+        "U2": "2",
+        "U3": "3",
+        "UX": "1",
+        "UY": "2",
+        "UZ": "3",
+        "T1": "1",
+        "T2": "2",
+        "T3": "3",
+    }
+    resolved_component = component_map.get(component_text)
+    if not resolved_component:
+        raise ValidationError(
+            "unsupported DISP response component",
+            {"component": component, "allowed": sorted(component_map)},
+        )
+    name = str(response.get("name") or f"DISP_MODE_{int(mode_number)}_N{int(node_id)}_{component_text}").strip()
     return [
-        f"DRESP1,{int(index)},{name},FREQ,STRUC,,{int(mode_number)}",
+        f"DRESP1,{int(index)},{name},DISP,,,{resolved_component},{int(mode_number)},{int(node_id)}",
         f"DCONSTR,1,{int(index)},-1.0E30,1.0E30",
     ]
 
@@ -363,8 +410,11 @@ def build_sol200_design_lines(
     for index, response in enumerate(responses, start=1):
         response_lines.extend(_build_response_lines(index, response))
 
-    # DSCREEN is a global screening control card; keep exactly one copy.
-    response_lines.append("DSCREEN  FREQ    -1.0E30")
+    # DSCREEN is a global screening control card; keep exactly one FREQ copy
+    # only when frequency responses are present. DISP modal-shape responses do
+    # not need a FREQ screening card.
+    if any(str(item.get("type") or "").strip().upper() in {"FREQ", "MODAL_FREQUENCY"} for item in responses):
+        response_lines.append("DSCREEN  FREQ    -1.0E30")
 
     design_lines = [
         "$ -----------------------------------------------------------------------------",

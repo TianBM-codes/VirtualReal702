@@ -121,3 +121,43 @@ def test_parse_formatted_sensitivity_csv_can_match_response_by_mode_number(tmp_p
     assert result["row_labels"] == ["FREQ_MOD"]
     assert result["column_labels"] == ["E_MAT1"]
     assert result["matrix"].shape == (1, 1)
+
+
+def test_parse_formatted_sensitivity_csv_can_match_modal_displacement_response(tmp_path):
+    csv_path = tmp_path / "sol200_sens.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "Local Sensitivity Results File",
+                "",
+                "DV ID,Label,Current Value,Lower Limit,Upper Limit",
+                "1,E_MAT1,9.0000E+04,2.0000E+03,2.0000E+05",
+                "",
+                "Design Response ID,   Label,Response Type,Elem/Grid ID,Component ID,Superelement ID,Subcase ID,Response value,Freq/Time",
+                "2,MODE1_NODE3_U3,DISP,3,3,0,1,6.3810E-01,0.0",
+                "E_MAT1",
+                "2.5000E-04",
+                "",
+            ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = op2_service._parse_formatted_sensitivity_csv(
+        str(csv_path),
+        parameter_names=["E_MAT1"],
+        response_names=["MODE1_NODE3_U3"],
+        response_rows=[{
+            "response_name": "MODE1_NODE3_U3",
+            "response_type": "DISP",
+            "mode_number": 1,
+            "node_id": 3,
+            "component": "U3",
+        }],
+    )
+
+    assert result is not None
+    assert result["row_labels"] == ["MODE1_NODE3_U3"]
+    assert result["response_types"] == ["DISP"]
+    assert result["matrix"].shape == (1, 1)
+    assert result["matrix"][0, 0] == 2.5e-4

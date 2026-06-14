@@ -74,3 +74,69 @@ def test_sync_sol200_config_from_catalog_maps_selected_parameters_and_modal_freq
     assert created_responses[0]["response_name"] == "FREQ_MODE_1"
     assert created_responses[0]["response_type"] == "FREQ"
     assert created_responses[0]["mode_number"] == 1
+
+
+def test_sync_sol200_config_from_catalog_maps_modal_displacement_responses(monkeypatch):
+    created_parameters = []
+    created_responses = []
+
+    monkeypatch.setattr(nastran_sol200_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(nastran_sol200_service, "clear_sol200_parameter_config_entries", lambda project_id: None)
+    monkeypatch.setattr(nastran_sol200_service, "clear_sol200_response_config_entries", lambda project_id: None)
+    monkeypatch.setattr(
+        nastran_sol200_service,
+        "create_sol200_parameter_config_entry",
+        lambda **kwargs: created_parameters.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        nastran_sol200_service,
+        "create_sol200_response_config_entry",
+        lambda **kwargs: created_responses.append(kwargs) or kwargs,
+    )
+
+    from services.model_update.analysis import inp_service
+
+    monkeypatch.setattr(
+        inp_service,
+        "list_optimization_parameters",
+        lambda project_id: {
+            "parameters": [
+                {
+                    "parameter_name": "E@MAT1_1001",
+                    "quantity_code": "E",
+                    "set_name": "MAT1_1001",
+                    "current_value": 2.1e11,
+                    "lower": 1.9e11,
+                    "upper": 2.3e11,
+                    "usage_scope": ["UPDATE"],
+                    "extra_json": {},
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        inp_service,
+        "get_fe_response_catalog",
+        lambda project_id: {
+            "responses": [
+                {
+                    "response_name": "MODE1_NODE3_U3",
+                    "response_type": "MODAL_DISPLACEMENT",
+                    "enabled": True,
+                    "solver_scope": ["SOL200"],
+                    "fem_node_label": 3,
+                    "component": "U3",
+                    "extra_json": {"mode_number": 1},
+                }
+            ]
+        },
+    )
+
+    result = nastran_sol200_service.sync_sol200_config_from_catalog(project_id=3, overwrite=True)
+
+    assert result["response_count"] == 1
+    assert created_responses[0]["response_name"] == "MODE1_NODE3_U3"
+    assert created_responses[0]["response_type"] == "DISP"
+    assert created_responses[0]["mode_number"] == 1
+    assert created_responses[0]["node_id"] == 3
+    assert created_responses[0]["component"] == "U3"

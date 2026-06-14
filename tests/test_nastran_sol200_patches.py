@@ -43,6 +43,22 @@ def test_build_sol200_response_lines_allow_negative_lower_bound():
     assert "DCONSTR,1,1,-1.0E30,1.0E30" in lines
 
 
+def test_build_sol200_response_lines_supports_modal_displacement_component():
+    lines = _build_response_lines(
+        2,
+        {
+            "type": "DISP",
+            "name": "MODE1_NODE3_U3",
+            "mode_number": 1,
+            "node_id": 3,
+            "component": "U3",
+        },
+    )
+
+    assert "DRESP1,2,MODE1_NODE3_U3,DISP,,,3,1,3" in lines
+    assert "DCONSTR,1,2,-1.0E30,1.0E30" in lines
+
+
 def test_build_sol200_design_lines_add_single_dscreen_for_freq_responses(tmp_path):
     input_bdf = tmp_path / "input.bdf"
     input_bdf.write_text("SOL 103\nCEND\nBEGIN BULK\nENDDATA\n", encoding="utf-8")

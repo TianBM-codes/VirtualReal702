@@ -667,24 +667,39 @@ def _parse_formatted_sensitivity_csv(
             continue
         idx += 1
 
-    eign_blocks = [item for item in response_blocks if item.get("response_type") == "EIGN" and item.get("values")]
-    if not eign_blocks:
+    supported_blocks = [
+        item for item in response_blocks
+        if item.get("response_type") in {"EIGN", "FREQ", "DISP"} and item.get("values")
+    ]
+    if not supported_blocks:
         return None
 
-    available_parameter_names = list(parameter_names or dv_names or eign_blocks[0].get("parameter_labels") or [])
+    available_parameter_names = list(parameter_names or dv_names or supported_blocks[0].get("parameter_labels") or [])
     if not available_parameter_names:
-        available_parameter_names = [f"PARAM_{ii + 1}" for ii in range(len(eign_blocks[0]["values"]))]
+        available_parameter_names = [f"PARAM_{ii + 1}" for ii in range(len(supported_blocks[0]["values"]))]
     requested_response_names = list(response_names or [])
     if requested_response_names:
         ordered_blocks = []
-        block_by_name = {str(item.get("label")): item for item in eign_blocks}
+        block_by_name = {str(item.get("label")): item for item in supported_blocks}
         requested_rows = list(response_rows or [])
         for idx, name in enumerate(requested_response_names):
             block = block_by_name.get(str(name))
             response_row = dict(requested_rows[idx]) if idx < len(requested_rows) and isinstance(requested_rows[idx], dict) else {}
-            if block is None and response_row.get("mode_number") is not None:
+            requested_type = str(response_row.get("response_type") or response_row.get("type") or "").strip().upper()
+            if requested_type in {"FREQ", "MODAL_FREQUENCY"}:
+                csv_types = {"EIGN", "FREQ"}
+            elif requested_type in {"DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"}:
+                csv_types = {"DISP"}
+            else:
+                csv_types = {"EIGN", "FREQ", "DISP"}
+            if block is not None and block.get("response_type") not in csv_types:
+                block = None
+            if block is None and response_row.get("mode_number") is not None and csv_types & {"EIGN", "FREQ"}:
                 mode_number = int(response_row["mode_number"])
-                mode_matches = [item for item in eign_blocks if item.get("reference_id") == mode_number]
+                mode_matches = [
+                    item for item in supported_blocks
+                    if item.get("response_type") in {"EIGN", "FREQ"} and item.get("reference_id") == mode_number
+                ]
                 if len(mode_matches) == 1:
                     block = mode_matches[0]
             if block is None:
@@ -693,13 +708,14 @@ def _parse_formatted_sensitivity_csv(
                     {
                         "response_name": str(name),
                         "mode_number": response_row.get("mode_number"),
-                        "available_response_names": [item.get("label") for item in eign_blocks],
-                        "available_reference_ids": [item.get("reference_id") for item in eign_blocks],
+                        "available_response_names": [item.get("label") for item in supported_blocks],
+                        "available_reference_ids": [item.get("reference_id") for item in supported_blocks],
+                        "available_response_types": [item.get("response_type") for item in supported_blocks],
                     },
                 )
             ordered_blocks.append(block)
     else:
-        ordered_blocks = eign_blocks
+        ordered_blocks = supported_blocks
 
     matrix_rows: List[List[float]] = []
     for block in ordered_blocks:
@@ -879,7 +895,7 @@ def preview_op2_sensitivity(
         if chosen is not None:
             warnings.append({
                 "code": "SENSITIVITY_FORMATTED_CSV_PARSED",
-                "message": "formatted Nastran sensitivity csv was parsed successfully; response rows were limited to EIGN blocks when present",
+                "message": "formatted Nastran sensitivity csv was parsed successfully; supported response blocks include EIGN/FREQ and DISP",
             })
         else:
             chosen = _parse_text_matrix_file(result_path, expected_shape=expected_shape)

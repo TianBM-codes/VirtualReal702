@@ -882,6 +882,8 @@ async def create_sol200_response_api(request: Request, body: CreateSol200Respons
             response_name=body.response_name,
             response_type=body.response_type,
             mode_number=body.mode_number,
+            node_id=body.node_id,
+            component=body.component,
             extra_json=body.extra_json,
         )
         return success_response(data, "SOL200 响应配置创建成功")

@@ -68,12 +68,20 @@ def _normalize_sol200_parameter_type(value: Any) -> str:
 
 def _normalize_sol200_response_type(value: Any) -> str:
     token = str(value or "").strip().upper()
-    if token != "FREQ":
+    mapping = {
+        "FREQ": "FREQ",
+        "MODAL_FREQUENCY": "FREQ",
+        "DISP": "DISP",
+        "MODAL_DISPLACEMENT": "DISP",
+        "NODAL_DISPLACEMENT": "DISP",
+    }
+    resolved = mapping.get(token)
+    if not resolved:
         raise ValidationError(
             "unsupported SOL200 response type",
-            {"response_type": value, "allowed": ["FREQ"]},
+            {"response_type": value, "allowed": ["FREQ", "MODAL_FREQUENCY", "DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"]},
         )
-    return token
+    return resolved
 
 
 def create_sol200_parameter_config_entry(
@@ -243,6 +251,8 @@ def create_sol200_response_config_entry(
     response_name: str,
     response_type: str,
     mode_number: Optional[int] = None,
+    node_id: Optional[int] = None,
+    component: Optional[str] = None,
     extra_json: Optional[Dict[str, Any]] = None,
 ) -> dict:
     ensure_tables_exist()
@@ -251,11 +261,33 @@ def create_sol200_response_config_entry(
         raise ValidationError("response_name is required", {"response_name": response_name})
     resolved_type = _normalize_sol200_response_type(response_type)
     resolved_mode_number = int(mode_number) if mode_number is not None else None
+    resolved_extra = dict(extra_json or {})
+    if node_id is None:
+        node_id = resolved_extra.get("node_id", resolved_extra.get("fem_node_label"))
+    if component is None:
+        component = resolved_extra.get("component", resolved_extra.get("dof"))
+    resolved_node_id = int(node_id) if node_id is not None else None
+    resolved_component = str(component).strip().upper() if component is not None else None
     if resolved_type == "FREQ" and resolved_mode_number is None:
         raise ValidationError(
             "mode_number is required for SOL200 FREQ response",
             {"response_type": resolved_type, "mode_number": mode_number},
         )
+    if resolved_type == "DISP":
+        missing = []
+        if resolved_mode_number is None:
+            missing.append("mode_number")
+        if resolved_node_id is None:
+            missing.append("node_id")
+        if not resolved_component:
+            missing.append("component")
+        if missing:
+            raise ValidationError(
+                "mode_number, node_id and component are required for SOL200 DISP response",
+                {"missing_fields": missing, "response_type": resolved_type},
+            )
+        resolved_extra["node_id"] = resolved_node_id
+        resolved_extra["component"] = resolved_component
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -281,7 +313,7 @@ def create_sol200_response_config_entry(
                 resolved_name,
                 resolved_type,
                 resolved_mode_number,
-                _json_dumps(dict(extra_json or {})),
+                _json_dumps(resolved_extra),
             ),
         )
         conn.commit()
@@ -307,7 +339,9 @@ def create_sol200_response_config_entry(
         "response_name": resolved_name,
         "response_type": resolved_type,
         "mode_number": resolved_mode_number,
-        "extra_json": dict(extra_json or {}),
+        "node_id": resolved_node_id,
+        "component": resolved_component,
+        "extra_json": resolved_extra,
     }
 
 
@@ -338,6 +372,8 @@ def list_sol200_response_config_entries(project_id: int) -> dict:
                 "response_name": str(row["response_name"]),
                 "response_type": str(row["response_type"]),
                 "mode_number": int(row["mode_number"]) if row.get("mode_number") is not None else None,
+                "node_id": int(extra_json["node_id"]) if isinstance(extra_json, dict) and extra_json.get("node_id") is not None else None,
+                "component": str(extra_json["component"]) if isinstance(extra_json, dict) and extra_json.get("component") is not None else None,
                 "extra_json": extra_json or {},
             })
         return {
@@ -442,22 +478,53 @@ def _map_selected_parameter_to_sol200(parameter_row: Dict[str, Any]) -> Tuple[Op
 
 def _map_catalog_response_to_sol200(response_row: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     response_type = str(response_row.get("response_type") or "").strip().upper()
-    if response_type not in {"FREQ", "MODAL_FREQUENCY"}:
-        return None, "response_is_not_modal_frequency"
     extra = dict(response_row.get("extra_json") or {})
-    mode_number = extra.get("mode_number")
-    if mode_number is None:
-        mode_number = extra.get("fem_mode_no")
-    if mode_number is None:
-        mode_number = response_row.get("test_mode_no")
-    if mode_number is None:
-        return None, "mode_number_missing"
-    return {
-        "name": str(response_row.get("response_name") or f"FREQ_MODE_{int(mode_number)}").strip(),
-        "type": "FREQ",
-        "mode_number": int(mode_number),
-        "extra_json": extra,
-    }, None
+    if response_type in {"FREQ", "MODAL_FREQUENCY"}:
+        mode_number = extra.get("mode_number")
+        if mode_number is None:
+            mode_number = extra.get("fem_mode_no")
+        if mode_number is None:
+            mode_number = response_row.get("test_mode_no")
+        if mode_number is None:
+            return None, "mode_number_missing"
+        return {
+            "name": str(response_row.get("response_name") or f"FREQ_MODE_{int(mode_number)}").strip(),
+            "type": "FREQ",
+            "mode_number": int(mode_number),
+            "extra_json": extra,
+        }, None
+
+    if response_type in {"DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"}:
+        mode_number = extra.get("mode_number")
+        if mode_number is None:
+            mode_number = extra.get("fem_mode_no")
+        if mode_number is None:
+            mode_number = response_row.get("test_mode_no")
+        node_id = (
+            response_row.get("fem_node_label")
+            or extra.get("node_id")
+            or extra.get("fem_node_label")
+        )
+        component = response_row.get("component") or extra.get("component") or extra.get("dof")
+        if mode_number is None:
+            return None, "mode_number_missing"
+        if node_id is None:
+            return None, "node_id_missing"
+        if component is None:
+            return None, "component_missing"
+        return {
+            "name": str(
+                response_row.get("response_name")
+                or f"DISP_MODE_{int(mode_number)}_N{int(node_id)}_{str(component).strip().upper()}"
+            ).strip(),
+            "type": "DISP",
+            "mode_number": int(mode_number),
+            "node_id": int(node_id),
+            "component": str(component).strip().upper(),
+            "extra_json": extra,
+        }, None
+
+    return None, "response_is_not_supported_sol200_response"
 
 
 def sync_sol200_config_from_catalog(
@@ -575,6 +642,8 @@ def sync_sol200_config_from_catalog(
                 response_name=item["name"],
                 response_type=item["type"],
                 mode_number=item.get("mode_number"),
+                node_id=item.get("node_id"),
+                component=item.get("component"),
                 extra_json={
                     "source_table": "t_mt_py_fem_response_catalog",
                     **dict(item.get("extra_json") or {}),
@@ -618,14 +687,39 @@ def _load_project_sol200_parameters(project_id: int) -> List[Dict[str, Any]]:
 
 def _load_project_sol200_responses(project_id: int) -> List[Dict[str, Any]]:
     payload = list_sol200_response_config_entries(project_id)
-    return [
-        {
+    rows = []
+    for item in list(payload.get("responses") or []):
+        extra = dict(item.get("extra_json") or {})
+        rows.append({
             "name": item["response_name"],
             "type": item["response_type"],
             "mode_number": item.get("mode_number"),
-        }
-        for item in list(payload.get("responses") or [])
-    ]
+            "node_id": item.get("node_id") or extra.get("node_id") or extra.get("fem_node_label"),
+            "component": item.get("component") or extra.get("component") or extra.get("dof"),
+            "extra_json": extra,
+        })
+    return rows
+
+
+def _sol200_response_metadata_rows(responses: Sequence[Dict[str, Any]]) -> List[dict]:
+    rows = []
+    for item in list(responses or []):
+        extra = dict(item.get("extra_json") or {})
+        node_id = item.get("node_id")
+        if node_id is None:
+            node_id = extra.get("node_id", extra.get("fem_node_label"))
+        component = item.get("component")
+        if component is None:
+            component = extra.get("component", extra.get("dof"))
+        rows.append({
+            "response_name": item.get("name"),
+            "response_type": item.get("type"),
+            "mode_number": item.get("mode_number"),
+            "node_id": int(node_id) if node_id is not None else None,
+            "component": str(component).strip().upper() if component is not None else None,
+            "unit": extra.get("unit"),
+        })
+    return rows
 
 
 def _resolve_sol200_config_sources(
@@ -1065,11 +1159,7 @@ def generate_sol200_workflow(
             project_id=int(project_id),
             batch_no=str(batch_no),
             case_name=str(case_name),
-            response_rows=[{
-                "response_name": item.get("name"),
-                "response_type": item.get("type"),
-                "mode_number": item.get("mode_number"),
-            } for item in list(resolved_responses or [])],
+            response_rows=_sol200_response_metadata_rows(resolved_responses),
             parameter_columns=[dict(item) for item in resolved_parameters],
             source={
                 "source_kind": "sol200_metadata",
@@ -1139,11 +1229,7 @@ def run_sol200_workflow(
             project_id=int(project_id),
             batch_no=str(batch_no),
             case_name=str(case_name),
-            response_rows=[{
-                "response_name": item.get("name"),
-                "response_type": item.get("type"),
-                "mode_number": item.get("mode_number"),
-            } for item in list(resolved_responses or [])],
+            response_rows=_sol200_response_metadata_rows(resolved_responses),
             parameter_columns=[dict(item) for item in resolved_parameters],
             source={
                 "source_kind": "sol200_metadata",

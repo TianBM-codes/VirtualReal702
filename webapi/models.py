@@ -147,6 +147,8 @@ class CreateSol200ResponseConfigRequest(BaseModel):
     response_name: str
     response_type: str
     mode_number: Optional[int] = None
+    node_id: Optional[int] = None
+    component: Optional[str] = None
     extra_json: Optional[Dict[str, Any]] = None
 
 
