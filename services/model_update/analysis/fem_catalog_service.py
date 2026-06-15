@@ -2796,7 +2796,7 @@ def create_design_response_catalog_entry(
         for existing_row in cursor.fetchall() or []:
             if _extract_static_sensitivity_response_signature(existing_row) == incoming_signature:
                 raise ValidationError(
-                    "duplicate static sensitivity response already exists",
+                    "重复的响应定义, 数据库中已存在响应",
                     {
                         "project_id": int(project_id),
                         "existing_response_no": int(existing_row.get("response_no") or 0),

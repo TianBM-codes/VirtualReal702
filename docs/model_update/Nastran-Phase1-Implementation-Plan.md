@@ -429,9 +429,9 @@
 桥接到：
 
 - `t_mt_py_fem_analysis_run`
-- `t_mt_py_fem_response_def`
-- `t_mt_py_fem_parameter_def`
-- `t_mt_py_fem_sensitivity_result`
+- `t_mt_py_fem_sensitivity_matrix_response`
+- `t_mt_py_fem_sensitivity_matrix_parameter`
+- `t_mt_py_fem_sensitivity_matrix_result`
 
 ## 9.4 验收标准
 

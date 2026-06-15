@@ -659,7 +659,7 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有限元分析任务表';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_response_def (
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_sensitivity_matrix_response (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
         project_id BIGINT NULL COMMENT '项目ID',
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
@@ -675,7 +675,7 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有限元响应定义表';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_parameter_def (
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_sensitivity_matrix_parameter (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
         project_id BIGINT NULL COMMENT '项目ID',
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
@@ -698,7 +698,7 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有限元参数定义表';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_sensitivity_result (
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_sensitivity_matrix_result (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
         project_id BIGINT NULL COMMENT '项目ID',
         analysis_run_id BIGINT NOT NULL COMMENT '分析任务ID',
@@ -1042,6 +1042,18 @@ def ensure_tables_exist():
             "t_mt_py_fem_response_catalog",
             "t_mt_py_fem_dynamic_response_catalog",
         )
+        _rename_table_if_needed(
+            "t_mt_py_fem_response_def",
+            "t_mt_py_fem_sensitivity_matrix_response",
+        )
+        _rename_table_if_needed(
+            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
+        )
+        _rename_table_if_needed(
+            "t_mt_py_fem_sensitivity_result",
+            "t_mt_py_fem_sensitivity_matrix_result",
+        )
         for table_name in OBSOLETE_TABLE_NAMES:
             _drop_table_if_exists(table_name)
 
@@ -1196,57 +1208,57 @@ def ensure_tables_exist():
             "metadata_path VARCHAR(1024) NULL COMMENT '元数据文件路径'",
         )
         _ensure_column(
-            "t_mt_py_fem_response_def",
+            "t_mt_py_fem_sensitivity_matrix_response",
             "response_type",
             "response_type VARCHAR(32) NULL COMMENT '响应类型'",
         )
         _ensure_column(
-            "t_mt_py_fem_response_def",
+            "t_mt_py_fem_sensitivity_matrix_response",
             "mode_number",
             "mode_number INT NULL COMMENT '模态阶次'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "param_type",
             "param_type VARCHAR(32) NULL COMMENT '参数类型'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "material_id",
             "material_id BIGINT NULL COMMENT '材料ID'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "property_id",
             "property_id BIGINT NULL COMMENT '属性ID'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "element_id",
             "element_id BIGINT NULL COMMENT '单元ID'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "source_material_id",
             "source_material_id BIGINT NULL COMMENT '源材料ID'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "source_property_id",
             "source_property_id BIGINT NULL COMMENT '源属性ID'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "initial_value",
             "initial_value DOUBLE NULL COMMENT '初始值'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "lower_bound",
             "lower_bound DOUBLE NULL COMMENT '下界'",
         )
         _ensure_column(
-            "t_mt_py_fem_parameter_def",
+            "t_mt_py_fem_sensitivity_matrix_parameter",
             "upper_bound",
             "upper_bound DOUBLE NULL COMMENT '上界'",
         )

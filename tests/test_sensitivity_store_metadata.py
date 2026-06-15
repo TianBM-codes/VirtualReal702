@@ -18,20 +18,20 @@ class _FakeCursor:
         self.executed.append((self.last_sql, params))
         if "INSERT INTO t_mt_py_fem_analysis_run" in self.last_sql:
             self.lastrowid = 10
-        elif "INSERT INTO t_mt_py_fem_response_def" in self.last_sql:
+        elif "INSERT INTO t_mt_py_fem_sensitivity_matrix_response" in self.last_sql:
             self.lastrowid += 1
-        elif "INSERT INTO t_mt_py_fem_parameter_def" in self.last_sql:
+        elif "INSERT INTO t_mt_py_fem_sensitivity_matrix_parameter" in self.last_sql:
             self.lastrowid += 1
 
     def fetchall(self):
         sql = self.last_sql
         if "SELECT id FROM t_mt_py_fem_analysis_run" in sql:
             return list(self._analysis_run_rows)
-        if "FROM t_mt_py_fem_response_def" in sql:
+        if "FROM t_mt_py_fem_sensitivity_matrix_response" in sql:
             return list(self._response_rows)
-        if "FROM t_mt_py_fem_parameter_def" in sql:
+        if "FROM t_mt_py_fem_sensitivity_matrix_parameter" in sql:
             return list(self._parameter_rows)
-        if "FROM t_mt_py_fem_sensitivity_result" in sql:
+        if "FROM t_mt_py_fem_sensitivity_matrix_result" in sql:
             return list(self._result_rows)
         return []
 
@@ -102,8 +102,8 @@ def test_persist_sensitivity_matrix_stores_metadata_columns(monkeypatch):
     )
 
     analysis_run_insert = next(params for sql, params in cursor.executed if "INSERT INTO t_mt_py_fem_analysis_run" in sql)
-    response_insert = next(params for sql, params in cursor.executed if "INSERT INTO t_mt_py_fem_response_def" in sql)
-    parameter_insert = next(params for sql, params in cursor.executed if "INSERT INTO t_mt_py_fem_parameter_def" in sql)
+    response_insert = next(params for sql, params in cursor.executed if "INSERT INTO t_mt_py_fem_sensitivity_matrix_response" in sql)
+    parameter_insert = next(params for sql, params in cursor.executed if "INSERT INTO t_mt_py_fem_sensitivity_matrix_parameter" in sql)
 
     assert analysis_run_insert[3] == "op2"
     assert analysis_run_insert[4] == "D:/demo/model.op2"

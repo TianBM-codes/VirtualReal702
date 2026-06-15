@@ -43,7 +43,7 @@
 当前项目里已经有两类和本次设计直接相关的表：
 
 1. `t_mt_py_fem_modal_result`
-2. `t_mt_py_fem_sensitivity_result`
+2. `t_mt_py_fem_sensitivity_matrix_result`
 
 定义位置：
 
@@ -436,9 +436,9 @@ frequency = sqrt(eigenvalue) / (2 * pi)
 当前项目已有的灵敏度存储结构是：
 
 - `t_mt_py_fem_analysis_run`
-- `t_mt_py_fem_response_def`
-- `t_mt_py_fem_parameter_def`
-- `t_mt_py_fem_sensitivity_result`
+- `t_mt_py_fem_sensitivity_matrix_response`
+- `t_mt_py_fem_sensitivity_matrix_parameter`
+- `t_mt_py_fem_sensitivity_matrix_result`
 
 这套结构非常适合继续复用，因为它本来就是“矩阵分表存储”的模式：
 

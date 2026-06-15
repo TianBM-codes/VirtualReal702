@@ -68,9 +68,9 @@ _PROJECT_PURGE_TABLES = (
     ("t_mt_channel_info", "project_id"),
     ("t_mt_py_console_log", "pid"),
     ("t_mt_py_background_task", "project_id"),
-    ("t_mt_py_fem_sensitivity_result", "project_id"),
-    ("t_mt_py_fem_response_def", "project_id"),
-    ("t_mt_py_fem_parameter_def", "project_id"),
+    ("t_mt_py_fem_sensitivity_matrix_result", "project_id"),
+    ("t_mt_py_fem_sensitivity_matrix_response", "project_id"),
+    ("t_mt_py_fem_sensitivity_matrix_parameter", "project_id"),
     ("t_mt_py_fem_analysis_run", "project_id"),
 )
 

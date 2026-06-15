@@ -1890,15 +1890,15 @@ def _delete_sensitivity_children(cursor, analysis_run_ids: List[int]) -> None:
     placeholders = ", ".join(["%s"] * len(analysis_run_ids))
     params = tuple(int(item) for item in analysis_run_ids)
     cursor.execute(
-        f"DELETE FROM t_mt_py_fem_sensitivity_result WHERE analysis_run_id IN ({placeholders})",
+        f"DELETE FROM t_mt_py_fem_sensitivity_matrix_result WHERE analysis_run_id IN ({placeholders})",
         params,
     )
     cursor.execute(
-        f"DELETE FROM t_mt_py_fem_response_def WHERE analysis_run_id IN ({placeholders})",
+        f"DELETE FROM t_mt_py_fem_sensitivity_matrix_response WHERE analysis_run_id IN ({placeholders})",
         params,
     )
     cursor.execute(
-        f"DELETE FROM t_mt_py_fem_parameter_def WHERE analysis_run_id IN ({placeholders})",
+        f"DELETE FROM t_mt_py_fem_sensitivity_matrix_parameter WHERE analysis_run_id IN ({placeholders})",
         params,
     )
 
@@ -2018,7 +2018,7 @@ def _persist_sensitivity_matrix(
             row_meta = dict(response_rows[index - 1] or {})
             cursor.execute(
                 """
-                INSERT INTO t_mt_py_fem_response_def (
+                INSERT INTO t_mt_py_fem_sensitivity_matrix_response (
                     project_id, analysis_run_id, response_code, response_name, response_type, mode_number, unit, seq_no
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -2041,7 +2041,7 @@ def _persist_sensitivity_matrix(
             column_meta = dict(parameter_columns[index - 1] or {})
             cursor.execute(
                 """
-                INSERT INTO t_mt_py_fem_parameter_def (
+                INSERT INTO t_mt_py_fem_sensitivity_matrix_parameter (
                     project_id, analysis_run_id, param_code, param_name, param_type,
                     material_id, property_id, element_id, source_material_id, source_property_id,
                     initial_value, lower_bound, upper_bound, unit, seq_no
@@ -2072,7 +2072,7 @@ def _persist_sensitivity_matrix(
             for col_index, parameter_id in enumerate(parameter_ids):
                 cursor.execute(
                     """
-                    INSERT INTO t_mt_py_fem_sensitivity_result (
+                    INSERT INTO t_mt_py_fem_sensitivity_matrix_result (
                         project_id, analysis_run_id, parameter_id, response_id, sensitivity_value
                     )
                     VALUES (%s, %s, %s, %s, %s)
@@ -2139,7 +2139,7 @@ def persist_sensitivity_metadata(
             row_meta = dict((response_rows or [])[index - 1] or {})
             cursor.execute(
                 """
-                INSERT INTO t_mt_py_fem_response_def (
+                INSERT INTO t_mt_py_fem_sensitivity_matrix_response (
                     project_id, analysis_run_id, response_code, response_name, response_type, mode_number, unit, seq_no
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -2160,7 +2160,7 @@ def persist_sensitivity_metadata(
             column_meta = dict((parameter_columns or [])[index - 1] or {})
             cursor.execute(
                 """
-                INSERT INTO t_mt_py_fem_parameter_def (
+                INSERT INTO t_mt_py_fem_sensitivity_matrix_parameter (
                     project_id, analysis_run_id, param_code, param_name, param_type,
                     material_id, property_id, element_id, source_material_id, source_property_id,
                     initial_value, lower_bound, upper_bound, unit, seq_no
@@ -2232,7 +2232,7 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
         cursor.execute(
             """
             SELECT id, response_code, response_name, response_type, mode_number, unit, seq_no
-            FROM t_mt_py_fem_response_def
+            FROM t_mt_py_fem_sensitivity_matrix_response
             WHERE analysis_run_id = %s
             ORDER BY seq_no ASC, id ASC
             """,
@@ -2244,7 +2244,7 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
             """
             SELECT id, param_code, param_name, param_type, material_id, property_id, element_id,
                    source_material_id, source_property_id, initial_value, lower_bound, upper_bound, unit, seq_no
-            FROM t_mt_py_fem_parameter_def
+            FROM t_mt_py_fem_sensitivity_matrix_parameter
             WHERE analysis_run_id = %s
             ORDER BY seq_no ASC, id ASC
             """,
@@ -2255,7 +2255,7 @@ def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) ->
         cursor.execute(
             """
             SELECT parameter_id, response_id, sensitivity_value
-            FROM t_mt_py_fem_sensitivity_result
+            FROM t_mt_py_fem_sensitivity_matrix_result
             WHERE analysis_run_id = %s
             """,
             (analysis_run_id,),

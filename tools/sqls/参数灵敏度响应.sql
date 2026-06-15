@@ -3,7 +3,7 @@ SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_dof_match` where pid=3 LIMIT 0,10
 SELECT distinct(frequency) FROM `db_simu_real_test`.`t_mt_py_fem_modal_result` where pid=3 LIMIT 0,1000;
 SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_modal_correlation` where pid=3 LIMIT 0,1000;
 
-SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_parameter_def` where project_id=3 LIMIT 0,1000;
+SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_sensitivity_matrix_parameter` where project_id=3 LIMIT 0,1000;
 SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_parameter_definition` where pid=3 LIMIT 0,1000;
 
 SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_property` where pid=3 LIMIT 0,1000;
