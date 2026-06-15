@@ -92,14 +92,6 @@ class CreateOptimizationParameterRequest(BaseModel):
     usage_scope: Optional[List[str]] = None
 
 
-class AddResponseRequest(BaseModel):
-    project_id: int
-    type: str
-    scatter: float
-    dof: str
-    step: Optional[str] = None
-
-
 class CreateAbaqusStaticResponseRequest(BaseModel):
     project_id: int
     region_type: str

@@ -6,10 +6,7 @@ from services.model_update.analysis.bayesian_service import (
     run_bayesian_update_from_text,
     run_bayesian_update_workflow,
 )
-from services.model_update.analysis.model_update_meta_service import (
-    add_manual_response,
-    resolve_abaqus_command,
-)
+from services.model_update.analysis.model_update_meta_service import resolve_abaqus_command
 from services.model_update.analysis import sensitivity_service as _sens
 from services.model_update.analysis.project_file_service import resolve_project_input_file
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
@@ -45,7 +42,6 @@ from src.l3.core.errors import AppError, ValidationError
 from ..background_jobs import get_background_task, submit_background_task, update_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
-    AddResponseRequest,
     AbaqusInstanceNodeValidationRequest,
     AbaqusStaticResponseCatalogRequest,
     BayesianModelUpdateRequest,
@@ -399,25 +395,6 @@ def _run_sol200_modal_bayesian_update_task(task_id: str, **kwargs) -> dict:
             run_sol200_modal_frequency_bayesian_update_workflow(progress_callback=_progress_callback, **kwargs)
         ),
     )
-
-
-@router.post("/add/response")
-async def add_response_api(request: Request, body: AddResponseRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        data = add_manual_response(
-            project_id=body.project_id,
-            response_type=body.type,
-            scatter=body.scatter,
-            dof=body.dof,
-            step=body.step,
-        )
-        return success_response(data, "响应添加成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/optimization/parameter/create")

@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 from typing import Optional
 from config import _load_service_config
 
@@ -52,20 +52,20 @@ def add_manual_parameter(
 ) -> dict:
     parameter_name = str(parameter or "").strip()
     if not parameter_name:
-        raise ValueError("parameter 不能为空")
+        raise ValueError("parameter 涓嶈兘涓虹┖")
 
     resolved_type = str(parameter_type or "").strip().upper()
     if not resolved_type:
-        raise ValueError("type 不能为空")
+        raise ValueError("type 涓嶈兘涓虹┖")
 
     resolved_scatter = float(scatter)
     if resolved_scatter <= 0:
-        raise ValueError("scatter 必须大于 0")
+        raise ValueError("scatter 蹇呴』澶т簬 0")
 
     upper_value = None if upper is None else float(upper)
     lower_value = None if lower is None else float(lower)
     if upper_value is not None and lower_value is not None and lower_value > upper_value:
-        raise ValueError("lower 必须小于或等于 upper")
+        raise ValueError("lower 蹇呴』灏忎簬鎴栫瓑浜?upper")
 
     ensure_tables_exist()
     conn = get_connection()
@@ -107,64 +107,4 @@ def add_manual_parameter(
         "scatter": resolved_scatter,
         "upper": upper_value,
         "lower": lower_value,
-    }
-
-
-def add_manual_response(
-        *,
-        project_id: int,
-        response_type: str,
-        scatter: float,
-        dof: str,
-        step: Optional[str] = None,
-) -> dict:
-    resolved_type = str(response_type or "").strip().upper()
-    if not resolved_type:
-        raise ValueError("type 不能为空")
-
-    resolved_dof = str(dof or "").strip().upper()
-    if not resolved_dof:
-        raise ValueError("dof 不能为空")
-
-    step_name = str(step).strip() if step is not None else ""
-
-    resolved_scatter = float(scatter)
-    if resolved_scatter <= 0:
-        raise ValueError("scatter 必须大于 0")
-
-    ensure_tables_exist()
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            INSERT INTO t_mt_py_fem_manual_response
-            (pid, response_type, step_name, dof, scatter)
-            VALUES (%s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                scatter = VALUES(scatter),
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                int(project_id),
-                resolved_type,
-                step_name,
-                resolved_dof,
-                resolved_scatter,
-            ),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        cursor.close()
-        conn.close()
-
-    return {
-        "project_id": int(project_id),
-        "type": resolved_type,
-        "step": step_name or None,
-        "dof": resolved_dof,
-        "scatter": resolved_scatter,
     }

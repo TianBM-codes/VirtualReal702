@@ -72,15 +72,6 @@ _PROJECT_PURGE_TABLES = (
     ("t_mt_py_fem_response_def", "project_id"),
     ("t_mt_py_fem_parameter_def", "project_id"),
     ("t_mt_py_fem_analysis_run", "project_id"),
-    ("t_mt_py_fem_response_overview", "pid"),
-    ("t_mt_py_fem_responses", "pid"),
-    ("t_mt_py_fem_displacement_responses", "pid"),
-    ("t_mt_py_fem_strain_responses", "pid"),
-    ("t_mt_py_fem_stress_responses", "pid"),
-    ("t_mt_py_fem_relative_error", "pid"),
-    ("t_mt_py_fem_confidence", "pid"),
-    ("t_mt_py_fem_displacement_scale_factor", "pid"),
-    ("t_mt_py_fem_correlation_scatter", "pid"),
 )
 
 
