@@ -479,7 +479,7 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='输入文件解析参数目标映射表';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_design_response_catalog (
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_static_sensitivity_response_catalog (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
         response_no INT NOT NULL COMMENT '响应序号',
@@ -554,7 +554,7 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有限元自由度匹配结果表';
     """,
     """
-    CREATE TABLE IF NOT EXISTS t_mt_py_fem_response_catalog (
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_dynamic_response_catalog (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',
         response_code VARCHAR(200) NOT NULL COMMENT '响应编码',
@@ -1114,6 +1114,20 @@ def ensure_tables_exist():
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        def _rename_table_if_needed(old_name, new_name):
+            cursor.execute(
+                """
+                SELECT TABLE_NAME
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = %s
+                  AND TABLE_NAME IN (%s, %s)
+                """,
+                (DB_CONFIG["database"], old_name, new_name),
+            )
+            existing_names = {str(row[0]) for row in (cursor.fetchall() or [])}
+            if old_name in existing_names and new_name not in existing_names:
+                cursor.execute(f"RENAME TABLE {old_name} TO {new_name}")
+
         def _ensure_column(table_name, column_name, column_sql):
             cursor.execute(
                 """
@@ -1128,6 +1142,15 @@ def ensure_tables_exist():
             )
             if cursor.fetchone() is None:
                 cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+        _rename_table_if_needed(
+            "t_mt_py_fem_design_response_catalog",
+            "t_mt_py_fem_static_sensitivity_response_catalog",
+        )
+        _rename_table_if_needed(
+            "t_mt_py_fem_response_catalog",
+            "t_mt_py_fem_dynamic_response_catalog",
+        )
 
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
@@ -1202,27 +1225,27 @@ def ensure_tables_exist():
             "usage_scope JSON NULL COMMENT 'parameter usage scope'",
         )
         _ensure_column(
-            "t_mt_py_fem_response_catalog",
+            "t_mt_py_fem_dynamic_response_catalog",
             "enabled",
             "enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT 'response enabled flag'",
         )
         _ensure_column(
-            "t_mt_py_fem_response_catalog",
+            "t_mt_py_fem_dynamic_response_catalog",
             "selection_source",
             "selection_source VARCHAR(64) NULL COMMENT 'response selection source'",
         )
         _ensure_column(
-            "t_mt_py_fem_response_catalog",
+            "t_mt_py_fem_dynamic_response_catalog",
             "solver_scope",
             "solver_scope JSON NULL COMMENT 'response solver scope'",
         )
         _ensure_column(
-            "t_mt_py_fem_response_catalog",
+            "t_mt_py_fem_dynamic_response_catalog",
             "scatter",
             "scatter FLOAT NOT NULL DEFAULT 0.05 COMMENT 'response scatter'",
         )
         _ensure_column(
-            "t_mt_py_fem_response_catalog",
+            "t_mt_py_fem_dynamic_response_catalog",
             "updated_at",
             "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time'",
         )
@@ -1335,17 +1358,17 @@ def ensure_tables_exist():
             "upper_bound DOUBLE NULL COMMENT '上界'",
         )
         _ensure_column(
-            "t_mt_py_fem_design_response_catalog",
+            "t_mt_py_fem_static_sensitivity_response_catalog",
             "set_scope",
             "set_scope VARCHAR(32) NULL COMMENT '集合范围'",
         )
         _ensure_column(
-            "t_mt_py_fem_design_response_catalog",
+            "t_mt_py_fem_static_sensitivity_response_catalog",
             "instance_name",
             "instance_name VARCHAR(200) NULL COMMENT '实例名称'",
         )
         _ensure_column(
-            "t_mt_py_fem_design_response_catalog",
+            "t_mt_py_fem_static_sensitivity_response_catalog",
             "part_name",
             "part_name VARCHAR(200) NULL COMMENT '零件名称'",
         )
@@ -1404,7 +1427,7 @@ def clear_unv_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_pairs WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_match WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_match WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_response_catalog WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_dynamic_response_catalog WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = {pid}")
 
 
@@ -1429,12 +1452,12 @@ def clear_fem_tables(cursor, pid):
     cursor.execute(f"DELETE FROM t_mt_py_fem_sol200_parameter_config WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_definition WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_parameter_target WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_static_sensitivity_response_catalog WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_sol200_response_config WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_octree_cache WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_node_match WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_dof_match WHERE pid = {pid}")
-    cursor.execute(f"DELETE FROM t_mt_py_fem_response_catalog WHERE pid = {pid}")
+    cursor.execute(f"DELETE FROM t_mt_py_fem_dynamic_response_catalog WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_modal_result WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_static_result WHERE pid = {pid}")
     cursor.execute(f"DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = {pid}")

@@ -20,13 +20,16 @@ from services.model_update.analysis.inp_service import (
     create_modal_frequency_response_catalog_from_match,
     create_design_response_catalog_entry,
     create_optimization_parameter,
+    get_project_abaqus_instances_and_steps,
     get_fe_response_catalog,
     get_modal_frequency_response_options,
     list_optimization_parameters,
     list_design_response_catalog_entries,
     remove_optimization_parameters_from_update,
+    resolve_abaqus_instance_context,
     select_optimization_parameters_for_update,
     update_optimization_parameter_usage,
+    validate_abaqus_instance_node_label,
 )
 from services.model_update.analysis.nastran_sol200_service import (
     clear_sol200_parameter_config_entries,
@@ -43,6 +46,7 @@ from ..background_jobs import get_background_task, submit_background_task, updat
 from ..common import error_response, server_error, success_response
 from ..models import (
     AddResponseRequest,
+    AbaqusInstanceNodeValidationRequest,
     AbaqusStaticResponseCatalogRequest,
     BayesianModelUpdateRequest,
     BayesianTextCheckRequest,
@@ -116,14 +120,20 @@ def _normalize_node_labels(raw_value) -> list[int]:
 def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseRequest):
     node_labels = _normalize_node_labels(body.node_labels)
     element_labels = _normalize_element_labels(body.element_labels)
+    resolved_set_scope = None
+    resolved_part_name = None
+    if body.instance_name:
+        context = resolve_abaqus_instance_context(body.project_id, body.instance_name)
+        resolved_set_scope = context["set_scope"]
+        resolved_part_name = context["part_name"]
     return create_design_response_catalog_entry(
         project_id=body.project_id,
         region_type=body.region_type,
         variables=body.variables,
         set_name=body.set_name,
-        set_scope=body.set_scope,
+        set_scope=resolved_set_scope,
         instance_name=body.instance_name,
-        part_name=body.part_name,
+        part_name=resolved_part_name,
         node_labels=node_labels or None,
         element_labels=element_labels or None,
         step_name=body.step_name,
@@ -526,6 +536,42 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
             }
         )
         return success_response(result, "优化参数创建成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/abaqus/static_response/meta",
+    summary="获取当前项目的 Abaqus 实例和分析步",
+)
+async def get_abaqus_static_response_meta_api(request: Request, body: AbaqusStaticResponseCatalogRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = get_project_abaqus_instances_and_steps(body.project_id)
+        return success_response(data, "Abaqus 实例和分析步获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post(
+    "/optimization/abaqus/static_response/node/validate",
+    summary="校验节点是否属于指定 Abaqus 实例",
+)
+async def validate_abaqus_static_response_node_api(request: Request, body: AbaqusInstanceNodeValidationRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = validate_abaqus_instance_node_label(
+            project_id=body.project_id,
+            instance_name=body.instance_name,
+            node_label=body.node_label,
+        )
+        return success_response(data, "Abaqus 实例节点校验成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

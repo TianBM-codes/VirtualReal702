@@ -645,7 +645,7 @@ def sync_sol200_config_from_catalog(
                 node_id=item.get("node_id"),
                 component=item.get("component"),
                 extra_json={
-                    "source_table": "t_mt_py_fem_response_catalog",
+                    "source_table": "t_mt_py_fem_dynamic_response_catalog",
                     **dict(item.get("extra_json") or {}),
                 },
             )

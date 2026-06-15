@@ -12,7 +12,7 @@ SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_quantity_set_capability` where pi
 SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_selected_parameter` where pid=3 LIMIT 0,1000;
 SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_sol200_response_config` LIMIT 0,1000;
 
-SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_response_catalog` where pid=3 LIMIT 0,1000;
+SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_dynamic_response_catalog` where pid=3 LIMIT 0,1000;
 
 SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_sol200_parameter_config` where pid=3 LIMIT 0,1000;
 SELECT * FROM `db_simu_real_test`.`t_mt_py_fem_sol200_response_config` where pid=3 LIMIT 0,1000;

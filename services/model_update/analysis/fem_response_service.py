@@ -36,7 +36,7 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
     cursor = conn.cursor(dictionary=True)
     try:
         if overwrite:
-            cursor.execute("DELETE FROM t_mt_py_fem_response_catalog WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_dynamic_response_catalog WHERE pid = %s", (project_id,))
 
         rows = []
         seq_no = 1
@@ -113,7 +113,7 @@ def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=Tru
                 seq_no += 1
 
         insert_sql = """
-        INSERT INTO t_mt_py_fem_response_catalog
+        INSERT INTO t_mt_py_fem_dynamic_response_catalog
         (pid, response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
          instance_name, part_name, fem_node_label, component, unit, scatter, seq_no, source_table, extra_json)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -179,7 +179,7 @@ def get_fe_response_catalog(project_id):
             SELECT response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
                    instance_name, part_name, fem_node_label, component, unit, scatter, seq_no, enabled,
                    selection_source, solver_scope, source_table, extra_json, created_at, updated_at
-            FROM t_mt_py_fem_response_catalog
+            FROM t_mt_py_fem_dynamic_response_catalog
             WHERE pid = %s
             ORDER BY seq_no, response_code
         """, (project_id,))
@@ -407,7 +407,7 @@ def _delete_response_catalog_entries_by_types(cursor, project_id: int, response_
         return
     cursor.execute(
         f"""
-        DELETE FROM t_mt_py_fem_response_catalog
+        DELETE FROM t_mt_py_fem_dynamic_response_catalog
         WHERE pid = %s AND response_type IN ({", ".join(["%s"] * len(resolved_types))})
         """,
         (int(project_id), *resolved_types),
@@ -562,7 +562,7 @@ def get_modal_frequency_response_options(project_id: int, response_source: str) 
 
 def _insert_response_catalog_rows(cursor, project_id: int, rows: Sequence[dict]) -> None:
     insert_sql = """
-    INSERT INTO t_mt_py_fem_response_catalog
+    INSERT INTO t_mt_py_fem_dynamic_response_catalog
     (pid, response_code, response_name, response_type, entity_type, test_mode_no, test_node_id,
      instance_name, part_name, fem_node_label, component, unit, scatter, seq_no, enabled, selection_source,
      solver_scope, source_table, extra_json)
@@ -672,7 +672,7 @@ def create_modal_frequency_response_catalog_from_fem(
         cursor.execute(
             """
             SELECT COALESCE(MAX(seq_no), 0) AS max_seq_no
-            FROM t_mt_py_fem_response_catalog
+            FROM t_mt_py_fem_dynamic_response_catalog
             WHERE pid = %s
             """,
             (int(project_id),),

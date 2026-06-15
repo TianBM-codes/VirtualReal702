@@ -801,7 +801,7 @@ def _load_project_design_responses(project_id: int) -> List[dict]:
             SELECT response_no, request_no, step_name, frequency, region_type,
                    set_name, set_scope, instance_name, part_name,
                    variables_json, extra_json
-            FROM t_mt_py_fem_design_response_catalog
+            FROM t_mt_py_fem_static_sensitivity_response_catalog
             WHERE pid = %s
             ORDER BY response_no ASC, request_no ASC
             """,

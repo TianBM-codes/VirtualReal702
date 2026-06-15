@@ -100,10 +100,10 @@ def test_create_modal_match_response_catalog_entries_writes_selected_pairs(monke
     )
 
     delete_sql, delete_params = fake_conn.cursor_obj.executed[1]
-    assert "DELETE FROM t_mt_py_fem_response_catalog" in delete_sql
+    assert "DELETE FROM t_mt_py_fem_dynamic_response_catalog" in delete_sql
     assert delete_params == (18, "MODAL_FREQUENCY", "MODAL_MAC")
 
-    insert_calls = [item for item in fake_conn.cursor_obj.executed if "INSERT INTO t_mt_py_fem_response_catalog" in item[0]]
+    insert_calls = [item for item in fake_conn.cursor_obj.executed if "INSERT INTO t_mt_py_fem_dynamic_response_catalog" in item[0]]
     assert len(insert_calls) == 2
     first_insert = insert_calls[0][1]
     second_insert = insert_calls[1][1]

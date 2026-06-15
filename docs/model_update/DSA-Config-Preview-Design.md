@@ -51,7 +51,7 @@ POST /sensitivity/dsa/config/preview
 
 ## 响应生成
 
-响应数据来自 `t_mt_py_fem_design_response_catalog`。
+响应数据来自 `t_mt_py_fem_static_sensitivity_response_catalog`。
 
 每条响应生成一个 `responses[]` 项：
 

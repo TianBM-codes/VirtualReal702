@@ -62,11 +62,11 @@ def test_create_modal_frequency_response_catalog_from_match_writes_modal_frequen
     )
 
     delete_sql, delete_params = fake_conn.cursor_obj.executed[0]
-    assert "DELETE FROM t_mt_py_fem_response_catalog" in delete_sql
+    assert "DELETE FROM t_mt_py_fem_dynamic_response_catalog" in delete_sql
     assert delete_params == (18, "MODAL_FREQUENCY")
 
     insert_sql, insert_params = fake_conn.cursor_obj.executed[1]
-    assert "INSERT INTO t_mt_py_fem_response_catalog" in insert_sql
+    assert "INSERT INTO t_mt_py_fem_dynamic_response_catalog" in insert_sql
     assert insert_params[2] == "FREQ_MODE_2"
     assert insert_params[3] == "MODAL_FREQUENCY"
     assert insert_params[12] == 0.05

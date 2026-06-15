@@ -105,14 +105,15 @@ class CreateAbaqusStaticResponseRequest(BaseModel):
     region_type: str
     variables: List[str]
     set_name: Optional[str] = None
-    set_scope: Optional[str] = None
     instance_name: Optional[str] = None
-    part_name: Optional[str] = None
     node_labels: Optional[List[int]] = None
     element_labels: Optional[List[int]] = None
     step_name: Optional[str] = None
     frequency: int = Field(default=1, ge=1)
     response_name: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
 
 
 CreateDesignResponseRequest = CreateAbaqusStaticResponseRequest
@@ -120,6 +121,12 @@ CreateDesignResponseRequest = CreateAbaqusStaticResponseRequest
 
 class AbaqusStaticResponseCatalogRequest(BaseModel):
     project_id: int
+
+
+class AbaqusInstanceNodeValidationRequest(BaseModel):
+    project_id: int
+    instance_name: str
+    node_label: int
 
 
 DesignResponseCatalogRequest = AbaqusStaticResponseCatalogRequest

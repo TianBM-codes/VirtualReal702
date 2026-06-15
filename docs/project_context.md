@@ -55,7 +55,7 @@ Added in `db.py`:
 - `t_mt_py_fem_node_octree_cache`
 - `t_mt_py_fem_node_match`
 - `t_mt_py_fem_dof_match`
-- `t_mt_py_fem_response_catalog`
+- `t_mt_py_fem_dynamic_response_catalog`
 - `t_mt_py_fem_modal_result`
 - `t_mt_py_fem_modal_correlation`
 
@@ -96,7 +96,7 @@ It currently provides:
   - build model-updating response catalog from:
     - test modal frequencies
     - matched node-DOF responses
-  - store results in `t_mt_py_fem_response_catalog`
+  - store results in `t_mt_py_fem_dynamic_response_catalog`
 - `import_fe_modal_results()`
   - import FE modal nodal displacement results from JSON file or request payload
   - persist them in `t_mt_py_fem_modal_result`

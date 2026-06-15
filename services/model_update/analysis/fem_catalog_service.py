@@ -1608,7 +1608,7 @@ def get_inp_catalog(project_id):
 
         cursor.execute("""
             SELECT response_no, request_no, step_name, frequency, region_type, set_name, variables_json, extra_json
-            FROM t_mt_py_fem_design_response_catalog
+            FROM t_mt_py_fem_static_sensitivity_response_catalog
             WHERE pid = %s
             ORDER BY response_no, request_no
         """, (project_id,))
@@ -1654,7 +1654,7 @@ def get_inp_catalog(project_id):
         node_match_count = int(cursor.fetchone()["cnt"])
         cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
         dof_match_count = int(cursor.fetchone()["cnt"])
-        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_response_catalog WHERE pid = %s", (project_id,))
+        cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_dynamic_response_catalog WHERE pid = %s", (project_id,))
         response_catalog_count = int(cursor.fetchone()["cnt"])
         cursor.execute("SELECT COUNT(DISTINCT mode_no) AS cnt FROM t_mt_py_fem_modal_result WHERE pid = %s", (project_id,))
         fem_mode_count = int(cursor.fetchone()["cnt"])
@@ -1733,6 +1733,106 @@ def get_inp_parameter_options(project_id):
     finally:
         cursor.close()
         conn.close()
+
+
+def _load_project_inp_model(project_id: int):
+    resolved_path = resolve_project_source_inp_path(int(project_id))
+    return parse_inp(resolved_path), os.path.abspath(resolved_path)
+
+
+def _model_instance_rows(model) -> List[dict]:
+    rows: List[dict] = []
+    if model.assembly and model.assembly.instances:
+        for instance_name, inst in sorted(model.assembly.instances.items()):
+            rows.append(
+                {
+                    "instance_name": str(instance_name),
+                    "part_name": str(inst.part_name),
+                    "set_scope": "ASSEMBLY",
+                }
+            )
+        return rows
+
+    for part_name in sorted(model.parts.keys()):
+        rows.append(
+            {
+                "instance_name": str(part_name),
+                "part_name": str(part_name),
+                "set_scope": "PART",
+            }
+        )
+    return rows
+
+
+def get_project_abaqus_instances_and_steps(project_id: int) -> dict:
+    model, source_inp = _load_project_inp_model(int(project_id))
+    instances = _model_instance_rows(model)
+    steps = []
+    for idx, step in enumerate(list(getattr(model, "steps", []) or []), start=1):
+        steps.append(
+            {
+                "step_name": str(getattr(step, "name", None) or f"Step-{idx}"),
+                "step_index": int(idx - 1),
+            }
+        )
+    return {
+        "project_id": int(project_id),
+        "source_inp": source_inp,
+        "instance_count": len(instances),
+        "step_count": len(steps),
+        "instances": instances,
+        "steps": steps,
+    }
+
+
+def resolve_abaqus_instance_context(project_id: int, instance_name: str) -> dict:
+    resolved_instance_name = str(instance_name or "").strip()
+    if not resolved_instance_name:
+        raise ValidationError("instance_name is required", {"instance_name": instance_name})
+
+    model, source_inp = _load_project_inp_model(int(project_id))
+    if model.assembly and model.assembly.instances:
+        inst = model.assembly.instances.get(resolved_instance_name)
+        if inst is None:
+            raise NotFoundError(
+                "instance not found in project inp model",
+                {"project_id": int(project_id), "instance_name": resolved_instance_name, "source_inp": source_inp},
+            )
+        return {
+            "project_id": int(project_id),
+            "source_inp": source_inp,
+            "instance_name": resolved_instance_name,
+            "part_name": str(inst.part_name),
+            "set_scope": "ASSEMBLY",
+        }
+
+    if resolved_instance_name not in model.parts:
+        raise NotFoundError(
+            "instance not found in project inp model",
+            {"project_id": int(project_id), "instance_name": resolved_instance_name, "source_inp": source_inp},
+        )
+    return {
+        "project_id": int(project_id),
+        "source_inp": source_inp,
+        "instance_name": resolved_instance_name,
+        "part_name": resolved_instance_name,
+        "set_scope": "PART",
+    }
+
+
+def validate_abaqus_instance_node_label(project_id: int, instance_name: str, node_label: int) -> dict:
+    context = resolve_abaqus_instance_context(int(project_id), instance_name)
+    model, _source_inp = _load_project_inp_model(int(project_id))
+    part = model.parts.get(str(context["part_name"]))
+    exists = bool(part is not None and int(node_label) in getattr(part, "nodes", {}))
+    return {
+        "project_id": int(project_id),
+        "instance_name": str(context["instance_name"]),
+        "part_name": str(context["part_name"]),
+        "set_scope": str(context["set_scope"]),
+        "node_label": int(node_label),
+        "exists": bool(exists),
+    }
 
 
 def _default_parameter_group_name(quantity_code: str, set_name: str) -> str:
@@ -2613,7 +2713,7 @@ def create_design_response_catalog_entry(
         cursor.execute(
             """
             SELECT COALESCE(MAX(response_no), 0) AS max_no
-            FROM t_mt_py_fem_design_response_catalog
+            FROM t_mt_py_fem_static_sensitivity_response_catalog
             WHERE pid = %s
             """,
             (int(project_id),),
@@ -2641,7 +2741,7 @@ def create_design_response_catalog_entry(
 
         cursor.execute(
             """
-            INSERT INTO t_mt_py_fem_design_response_catalog
+            INSERT INTO t_mt_py_fem_static_sensitivity_response_catalog
             (pid, response_no, request_no, step_name, frequency, region_type, set_name,
              set_scope, instance_name, part_name, variables_json, extra_json)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -2710,7 +2810,7 @@ def list_design_response_catalog_entries(project_id: int) -> dict:
             """
             SELECT response_no, request_no, step_name, frequency, region_type,
                    set_name, set_scope, instance_name, part_name, variables_json, extra_json
-            FROM t_mt_py_fem_design_response_catalog
+            FROM t_mt_py_fem_static_sensitivity_response_catalog
             WHERE pid = %s
             ORDER BY response_no ASC, request_no ASC
             """,
@@ -2760,7 +2860,7 @@ def clear_design_response_catalog_entries(project_id: int) -> dict:
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "DELETE FROM t_mt_py_fem_design_response_catalog WHERE pid = %s",
+            "DELETE FROM t_mt_py_fem_static_sensitivity_response_catalog WHERE pid = %s",
             (int(project_id),),
         )
         deleted = int(cursor.rowcount or 0)
