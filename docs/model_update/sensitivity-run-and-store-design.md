@@ -1,7 +1,8 @@
 # sensitivity run_and_store 接口逻辑速查
 
 > 文件对应源码：`services/model_update/analysis/sensitivity_service.py`
-> 路由入口：`webapi/routers/sensitivity.py` → `POST /sensitivity/run_and_store`
+> 路由入口：`webapi/routers/sensitivity.py` → `POST /sensitivity/abaqus/run_and_store`
+> 兼容旧路径：`POST /sensitivity/run_and_store`
 
 ---
 
@@ -9,11 +10,17 @@
 
 | 函数 | 路由 | 说明 |
 |---|---|---|
-| `run_sensitivity_inp_and_store` | `POST /sensitivity/run_and_store` | 主入口：跑 Abaqus、解析结果、入库、（可选）合并场 |
-| `generate_sensitivity_inp_and_store` | `POST /sensitivity/generate_run_and_store` | 先从 DB 生成 INP，再调用 `run_sensitivity_inp_and_store` |
-| `store_dsa_sensitivity_results` | `POST /sensitivity/calculate_and_store` | 另一条路：支持传已有 ODB/workspace，直接解析入库（无 merge） |
+| `run_sensitivity_inp_and_store` | `POST /sensitivity/abaqus/run_and_store` | 主入口：跑 Abaqus、解析结果、入库、（可选）合并场 |
+| `generate_sensitivity_inp_and_store` | `POST /sensitivity/abaqus/generate_run_and_store` | 先从 DB 生成 INP，再调用 `run_sensitivity_inp_and_store` |
+| `store_dsa_sensitivity_results` | `POST /sensitivity/abaqus/calculate_and_store` | 另一条路：支持传已有 ODB/workspace，直接解析入库（无 merge） |
 
 `generate_sensitivity_inp_and_store` 透传所有参数给 `run_sensitivity_inp_and_store`，只多了 INP 生成一步，行为完全一致。
+
+补充：
+
+- `POST /sensitivity/abaqus/generate_run_and_store` 现在支持极简请求。
+- 当项目里已经定义好正式参数和正式响应后，`step / instances / response_component / position` 可以不显式传入，由后端在结果解析阶段自动补全。
+- 项目内源 `inp` 建议通过 `input_inp_name` 传文件名或相对路径。
 
 ---
 

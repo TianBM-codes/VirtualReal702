@@ -823,6 +823,82 @@ def _load_project_design_responses(project_id: int) -> List[dict]:
         conn.close()
 
 
+def _infer_step_from_design_response_rows(rows: List[dict]) -> Optional[str]:
+    step_names = sorted(
+        {
+            str(row.get("step_name") or "").strip()
+            for row in (rows or [])
+            if str(row.get("step_name") or "").strip()
+        }
+    )
+    if not step_names:
+        return None
+    if len(step_names) == 1:
+        return step_names[0]
+    raise ValidationError(
+        "step is required because design responses span multiple steps",
+        {"available_steps": step_names},
+    )
+
+
+def _infer_response_component_from_design_response_rows(
+        rows: List[dict],
+        *,
+        field_prefix: str,
+) -> Optional[str]:
+    response_token = _field_prefix_response_token(field_prefix)
+    if not response_token:
+        return None
+
+    parsed_matches: List[dict] = []
+    seen_components: Set[str] = set()
+    for row in rows or []:
+        for raw_variable in list(row.get("variables") or []):
+            token = str(raw_variable or "").strip()
+            if not token:
+                continue
+            parsed = _parse_design_response_variable(token)
+            if not _design_response_matches_token(parsed, response_token):
+                continue
+            component = str(parsed.get("component") or "").strip().upper()
+            if not component or component in seen_components:
+                continue
+            seen_components.add(component)
+            parsed_matches.append(
+                {
+                    "component": component,
+                    "variable": str(parsed.get("variable") or "").upper(),
+                    "field_name": str(parsed.get("field_name") or "").upper(),
+                    "step_name": str(row.get("step_name") or "").strip(),
+                    "set_name": str(row.get("set_name") or "").strip(),
+                    "region_type": str(row.get("region_type") or "").strip().upper(),
+                }
+            )
+
+    if not parsed_matches:
+        return None
+    if len(parsed_matches) == 1:
+        return parsed_matches[0]["component"]
+
+    raise ValidationError(
+        "response_component is required because multiple explicit design response components match the requested DSA field",
+        {
+            "field_prefix": field_prefix,
+            "available_components": [
+                {
+                    "component": item["component"],
+                    "variable": item["variable"],
+                    "field_name": item["field_name"],
+                    "step_name": item["step_name"],
+                    "set_name": item["set_name"],
+                    "region_type": item["region_type"],
+                }
+                for item in parsed_matches
+            ],
+        },
+    )
+
+
 def _load_project_thickness_parameters(project_id: int) -> List[dict]:
     return [
         row
@@ -1459,7 +1535,7 @@ def _build_project_result_parse_options(
     parse_options = {
         "consistency_check": "count-only",
         "steps": [str(step)] if step else None,
-        "frames": [int(frame)] if frame is not None else "all",
+        "frames": [int(frame)] if (step and frame is not None) else "all",
         "invariants": "none",
     }
 
@@ -1476,9 +1552,11 @@ def _build_project_result_parse_options(
 
 def _resolved_workspace_frame(
         *,
-        requested_frame: int,
+        requested_frame: Optional[int],
         parse_via_project_results: bool,
-) -> int:
+) -> Optional[int]:
+    if requested_frame is None:
+        return None
     if not parse_via_project_results:
         return int(requested_frame)
 
@@ -1486,6 +1564,38 @@ def _resolved_workspace_frame(
     # frame. The extracted workspace then stores that one physical frame as
     # frame_idx=0, so later workspace lookups must use the remapped index.
     return 0
+
+
+def _resolve_workspace_step_frame(
+        workspace: str,
+        *,
+        step: str,
+        requested_frame: Optional[int],
+) -> int:
+    workspace_abs = _workspace_path(workspace)
+    conn = _manifest_conn(workspace_abs)
+    try:
+        frame_rows = conn.execute(
+            "SELECT frame_idx FROM frames WHERE step_name = ? ORDER BY frame_idx",
+            (step,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    frame_indices = [int(row["frame_idx"]) for row in frame_rows or []]
+    if not frame_indices:
+        raise NotFoundError(f"no frames found for step '{step}'", {"workspace": workspace_abs, "step": step})
+
+    if requested_frame is None:
+        return max(frame_indices)
+
+    resolved_frame = int(requested_frame)
+    if resolved_frame not in frame_indices:
+        raise ValidationError(
+            f"frame {resolved_frame} not found under step '{step}'",
+            {"workspace": workspace_abs, "step": step, "available_frames": frame_indices},
+        )
+    return resolved_frame
 
 
 def _submit_project_result_group_and_wait(
@@ -2317,7 +2427,7 @@ def store_dsa_sensitivity_results(
         response_component: Optional[str] = None,
         position: Optional[str] = None,
         aggregation: str = "max_abs",
-        frame: int = 0,
+        frame: Optional[int] = None,
         response_elset: Optional[str] = None,
         response_nset: Optional[str] = None,
         response_frequency: int = 1,
@@ -2445,13 +2555,13 @@ def run_sensitivity_inp_and_store(
         batch_no: Optional[str] = None,
         input_inp: str,
         output_dir: str,
-        step: str,
-        instances: List[str],
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
         field_prefix: str,
-        response_component: str,
-        position: str,
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
         aggregation: str = "max_abs",
-        frame: int = 0,
+        frame: Optional[int] = None,
         abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -2603,20 +2713,23 @@ def run_sensitivity_inp_and_store(
             extra_payload={
                 "temp_selected_parameters": temp_selected_parameters,
                 "project_result_parse": project_result_parse,
-                "workspace_frame": int(workspace_frame),
+                "workspace_frame": workspace_frame,
             },
         )
 
         if merge_fields:
+            merge_step = str(result.get("step") or step or "").strip()
+            merge_instances = [str(item) for item in (result.get("instances") or instances or []) if str(item).strip()]
+            merge_frame = result.get("frame")
             source_rg = (project_result_parse or {}).get("result_group") if parse_via_project_results else None
             try:
                 merge_result = merge_dsa_sensitivity_fields(
                     project_id=project_id,
                     workspace=str(result["workspace"]),
-                    step=step,
-                    frame=int(workspace_frame),
+                    step=merge_step,
+                    frame=int(merge_frame) if merge_frame is not None else 0,
                     field_prefix=field_prefix,
-                    instances=list(instances) if instances else [],
+                    instances=merge_instances,
                     result_group=resolved_merge_result_group,
                     source_result_group=source_rg,
                 )
@@ -2637,13 +2750,13 @@ def generate_sensitivity_inp_and_store(
         batch_no: Optional[str] = None,
         input_inp: Optional[str] = None,
         output_dir: Optional[str] = None,
-        step: str,
-        instances: List[str],
+        step: Optional[str] = None,
+        instances: Optional[List[str]] = None,
         field_prefix: str,
-        response_component: str,
-        position: str,
+        response_component: Optional[str] = None,
+        position: Optional[str] = None,
         aggregation: str = "max_abs",
-        frame: int = 0,
+        frame: Optional[int] = None,
         abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -2684,6 +2797,14 @@ def generate_sensitivity_inp_and_store(
                 "no design responses found for project-driven sensitivity generation",
                 {"project_id": int(project_id)},
             )
+        resolved_step = str(step or "").strip() or _infer_step_from_design_response_rows(design_response_rows)
+        resolved_response_component = (
+            str(response_component or "").strip()
+            or _infer_response_component_from_design_response_rows(
+                design_response_rows,
+                field_prefix=field_prefix,
+            )
+        )
 
         generation_payload = _generate_sensitivity_inp_from_project_db(
             project_id=project_id,
@@ -2704,10 +2825,10 @@ def generate_sensitivity_inp_and_store(
             batch_no=batch_no,
             input_inp=str(generated_analysis_inp),
             output_dir=output_dir_abs,
-            step=step,
+            step=resolved_step,
             instances=instances,
             field_prefix=field_prefix,
-            response_component=response_component,
+            response_component=resolved_response_component,
             position=position,
             aggregation=aggregation,
             frame=frame,
@@ -2735,6 +2856,8 @@ def generate_sensitivity_inp_and_store(
         result["generation_summary"] = {
             "optimization_parameter_count": len(parameter_rows),
             "design_response_count": len(design_response_rows),
+            "resolved_step": resolved_step,
+            "resolved_response_component": resolved_response_component,
         }
         generated_files = dict(result.get("generated_files") or {})
         generation_files = dict(generation_payload.get("generated_files") or {})
@@ -3447,6 +3570,9 @@ def _flatten_design_response_requests(model, *, step_name: Optional[str]) -> Lis
                     "frequency": int(getattr(response, "frequency", 1) or 1),
                     "region_type": str(getattr(request, "region_type", "") or "").upper(),
                     "set_name": str(getattr(request, "set_name", "") or ""),
+                    "set_scope": str(getattr(request, "set_scope", "") or "").upper(),
+                    "instance_name": str(getattr(request, "instance_name", "") or ""),
+                    "part_name": str(getattr(request, "part_name", "") or ""),
                     "variables": [str(item).upper() for item in (getattr(request, "variables", []) or []) if str(item).strip()],
                 }
             )
@@ -3686,6 +3812,102 @@ def _parameter_target_labels(model, parameter_row: dict) -> tuple[str, List[obje
 def _compose_dsa_label_map(model, parameter_row: dict, value: object) -> tuple[str, Dict[object, object]]:
     target_kind, targets = _parameter_target_labels(model, parameter_row)
     return target_kind, {target: value for target in targets}
+
+
+def _design_response_target_labels(model, response_spec: dict) -> tuple[str, List[object]]:
+    set_name = str(response_spec.get("set_name") or "")
+    region_type = str(response_spec.get("region_type") or "").upper()
+    set_scope = str(response_spec.get("set_scope") or "").upper()
+    instance_name = str(response_spec.get("instance_name") or "").strip()
+    part_name = str(response_spec.get("part_name") or "").strip()
+
+    if region_type == "NODE":
+        target_kind = "point"
+        assembly_attr = "nsets"
+        labels_attr = "node_labels"
+        part_attr = "nsets"
+    elif region_type == "ELEMENT":
+        target_kind = "cell"
+        assembly_attr = "elsets"
+        labels_attr = "elem_labels"
+        part_attr = "elsets"
+    else:
+        raise ValidationError(
+            "unsupported design response region_type",
+            {"region_type": region_type, "set_name": set_name},
+        )
+
+    if model.assembly:
+        assembly_sets = getattr(model.assembly, assembly_attr, {}) or {}
+        assembly_set = assembly_sets.get(set_name)
+        if assembly_set is not None:
+            labels = list(getattr(assembly_set, labels_attr, []) or [])
+            if not labels:
+                raise ValidationError(
+                    "design response assembly set has no members in inp model",
+                    {"set_name": set_name, "region_type": region_type},
+                )
+            resolved_instance = instance_name or str(getattr(assembly_set, "instance_name", "") or "").strip()
+            return target_kind, _scoped_labels(resolved_instance or None, labels)
+
+    candidate_parts = []
+    if part_name:
+        if part_name not in model.parts:
+            raise ValidationError(
+                "design response part set not found in inp model",
+                {"set_name": set_name, "part_name": part_name, "region_type": region_type},
+            )
+        candidate_parts.append(part_name)
+    else:
+        for candidate_part_name, part in (model.parts or {}).items():
+            part_sets = getattr(part, part_attr, {}) or {}
+            if set_name in part_sets:
+                candidate_parts.append(str(candidate_part_name))
+
+    if len(candidate_parts) > 1:
+        raise ValidationError(
+            "design response part set is ambiguous across multiple parts",
+            {"set_name": set_name, "region_type": region_type, "matched_parts": candidate_parts},
+        )
+
+    if candidate_parts:
+        resolved_part_name = candidate_parts[0]
+        part = model.parts[resolved_part_name]
+        part_sets = getattr(part, part_attr, {}) or {}
+        source_set = part_sets.get(set_name)
+        labels = list(getattr(source_set, labels_attr, []) or []) if source_set else []
+        if not labels:
+            raise ValidationError(
+                "design response part set has no members in inp model",
+                {"set_name": set_name, "part_name": resolved_part_name, "region_type": region_type},
+            )
+
+        if model.assembly and model.assembly.instances:
+            matched_instances = [
+                inst_name
+                for inst_name, inst in model.assembly.instances.items()
+                if str(inst.part_name) == str(resolved_part_name)
+            ]
+            if instance_name:
+                matched_instances = [name for name in matched_instances if str(name) == instance_name]
+            if matched_instances:
+                scoped = []
+                for inst_name in matched_instances:
+                    scoped.extend(_scoped_labels(inst_name, labels))
+                return target_kind, scoped
+
+        return target_kind, _scoped_labels(resolved_part_name, labels)
+
+    raise ValidationError(
+        "design response set not found in inp model",
+        {
+            "set_name": set_name,
+            "region_type": region_type,
+            "set_scope": set_scope,
+            "instance_name": instance_name,
+            "part_name": part_name,
+        },
+    )
 
 
 def _resolve_dsa_parameter_scalar_value(model, *, parameter_name: Optional[str], target_rows: List[dict]) -> float:
@@ -4178,6 +4400,15 @@ def _export_sensitivity_vtu(
         )
         source_mode = "l3_api"
 
+    if resolved_workspace:
+        resolved_frame = _resolve_workspace_step_frame(
+            resolved_workspace,
+            step=str(discovery["step"]),
+            requested_frame=frame,
+        )
+    else:
+        resolved_frame = int(frame) if frame is not None else 0
+
     dsa_parameter_rows = _load_project_optimization_parameters(project_id, required_scope="SENSITIVITY") if selector["kind"] == "prefix" else []
     dsa_model = parse_inp(resolved_inp_path) if selector["kind"] == "prefix" else None
     dsa_direct_target_map = build_parameter_target_map(dsa_model) if dsa_model is not None else {}
@@ -4220,7 +4451,7 @@ def _export_sensitivity_vtu(
                     field=source_field_name,
                     instance=instance_name,
                     position=selected_position,
-                    frame=frame,
+                    frame=resolved_frame,
                     aggregation=aggregation,
                     component=initial_component,
                     component_index=initial_component_index,
@@ -4232,7 +4463,7 @@ def _export_sensitivity_vtu(
                     step=discovery["step"],
                     field=source_field_name,
                     position=selected_position,
-                    frame=frame,
+                    frame=resolved_frame,
                     aggregation=aggregation,
                     component=initial_component,
                     component_index=initial_component_index,
@@ -4295,7 +4526,7 @@ def _export_sensitivity_vtu(
                                 field=source_field_name,
                                 instance=instance_name,
                                 position=selected_position,
-                                frame=frame,
+                                frame=resolved_frame,
                                 aggregation=aggregation,
                                 component=candidate_component,
                                 component_index=candidate_component_index,
@@ -4307,7 +4538,7 @@ def _export_sensitivity_vtu(
                                 step=discovery["step"],
                                 field=source_field_name,
                                 position=selected_position,
-                                frame=frame,
+                                frame=resolved_frame,
                                 aggregation=aggregation,
                                 component=candidate_component,
                                 component_index=candidate_component_index,
@@ -4337,7 +4568,7 @@ def _export_sensitivity_vtu(
                             candidate_position,
                             candidate_component,
                             candidate_component_index,
-                            int(frame),
+                            int(resolved_frame),
                             str(aggregation),
                         )
                         if response_cache_key not in response_value_cache:
@@ -4348,7 +4579,7 @@ def _export_sensitivity_vtu(
                                     field=candidate_field_name,
                                     instance=instance_name,
                                     position=candidate_position,
-                                    frame=frame,
+                                    frame=resolved_frame,
                                     aggregation=aggregation,
                                     component=candidate_component,
                                     component_index=candidate_component_index,
@@ -4360,7 +4591,7 @@ def _export_sensitivity_vtu(
                                     step=discovery["step"],
                                     field=candidate_field_name,
                                     position=candidate_position,
-                                    frame=frame,
+                                    frame=resolved_frame,
                                     aggregation=aggregation,
                                     component=candidate_component,
                                     component_index=candidate_component_index,
@@ -4369,6 +4600,18 @@ def _export_sensitivity_vtu(
                             response_value_cache[response_cache_key] = _normalize_vtu_label_map(cached_response_map)
 
                         candidate_response_label_map = response_value_cache[response_cache_key]
+                        _, response_targets = _design_response_target_labels(dsa_model, spec)
+                        response_target_set = {str(item) for item in response_targets}
+                        candidate_response_label_map = {
+                            str(label): value
+                            for label, value in (candidate_response_label_map or {}).items()
+                            if str(label) in response_target_set
+                        }
+                        candidate_dsa_map = {
+                            str(label): value
+                            for label, value in (candidate_dsa_map or {}).items()
+                            if str(label) in response_target_set
+                        }
                         overlap = sorted(set(candidate_dsa_map.keys()) & set(candidate_response_label_map.keys()))
                         score = len(overlap)
                         if score <= 0:
@@ -4554,7 +4797,7 @@ def _export_sensitivity_vtu(
         "output_vtu": output_vtu_abs,
         "step": discovery["step"],
         "instances": discovery["instances"],
-        "frame": int(frame),
+        "frame": int(resolved_frame),
         "aggregation": aggregation,
         "exported_field_count": len(discovery["field_names"]),
         "exported_fields": discovery["field_names"],

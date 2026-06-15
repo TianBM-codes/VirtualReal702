@@ -179,7 +179,7 @@ def _generate_run_and_store_kwargs(body: SensitivityGenerateRunAndStoreRequest) 
         "input_inp": _resolve_sensitivity_input_inp(body.project_id, body.input_inp, body.input_inp_name),
         "output_dir": _resolve_sensitivity_output_dir(body.project_id, body.output_dir),
         "step": body.step,
-        "instances": body.instances,
+        "instances": list(body.instances or []),
         "field_prefix": body.field_prefix,
         "response_component": body.response_component,
         "position": body.position,
@@ -204,6 +204,7 @@ def _generate_run_and_store_kwargs(body: SensitivityGenerateRunAndStoreRequest) 
     }
 
 
+@router.post("/sensitivity/abaqus/calculate_and_store")
 @router.post("/sensitivity/calculate_and_store")
 async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaRequest):
     await log_request(request, model_to_dict(body))
@@ -227,6 +228,7 @@ async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaReque
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+@router.post("/sensitivity/abaqus/run_and_store")
 @router.post("/sensitivity/run_and_store")
 async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndStoreRequest):
     await log_request(request, model_to_dict(body))
@@ -250,6 +252,7 @@ async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndSto
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+@router.post("/sensitivity/abaqus/generate_run_and_store")
 @router.post("/sensitivity/generate_run_and_store")
 async def sensitivity_generate_run_and_store(request: Request, body: SensitivityGenerateRunAndStoreRequest):
     await log_request(request, model_to_dict(body))
@@ -308,6 +311,7 @@ async def sensitivity_dsa_config_preview(request: Request, body: SensitivityDsaC
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+@router.post("/sensitivity/abaqus/dsa/inp/generate")
 @router.post("/sensitivity/dsa/inp/generate")
 async def sensitivity_dsa_inp_generate(request: Request, body: SensitivityDsaInpGenerateRequest):
     await log_request(request, model_to_dict(body))

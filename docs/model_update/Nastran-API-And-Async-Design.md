@@ -55,8 +55,8 @@
 
 已有风格：
 
-- `POST /sensitivity/run_and_store`
-- `POST /sensitivity/generate_run_and_store`
+- `POST /sensitivity/abaqus/run_and_store`
+- `POST /sensitivity/abaqus/generate_run_and_store`
 - `GET /sensitivity/tasks/{task_id}`
 
 ### 3.2 贝叶斯修正任务

@@ -179,7 +179,7 @@ class BayesianModelUpdateRequest(BaseModel):
     response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
-    frame: int = 0
+    frame: Optional[int] = None
     iterations: int = Field(default=1, ge=1)
     exit_diff_percent: Optional[float] = Field(default=None, ge=0)
     damping: float = 1e-8
@@ -489,7 +489,7 @@ class SensitivityExportVtuBaseRequest(BaseModel):
     response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
-    frame: int = 0
+    frame: Optional[int] = None
     abaqus: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
@@ -591,13 +591,13 @@ class SensitivityGenerateRunAndStoreRequest(BaseModel):
     input_inp: Optional[str] = None
     input_inp_name: Optional[str] = None
     output_dir: Optional[str] = None
-    step: str
-    instances: List[str]
+    step: Optional[str] = None
+    instances: List[str] = Field(default_factory=list)
     field_prefix: str
-    response_component: str
-    position: str
+    response_component: Optional[str] = None
+    position: Optional[str] = None
     aggregation: str = "max_abs"
-    frame: int = 0
+    frame: Optional[int] = None
     abaqus: Optional[str] = None
     python3: Optional[str] = None
     base_url: Optional[str] = None

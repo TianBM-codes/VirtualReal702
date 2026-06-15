@@ -307,7 +307,7 @@ async def sensitivity_merge_fields(
 ### 方式一：集成调用（推荐，一次完成）
 
 ```json
-POST /sensitivity/run_and_store
+POST /sensitivity/abaqus/run_and_store
 {
   "project_id": 1001,
   "input_inp": "/data/job.inp",
@@ -340,7 +340,7 @@ POST /sensitivity/run_and_store
 ### 方式二：分步调用
 
 ```
-POST /sensitivity/run_and_store   （merge_fields 默认 false，行为不变）
+POST /sensitivity/abaqus/run_and_store   （merge_fields 默认 false，行为不变）
     → 拿到 workspace、step、field_prefix、project_result_parse.result_group
 
 POST /sensitivity/merge_fields

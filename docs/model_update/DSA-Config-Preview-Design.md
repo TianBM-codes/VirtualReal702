@@ -94,7 +94,7 @@ POST /sensitivity/dsa/config/preview
 确认预览合理后，可以调用：
 
 ```http
-POST /sensitivity/dsa/inp/generate
+POST /sensitivity/abaqus/dsa/inp/generate
 ```
 
 请求：

@@ -2128,7 +2128,7 @@ def build_dsa_normalized_sensitivity_matrix(
         response_component: Optional[str] = None,
         position: Optional[str] = None,
         aggregation: str = "max_abs",
-        frame: int = 0,
+        frame: Optional[int] = None,
         abaqus: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
@@ -2206,6 +2206,15 @@ def build_dsa_normalized_sensitivity_matrix(
             position=position,
         )
         source_mode = "l3_api"
+
+    if resolved_workspace:
+        resolved_frame = _sens._resolve_workspace_step_frame(
+            resolved_workspace,
+            step=str(discovery["step"]),
+            requested_frame=frame,
+        )
+    else:
+        resolved_frame = int(frame) if frame is not None else 0
 
     # DSA columns come from result fields, then are mapped back to design parameters
     # and finally to INP target sets/sections.
@@ -2299,7 +2308,7 @@ def build_dsa_normalized_sensitivity_matrix(
                         field=source_field_name,
                         instance=instance_name,
                         position=selected_position,
-                        frame=frame,
+                        frame=resolved_frame,
                         aggregation=aggregation,
                         component=candidate_component,
                         component_index=candidate_component_index,
@@ -2312,7 +2321,7 @@ def build_dsa_normalized_sensitivity_matrix(
                         step=discovery["step"],
                         field=source_field_name,
                         position=selected_position,
-                        frame=frame,
+                        frame=resolved_frame,
                         aggregation=aggregation,
                         component=candidate_component,
                         component_index=candidate_component_index,
@@ -2339,7 +2348,7 @@ def build_dsa_normalized_sensitivity_matrix(
                     candidate_position,
                     candidate_component,
                     candidate_component_index,
-                    int(frame),
+                    int(resolved_frame),
                     str(aggregation),
                 )
                 if cache_key not in response_value_cache:
@@ -2350,7 +2359,7 @@ def build_dsa_normalized_sensitivity_matrix(
                             field=candidate_field_name,
                             instance=instance_name,
                             position=candidate_position,
-                            frame=frame,
+                            frame=resolved_frame,
                             aggregation=aggregation,
                             component=candidate_component,
                             component_index=candidate_component_index,
@@ -2363,7 +2372,7 @@ def build_dsa_normalized_sensitivity_matrix(
                             step=discovery["step"],
                             field=candidate_field_name,
                             position=candidate_position,
-                            frame=frame,
+                            frame=resolved_frame,
                             aggregation=aggregation,
                             component=candidate_component,
                             component_index=candidate_component_index,
@@ -2562,7 +2571,7 @@ def build_dsa_normalized_sensitivity_matrix(
         "inp_path": resolved_inp_path,
         "step": discovery["step"],
         "instances": discovery["instances"],
-        "frame": int(frame),
+        "frame": int(resolved_frame),
         "aggregation": aggregation,
         "field_prefix": field_prefix,
         "response_component": explicit_response["component"] if explicit_response is not None else None,
@@ -2746,7 +2755,7 @@ def _collect_workspace_static_displacement_rows(
                 field="U",
                 instance=instance_name,
                 position="NODAL",
-                frame=frame,
+                frame=resolved_frame,
                 aggregation=aggregation,
                 component="U1",
             ),
@@ -2756,7 +2765,7 @@ def _collect_workspace_static_displacement_rows(
                 field="U",
                 instance=instance_name,
                 position="NODAL",
-                frame=frame,
+                frame=resolved_frame,
                 aggregation=aggregation,
                 component="U2",
             ),
@@ -2766,7 +2775,7 @@ def _collect_workspace_static_displacement_rows(
                 field="U",
                 instance=instance_name,
                 position="NODAL",
-                frame=frame,
+                frame=resolved_frame,
                 aggregation=aggregation,
                 component="U3",
             ),
@@ -2785,14 +2794,14 @@ def _collect_workspace_static_displacement_rows(
                     "u1": _safe_float_or_none(comp_maps["U1"].get(scoped_label)),
                     "u2": _safe_float_or_none(comp_maps["U2"].get(scoped_label)),
                     "u3": _safe_float_or_none(comp_maps["U3"].get(scoped_label)),
-                    "extra_json": {"step_name": chosen_step, "frame_idx": int(frame)},
+                    "extra_json": {"step_name": chosen_step, "frame_idx": int(resolved_frame)},
                 }
             )
 
     return {
         "workspace": workspace_abs,
         "step_name": chosen_step,
-        "frame_idx": int(frame),
+        "frame_idx": int(resolved_frame),
         "instances": chosen_instances,
         "rows": rows,
     }

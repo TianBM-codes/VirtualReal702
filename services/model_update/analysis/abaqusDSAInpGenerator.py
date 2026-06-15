@@ -889,11 +889,13 @@ def build_include_text(
     7. response ELSET created from responses[].elements
     """
     elset_members = parsed["elset_members"]
+    parameter_alias_map = _build_parameter_alias_map(enriched_tasks)
 
     parameter_map: Dict[str, Any] = {}
 
     for task in enriched_tasks:
-        p = task["parameter"]
+        parameter_name = str(task["parameter"])
+        p = parameter_alias_map.get(parameter_name, _safe_parameter_identifier(parameter_name))
 
         # 如果 JSON 明确写了 value，就使用 JSON 的 value。
         # 如果没有写 value，就从该任务对应原始 section 的壳厚度自动继承。
@@ -915,7 +917,7 @@ def build_include_text(
 
         if p in parameter_map and str(parameter_map[p]) != str(v):
             raise ValueError(
-                f'Parameter "{p}" has inconsistent initial values: '
+                f'Parameter "{parameter_name}" has inconsistent initial values: '
                 f"{parameter_map[p]} vs {v}"
             )
 
@@ -958,7 +960,9 @@ def build_include_text(
             lines.append(
                 f"{group['section_keyword']}, ELSET={group['group_set_name']}, MATERIAL={group['material']}"
             )
-            lines.append(f"<{task['parameter']}>")
+            lines.append(
+                f"<{parameter_alias_map.get(str(task['parameter']), _safe_parameter_identifier(str(task['parameter'])))}>"
+            )
 
     # remainder sets
     lines.append("** Remainder element sets")
@@ -1039,6 +1043,36 @@ def build_include_text(
 
     lines.append("** ================================================================")
     return "\n".join(line for line in lines if line.strip() != "") + "\n"
+
+
+def _safe_parameter_identifier(name: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_]+", "_", str(name or "").strip())
+    text = text.strip("_")
+    if not text:
+        text = "P_AUTO"
+    elif text[0].isdigit():
+        text = f"P_{text}"
+    return text.upper()
+
+
+def _build_parameter_alias_map(enriched_tasks: List[Dict[str, Any]]) -> Dict[str, str]:
+    alias_map: Dict[str, str] = {}
+    used_aliases: Set[str] = set()
+    for task in enriched_tasks:
+        original_name = str(task.get("parameter") or "").strip()
+        if not original_name:
+            continue
+        if original_name in alias_map:
+            continue
+        base_alias = _safe_parameter_identifier(original_name)
+        alias = base_alias
+        index = 1
+        while alias in used_aliases:
+            alias = f"{base_alias}_{index}"
+            index += 1
+        alias_map[original_name] = alias
+        used_aliases.add(alias)
+    return alias_map
 
 
 def analyze_element_set_tasks_scoped(
@@ -1174,9 +1208,11 @@ def analyze_element_set_tasks_scoped(
 
 
 def _build_parameter_lines(enriched_tasks: List[Dict[str, Any]]) -> List[str]:
+    parameter_alias_map = _build_parameter_alias_map(enriched_tasks)
     parameter_map: Dict[str, Any] = {}
     for task in enriched_tasks:
-        parameter_name = task["parameter"]
+        parameter_name = str(task["parameter"])
+        parameter_alias = parameter_alias_map.get(parameter_name, _safe_parameter_identifier(parameter_name))
         if task.get("value", None) is not None:
             value = task["value"]
         else:
@@ -1188,12 +1224,12 @@ def _build_parameter_lines(enriched_tasks: List[Dict[str, Any]]) -> List[str]:
                     f"Please set 'value' explicitly or split this task into different parameters."
                 )
             value = original_values[0]
-        if parameter_name in parameter_map and str(parameter_map[parameter_name]) != str(value):
+        if parameter_alias in parameter_map and str(parameter_map[parameter_alias]) != str(value):
             raise ValueError(
                 f'Parameter "{parameter_name}" has inconsistent initial values: '
-                f"{parameter_map[parameter_name]} vs {value}"
+                f"{parameter_map[parameter_alias]} vs {value}"
             )
-        parameter_map[parameter_name] = value
+        parameter_map[parameter_alias] = value
 
     lines: List[str] = [
         "** ================================================================",
@@ -1220,6 +1256,7 @@ def _build_scope_structure_lines(
     parsed: Dict[str, Any],
     mother_set_to_remainder_name: Dict[Tuple[str, str, str], Optional[str]],
 ) -> List[str]:
+    parameter_alias_map = _build_parameter_alias_map(enriched_tasks)
     lines: List[str] = [
         "** ================================================================",
         f"** Auto-generated DSA scoped include for {scope_comment(scope_key[0], scope_key[1])}",
@@ -1234,9 +1271,11 @@ def _build_scope_structure_lines(
         if not groups:
             continue
         local_task_found = True
+        parameter_name = str(task["parameter"])
+        parameter_alias = parameter_alias_map.get(parameter_name, _safe_parameter_identifier(parameter_name))
         lines.append("**")
         lines.append(
-            f"** {AUTO_COMMENT_PREFIX}_TASK_BEGIN index={idx} parameter={task['parameter']} set={task['set_name']}"
+            f"** {AUTO_COMMENT_PREFIX}_TASK_BEGIN index={idx} parameter={parameter_name} alias={parameter_alias} set={task['set_name']}"
         )
         if make_scope_key(task["target_scope_key"][0], task["target_scope_key"][1]) == scope_key:
             lines.extend(build_set_block("*ELSET", task["set_name"], task["elements"]))
@@ -1250,9 +1289,9 @@ def _build_scope_structure_lines(
             lines.append(
                 f"{group['section_keyword']}, ELSET={group['group_set_name']}, MATERIAL={group['material']}"
             )
-            lines.append(f"<{task['parameter']}>")
+            lines.append(f"<{parameter_alias}>")
         lines.append(
-            f"** {AUTO_COMMENT_PREFIX}_TASK_END index={idx} parameter={task['parameter']} set={task['set_name']}"
+            f"** {AUTO_COMMENT_PREFIX}_TASK_END index={idx} parameter={parameter_name} alias={parameter_alias} set={task['set_name']}"
         )
 
     local_remainder_found = False
