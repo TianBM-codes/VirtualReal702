@@ -1936,6 +1936,63 @@ def _safe_manual_response_set_name(region_type: str, response_name: Optional[str
     return f"MANUAL_RESP_{prefix}_{token}_{int(response_no)}"
 
 
+def _build_static_sensitivity_response_signature(
+        *,
+        region_type: str,
+        set_name: Optional[str],
+        set_scope: Optional[str],
+        instance_name: Optional[str],
+        part_name: Optional[str],
+        step_name: Optional[str],
+        frequency: int,
+        variables,
+        node_labels: Optional[List[int]] = None,
+        element_labels: Optional[List[int]] = None,
+        manual_mode: bool = False,
+) -> dict:
+    payload = {
+        "region_type": str(region_type or "").strip().upper(),
+        "set_name": str(set_name or "").strip(),
+        "set_scope": str(set_scope or "").strip().upper(),
+        "instance_name": str(instance_name or "").strip(),
+        "part_name": str(part_name or "").strip(),
+        "step_name": str(step_name or "").strip(),
+        "frequency": int(frequency),
+        "variables": tuple(str(item or "").strip().upper() for item in (variables or [])),
+        "manual_mode": bool(manual_mode),
+    }
+    if manual_mode:
+        payload["node_labels"] = tuple(sorted(int(item) for item in (node_labels or [])))
+        payload["element_labels"] = tuple(sorted(int(item) for item in (element_labels or [])))
+        payload["set_name"] = ""
+    return payload
+
+
+def _extract_static_sensitivity_response_signature(row: dict) -> dict:
+    extra_json = _parse_optional_json_object(row.get("extra_json"))
+    variables = _json_loads(row.get("variables_json")) or []
+    node_labels = [int(item) for item in (extra_json.get("node_labels") or [])]
+    element_labels = [int(item) for item in (extra_json.get("element_labels") or [])]
+    manual_mode = bool(
+        str(extra_json.get("set_source") or "").strip().lower() == "manual"
+        or node_labels
+        or element_labels
+    )
+    return _build_static_sensitivity_response_signature(
+        region_type=row.get("region_type"),
+        set_name=row.get("set_name"),
+        set_scope=row.get("set_scope"),
+        instance_name=row.get("instance_name"),
+        part_name=row.get("part_name"),
+        step_name=row.get("step_name"),
+        frequency=int(row.get("frequency") or 1),
+        variables=variables,
+        node_labels=node_labels,
+        element_labels=element_labels,
+        manual_mode=manual_mode,
+    )
+
+
 def _row_element_labels(row: dict) -> set:
     labels = set()
     element_label = row.get("element_label")
@@ -2710,6 +2767,52 @@ def create_design_response_catalog_entry(
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        resolved_step_name = str(step_name or "").strip() or None
+        resolved_set_scope = str(set_scope or "").strip().upper() or None
+        resolved_instance_name = str(instance_name or "").strip() or None
+        resolved_part_name = str(part_name or "").strip() or None
+        incoming_signature = _build_static_sensitivity_response_signature(
+            region_type=resolved_region,
+            set_name=normalized_set_name,
+            set_scope=resolved_set_scope,
+            instance_name=resolved_instance_name,
+            part_name=resolved_part_name,
+            step_name=resolved_step_name,
+            frequency=int(frequency),
+            variables=resolved_variables,
+            node_labels=normalized_node_labels,
+            element_labels=normalized_element_labels,
+            manual_mode=has_manual_labels,
+        )
+        cursor.execute(
+            """
+            SELECT response_no, request_no, step_name, frequency, region_type, set_name,
+                   set_scope, instance_name, part_name, variables_json, extra_json
+            FROM t_mt_py_fem_static_sensitivity_response_catalog
+            WHERE pid = %s
+            """,
+            (int(project_id),),
+        )
+        for existing_row in cursor.fetchall() or []:
+            if _extract_static_sensitivity_response_signature(existing_row) == incoming_signature:
+                raise ValidationError(
+                    "duplicate static sensitivity response already exists",
+                    {
+                        "project_id": int(project_id),
+                        "existing_response_no": int(existing_row.get("response_no") or 0),
+                        "existing_request_no": int(existing_row.get("request_no") or 0),
+                        "region_type": resolved_region,
+                        "step_name": resolved_step_name,
+                        "set_name": normalized_set_name or None,
+                        "set_scope": resolved_set_scope,
+                        "instance_name": resolved_instance_name,
+                        "part_name": resolved_part_name,
+                        "variables": list(resolved_variables),
+                        "node_labels": list(normalized_node_labels),
+                        "element_labels": list(normalized_element_labels),
+                    },
+                )
+
         cursor.execute(
             """
             SELECT COALESCE(MAX(response_no), 0) AS max_no
@@ -2721,11 +2824,7 @@ def create_design_response_catalog_entry(
         max_no_row = cursor.fetchone() or {}
         response_no = int(max_no_row.get("max_no") or 0) + 1
         request_no = 1
-        resolved_step_name = str(step_name or "").strip() or None
         resolved_response_name = str(response_name or "").strip() or f"RESP_{response_no}"
-        resolved_set_scope = str(set_scope or "").strip().upper() or None
-        resolved_instance_name = str(instance_name or "").strip() or None
-        resolved_part_name = str(part_name or "").strip() or None
 
         extra_json = {"response_name": resolved_response_name}
         if has_manual_labels:
