@@ -1,6 +1,8 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
+更新时间：2026-06-16（新增 `results/frame-scalar-range` 接口文档，并加 `set` 参数——按选中 set 子集计算归一化范围，配合 `frame-scalars?set=` 实现"只显示选中 set 单元、set 内最小值蓝/最大值红"的云图；`frame-scalars` 的 `set` 在未传 override 时也改为按 set 子集收缩归一化范围）
+
+历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
 历史：2026-06-09（新增 color-code scheme=section_assignment 按真实截面指派上色/统计，与既有 section=平均域并存互不影响；legend-entries 新增 elem_count——实际单元数含内部，来自 L1，section 例外为表面单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) 慢查询）
 
@@ -162,6 +164,7 @@ project_id + result_group
 | geometry | POST | `/api/odb/{odb_id}/geometry/{instance}/render-buffers-subset` |
 | results | GET | `/api/odb/{odb_id}/results/frame-colors` |
 | results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
+| results | GET | `/api/odb/{odb_id}/results/frame-scalar-range` |
 | results | GET | `/api/odb/{odb_id}/results/deformed-positions` |
 | results | GET | `/api/odb/{odb_id}/results/vertex-displacements` |
 | results | GET | `/api/odb/{odb_id}/results/deformed-normals` |
@@ -1064,7 +1067,9 @@ L3BE sections：
 | `component_idx` | 否 | 0-based component index；省略时取 magnitude |
 | `mode` | 否 | `smooth` / `flat`，默认 `smooth` |
 | `result_group` | 否 | Project 模式结果组 |
-| `set` | 否 | user set / element set 过滤 |
+| `set` | 否 | user set / element set 过滤；只返回该 set 单元对应的顶点。**未传 `global_min/global_max` 时，归一化范围会收缩到该 set 子集**（set 内最小值=蓝、最大值=红）；传了 override 则以 override 为准 |
+| `global_min` | 否 | 覆盖归一化最小值（全局/外部范围模式）；与 `global_max` 同时传才生效 |
+| `global_max` | 否 | 覆盖归一化最大值；与 `global_min` 同时传才生效 |
 | `feature_angle` | 否 | shell/membrane 几何分域角度，默认 `20.0` |
 | `average_threshold` | 否 | 条件平均阈值，默认 `0.75` |
 | `use_geometry_split` | 否 | 是否使用几何分裂，默认 `true` |
@@ -1096,6 +1101,43 @@ L3BE sections：
 - indexed geometry 下通常返回 `[Nv]`。
 - Triangle Soup fallback 下可能返回 `[Rf*3]`。
 - 前端当前用这个接口拿标量，再自行应用 colormap。
+
+### `GET /api/odb/{odb_id}/results/frame-scalar-range`
+
+计算给定 instance 集合在某 step/field/frame 下的**统一归一化范围**（min/max），供前端在多 instance 共享 colormap 前先取范围，再把范围作为 `global_min/global_max` 传给 `frame-scalars`。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instances` | 是 | 逗号分隔的 instance 名列表 |
+| `step` | 是 | step name |
+| `field` | 是 | field name |
+| `frame` | 否 | 默认 `0` |
+| `component_idx` | 否 | 0-based component index；省略时取 magnitude |
+| `mode` | 否 | `smooth` / `flat`，默认 `smooth` |
+| `result_group` | 否 | 可重复传多个；按顺序尝试，第一个含该 field 数据的生效 |
+| `set` | 否 | user set / element set 名；传入后**范围只在该 set 的单元上计算**（set 内最小值=蓝、最大值=红）。不含该 set 的 instance 视为无数据被跳过，不污染 union 范围 |
+| `feature_angle` | 否 | 默认 `20.0` |
+| `average_threshold` | 否 | 默认 `0.75` |
+| `use_geometry_split` | 否 | 默认 `true` |
+
+响应 JSON：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "global_min": 0.0,
+    "global_max": 1.23,
+    "instance_ranges": {"PART-1-1": [0.0, 1.23]}
+  },
+  "message": ""
+}
+```
+
+- 所有给定 instance 都无数据（或都不含指定 `set`）时，`global_min`/`global_max` 返回 `null`，`instance_ranges` 为空对象。
+- **按 set 显示云图的典型用法**：① 几何用 `geometry/{instance}/render-buffers?set=...` 只渲染选中 set 的单元；② 调本接口带 `set=...` 拿到该 set 子集范围；③ 把范围作为 `global_min/global_max`、并带同一个 `set` 调 `frame-scalars`，即得到"只显示选中 set、set 内蓝→红"的云图。
 
 ### `GET /api/odb/{odb_id}/results/deformed-positions`
 
