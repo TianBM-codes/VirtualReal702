@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-16（新增 `results/frame-scalar-range` 接口文档，并加 `set` 参数——按选中 set 子集计算归一化范围，配合 `frame-scalars?set=` 实现"只显示选中 set 单元、set 内最小值蓝/最大值红"的云图；`frame-scalars` 的 `set` 在未传 override 时也改为按 set 子集收缩归一化范围）
+更新时间：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
 
 历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
@@ -1067,7 +1067,8 @@ L3BE sections：
 | `component_idx` | 否 | 0-based component index；省略时取 magnitude |
 | `mode` | 否 | `smooth` / `flat`，默认 `smooth` |
 | `result_group` | 否 | Project 模式结果组 |
-| `set` | 否 | user set / element set 过滤；只返回该 set 单元对应的顶点。**未传 `global_min/global_max` 时，归一化范围会收缩到该 set 子集**（set 内最小值=蓝、最大值=红）；传了 override 则以 override 为准 |
+| `set` | 否 | user set / element set 名。归一化范围按该 set 子集计算（set 内最小值=蓝、最大值=红）；传了 `global_min/global_max` 则以 override 为准（前端两段式：先取 set 范围，再作 override 传回） |
+| `set_mode` | 否 | 配合 `set` 用，`clip`（默认）/ `mask`。`clip`=只返回该 set 单元的顶点（模式 A，需配合 `render-buffers?set=` 裁几何）；`mask`=**返回整模型全部顶点，set 外顶点值为 NaN（前端渲成灰），只有 set 区域出云图（模式 B）**。两种模式归一化范围都只按 set 内算 |
 | `global_min` | 否 | 覆盖归一化最小值（全局/外部范围模式）；与 `global_max` 同时传才生效 |
 | `global_max` | 否 | 覆盖归一化最大值；与 `global_min` 同时传才生效 |
 | `feature_angle` | 否 | shell/membrane 几何分域角度，默认 `20.0` |
@@ -1137,7 +1138,8 @@ L3BE sections：
 ```
 
 - 所有给定 instance 都无数据（或都不含指定 `set`）时，`global_min`/`global_max` 返回 `null`，`instance_ranges` 为空对象。
-- **按 set 显示云图的典型用法**：① 几何用 `geometry/{instance}/render-buffers?set=...` 只渲染选中 set 的单元；② 调本接口带 `set=...` 拿到该 set 子集范围；③ 把范围作为 `global_min/global_max`、并带同一个 `set` 调 `frame-scalars`，即得到"只显示选中 set、set 内蓝→红"的云图。
+- **按 set 显示云图（模式 B，整模型保留、只给 set 区域上色）的典型用法**：① 几何保持整模型 `geometry/{instance}/render-buffers`（**不裁**）；② 调本接口带 `set=...` 拿到该 set 子集范围；③ 把范围作为 `global_min/global_max`、并带 `set=...&set_mode=mask` 调 `frame-scalars` —— set 外顶点返回 NaN（前端渲成灰），set 区域按 set 内 min/max 蓝→红。
+- **若要"只显示选中 set 单元"（模式 A）**：几何改用 `render-buffers?set=...` 裁成子集，`frame-scalars` 用 `set_mode=clip`（默认），其余步骤相同。
 
 ### `GET /api/odb/{odb_id}/results/deformed-positions`
 

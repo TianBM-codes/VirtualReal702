@@ -674,6 +674,7 @@ def frame_scalars(
     render_mode: str = "smooth",
     result_group: str = None,
     set_name: str = None,
+    set_mode: str = "clip",
     feature_angle: Optional[float] = 20.0,
     average_threshold: float = 0.75,
     use_geometry_split: bool = True,
@@ -690,6 +691,12 @@ def frame_scalars(
 
     component_idx=None → magnitude (L2 norm).
     component_idx=0,1,2,... → direct index into the result component axis.
+
+    set_name: optional user/element set to restrict to. set_mode controls how:
+      'clip' = drop non-set vertices (pair with geometry subset, mode A);
+      'mask' = keep all vertices, set non-set ones to NaN so the full model stays
+               visible and only the set region is colored (mode B). Either way the
+               normalization range is computed over the set only.
 
     override_min/override_max: when both are provided, skip per-instance range
     computation and use these values directly (global normalization mode).
@@ -887,7 +894,14 @@ def frame_scalars(
             {"frame_idx": frame_idx},
         )
 
-    # Apply set filter: keep only vertices belonging to the named set
+    # Apply set filter. Two modes:
+    #   clip (mode A): drop non-set vertices entirely — caller pairs this with
+    #                  geometry subset (render-buffers?set=) so only the set shows.
+    #   mask (mode B): keep ALL vertices but blank out non-set ones to NaN, so the
+    #                  full model stays visible and only the set region gets the
+    #                  colormap (the frontend already renders NaN vertices grey).
+    # In both modes the normalization range below ends up over the set only (NaN
+    # is excluded from finite), giving "min=blue / max=red over the selected set".
     if set_name is not None:
         manifest = ManifestRepo(idx.workspace)
         render_rows = manifest.get_user_set_render_rows(set_name, instance)
@@ -902,13 +916,19 @@ def frame_scalars(
         if render_rows is not None and len(render_rows) > 0:
             render_idx = idx.render_indices.get(instance)
             if render_idx is not None:
-                # indexed geometry: compact to unique vertices of the selected triangles
-                used_vtx = np.unique(render_idx[render_rows].ravel())
-                scalar_vertex = scalar_vertex[used_vtx]
+                # indexed geometry: unique vertices of the selected triangles
+                set_vtx = np.unique(render_idx[render_rows].ravel())
             else:
                 # soup geometry: each triangle occupies 3 contiguous vertices
-                vtx_idx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
-                scalar_vertex = scalar_vertex[vtx_idx]
+                set_vtx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
+            if set_mode == "mask":
+                keep = np.zeros(scalar_vertex.shape[0], dtype=bool)
+                keep[set_vtx] = True
+                scalar_vertex = np.where(
+                    keep, scalar_vertex, np.nan
+                ).astype(np.float32)
+            else:  # clip
+                scalar_vertex = scalar_vertex[set_vtx]
 
     # NaN = element type has no data for this component (e.g. shell missing S33).
     # Preserve NaN through normalization so the frontend can render those faces grey.

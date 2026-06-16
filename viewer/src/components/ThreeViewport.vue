@@ -1157,10 +1157,11 @@ async function applyColors({ field, componentVal, componentIdx, renderMode, step
   const compParam = componentIdx != null ? `&component_idx=${componentIdx}` : ''
   // resultGroup override: per-call result_group takes precedence over store.activeResultGroup
   const resolvedRg = resultGroup !== undefined ? resultGroup : store.activeResultGroup
-  // set filter: when present, the range is computed over the set only (min=blue /
-  // max=red over the selected set), and frame-scalars must use the same set so its
-  // per-vertex array aligns with the set-subset geometry's vertex numbering.
-  const setParam = set ? `&set=${encodeURIComponent(set)}` : ''
+  // set filter (mode B): keep the FULL model geometry loaded; frame-scalars is asked
+  // for the set in mask mode, so it returns all vertices with non-set ones NaN (the
+  // frontend renders NaN grey). The range is computed over the set only, so the
+  // selected set region gets min=blue / max=red while the rest stays neutral.
+  const setParam = set ? `&set=${encodeURIComponent(set)}&set_mode=mask` : ''
   try {
     // Phase 1: fetch global min/max across all currently loaded instances
     store.setStatus(`Fetching global range for ${instNames.length} instance(s)…`)

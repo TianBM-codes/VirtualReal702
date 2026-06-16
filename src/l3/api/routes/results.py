@@ -185,6 +185,12 @@ async def get_frame_scalars(
     mode: str = Query("smooth", pattern="^(smooth|flat)$"),
     result_group: Optional[str] = Query(None, description="Result group (project mode)"),
     set: Optional[str] = Query(None, description="User set name to filter triangles"),
+    set_mode: str = Query(
+        "clip", pattern="^(clip|mask)$",
+        description="clip = return only the set's vertices (mode A); "
+                    "mask = return all vertices, non-set ones NaN/grey, only the set "
+                    "region colored (mode B). Range is over the set in both modes.",
+    ),
     feature_angle: Optional[float] = Query(
         default=20.0,
         description="Shell/membrane geometric split angle (degrees). Omit to disable."
@@ -232,6 +238,7 @@ async def get_frame_scalars(
         render_mode=mode,
         result_group=resolved_result_group,
         set_name=set,
+        set_mode=set_mode,
         feature_angle=feature_angle,
         average_threshold=average_threshold,
         use_geometry_split=use_geometry_split,
