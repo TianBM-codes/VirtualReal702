@@ -23,6 +23,7 @@ import numpy as np
 
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import ModelIndex
+from src.l1.manifest_schema import canon_instance
 
 # ---------------------------------------------------------------------------
 # Colour palette  (qualitative, 16 entries)
@@ -192,6 +193,7 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     """
     Return the available coloring schemes and elset names for *instance*.
     """
+    instance = canon_instance(instance)
     schemes: List[str] = ["etype"]
 
     from ..infra.manifest_repo import ManifestRepo
@@ -267,6 +269,44 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     return {"schemes": schemes, "elsets": elsets}
 
 
+def get_all_schemes(idx: ModelIndex) -> dict:
+    """Union of coloring schemes across *all* instances, plus the full
+    instance-scoped elset list.
+
+    Element-set names are only unique within an instance (label scoping), so a
+    bare name like ``_PickedSet6`` may exist on several instances and mean a
+    different element group on each. The per-instance ``get_schemes`` can't
+    express the whole model. Here every set is returned as the qualified string
+    ``INSTANCE.setname`` (e.g. ``OMEGA-1._PickedSet6``) so the caller can show
+    them all at once and the elset endpoints route each selection back to the
+    one instance it belongs to (see ``_split_instance_prefix``).
+
+    Returned ``elsets`` is a flat list of qualified-name strings — drop-in
+    compatible with the existing per-instance ``{schemes, elsets}`` shape, just
+    with more (and prefixed) entries, so the front-end needs no change.
+
+    Returns: {"schemes": [union, canonical order], "elsets": ["INST.name", ...]}
+    """
+    # Canonical display order; any extra scheme is appended afterwards.
+    order = ["etype", "section", "material", "section_type",
+             "section_assignment", "elset"]
+    schemes_seen: Dict[str, None] = {}
+    elsets: List[str] = []
+    for inst in sorted(idx.source_elem_etype.keys()):
+        try:
+            s = get_schemes(idx, inst)
+        except Exception:
+            continue
+        for sc in s.get("schemes", []):
+            schemes_seen.setdefault(sc, None)
+        for name in s.get("elsets", []):
+            elsets.append(f"{inst}.{name}")
+
+    schemes = [sc for sc in order if sc in schemes_seen]
+    schemes.extend(sc for sc in schemes_seen if sc not in schemes)
+    return {"schemes": schemes, "elsets": elsets}
+
+
 def get_color_code(
     idx: ModelIndex,
     instance: str,
@@ -283,6 +323,7 @@ def get_color_code(
         colors   [Rf*3, 3] float32   — ready for Three.js colorAttr
         legend   list[{id, name, r, g, b}]
     """
+    instance = canon_instance(instance)
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
 
@@ -325,6 +366,7 @@ def get_legend(
     Returns list[{id, legend_key, name, r, g, b}] — same format as the legend
     embedded in the GET /color-code/{instance} L3BE response.
     """
+    instance = canon_instance(instance)
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
 
@@ -356,6 +398,7 @@ def region_face_mask(
     Return a bool mask [Rf] where True = render face belongs to *region*.
     Returns None if scheme is unsupported or data is missing.
     """
+    instance = canon_instance(instance)
     etype_arr    = idx.source_elem_etype.get(instance)
     elem_row_arr = idx.render_source_elem_row.get(instance)
     if etype_arr is None or elem_row_arr is None:
@@ -462,6 +505,27 @@ def _labels_from_elem_attr(
     ]
 
 
+def _split_instance_prefix(name: str, known_instances) -> Tuple[Optional[str], str]:
+    """Split an ``INSTANCE.localname`` element-set name.
+
+    Element-set names are only unique within an instance, so the color-code list
+    exposes them as ``INSTANCE.setname`` (e.g. ``OMEGA-1._PickedSet6``). The
+    front-end broadcasts the whole selected list to every instance, so each
+    instance must recognise which entries are its own.
+
+    Returns ``(owner_instance, local_name)``: if *name* starts with a recognised
+    instance prefix, owner is that instance (canonicalised) and local_name is the
+    remainder; otherwise owner is None and local_name is *name* unchanged (a bare
+    name is treated as local to whichever instance is asking — backward compat).
+    """
+    dot = name.find(".")
+    if dot != -1:
+        prefix = canon_instance(name[:dot])
+        if prefix in known_instances:
+            return prefix, name[dot + 1:]
+    return None, name
+
+
 def _labels_from_elsets(
     idx: ModelIndex,
     instance: str,
@@ -472,66 +536,87 @@ def _labels_from_elsets(
     """
     Return per-face label: the first matching set name if the element belongs
     to any of *set_names*, else "other".  Priority = order of set_names.
+
+    *set_names* may be ``INSTANCE.setname`` qualified. Entries belonging to a
+    *different* instance contribute nothing here (and never raise "not found"):
+    every instance receives the full broadcast list and just picks out its own.
+    The label kept for a matching face is the *original* (possibly qualified)
+    name, so the caller's palette ordering over set_names stays consistent across
+    instances.
     """
     from ..infra.manifest_repo import ManifestRepo
     sets_h5 = os.path.join(idx.workspace, "l1", "sets", "sets.h5")
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
               os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
-    # Load all requested sets' label arrays.
-    # Try all four sources in order; first hit wins for each set name:
-    #   1. sets.h5  element_sets/{instance}/{sn}              (INP-exported instance sets)
-    #   2. sets.h5  assembly_sets/{sn}/{inst_safe}/elem_labels (assembly-level sets)
-    #   3. geometry H5  instance_sets/element_sets/{sn}       (ODB instance sets, always checked)
-    #   4. sets.h5  part_sets/*/element_sets/{sn}             (part-level sets via dump_sets)
+    # Resolve each requested name to the local set name to look up in THIS
+    # instance, or None when it belongs to another instance (skip, no error).
+    known = set(idx.source_elem_etype.keys())
+    lookup_name: Dict[str, Optional[str]] = {}
+    for sn in set_names:
+        owner, local = _split_instance_prefix(sn, known)
+        lookup_name[sn] = None if (owner is not None and owner != instance) else local
+    active = [sn for sn in set_names if lookup_name[sn] is not None]
+
+    # Load each active set's label array. Try all four sources in order; first
+    # hit wins. Stored under the ORIGINAL name sn (the label), looked up by its
+    # local name lk:
+    #   1. sets.h5  element_sets/{instance}/{lk}              (INP-exported instance sets)
+    #   2. sets.h5  assembly_sets/{lk}/{inst_safe}/elem_labels (assembly-level sets)
+    #   3. geometry H5  instance_sets/element_sets/{lk}       (ODB instance sets, always checked)
+    #   4. sets.h5  part_sets/*/element_sets/{lk}             (part-level sets via dump_sets)
     inst_safe = instance.replace('/', '__').replace('\\', '__').replace(' ', '_')
     slabels_dict: Dict[str, np.ndarray] = {}
     if os.path.exists(sets_h5):
         with h5py.File(sets_h5, "r") as f:
-            for sn in set_names:
+            for sn in active:
                 if sn in slabels_dict:
                     continue
-                key = f"element_sets/{instance}/{sn}"
+                lk = lookup_name[sn]
+                key = f"element_sets/{instance}/{lk}"
                 if key in f:
                     slabels_dict[sn] = f[key][:]
                     continue
-                asm_key = f"assembly_sets/{sn}/{inst_safe}/elem_labels"
+                asm_key = f"assembly_sets/{lk}/{inst_safe}/elem_labels"
                 if asm_key in f:
                     slabels_dict[sn] = f[asm_key][:]
     # Always also check geometry H5 for ODB instance-level sets
     if os.path.exists(geom_h5):
         try:
             with h5py.File(geom_h5, "r") as f:
-                for sn in set_names:
+                for sn in active:
                     if sn in slabels_dict:
                         continue
-                    geom_key = f"instance_sets/element_sets/{sn}"
+                    geom_key = f"instance_sets/element_sets/{lookup_name[sn]}"
                     if geom_key in f:
                         slabels_dict[sn] = f[geom_key][:]
         except Exception:
             pass
     # Part-level sets stored in sets.h5 part_sets (search across all parts)
-    missing = [sn for sn in set_names if sn not in slabels_dict]
+    missing = [sn for sn in active if sn not in slabels_dict]
     if missing and os.path.exists(sets_h5):
         try:
             with h5py.File(sets_h5, "r") as f:
                 parts_grp = f.get("part_sets")
                 if parts_grp is not None:
                     for sn in missing:
+                        lk = lookup_name[sn]
                         for part_safe in parts_grp.keys():
-                            pk = f"part_sets/{part_safe}/element_sets/{sn}"
+                            pk = f"part_sets/{part_safe}/element_sets/{lk}"
                             if pk in f:
                                 slabels_dict[sn] = f[pk][:]
                                 break
         except Exception:
             pass
-    still_missing = [sn for sn in set_names if sn not in slabels_dict]
+    # Only sets that genuinely belong to THIS instance can be "not found";
+    # entries for other instances were filtered out above.
+    still_missing = [sn for sn in active if sn not in slabels_dict]
     if still_missing:
         raise ValidationError(
             f"Set(s) not found: {still_missing}", {"set_names": still_missing}
         )
     set_label_arrays: List[Tuple[str, np.ndarray]] = [
-        (sn, slabels_dict[sn]) for sn in set_names
+        (sn, slabels_dict[sn]) for sn in set_names if sn in slabels_dict
     ]
 
     Rf         = len(etype_arr)
@@ -846,13 +931,17 @@ def _compute_labels_and_legend(
     overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
 
     global_colors = _build_global_color_map(idx, scheme)
+    known = set(idx.source_elem_etype.keys())
 
     legend: List[dict] = []
     for i, val in enumerate(unique_vals):
         if not val or val in ("(none)", "(unknown)", "other"):
             auto_rgb = _GREY
         else:
-            auto_rgb = global_colors.get(val, _GREY)
+            # elset labels are 'INSTANCE.setname'; the global elset color map is
+            # keyed by bare set name, so strip the prefix for the lookup.
+            ckey = _split_instance_prefix(val, known)[1] if scheme == "elset" else val
+            auto_rgb = global_colors.get(ckey, _GREY)
         ov  = overrides.get(val, {})
         rgb = (ov["color_r"], ov["color_g"], ov["color_b"]) if ov.get("color_r") is not None else auto_rgb
         legend.append({
@@ -1078,6 +1167,7 @@ def get_legend_entries(
       user_color/user_name flags, face_count.
     Used by GET /color-code/{instance}/legend-entries.
     """
+    instance = canon_instance(instance)
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
 
@@ -1142,12 +1232,16 @@ def get_legend_entries(
 
     # Palette assignment (identical logic to get_color_code)
     global_colors = _build_global_color_map(idx, scheme)
+    known = set(idx.source_elem_etype.keys())
     palette_colors: Dict[str, Tuple[float, float, float]] = {}
     for val in unique_vals:
         if not val or val in ("(none)", "(unknown)", "other"):
             rgb = _GREY
         else:
-            rgb = global_colors.get(val, _GREY)
+            # elset labels are 'INSTANCE.setname'; global elset colors are keyed
+            # by bare set name, so strip the prefix for the lookup.
+            ckey = _split_instance_prefix(val, known)[1] if scheme == "elset" else val
+            rgb = global_colors.get(ckey, _GREY)
         palette_colors[val] = rgb
 
     from ..infra.manifest_repo import ManifestRepo

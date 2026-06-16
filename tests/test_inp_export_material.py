@@ -122,8 +122,9 @@ def test_internal_set_stored_with_is_internal_flag(tmp_path):
     conn = sqlite3.connect(os.path.join(ws, "manifest.db"))
     rows = dict(conn.execute("SELECT set_name, is_internal FROM element_sets"))
     conn.close()
-    assert rows.get("_PickedSet1") == 1, rows
-    assert rows.get("UserSet") == 0, rows
+    # Set names are uppercased on export to match the ODB side.
+    assert rows.get("_PICKEDSET1") == 1, rows
+    assert rows.get("USERSET") == 0, rows
 
 
 def test_flat_inp_case_insensitive_elset(tmp_path):

@@ -761,6 +761,18 @@ CREATE TABLE element_sets (
 -- is_internal 由 INP 导出链路写入：*Elset 带 internal 关键字（CAE 生成的
 -- _PickedSetNN，被 *Solid Section 引用）标记为 1，其余为 0。当前仅作信息存储，
 -- list_element_sets 接口暂不按此过滤；ODB/BDF/ANSYS 链路写入时走默认值 0。
+--
+-- 【命名约定·大小写】set_name 在写 sets.h5 / manifest 时统一规范化为大写，与
+-- instance 名的大写约定（见 manifest_schema.canon_instance）同源同理：Abaqus 生成
+-- ODB 时已把所有 set 名烙成大写（不可逆），而 INP 保留用户原始大小写，两侧按字面
+-- 比较时同一模型的 set 名会对不上（典型：内部集 _PickedSet6 vs _PICKEDSET6）。
+--   · INP 侧：exporter._write_sets() 写库前显式 set_name.upper()。
+--   · ODB 侧：set 名全部来自 Abaqus ODB 的 repository key（elementSets.items()、
+--     内部集走 sectionAssignment.region.name），本就是大写；abaqus_dump 的 safe()
+--     不改大小写，l1_pack 重建也不改 —— 故未加显式 .upper()。
+-- 决定（2026-06-16）：ODB 侧维持现状（依赖 Abaqus 隐式大写，不加显式保险），仅作
+-- 此记录；若日后真出现 ODB 链路写入小写 set 名的情况，再在 l1_pack 的 4 个重建点
+-- 补 .upper()。只规范化展示用的名字，单元归属（整数 label）不受影响。
 
 -- ── L2 文件索引 ────────────────────────────────────────────
 

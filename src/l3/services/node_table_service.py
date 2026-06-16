@@ -21,6 +21,7 @@ import numpy as np
 from ..core.errors import NotFoundError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.manifest_repo import ManifestRepo
+from src.l1.manifest_schema import canon_instance
 
 
 # ── path helpers (mirrors raw_result_service convention) ───────────────────────
@@ -60,6 +61,7 @@ def get_instance_fields(
     components comes from result_files (same across instances for a field).
     Empty components list means scalar field.
     """
+    instance = canon_instance(instance)
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
@@ -123,6 +125,7 @@ def get_node_table(
     columns  : [{"key": str, "field": str, "component": str}, ...]
         Column definitions in the same order as items / the M axis of values.
     """
+    instance = canon_instance(instance)
     if frame_idx < 0:
         raise ValidationError(
             f"frame_idx must be >= 0, got {frame_idx}",

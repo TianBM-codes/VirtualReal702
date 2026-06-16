@@ -4,6 +4,9 @@ import os
 import zlib
 import numpy as np
 
+from src.l1.manifest_schema import canon_instance
+
+
 class ManifestRepo:
     """
     Repository for interacting with the SQLite manifest.db of a specific ODB.
@@ -52,6 +55,7 @@ class ManifestRepo:
         return conn
 
     def get_instance_info(self, instance_name: str):
+        instance_name = canon_instance(instance_name)
         try:
             with self._get_conn() as conn:
                 return conn.execute(
@@ -81,6 +85,7 @@ class ManifestRepo:
     def get_result_block(self, step: str, field: str, instance: str,
                          position: str, elem_type: str = None,
                          result_group: str = None):
+        instance = canon_instance(instance)
         rg_clause, rg_params = self._rg_clause(result_group)
         query = (
             "SELECT * FROM result_blocks"
@@ -99,6 +104,7 @@ class ManifestRepo:
     def has_nodal_block(self, step: str, field: str, instance: str,
                         result_group: str = None) -> bool:
         """Return True if result_blocks has a NODAL entry for (step, field, instance)."""
+        instance = canon_instance(instance)
         rg_clause, rg_params = self._rg_clause(result_group)
         with self._get_conn() as conn:
             row = conn.execute(
@@ -138,6 +144,7 @@ class ManifestRepo:
         Return fields available for a specific (result_group, step, instance).
         Joins result_blocks with result_files (both scoped by result_group).
         """
+        instance = canon_instance(instance)
         rg_rb, rg_rb_p = self._rg_clause(result_group, prefix="rb.")
         rg_rf, rg_rf_p = self._rg_clause(result_group, prefix="rf.")
         with self._get_conn() as conn:
@@ -437,7 +444,7 @@ class ManifestRepo:
                     (us_id, instance_name, elem_count, render_rows, elem_rows, etype_rows)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (us_id, idata["instance_name"], idata["elem_count"],
+                    (us_id, canon_instance(idata["instance_name"]), idata["elem_count"],
                      render_blob, elem_blob, etype_blob),
                 )
 
@@ -454,6 +461,7 @@ class ManifestRepo:
         Return render_rows (int32 ndarray) for a user set + instance, or None if not found.
         render_rows: triangle indices into the render buffer that belong to this set.
         """
+        instance_name = canon_instance(instance_name)
         conn = self._get_conn()
         try:
             self._ensure_user_tables(conn)
@@ -498,6 +506,7 @@ class ManifestRepo:
         element_labels: all elements in the set (get value `value`).
         Returns the row id.
         """
+        instance_name = canon_instance(instance_name)
         blob = zlib.compress(np.asarray(element_labels, dtype=np.int32).tobytes())
         conn = self._get_conn()
         try:
@@ -530,6 +539,7 @@ class ManifestRepo:
         Returns dict {id, name, instance_name, value, element_labels (int32 ndarray)}
         or None if not found.
         """
+        instance_name = canon_instance(instance_name)
         try:
             with self._get_conn() as conn:
                 self._ensure_user_fields_table(conn)
@@ -557,6 +567,7 @@ class ManifestRepo:
         Returns list of dicts {id, name, instance_name, value, created_at}.
         Optionally filtered by instance_name.
         """
+        instance_name = canon_instance(instance_name)
         try:
             with self._get_conn() as conn:
                 self._ensure_user_fields_table(conn)
@@ -577,6 +588,7 @@ class ManifestRepo:
 
     def delete_user_field(self, name: str, instance_name: str) -> bool:
         """Delete a named user field. Returns True if it existed."""
+        instance_name = canon_instance(instance_name)
         conn = self._get_conn()
         try:
             self._ensure_user_fields_table(conn)
@@ -817,6 +829,7 @@ class ManifestRepo:
           ODB (l1_pack.py):  "l1/assembly.h5:assembly_sets/SET/INST/elem_labels"
               → split on ':' to get file and dataset path
         """
+        instance_name = canon_instance(instance_name)
         import h5py as _h5py
         try:
             with self._get_conn() as conn:
@@ -872,6 +885,7 @@ class ManifestRepo:
 
     def get_display_names(self, instance: str, scheme: str) -> dict:
         """Return {legend_key: display_name} for the given instance + scheme."""
+        instance = canon_instance(instance)
         try:
             with self._get_conn() as conn:
                 rows = conn.execute(
@@ -885,6 +899,7 @@ class ManifestRepo:
 
     def set_display_names(self, instance: str, scheme: str, names: dict) -> None:
         """Upsert {legend_key: display_name} entries for the given instance + scheme."""
+        instance = canon_instance(instance)
         with self._get_conn() as conn:
             for key, val in names.items():
                 conn.execute(
@@ -898,6 +913,7 @@ class ManifestRepo:
 
     def get_legend_overrides(self, instance: str, scheme: str) -> dict:
         """Return {legend_key: {display_name?, color_r?, color_g?, color_b?}} for the given instance + scheme."""
+        instance = canon_instance(instance)
         try:
             with self._get_conn() as conn:
                 rows = conn.execute(
@@ -926,6 +942,7 @@ class ManifestRepo:
           legend_key (required), display_name (str | None), color_r/g/b (float | None).
         Pass None for display_name / color to clear that override.
         """
+        instance = canon_instance(instance)
         with self._get_conn() as conn:
             for e in entries:
                 key = e["legend_key"]

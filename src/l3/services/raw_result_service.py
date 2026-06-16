@@ -18,6 +18,7 @@ import numpy as np
 
 from ..core.errors import NotFoundError, ValidationError
 from ..core.state import OdbRegistry
+from src.l1.manifest_schema import canon_instance
 
 POSITIONS = {"NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT"}
 
@@ -34,6 +35,7 @@ def _result_h5_path(workspace: str, step: str, field: str,
 
 def _geom_h5_path(workspace: str, instance: str) -> str:
     """Resolve L1 geometry path via manifest; fall back to safe-name construction."""
+    instance = canon_instance(instance)
     try:
         import sqlite3
         with sqlite3.connect(os.path.join(workspace, "manifest.db")) as conn:
@@ -125,6 +127,7 @@ def get_raw_values(
     The etype suffix in section names is sanitised to alphanumeric + underscore,
     and truncated to fit the 32-char L3BE name limit.
     """
+    instance = canon_instance(instance)
     if frame_idx < 0:
         raise ValidationError(
             f"frame_idx must be >= 0, got {frame_idx}",

@@ -19,6 +19,7 @@ from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.colormap import apply_jet, apply_jet_with_neutral
 from ..infra.manifest_repo import ManifestRepo
+from src.l1.manifest_schema import canon_instance
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,7 @@ def frame_colors(
     color_per_vertex is aligned to Triangle Soup vertex order.
     Tries NODAL first; falls back to ELEMENT_NODAL then INTEGRATION_POINT.
     """
+    instance = canon_instance(instance)
     # Validate frame_idx sign upfront — NumPy/HDF5 silently accept negative indices
     if frame_idx < 0:
         raise ValidationError(
@@ -519,6 +521,7 @@ def compute_scalar_range(
     Returns None if no result data is found for this instance.
     Raises NotFoundError / NotReadyError / ValidationError on hard failures.
     """
+    instance = canon_instance(instance)
     if frame_idx < 0:
         raise ValidationError(
             f"frame_idx must be >= 0, got {frame_idx}",

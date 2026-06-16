@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 科普性内容写进 `FEM-Viewer-Primer.md`，流程/设计写进对应 `docs/` 文档
 - **每次修改 `src/l3/api/routes/` 下的接口（新增、删除、改参数/响应）后，必须同步更新 `docs/l3/L3-API-Quick-Reference.md`**，包括更新文件顶部的"更新时间"行
 - **接口只使用 GET 和 POST**，不使用 PUT / PATCH / DELETE
+- **优先后端方案，尽量不改前端**：`viewer/` 前端实际嵌入在第三方项目里，发布/修改成本很高。解决问题时优先在后端（L3 接口/服务）消化，复用前端既有行为（例如 color-code 的"同一份 set_names 广播给所有 instance"）。只有当后端方案明显更复杂或冗余时，才酌情考虑改前端，且需说明理由。
 
 ## Project Overview
 

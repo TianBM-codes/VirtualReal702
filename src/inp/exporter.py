@@ -35,7 +35,7 @@ import h5py
 import numpy as np
 
 from .model import InpModel, Instance, Part
-from src.l1.manifest_schema import MANIFEST_SCHEMA
+from src.l1.manifest_schema import MANIFEST_SCHEMA, canon_instance
 
 
 def _safe(name: str) -> str:
@@ -147,6 +147,9 @@ def export_l1(model: InpModel, workspace: str) -> None:
             part = model.parts.get(inst.part_name)
             if part is None:
                 continue
+            # 统一大写：让 manifest / 几何 h5 文件名 / sets / assembly.h5 group
+            # 都用规范化后的名字，和 ODB 默认大写对齐（见 canon_instance 注释）。
+            inst_name = canon_instance(inst_name)
             geom_rel = os.path.join("l1", "geometry",
                                     _safe(inst_name) + ".h5")
             geom_abs = os.path.join(workspace, geom_rel)
@@ -154,7 +157,7 @@ def export_l1(model: InpModel, workspace: str) -> None:
             bbox_min, bbox_max = _write_geometry_h5(part, geom_abs, mat_map, sec_map)
             _insert_instance(db_conn, inst_name, inst.part_name,
                              geom_rel, part, bbox_min, bbox_max)
-            _write_sets(part, inst_name, workspace, db_conn)
+            _write_sets(part, inst_name, workspace, db_conn, model.assembly)
             geom_paths.append((geom_abs, part))
         db_conn.commit()
 
@@ -179,6 +182,8 @@ def _write_assembly_h5(model: InpModel, workspace: str) -> None:
         asm = model.assembly
         if asm is not None:
             for inst_name, inst in asm.instances.items():
+                # group 名必须与 manifest.instance_name 逐字一致（L2 按它查 transform）
+                inst_name = canon_instance(inst_name)
                 grp = f.require_group("instances/{}".format(inst_name))
                 mat = _build_transform_matrix(inst)
                 grp.create_dataset("transform", data=mat)
@@ -313,7 +318,8 @@ def _build_section_maps(
             # Only apply to the instance this assembly elset belongs to.
             # instance_name=None means assembly-wide; its labels are not
             # instance-local so we can't safely attribute them here.
-            if aelset.instance_name != inst_name:
+            # inst_name 已规范化为大写，这里把 elset 的 instance 引用也规范化后再比。
+            if canon_instance(aelset.instance_name) != inst_name:
                 continue
             mat   = sec.material_name or ""
             stype = _norm_type(sec.section_type)
@@ -473,26 +479,59 @@ def _compute_elem_and_faces(
 # ---------------------------------------------------------------------------
 
 def _write_sets(
-    part: Part, inst_name: str, workspace: str, db_conn: sqlite3.Connection
+    part: Part, inst_name: str, workspace: str, db_conn: sqlite3.Connection,
+    assembly=None,
 ) -> None:
     """
-    Write part-level Elsets to l1/sets/sets.h5 and manifest.db element_sets.
+    Write this instance's element sets to l1/sets/sets.h5 and manifest.db.
 
-    HDF5 layout:  element_sets/{inst_name}/{set_name}  →  sorted int32 labels
+    HDF5 layout:  element_sets/{inst_name}/{SET_NAME}  →  sorted int32 labels
+    (both inst_name and set_name are uppercased to match the ODB side).
+
+    Two sources are merged, both keyed under the instance:
+      1. Part-level Elsets (native CAE layout, mostly Abaqus-generated
+         _PickedSetNN property sets).
+      2. Assembly-level Elsets whose `instance_name` resolves to this instance
+         (flattened / CAE assembly layout). In a CAE-exported INP the
+         user-named sets (CDM_FIX, QA_TEST, XSYMM, …) and almost all surface
+         sets (_Head-Seal_S3, _PickedSet352, …) live here — skipping them left
+         the color-code elset list showing only the few part-level sets.
+
+    Assembly elset labels are instance-local (same convention as part labels and
+    as _build_section_maps), so they map straight onto this instance's element
+    label index without any offset.
     """
-    if not part.elsets:
-        return
-
     sets_h5 = os.path.join(workspace, "l1", "sets", "sets.h5")
     sets_rel = os.path.join("l1", "sets", "sets.h5")
 
+    # (set_name, elset, scope) tuples to write under this instance.
+    items: List[Tuple[str, object, str]] = [
+        (sn, es, "PART") for sn, es in part.elsets.items()
+    ]
+    if assembly is not None:
+        for sn, es in assembly.elsets.items():
+            if canon_instance(getattr(es, "instance_name", "") or "") == inst_name:
+                items.append((sn, es, "ASSEMBLY"))
+
+    if not items:
+        return
+
     with h5py.File(sets_h5, "a") as f:
-        for set_name, elset in part.elsets.items():
+        for set_name, elset, scope in items:
             if not elset.elem_labels:
                 continue
-            # Internal sets (Abaqus-generated _PickedSetNN) are stored too, just
-            # flagged via is_internal so callers can later tell them apart from
-            # user-named sets. No filtering is applied here.
+            # Normalize the set name to UPPERCASE to match the ODB side: Abaqus
+            # stores every set name uppercase inside the ODB (irreversibly), so an
+            # INP-sourced workspace must do the same or the same model imported as
+            # INP vs ODB would disagree (e.g. INP '_PickedSet6' vs ODB
+            # '_PICKEDSET6'). Symmetric with the instance-name uppercase convention
+            # (canon_instance). Only the display key changes — element membership
+            # (integer labels) is untouched, and section→elset resolution already
+            # matches case-insensitively.
+            set_name = set_name.upper()
+            # Internal sets (Abaqus-generated _PICKEDSETNN / surface _SN sets)
+            # are stored too, just flagged via is_internal so callers can later
+            # tell them apart from user-named sets. No filtering is applied here.
             is_internal = 1 if getattr(elset, "internal", False) else 0
             safe_name = _safe(set_name)
             key = "element_sets/{}/{}".format(inst_name, safe_name)
@@ -505,7 +544,7 @@ def _write_sets(
                 "INSERT OR REPLACE INTO element_sets "
                 "(set_name, set_scope, instance_name, h5_path, elem_count, is_internal) "
                 "VALUES (?,?,?,?,?,?)",
-                (safe_name, "PART", inst_name, sets_rel,
+                (safe_name, scope, inst_name, sets_rel,
                  len(elset.elem_labels), is_internal),
             )
 

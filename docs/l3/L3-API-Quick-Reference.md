@@ -1,6 +1,8 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-09（新增 color-code scheme=section_assignment 按真实截面指派上色/统计，与既有 section=平均域并存互不影响；legend-entries 新增 elem_count——实际单元数含内部，来自 L1，section 例外为表面单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) 慢查询）
+更新时间：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
+
+历史：2026-06-09（新增 color-code scheme=section_assignment 按真实截面指派上色/统计，与既有 section=平均域并存互不影响；legend-entries 新增 elem_count——实际单元数含内部，来自 L1，section 例外为表面单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) 慢查询）
 
 本文以当前分支 `src/l3/api/routes/*` 的实现为准，面向前端和上层服务调用方。服务地址示例：
 
@@ -1476,6 +1478,10 @@ L3BE sections：
 
 ### `GET /api/odb/{odb_id}/color-code/{instance}/schemes`
 
+返回**整模型**的可用上色方案与单元集列表（路径里的 `{instance}` 仅为兼容保留，不再限定范围）。`schemes` 是所有 instance 的并集；`elsets` 里每个单元集都带 `instance.` 前缀（如 `OMEGA-1._PickedSet6`）。
+
+> 为什么带前缀：单元集名只在单个 instance 内唯一，同名 `_PickedSet6` 在不同 instance 上是不同的单元组。带上 instance 前缀后，前端一次就能列出/勾选全模型所有 instance 的集合；上色/legend 接口会识别前缀，把每个集合只发回它所属的那个 instance。响应结构 `{schemes, elsets}` 不变，老调用方无需改动。
+
 响应：
 
 ```json
@@ -1483,7 +1489,7 @@ L3BE sections：
   "code": 200,
   "data": {
     "schemes": ["etype", "section", "material", "section_type", "elset"],
-    "elsets": ["SET_A", "SET_B"]
+    "elsets": ["HEAD-1._PickedSet6", "OMEGA-1._PickedSet6", "HEAD-1.QA_TEST"]
   },
   "message": ""
 }
@@ -1509,7 +1515,7 @@ L3BE sections：
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `scheme` | 是 | `etype` / `section` / `section_assignment` / `material` / `section_type` / `elset` |
-| `set_names` | 否 | 逗号分隔，仅 `scheme=elset` 使用 |
+| `set_names` | 否 | 逗号分隔，仅 `scheme=elset` 使用。接受 `INSTANCE.setname` 限定名；本 instance 用 schemes 返回的前缀名即可，属于别的 instance 的条目会被自动忽略（不会报错），所以可把整份勾选广播给每个 instance |
 
 响应 body 为 L3BE 二进制，legend 嵌入 L3BE section 中（非响应头）：
 
@@ -1655,7 +1661,8 @@ const legend = res.data?.legend ?? []
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `scheme` | 是 | etype \\| material \\| section_type \\| section \\| section_assignment \\| elset |
-| `set_names` | elset 时必填 | 逗号分隔的集合名称 |
+| `set_names` | elset 时必填 | 逗号分隔的集合名称，可用 `INSTANCE.setname` 限定名 |
+| `all` | 否 | true 时返回全部 instance 的条目（每条多一个 `instance` 字段）。**`scheme=elset` 始终按 all 处理**（单元集名按 instance 限定，需一次列全各 instance 的所选集合供跨 instance 改名/改色），无需调用方传 `all=true` |
 
 响应 `data.entries` 数组，每项：
 
@@ -1678,7 +1685,10 @@ const legend = res.data?.legend ?? []
 
 批量保存 legend 条目的名称和颜色覆盖。传 null 表示清除该覆盖（恢复自动分配）。
 
-查询参数：`scheme`（必填）
+查询参数：`scheme`（必填）、`all`（可选）。
+
+- `all=true`：从每个条目的 `legend_key` 解析 instance（section 用 `{inst}.Region_N`），一次保存多个 instance；其它共享标签 scheme（etype/material/section_type）写入所有 instance。
+- **`scheme=elset` 始终按 instance 路由**：每个 `legend_key` 形如 `INSTANCE.setname`，覆盖会写到其归属 instance（无需调用方传 `all=true`）。因此 LegendEditor 一次提交即可跨 instance 改名/改色，前端无需改动。
 
 请求 body（`application/json`，数组）：
 

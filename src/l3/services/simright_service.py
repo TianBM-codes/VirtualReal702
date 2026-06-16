@@ -37,6 +37,7 @@ from ..core.errors import NotFoundError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.manifest_repo import ManifestRepo
 from ..infra.registry_repo import RegistryRepo
+from src.l1.manifest_schema import canon_instance
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ def _result_h5_path(workspace: str, step: str, field: str,
 
 def _geom_h5_path(workspace: str, instance_name: str) -> str:
     """Resolve L1 geometry path via manifest; fall back to safe-name construction."""
+    instance_name = canon_instance(instance_name)
     try:
         import sqlite3
         with sqlite3.connect(os.path.join(workspace, "manifest.db")) as conn:
@@ -175,6 +177,7 @@ def _read_nodal_scalar(f: h5py.File, instance_name: str, frame_idx: int,
     Read NODAL data for one instance at one frame.
     Returns 1-D float32 array of length N_nodes, or None if dataset missing.
     """
+    instance_name = canon_instance(instance_name)
     ds_path = f"/NODAL/{instance_name}/data"
     if ds_path not in f:
         return None
@@ -198,6 +201,7 @@ def _read_nodal_timeseries(f: h5py.File, instance_name: str, node_row: int,
                            frame_indices: Optional[List[int]],
                            comp_idx: int, magnitude: bool) -> List[float]:
     """Return list of scalar values across frames for one node row."""
+    instance_name = canon_instance(instance_name)
     ds_path = f"/NODAL/{instance_name}/data"
     if ds_path not in f:
         return []
