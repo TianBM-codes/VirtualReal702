@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import meshio
 import numpy as np
 
 
@@ -27,6 +28,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from services.model_update.analysis.nastran_sol200_service import generate_sol200_workflow
+from services.model_update.importers.op2_service import (
+    _build_mesh_from_bdf,
+    _element_property_id,
+    _parse_formatted_sensitivity_csv,
+    _property_material_ids,
+)
 
 
 def _json_dumps(data: Any) -> str:
@@ -35,7 +42,7 @@ def _json_dumps(data: Any) -> str:
 
 def _load_json(path: str) -> Dict[str, Any]:
     resolved = Path(path).expanduser().resolve()
-    with resolved.open("r", encoding="utf-8") as fp:
+    with resolved.open("r", encoding="utf-8-sig") as fp:
         payload = json.load(fp)
     if not isinstance(payload, dict):
         raise RuntimeError(f"config must be a JSON object: {resolved}")
@@ -353,6 +360,108 @@ def run_build_sol200_bdf(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def run_export_sensitivity_vtu(payload: Dict[str, Any]) -> Dict[str, Any]:
+    input_bdf = str(payload.get("input_bdf") or "").strip()
+    matrix_path = str(payload.get("matrix_path") or "").strip()
+    metadata_json = str(payload.get("metadata_json") or "").strip()
+    output_vtu = str(payload.get("output_vtu") or "").strip()
+    response_name = str(payload.get("response_name") or "").strip()
+    if not input_bdf:
+        raise RuntimeError("input_bdf is required")
+    if not matrix_path:
+        raise RuntimeError("matrix_path is required")
+    if not metadata_json:
+        raise RuntimeError("metadata_json is required")
+    if not output_vtu:
+        raise RuntimeError("output_vtu is required")
+    if not response_name:
+        raise RuntimeError("response_name is required")
+
+    metadata = _load_json(metadata_json)
+    parameters = [dict(item) for item in list(metadata.get("parameters") or [])]
+    responses = [dict(item) for item in list(metadata.get("responses") or [])]
+    parameter_names = [str(item.get("name")) for item in parameters if str(item.get("name") or "").strip()]
+    response_names = [str(item.get("name")) for item in responses if str(item.get("name") or "").strip()]
+    if not parameter_names:
+        raise RuntimeError(f"metadata_json does not contain usable parameter names: {metadata_json}")
+    if not response_names:
+        raise RuntimeError(f"metadata_json does not contain usable response names: {metadata_json}")
+
+    response_meta = next(
+        (dict(item) for item in responses if str(item.get("name") or "").strip() == response_name),
+        None,
+    )
+    if response_meta is None:
+        raise RuntimeError(
+            f"response_name not found in metadata_json: {response_name}; available: {response_names}"
+        )
+
+    parsed = _parse_formatted_sensitivity_csv(
+        matrix_path,
+        parameter_names=parameter_names,
+        response_names=[response_name],
+        response_rows=[response_meta],
+    )
+    row_names = [str(name) for name in parsed.get("row_labels") or []]
+    col_names = [str(name) for name in parsed.get("column_labels") or []]
+    raw_matrix = parsed.get("matrix")
+    matrix = np.asarray(raw_matrix if raw_matrix is not None else [], dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        raise RuntimeError(f"sensitivity matrix is empty for response: {response_name}")
+    row_index = 0
+    matched_row_label = row_names[row_index] if row_names else response_name
+
+    parameter_by_name = {
+        str(item.get("name")): dict(item)
+        for item in parameters
+        if str(item.get("name") or "").strip()
+    }
+    coords, cell_blocks, cell_element_ids, _, bdf_model = _build_mesh_from_bdf(str(Path(input_bdf).expanduser().resolve()))
+    cell_data_blocks: List[np.ndarray] = []
+    for block_ids in cell_element_ids:
+        values = np.full(len(block_ids), np.nan, dtype=np.float64)
+        for cell_idx, element_id in enumerate(block_ids.tolist()):
+            element = bdf_model.elements.get(int(element_id))
+            if element is None:
+                continue
+            pid = _element_property_id(element)
+            prop = getattr(element, "pid_ref", None)
+            if prop is None and pid is not None:
+                prop = bdf_model.properties.get(pid)
+            mids = _property_material_ids(prop) if prop is not None else []
+            candidates: List[float] = []
+            for col_idx, param_name in enumerate(col_names):
+                meta = parameter_by_name.get(str(param_name))
+                if not meta:
+                    continue
+                ptype = str(meta.get("param_type") or meta.get("parameter_type") or meta.get("type") or "").upper()
+                if meta.get("element_id") is not None and int(meta["element_id"]) == int(element_id):
+                    candidates.append(float(matrix[row_index, col_idx]))
+                elif ptype == "H" and meta.get("property_id") is not None and pid == int(meta["property_id"]):
+                    candidates.append(float(matrix[row_index, col_idx]))
+                elif ptype in {"E", "RHO"} and meta.get("material_id") is not None and int(meta["material_id"]) in mids:
+                    candidates.append(float(matrix[row_index, col_idx]))
+            if candidates:
+                values[cell_idx] = float(max(candidates, key=lambda item: abs(item)))
+        cell_data_blocks.append(values)
+
+    resolved_output = Path(output_vtu).expanduser().resolve()
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    mesh = meshio.Mesh(points=coords, cells=cell_blocks, cell_data={"sensitivity": cell_data_blocks})
+    meshio.write(str(resolved_output), mesh)
+    return {
+        "workflow": "export_sensitivity_vtu",
+        "input_bdf": str(Path(input_bdf).expanduser().resolve()),
+        "matrix_path": str(Path(matrix_path).expanduser().resolve()),
+        "metadata_json": str(Path(metadata_json).expanduser().resolve()),
+        "output_vtu": str(resolved_output),
+        "response_name": response_name,
+        "matched_row_label": matched_row_label,
+        "available_response_names": row_names,
+        "cell_block_count": len(cell_blocks),
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Standalone tools for MAC sensitivity calculation and SOL200 BDF generation."
@@ -372,6 +481,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser_mac.add_argument("--config", required=True, help="Path to JSON config.")
     parser_mac.add_argument("--output", help="Optional path to write result JSON.")
+
+    parser_vtu = subparsers.add_parser(
+        "export-sensitivity-vtu",
+        help="Export one stored sensitivity response row to VTU from local files.",
+    )
+    parser_vtu.add_argument("--config", required=True, help="Path to JSON config.")
+    parser_vtu.add_argument("--output", help="Optional path to write result JSON.")
     return parser
 
 
@@ -384,6 +500,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         result = run_build_sol200_bdf(payload)
     elif args.command == "compute-mac-sensitivity":
         result = run_mac_sensitivity_from_payload(payload)
+    elif args.command == "export-sensitivity-vtu":
+        result = run_export_sensitivity_vtu(payload)
     else:
         raise RuntimeError(f"unsupported command: {args.command}")
 

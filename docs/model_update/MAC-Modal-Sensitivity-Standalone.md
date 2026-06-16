@@ -152,3 +152,47 @@ python tools/mac_modal_sensitivity_standalone.py compute-mac-sensitivity --confi
 2. 符号对齐对不对
 3. `dPhi/dp` 的组装对不对
 4. `dMAC/dp` 的公式实现对不对
+
+## 子命令 3：导出灵敏度 VTU
+
+这个命令是给你现在这个场景准备的：
+
+1. 先用 `build-sol200-bdf` 生成 `SOL200` 的 `BDF`
+2. 手工调用 `Nastran` 求解
+3. 拿求解生成的 `sens.csv` 和 `*.sol200.json`
+4. 导出一个可以直接看云图的 `VTU`
+
+命令：
+
+```bash
+python tools/mac_modal_sensitivity_standalone.py export-sensitivity-vtu --config export_vtu.json --output export_vtu_result.json
+```
+
+最小配置示例：
+
+```json
+{
+  "input_bdf": "D:/demo/model.bdf",
+  "matrix_path": "D:/demo/sens.csv",
+  "metadata_json": "D:/demo/model_sol200.bdf.sol200.json",
+  "output_vtu": "D:/demo/freq_mode_1_sensitivity.vtu",
+  "response_name": "FREQ_MODE_1"
+}
+```
+
+说明：
+
+- `response_name` 表示你要看哪一个响应的灵敏度云图
+- 频率响应可以写成 `FREQ_MODE_1`
+- 模态位移响应可以写成类似 `PHI_M1_N101_U3`
+- 这个 `VTU` 展示的是“某一个响应对各个设计变量的灵敏度”映射到单元上的结果
+- 它适合拿来直观看 `SOL200` 原始灵敏度分布
+- 它不是最终的 `dMAC/dp` 结果，因为 `dMAC/dp` 是后面把振型、`dPhi/dp`、`MAC` 公式一起算完之后得到的
+
+当前映射规则：
+
+- 如果参数本身就是单元参数，就直接映射到对应单元
+- 如果参数是属性参数 `H`，就映射到该属性下的单元
+- 如果参数是材料参数 `E` / `RHO`，就映射到使用该材料的单元
+
+这样做的目的很简单：先把“求解器产出的原始灵敏度有没有问题”看清楚，再往后接 `MAC` 灵敏度，排查会轻松很多。
