@@ -1183,6 +1183,11 @@ def ensure_tables_exist():
             "flip BOOLEAN NOT NULL DEFAULT FALSE COMMENT '是否需要相位翻转'",
         )
         _ensure_column(
+            "t_mt_py_fem_modal_correlation",
+            "msf",
+            "msf DOUBLE NULL COMMENT 'MSF鍊?'",
+        )
+        _ensure_column(
             "t_mt_py_fem_analysis_run",
             "source_kind",
             "source_kind VARCHAR(32) NULL COMMENT '灵敏度结果来源类型'",

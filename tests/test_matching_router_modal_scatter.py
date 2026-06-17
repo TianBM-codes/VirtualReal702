@@ -1,8 +1,13 @@
 import pytest
 
 
+def _require_route_test_deps():
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+
+
 def test_modal_match_frequency_scatter_route(monkeypatch):
-    fastapi = pytest.importorskip("fastapi")
+    _require_route_test_deps()
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -60,7 +65,7 @@ def test_modal_match_frequency_scatter_route(monkeypatch):
 
 
 def test_modal_correlation_all_scatter_route(monkeypatch):
-    fastapi = pytest.importorskip("fastapi")
+    _require_route_test_deps()
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -109,7 +114,7 @@ def test_modal_correlation_all_scatter_route(monkeypatch):
 
 
 def test_modal_frequency_consistency_route(monkeypatch):
-    fastapi = pytest.importorskip("fastapi")
+    _require_route_test_deps()
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -147,8 +152,47 @@ def test_modal_frequency_consistency_route(monkeypatch):
     assert captured == {"project_id": 18}
 
 
+def test_modal_scale_factor_table_route(monkeypatch):
+    _require_route_test_deps()
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import matching
+
+    captured = {}
+
+    monkeypatch.setattr(
+        matching,
+        "get_modal_scale_factor_table_payload",
+        lambda project_id: captured.update({"project_id": project_id}) or {
+            "project_id": int(project_id),
+            "row_mode_order": ["7"],
+            "column_mode_order": ["1"],
+            "rows": ["7"],
+            "column": ["1"],
+            "data": [{"1": 2.25}],
+            "summary": {"fem_mode_count": 1, "test_mode_count": 1, "point_count": 1},
+        },
+    )
+
+    app = FastAPI()
+    app.include_router(matching.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/correlation/modal/msf/table",
+        json={"project_id": 18},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["data"][0]["1"] == 2.25
+    assert captured == {"project_id": 18}
+
+
 def test_evaluate_correlation_route_uses_modal_branch_for_mtxz(monkeypatch):
-    fastapi = pytest.importorskip("fastapi")
+    _require_route_test_deps()
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 

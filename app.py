@@ -27,6 +27,7 @@ from services.model_update.analysis.inp_service import (
     get_modal_correlation,
     get_modal_correlation_matrix_payload,
     get_modal_correlation_table_payload,
+    get_modal_scale_factor_table_payload,
     import_fe_modal_results,
     import_fe_static_results,
     match_modal_modes,
@@ -290,6 +291,16 @@ async def get_modal_correlation_table_api(request: Request):
         body = await request.json()
         result = get_modal_correlation_table_payload(int(body["project_id"]))
         return success_response(result, "模态相关表格查询成功")
+    except Exception as exc:
+        return _legacy_error_response(exc)
+
+
+@app.post("/correlation/modal/msf/table")
+async def get_modal_scale_factor_table_api(request: Request):
+    try:
+        body = await request.json()
+        result = get_modal_scale_factor_table_payload(int(body["project_id"]))
+        return success_response(result, "MSF琛ㄦ牸鏌ヨ鎴愬姛")
     except Exception as exc:
         return _legacy_error_response(exc)
 

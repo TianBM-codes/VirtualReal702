@@ -3,6 +3,7 @@ from fastapi import APIRouter, Request
 from services.model_update.analysis.inp_service import (
     evaluate_static_correlation,
     get_modal_correlation_all_scatter_payload,
+    get_modal_scale_factor_table_payload,
     get_dof_matches,
     get_modal_frequency_consistency_payload,
     get_modal_match_frequency_scatter_payload,
@@ -168,6 +169,19 @@ async def modal_correlation_all_scatter_api(request: Request, body: ModalCorrela
     try:
         result = get_modal_correlation_all_scatter_payload(project_id=body.project_id)
         return success_response(result, "频率相关性散点图计算成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/correlation/modal/msf/table")
+async def modal_scale_factor_table_api(request: Request, body: ModalCorrelationScatterRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_modal_scale_factor_table_payload(project_id=body.project_id)
+        return success_response(result, "MSF结果返回成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
