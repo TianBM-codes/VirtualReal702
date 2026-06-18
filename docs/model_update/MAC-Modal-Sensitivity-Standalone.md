@@ -196,3 +196,85 @@ python tools/mac_modal_sensitivity_standalone.py export-sensitivity-vtu --config
 - 如果参数是材料参数 `E` / `RHO`，就映射到使用该材料的单元
 
 这样做的目的很简单：先把“求解器产出的原始灵敏度有没有问题”看清楚，再往后接 `MAC` 灵敏度，排查会轻松很多。
+
+## 百分号口径说明
+
+现在脚本里的 `MAC` 和 `dMAC/dp` 默认都按百分号口径输出，也就是：
+
+- 原始 `MAC=0.975`
+- 输出结果会写成 `97.5`
+
+对应地：
+
+- 原始 `dMAC/dp`
+- 输出结果会自动乘以 `100`
+
+这样做的原因不是公式变了，而是为了和 `FEMTools` 的显示口径对齐。脚本结果里同时保留：
+
+- `mac_matrix` / `pair_results[].mac`：百分号口径
+- `mac_matrix_raw` / `pair_results[].mac_raw`：`0~1` 原始口径
+- `pair_results[].dmac_dp`：百分号口径
+- `pair_results[].dmac_dp_raw`：原始口径
+
+## 接口入口
+
+除了命令行脚本，现在还可以直接走接口：
+
+### `POST /optimization/modal_mac/sensitivity/compute`
+
+这个接口的目标很直接：你把试验振型、仿真振型、振型灵敏度矩阵喂进去，它直接返回：
+
+- `MAC`
+- 符号对齐后的振型
+- `dMAC/dp`
+
+最小请求示例：
+
+```json
+{
+  "phi_exp": [
+    [1.0, 0.1],
+    [0.5, 0.3],
+    [0.2, 0.8]
+  ],
+  "phi_sim": [
+    [0.9, 0.2],
+    [0.45, 0.35],
+    [0.25, 0.75]
+  ],
+  "dphi_dp": [
+    [
+      [0.01, 0.02],
+      [0.03, 0.01],
+      [0.02, -0.01]
+    ],
+    [
+      [0.00, 0.03],
+      [0.01, 0.02],
+      [0.02, 0.01]
+    ]
+  ],
+  "pairs": [
+    { "exp_mode": 1, "sim_mode": 1 },
+    { "exp_mode": 2, "sim_mode": 2 }
+  ],
+  "parameter_names": ["E1", "E2"],
+  "sensor_labels": ["N101_U3", "N102_U3", "N103_U3"],
+  "index_base": 1,
+  "mac_scale": 100.0
+}
+```
+
+如果矩阵太大，也可以沿用 standalone 的文件写法：
+
+```json
+{
+  "phi_exp": { "path": "D:/demo/phi_exp.csv", "delimiter": "," },
+  "phi_sim": { "path": "D:/demo/phi_sim.csv", "delimiter": "," },
+  "dphi_dp": { "path": "D:/demo/dphi_dp.npy" },
+  "pairs": [
+    { "exp_mode": 1, "sim_mode": 1 }
+  ],
+  "mac_scale": 100.0
+}
+```

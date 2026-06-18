@@ -292,6 +292,22 @@ class ModalMatchPairRequest(BaseModel):
     fem_mode_no: int
 
 
+class ModalMacPairRequest(BaseModel):
+    exp_mode: int
+    sim_mode: int
+
+
+class ModalMacSensitivityComputeRequest(BaseModel):
+    phi_exp: Any
+    phi_sim: Any
+    dphi_dp: Any
+    pairs: List[ModalMacPairRequest]
+    index_base: int = 1
+    parameter_names: Optional[List[str]] = None
+    sensor_labels: Optional[List[str]] = None
+    mac_scale: float = 100.0
+
+
 class ModalMatchResponseSelectRequest(BaseModel):
     project_id: int
     overwrite: bool = False
