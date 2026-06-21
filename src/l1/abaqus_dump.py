@@ -55,6 +55,29 @@ except Exception:
     except Exception:
         pass
 
+# Invariant constants for getScalarField(invariant=...) API calls.
+# Maps our internal key → Abaqus constant. Loaded defensively because older
+# Abaqus versions may not expose all of these.
+_INV_CONSTANTS = {}
+try:
+    from abaqusConstants import (  # noqa: F401
+        MISES, TRESCA, PRESS, INV3,
+        MAX_PRINCIPAL, MID_PRINCIPAL, MIN_PRINCIPAL,
+        MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL,
+        MAGNITUDE,
+    )
+    _INV_CONSTANTS = {
+        'MISES': MISES, 'TRESCA': TRESCA, 'PRESS': PRESS, 'INV3': INV3,
+        'MAX_PRINCIPAL': MAX_PRINCIPAL, 'MID_PRINCIPAL': MID_PRINCIPAL,
+        'MIN_PRINCIPAL': MIN_PRINCIPAL,
+        'MAX_IN_PLANE_PRINCIPAL': MAX_INPLANE_PRINCIPAL,
+        'MIN_IN_PLANE_PRINCIPAL': MIN_INPLANE_PRINCIPAL,
+        'OUT_OF_PLANE_PRINCIPAL': OUTOFPLANE_PRINCIPAL,
+        'MAGNITUDE': MAGNITUDE,
+    }
+except Exception:
+    pass
+
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -185,19 +208,9 @@ INV_ATTR_MAP = {
 }
 
 # Invariant suffixes skipped even when --invariants full is passed.
-# Remove an entry once the viewer gains support for that invariant.
-# Currently active (extracted): MISES, TRESCA (stress tensors only).
-# MAGNITUDE is excluded — L3 computes it on-the-fly from components (identical result).
+# MAGNITUDE excluded — L3 computes it on-the-fly from components (identical result).
 _HIDDEN_INV_SUFFIXES = frozenset({
     'MAGNITUDE',
-    'PRESS',
-    'INV3',
-    'MAX_PRINCIPAL',
-    'MID_PRINCIPAL',
-    'MIN_PRINCIPAL',
-    'MAX_IN_PLANE_PRINCIPAL',
-    'MIN_IN_PLANE_PRINCIPAL',
-    'OUT_OF_PLANE_PRINCIPAL',
 })
 
 
@@ -229,8 +242,8 @@ def parse_args():
                         'inp=warn only (INP parser may miss connector/special elements)')
     p.add_argument('--invariants', choices=['none', 'full'], default='none',
                    help=('none=skip invariants (fast, default); '
-                         'full=extract all validInvariants via .values iteration '
-                         '(slower, creates synthetic NODAL scalar fields)'))
+                         'full=extract all validInvariants via getScalarField '
+                         '(Abaqus-computed, creates synthetic scalar fields)'))
     # ── legacy parallel-worker params ────────────────────────────────────────
     p.add_argument('--step',   default=None,
                    help='Step name (results-worker mode only)')
@@ -1073,88 +1086,79 @@ def _compute_invariants_numpy(comp, inv_name):
 
 def _extract_ip_invariants(step, step_name, field_name, first_field,
                            invariants, results_dir, safe_step, safe_field,
-                           block_struct, odb_instances):
-    """Extract scalar invariant fields, preserving raw per-IP and per-local-node values.
+                           block_struct, odb_instances, selected_frames=None):
+    """Extract scalar invariant fields via Abaqus getScalarField(invariant=...).
+
+    Uses the Abaqus API to compute each invariant (guaranteed accuracy),
+    then reads bulkDataBlocks for vectorized output. For element types where
+    an invariant is not valid, the corresponding entries are NaN (rendered grey
+    by the frontend).
 
     ELEMENT_NODAL path (preferred): stores [N_elem, n_local_node, 1] per block.
-      L3 applies the same 75% conditional averaging as for regular components.
     INTEGRATION_POINT path: stores [N_elem, n_ip, 1] per block.
-      L3 does NOT average; IP data is used only for point queries.
-
-    No pre-averaging is done here — that is L3's responsibility.
+    NODAL path: stores [N_nodes, 1] per block.
     """
     active_invs = [
         (inv, INV_ATTR_MAP[inv]) for inv in invariants
         if inv in INV_ATTR_MAP and inv not in _HIDDEN_INV_SUFFIXES
+        and inv in _INV_CONSTANTS
     ]
     if not active_invs:
         return
 
     parent_field_dir = os.path.join(results_dir, '{}_{}'.format(safe_step, safe_field))
 
-    # ── Discover EN blocks from parent block_struct ───────────────────────────
-    en_blocks = {}  # {(iname, etype, sp_num_key): {'labels': arr, 'n_enodes': int}}
-    for (iname, pos, etype, sp_num_key) in list(block_struct.keys()):
-        if pos != 'ELEMENT_NODAL':
-            continue
-        info = block_struct[(iname, pos, etype, sp_num_key)]
-        n_enodes = info.get('n_enodes', 0)
-        if n_enodes == 0:
-            continue
-        bd_parts = [parent_field_dir, safe(iname), 'ELEMENT_NODAL']
-        if etype:
-            bd_parts.append(safe(etype))
-        if sp_num_key is not None:
-            bd_parts.append('sp{}'.format(sp_num_key))
-        bd = os.path.join(*bd_parts)
-        lbl_path = os.path.join(bd, 'labels.npy')
-        if not os.path.exists(lbl_path):
-            continue
-        en_blocks[(iname, etype, sp_num_key)] = {'labels': np.load(lbl_path), 'n_enodes': n_enodes}
-
-    # ── Discover IP blocks from parent block_struct ───────────────────────────
-    ip_blocks = {}  # {(iname, etype, sp_num_key): {'labels': arr, 'ip_labels': arr}}
-    for (iname, pos, etype, sp_num_key) in list(block_struct.keys()):
-        if pos != 'INTEGRATION_POINT':
-            continue
-        bd_parts = [parent_field_dir, safe(iname), 'INTEGRATION_POINT']
-        if etype:
-            bd_parts.append(safe(etype))
-        if sp_num_key is not None:
-            bd_parts.append('sp{}'.format(sp_num_key))
-        bd = os.path.join(*bd_parts)
-        lbl_path = os.path.join(bd, 'labels.npy')
-        if not os.path.exists(lbl_path):
-            continue
-        ip_lbl_path = os.path.join(bd, 'ip_labels.npy')
-        ip_labels = (np.load(ip_lbl_path) if os.path.exists(ip_lbl_path)
-                     else np.array([1], dtype=np.int32))
-        ip_blocks[(iname, etype, sp_num_key)] = {
-            'labels':    np.load(lbl_path),
-            'ip_labels': ip_labels,
-        }
-
-    # ── Discover NODAL blocks from parent block_struct ───────────────────────────
+    # ── Discover blocks from parent block_struct (used for canonical labels) ──
+    en_blocks = {}   # {(iname, etype, sp_num_key): {'labels': arr, 'n_enodes': int}}
+    ip_blocks = {}   # {(iname, etype, sp_num_key): {'labels': arr, 'ip_labels': arr}}
     nodal_blocks = {}  # {(iname, etype, sp_num_key): {'labels': arr}}
-    for (iname, pos, etype, sp_num_key) in list(block_struct.keys()):
-        if pos != 'NODAL':
-            continue
-        bd_parts = [parent_field_dir, safe(iname), 'NODAL']
-        if etype:
-            bd_parts.append(safe(etype))
-        if sp_num_key is not None:
-            bd_parts.append('sp{}'.format(sp_num_key))
-        bd = os.path.join(*bd_parts)
-        lbl_path = os.path.join(bd, 'labels.npy')
-        if not os.path.exists(lbl_path):
-            continue
-        nodal_blocks[(iname, etype, sp_num_key)] = {'labels': np.load(lbl_path)}
+
+    for (iname, pos, etype, sp_num_key), info in block_struct.items():
+        if pos == 'ELEMENT_NODAL':
+            n_enodes = info.get('n_enodes', 0)
+            if n_enodes == 0:
+                continue
+            bd_parts = [parent_field_dir, safe(iname), 'ELEMENT_NODAL']
+            if etype:
+                bd_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_parts.append('sp{}'.format(sp_num_key))
+            lbl_path = os.path.join(*(bd_parts + ['labels.npy']))
+            if not os.path.exists(lbl_path):
+                continue
+            en_blocks[(iname, etype, sp_num_key)] = {
+                'labels': np.load(lbl_path), 'n_enodes': n_enodes}
+
+        elif pos == 'INTEGRATION_POINT':
+            bd_parts = [parent_field_dir, safe(iname), 'INTEGRATION_POINT']
+            if etype:
+                bd_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_parts.append('sp{}'.format(sp_num_key))
+            bd = os.path.join(*bd_parts)
+            lbl_path = os.path.join(bd, 'labels.npy')
+            if not os.path.exists(lbl_path):
+                continue
+            ip_lbl_path = os.path.join(bd, 'ip_labels.npy')
+            ip_labels = (np.load(ip_lbl_path) if os.path.exists(ip_lbl_path)
+                         else np.array([1], dtype=np.int32))
+            ip_blocks[(iname, etype, sp_num_key)] = {
+                'labels': np.load(lbl_path), 'ip_labels': ip_labels}
+
+        elif pos == 'NODAL':
+            bd_parts = [parent_field_dir, safe(iname), 'NODAL']
+            if etype:
+                bd_parts.append(safe(etype))
+            if sp_num_key is not None:
+                bd_parts.append('sp{}'.format(sp_num_key))
+            lbl_path = os.path.join(*(bd_parts + ['labels.npy']))
+            if not os.path.exists(lbl_path):
+                continue
+            nodal_blocks[(iname, etype, sp_num_key)] = {'labels': np.load(lbl_path)}
 
     if not en_blocks and not ip_blocks and not nodal_blocks:
         print("    [inv] no EN, IP or NODAL blocks found, skipping invariant extraction")
         return
-
-    insts = list({k[0] for k in list(en_blocks.keys()) + list(ip_blocks.keys()) + list(nodal_blocks.keys())})
 
     # ── Create synthetic field dirs and write static index files ─────────────
     inv_field_dirs = {}
@@ -1204,122 +1208,135 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
             mkdirs(bd)
             npsave(os.path.join(bd, 'labels.npy'), info['labels'])
 
-    # ── Per-frame invariant computation (numpy, no .values API calls) ────────
-    # Component data was already saved by dump_results as f{frame_idx:04d}.npy.
-    # Load those files and apply numpy formulas — no Abaqus API calls needed.
-    num_frames = len(step.frames)
+    # ── Per-frame: call getScalarField then read bulkDataBlocks ──────────────
+    if selected_frames is None:
+        selected_frames = list(enumerate(step.frames))
+    num_frames = len(selected_frames)
 
-    for frame_idx in range(num_frames):
+    for frame_idx, (_, frame) in enumerate(selected_frames):
+        if field_name not in frame.fieldOutputs:
+            continue
+        field_out = frame.fieldOutputs[field_name]
 
-        # ELEMENT_NODAL: load component npy → compute invariants
-        for (iname, etype, sp_num_key), info in en_blocks.items():
-            canon    = info['labels']
-            n_enodes = info['n_enodes']
+        for inv_name, _ in active_invs:
+            inv_const = _INV_CONSTANTS[inv_name]
 
-            bd_comp_parts = [parent_field_dir, safe(iname), 'ELEMENT_NODAL']
-            if etype:
-                bd_comp_parts.append(safe(etype))
-            if sp_num_key is not None:
-                bd_comp_parts.append('sp{}'.format(sp_num_key))
-            comp_path = os.path.join(*(bd_comp_parts + ['f{:04d}.npy'.format(frame_idx)]))
-            if not os.path.exists(comp_path):
+            # Ask Abaqus to compute this invariant — returns a scalar FieldOutput
+            try:
+                scalar_field = field_out.getScalarField(invariant=inv_const)
+            except Exception as exc:
+                if frame_idx == 0:
+                    print("    [inv] getScalarField({}) failed: {}".format(inv_name, exc))
                 continue
-            comp = np.load(comp_path)         # [N_elem, n_enodes, ncomp]
-            if comp.ndim == 2:
-                comp = comp[:, :, np.newaxis]
 
-            for inv_name, _ in active_invs:
-                inv_data = _compute_invariants_numpy(comp, inv_name)
-                if inv_data is None:
-                    inv_data = np.full((len(canon), n_enodes, 1), np.nan, dtype=np.float32)
-                else:
-                    # Clamp to expected shape (canon × n_enodes × 1)
-                    N_comp = inv_data.shape[0]
-                    N_en   = inv_data.shape[1]
-                    if N_comp != len(canon) or N_en != n_enodes:
-                        tmp = np.full((len(canon), n_enodes, 1), np.nan, dtype=np.float32)
-                        r = min(N_comp, len(canon))
-                        c = min(N_en, n_enodes)
-                        tmp[:r, :c, :] = inv_data[:r, :c, :]
-                        inv_data = tmp
+            # Collect scalar blocks, keyed the same way as parent
+            scalar_blocks = {}  # key → list of blocks
+            for block in scalar_field.bulkDataBlocks:
+                if block.instance is None:
+                    continue
+                inst_name = _canon_inst(block.instance.name)
+                position  = _pos_str(block.position)
+                elem_type = (getattr(block, 'elementType', None)
+                             or getattr(block, 'baseElementType', None))
+                if elem_type is None:
+                    _d = np.array(block.data)
+                    _n = len(getattr(block, 'elementLabels',
+                             getattr(block, 'nodeLabels', [])))
+                    elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
+                sp_num = _block_sp_num(block)
+                key    = (inst_name, position, elem_type, sp_num)
+                scalar_blocks.setdefault(key, []).append(block)
+
+            # ── Write ELEMENT_NODAL invariant data ───────────────────────────
+            for (iname, etype, sp_num_key), info in en_blocks.items():
+                canon    = info['labels']
+                n_enodes = info['n_enodes']
+                M_c      = len(canon)
 
                 bd_inv_parts = [inv_field_dirs[inv_name], safe(iname), 'ELEMENT_NODAL']
                 if etype:
                     bd_inv_parts.append(safe(etype))
                 if sp_num_key is not None:
                     bd_inv_parts.append('sp{}'.format(sp_num_key))
-                npsave(os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)])), inv_data)
+                fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
-        # INTEGRATION_POINT: load component npy → compute invariants
-        for (iname, etype, sp_num_key), info in ip_blocks.items():
-            canon     = info['labels']
-            ip_labels = info['ip_labels']
-            n_ip      = len(ip_labels)
+                s_key = (iname, 'ELEMENT_NODAL', etype, sp_num_key)
+                fr_blocks = scalar_blocks.get(s_key, [])
 
-            bd_comp_parts = [parent_field_dir, safe(iname), 'INTEGRATION_POINT']
-            if etype:
-                bd_comp_parts.append(safe(etype))
-            if sp_num_key is not None:
-                bd_comp_parts.append('sp{}'.format(sp_num_key))
-            comp_path = os.path.join(*(bd_comp_parts + ['f{:04d}.npy'.format(frame_idx)]))
-            if not os.path.exists(comp_path):
-                continue
-            comp = np.load(comp_path)         # [N_elem, n_ip, ncomp]
-            if comp.ndim == 2:
-                comp = comp[:, :, np.newaxis]
+                if not fr_blocks:
+                    npsave(fr_path, np.full((M_c, n_enodes, 1), np.nan, dtype=np.float32))
+                    continue
 
-            for inv_name, _ in active_invs:
-                inv_data = _compute_invariants_numpy(comp, inv_name)
-                if inv_data is None:
-                    inv_data = np.full((len(canon), n_ip, 1), np.nan, dtype=np.float32)
-                else:
-                    N_comp = inv_data.shape[0]
-                    N_ip   = inv_data.shape[1]
-                    if N_comp != len(canon) or N_ip != n_ip:
-                        tmp = np.full((len(canon), n_ip, 1), np.nan, dtype=np.float32)
-                        r = min(N_comp, len(canon))
-                        c = min(N_ip, n_ip)
-                        tmp[:r, :c, :] = inv_data[:r, :c, :]
-                        inv_data = tmp
+                out = np.full((M_c, n_enodes, 1), np.nan, dtype=np.float32)
+                for b in fr_blocks:
+                    u_e, data_nd = reshape_element_nodal_block(b)
+                    # data_nd shape: [N_elem, n_enodes, 1] (scalar)
+                    if data_nd.ndim == 2:
+                        data_nd = data_nd[:, :, np.newaxis]
+                    rows  = np.searchsorted(canon, u_e)
+                    valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                    out[rows[valid]] = data_nd[valid]
+                npsave(fr_path, out)
+
+            # ── Write INTEGRATION_POINT invariant data ───────────────────────
+            for (iname, etype, sp_num_key), info in ip_blocks.items():
+                canon     = info['labels']
+                ip_labels = info['ip_labels']
+                n_ip      = len(ip_labels)
+                M_c       = len(canon)
 
                 bd_parts = [inv_field_dirs[inv_name], safe(iname), 'INTEGRATION_POINT']
                 if etype:
                     bd_parts.append(safe(etype))
                 if sp_num_key is not None:
                     bd_parts.append('sp{}'.format(sp_num_key))
-                npsave(os.path.join(*(bd_parts + ['f{:04d}.npy'.format(frame_idx)])), inv_data)
+                fr_path = os.path.join(*(bd_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
-        # NODAL: load component npy [N_nodes, ncomp] → compute invariants → [N_nodes, 1]
-        for (iname, etype, sp_num_key), info in nodal_blocks.items():
-            canon = info['labels']
+                s_key = (iname, 'INTEGRATION_POINT', etype, sp_num_key)
+                fr_blocks = scalar_blocks.get(s_key, [])
 
-            bd_comp_parts = [parent_field_dir, safe(iname), 'NODAL']
-            if etype:
-                bd_comp_parts.append(safe(etype))
-            if sp_num_key is not None:
-                bd_comp_parts.append('sp{}'.format(sp_num_key))
-            comp_path = os.path.join(*(bd_comp_parts + ['f{:04d}.npy'.format(frame_idx)]))
-            if not os.path.exists(comp_path):
-                continue
-            comp = np.load(comp_path)  # [N_nodes, ncomp]
+                if not fr_blocks:
+                    npsave(fr_path, np.full((M_c, n_ip, 1), np.nan, dtype=np.float32))
+                    continue
 
-            for inv_name, _ in active_invs:
-                inv_data = _compute_invariants_numpy(comp, inv_name)
-                if inv_data is None:
-                    inv_data = np.full((len(canon), 1), np.nan, dtype=np.float32)
-                else:
-                    if inv_data.shape[0] != len(canon):
-                        tmp = np.full((len(canon), 1), np.nan, dtype=np.float32)
-                        r = min(inv_data.shape[0], len(canon))
-                        tmp[:r, :] = inv_data[:r, :]
-                        inv_data = tmp
+                out = np.full((M_c, n_ip, 1), np.nan, dtype=np.float32)
+                for b in fr_blocks:
+                    u_e, _, sp, data_nd = reshape_ip_block(b)
+                    # data_nd shape: [N_elem, n_ip, 1] (scalar)
+                    if data_nd.ndim == 2:
+                        data_nd = data_nd[:, :, np.newaxis]
+                    rows  = np.searchsorted(canon, u_e)
+                    valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                    out[rows[valid]] = data_nd[valid]
+                npsave(fr_path, out)
+
+            # ── Write NODAL invariant data ───────────────────────────────────
+            for (iname, etype, sp_num_key), info in nodal_blocks.items():
+                canon = info['labels']
+                M_c   = len(canon)
 
                 bd_inv_parts = [inv_field_dirs[inv_name], safe(iname), 'NODAL']
                 if etype:
                     bd_inv_parts.append(safe(etype))
                 if sp_num_key is not None:
                     bd_inv_parts.append('sp{}'.format(sp_num_key))
-                npsave(os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)])), inv_data)
+                fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
+
+                s_key = (iname, 'NODAL', etype, sp_num_key)
+                fr_blocks = scalar_blocks.get(s_key, [])
+
+                if not fr_blocks:
+                    npsave(fr_path, np.full((M_c, 1), np.nan, dtype=np.float32))
+                    continue
+
+                out = np.full((M_c, 1), np.nan, dtype=np.float32)
+                for b in fr_blocks:
+                    lbls  = np.array(b.nodeLabels, dtype=np.int32)
+                    dflat = _block_data_2d(b)  # [N, 1]
+                    rows  = np.searchsorted(canon, lbls)
+                    valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == lbls)
+                    out[rows[valid]] = dflat[valid]
+                npsave(fr_path, out)
 
     # ── Write meta.json for each synthetic invariant field ────────────────────
     for inv_name, _ in active_invs:
@@ -1384,9 +1401,9 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
     field_prefix: optional string. If provided, only fields starting with this prefix
       are dumped.
 
-    extract_invariants: if True, also extract validInvariants as synthetic NODAL scalar
+    extract_invariants: if True, also extract validInvariants as synthetic scalar
       fields named {field}_{INV_NAME} (e.g. S_MISES, S_MAX_PRINCIPAL).
-      Uses .values iteration (slower than bulkDataBlocks).
+      Uses Abaqus getScalarField API for guaranteed accuracy.
     """
     results_dir = os.path.join(raw_dir, 'results')
     mkdirs(results_dir)
@@ -1834,6 +1851,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     step, step_name, field_name, first_field,
                     invariants, results_dir, safe_step, safe_field,
                     block_struct, odb.rootAssembly.instances,
+                    selected_frames=selected_frames,
                 )
         print("  Step '{}' done. ({})".format(step_name, _fmt_t(time.time() - t_step)))
 
