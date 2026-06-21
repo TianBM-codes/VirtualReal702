@@ -1000,6 +1000,7 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray, *, mac_mode: str
     self_fem_h = np.vdot(fem_vec, fem_vec)
     self_fem_t = np.dot(fem_vec, fem_vec)
     scale = np.vdot(fem_vec, test_vec) / np.vdot(test_vec, test_vec)
+    msf_scale = np.vdot(fem_vec, test_vec) / np.vdot(fem_vec, fem_vec)
     residual = test_vec - scale * fem_vec
     if resolved_mac_mode == "complex":
         mac_numerator = (abs(cross) + abs(cross_t)) ** 2
@@ -1013,6 +1014,7 @@ def _compute_dac_dsf(test_vec: np.ndarray, fem_vec: np.ndarray, *, mac_mode: str
         "dac": mac_value,
         "mac": mac_value,
         "dsf": float(abs(scale)),
+        "msf": float(abs(msf_scale)),
         "scale_real": float(scale.real),
         "scale_imag": float(scale.imag),
         "scale_phase_deg": float(math.degrees(math.atan2(scale.imag, scale.real))) if abs(scale) > 1e-18 else 0.0,
@@ -1078,12 +1080,13 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
 
         insert_sql = """
         INSERT INTO t_mt_py_fem_modal_correlation
-        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac, freq_test, freq_fem, freq_error_ratio, flip, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (pid, test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, msf, mac, freq_test, freq_fem, freq_error_ratio, flip, extra_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             dof_pair_count = VALUES(dof_pair_count),
             dac = VALUES(dac),
             dsf = VALUES(dsf),
+            msf = VALUES(msf),
             mac = VALUES(mac),
             freq_test = VALUES(freq_test),
             freq_fem = VALUES(freq_fem),
@@ -1154,6 +1157,7 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
                     "dac": metrics["dac"],
                     "mac": metrics["mac"],
                     "dsf": metrics["dsf"],
+                    "msf": metrics["msf"],
                     "freq_test": freq_test,
                     "freq_fem": freq_fem,
                     "freq_error_ratio": freq_error_ratio,
@@ -1187,6 +1191,7 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
                     item["dof_pair_count"],
                     item["dac"],
                     item["dsf"],
+                    item["msf"],
                     item["mac"],
                     item["freq_test"],
                     item["freq_fem"],
@@ -1245,35 +1250,52 @@ def compute_modal_correlation(project_id, overwrite=True, mac_threshold: Optiona
         conn.close()
 
 
-def get_modal_correlation(project_id):
+def _load_modal_correlation_metric_matrix(project_id: int, metric_name: str) -> dict:
+    resolved_metric = str(metric_name or "mac").strip().lower()
+    if resolved_metric not in {"mac", "msf"}:
+        raise ValidationError(
+            "unsupported modal correlation metric",
+            {"metric_name": metric_name, "allowed": ["mac", "msf"]},
+        )
+
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT test_mode_no, fem_mode_no, mac
+            SELECT test_mode_no, fem_mode_no, mac, msf
             FROM t_mt_py_fem_modal_correlation
             WHERE pid = %s
             ORDER BY fem_mode_no, test_mode_no
-        """, (project_id,))
+        """, (int(project_id),))
         rows = cursor.fetchall()
         fem_mode_order = sorted({int(row["fem_mode_no"]) for row in rows})
         test_mode_order = sorted({int(row["test_mode_no"]) for row in rows})
         fem_mode_index = {mode_no: idx for idx, mode_no in enumerate(fem_mode_order)}
         test_mode_index = {mode_no: idx for idx, mode_no in enumerate(test_mode_order)}
-        mac_matrix = [[None for _ in test_mode_order] for _ in fem_mode_order]
+        metric_matrix = [[None for _ in test_mode_order] for _ in fem_mode_order]
         for row in rows:
             row_idx = fem_mode_index[int(row["fem_mode_no"])]
             col_idx = test_mode_index[int(row["test_mode_no"])]
-            mac_matrix[row_idx][col_idx] = float(row["mac"]) if row["mac"] is not None else None
+            value = row.get(resolved_metric)
+            metric_matrix[row_idx][col_idx] = float(value) if value is not None else None
         return {
-            "project_id": project_id,
+            "project_id": int(project_id),
+            "metric_name": resolved_metric,
             "row_mode_order": fem_mode_order,
             "column_mode_order": test_mode_order,
-            "matrix": mac_matrix,
+            "matrix": metric_matrix,
         }
     finally:
         cursor.close()
         conn.close()
+
+
+def get_modal_correlation(project_id):
+    return _load_modal_correlation_metric_matrix(int(project_id), "mac")
+
+
+def get_modal_scale_factor(project_id):
+    return _load_modal_correlation_metric_matrix(int(project_id), "msf")
 
 
 def get_modal_correlation_matrix_payload(project_id):
@@ -1311,6 +1333,35 @@ def get_modal_correlation_matrix_payload(project_id):
 
 def get_modal_correlation_table_payload(project_id):
     raw = get_modal_correlation(project_id)
+    row_mode_order = [str(item) for item in (raw.get("row_mode_order") or [])]
+    column_mode_order = [str(item) for item in (raw.get("column_mode_order") or [])]
+    matrix = [list(row) for row in (raw.get("matrix") or [])]
+
+    table_rows = []
+    for row_index, _row_name in enumerate(row_mode_order):
+        current_row = matrix[row_index] if row_index < len(matrix) else []
+        row_item = {}
+        for col_index, col_name in enumerate(column_mode_order):
+            row_item[col_name] = current_row[col_index] if col_index < len(current_row) else None
+        table_rows.append(row_item)
+
+    return {
+        "project_id": int(project_id),
+        "row_mode_order": row_mode_order,
+        "column_mode_order": column_mode_order,
+        "rows": row_mode_order,
+        "column": column_mode_order,
+        "data": table_rows,
+        "summary": {
+            "fem_mode_count": len(row_mode_order),
+            "test_mode_count": len(column_mode_order),
+            "point_count": len(row_mode_order) * len(column_mode_order),
+        },
+    }
+
+
+def get_modal_scale_factor_table_payload(project_id):
+    raw = get_modal_scale_factor(project_id)
     row_mode_order = [str(item) for item in (raw.get("row_mode_order") or [])]
     column_mode_order = [str(item) for item in (raw.get("column_mode_order") or [])]
     matrix = [list(row) for row in (raw.get("matrix") or [])]
@@ -1418,7 +1469,7 @@ def _load_modal_correlation_rows(project_id: int) -> List[dict]:
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, mac,
+            SELECT test_mode_no, fem_mode_no, dof_pair_count, dac, dsf, msf, mac,
                    freq_test, freq_fem, freq_error_ratio, flip
             FROM t_mt_py_fem_modal_correlation
             WHERE pid = %s
@@ -1488,6 +1539,7 @@ def _build_modal_frequency_order_rows(project_id: int) -> dict:
             "freq_error_ratio": freq_error_ratio,
             "freq_error_percent": freq_error_percent,
             "mac": _safe_float(pair_row.get("mac")),
+            "msf": _safe_float(pair_row.get("msf")),
             "dof_pair_count": int(pair_row["dof_pair_count"]) if pair_row.get("dof_pair_count") is not None else None,
             "flip": bool(pair_row.get("flip", False)) if pair_row else False,
         })

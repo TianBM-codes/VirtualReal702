@@ -104,10 +104,12 @@ def test_compute_modal_correlation_persists_all_rows_and_tracks_threshold_matche
 
     def _fake_compute_dac_dsf(test_values, fem_values, mac_mode="real"):
         mac = next(mac_by_call)
+        msf = float(np.abs(fem_values[0]))
         return {
             "dac": mac,
             "mac": mac,
             "dsf": 1.0,
+            "msf": msf,
             "scale_real": 1.0,
             "scale_imag": 0.0,
             "scale_phase_deg": 0.0,
@@ -135,11 +137,15 @@ def test_compute_modal_correlation_persists_all_rows_and_tracks_threshold_matche
     assert len(insert_calls) == 2
     assert insert_calls[0][2] == 1
     assert insert_calls[1][2] == 2
+    assert insert_calls[0][6] == 1.0
+    assert insert_calls[1][6] == 0.5
     assert result["comparison_count"] == 2
     assert result["qualified_comparison_count"] == 1
     assert result["mac_threshold"] == 70.0
     assert result["results_preview"][0]["mac"] == 82.0
+    assert result["results_preview"][0]["msf"] == 1.0
     assert result["results_preview"][1]["mac"] == 65.0
+    assert result["results_preview"][1]["msf"] == 0.5
     assert result["qualified_results_preview"][0]["mac"] == 82.0
     assert fake_conn.committed is True
 

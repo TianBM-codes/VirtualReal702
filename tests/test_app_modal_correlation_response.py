@@ -118,3 +118,30 @@ def test_modal_match_frequency_scatter_api_returns_tooltip_points(monkeypatch):
     assert response["data"]["chart_type"] == "scatter"
     assert response["data"]["data"][0]["points"][0]["tooltip"]["fem_mode_no"] == 1
     assert response["data"]["step_names"] == ["SUBCASE_1", "SUBCASE_2"]
+
+
+def test_modal_scale_factor_table_api_returns_code(monkeypatch):
+    monkeypatch.setattr(
+        legacy_app,
+        "get_modal_scale_factor_table_payload",
+        lambda project_id: {
+            "project_id": int(project_id),
+            "row_mode_order": ["7"],
+            "column_mode_order": ["1"],
+            "rows": ["7"],
+            "column": ["1"],
+            "data": [{"1": 2.25}],
+            "summary": {"point_count": 1},
+        },
+    )
+
+    response = asyncio.run(
+        legacy_app.get_modal_scale_factor_table_api(
+            _make_json_request("/correlation/modal/msf/table", {"project_id": 18})
+        )
+    )
+
+    assert response["ok"] is True
+    assert response["code"] == 200
+    assert response["data"]["project_id"] == 18
+    assert response["data"]["data"][0]["1"] == 2.25
