@@ -23,6 +23,7 @@ from services.model_update.analysis.nastran_sol200_service import (
     generate_sol200_workflow,
     preview_sol200_sensitivity,
     preview_sol200_workflow,
+    run_sol200_modal_mac_and_store_workflow,
     run_sol200_and_store_workflow,
     run_sol200_workflow,
     store_sol200_sensitivity_cloud,
@@ -805,6 +806,29 @@ async def run_nastran_sol200_and_store_api(request: Request, body: NastranSol200
             return success_response(data, "Nastran SOL200 求解并入库任务已提交")
         data = run_sol200_and_store_workflow(**kwargs)
         return success_response(data, "Nastran SOL200 求解并入库成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/nastran/sol200/modal_mac/run_and_store")
+async def run_nastran_sol200_modal_mac_and_store_api(request: Request, body: NastranSol200RunAndStoreRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _sol200_run_and_store_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="solver.nastran.sol200.modal_mac.run_and_store",
+                fn=run_sol200_modal_mac_and_store_workflow,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                task_kind="external_solver",
+            )
+            return success_response(data, "Nastran SOL200 MAC 灵敏度求解入库任务已提交")
+        data = run_sol200_modal_mac_and_store_workflow(**kwargs)
+        return success_response(data, "Nastran SOL200 MAC 灵敏度求解入库成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

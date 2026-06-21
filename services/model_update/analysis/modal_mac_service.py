@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from db import get_connection
 from src.l3.core.errors import ValidationError
 
 
@@ -272,4 +273,413 @@ def run_modal_mac_sensitivity(payload: Dict[str, Any]) -> Dict[str, Any]:
         "pair_results": pair_results,
         "phi_sim_aligned": np.asarray(phi_sim_aligned, dtype=np.float64).tolist(),
         "dphi_dp_aligned": np.asarray(dphi_dp_aligned, dtype=np.float64).tolist(),
+    }
+
+
+def _normalize_response_type(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _normalize_component_token(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    mapping = {
+        "1": "U1",
+        "2": "U2",
+        "3": "U3",
+        "X": "U1",
+        "Y": "U2",
+        "Z": "U3",
+        "UX": "U1",
+        "UY": "U2",
+        "UZ": "U3",
+        "U1": "U1",
+        "U2": "U2",
+        "U3": "U3",
+    }
+    resolved = mapping.get(token)
+    if not resolved:
+        raise _validation_error(
+            "unsupported modal displacement component",
+            {"component": value, "allowed": ["U1", "U2", "U3", "UX", "UY", "UZ", "1", "2", "3"]},
+        )
+    return resolved
+
+
+def _load_project_node_matches(project_id: int) -> List[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT test_node_id, instance_name, fem_node_label
+            FROM t_mt_py_fem_node_match
+            WHERE pid = %s
+            ORDER BY test_node_id, instance_name, fem_node_label
+            """,
+            (int(project_id),),
+        )
+        return [dict(row) for row in (cursor.fetchall() or [])]
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _load_project_modal_vectors(project_id: int) -> Tuple[Dict[int, Dict[str, np.ndarray]], Dict[int, Dict[Tuple[str, int], np.ndarray]]]:
+    from .fem_correlation_service import _load_fem_mode_vectors, _load_test_mode_vectors
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        test_modes = _load_test_mode_vectors(cursor, int(project_id))
+        fem_modes, _ = _load_fem_mode_vectors(cursor, int(project_id))
+        return test_modes, fem_modes
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _build_project_modal_mac_vectors_from_maps(
+    *,
+    project_id: int,
+    test_mode_map: Dict[str, np.ndarray],
+    fem_mode_map: Dict[Tuple[str, int], np.ndarray],
+    test_mode_no: Optional[int] = None,
+    fem_mode_no: Optional[int] = None,
+) -> Dict[str, Any]:
+    node_matches = _load_project_node_matches(int(project_id))
+    if not node_matches:
+        raise _validation_error(
+            "node matches are required before building project MAC vectors",
+            {"project_id": int(project_id)},
+        )
+
+    phi_exp_values: List[float] = []
+    phi_sim_values: List[float] = []
+    sensor_labels: List[str] = []
+    node_pairs: List[dict] = []
+
+    for row in node_matches:
+        test_node_id = str(row.get("test_node_id") or "").strip()
+        instance_name = str(row.get("instance_name") or "").strip()
+        fem_node_label = row.get("fem_node_label")
+        if not test_node_id or fem_node_label is None:
+            continue
+        test_vector = test_mode_map.get(test_node_id)
+        fem_vector = fem_mode_map.get((instance_name, int(fem_node_label)))
+        if test_vector is None or fem_vector is None:
+            continue
+        test_arr = np.asarray(test_vector, dtype=np.complex128).reshape(3)
+        fem_arr = np.asarray(fem_vector, dtype=np.float64).reshape(3)
+        for comp_index, comp_name in enumerate(("U1", "U2", "U3")):
+            phi_exp_values.append(float(np.real(test_arr[comp_index])))
+            phi_sim_values.append(float(fem_arr[comp_index]))
+            sensor_labels.append(f"{test_node_id}:{comp_name}")
+        node_pairs.append(
+            {
+                "test_node_id": test_node_id,
+                "instance_name": instance_name,
+                "fem_node_label": int(fem_node_label),
+            }
+        )
+
+    if not node_pairs:
+        raise _validation_error(
+            "no overlapping node-match modal vectors were found",
+            {
+                "project_id": int(project_id),
+                "test_mode_no": int(test_mode_no) if test_mode_no is not None else None,
+                "fem_mode_no": int(fem_mode_no) if fem_mode_no is not None else None,
+            },
+        )
+
+    phi_exp = np.asarray(phi_exp_values, dtype=np.float64).reshape(-1, 1)
+    phi_sim = np.asarray(phi_sim_values, dtype=np.float64).reshape(-1, 1)
+    return {
+        "phi_exp": phi_exp,
+        "phi_sim": phi_sim,
+        "sensor_labels": sensor_labels,
+        "node_pairs": node_pairs,
+    }
+
+
+def build_project_modal_mac_vectors(
+    *,
+    project_id: int,
+    test_mode_no: int,
+    fem_mode_no: int,
+) -> Dict[str, Any]:
+    test_modes, fem_modes = _load_project_modal_vectors(int(project_id))
+    test_mode_map = dict(test_modes.get(int(test_mode_no)) or {})
+    fem_mode_map = dict(fem_modes.get(int(fem_mode_no)) or {})
+    if not test_mode_map:
+        raise _validation_error(
+            "test mode not found for project MAC computation",
+            {"project_id": int(project_id), "test_mode_no": int(test_mode_no)},
+        )
+    if not fem_mode_map:
+        raise _validation_error(
+            "fem mode not found for project MAC computation",
+            {"project_id": int(project_id), "fem_mode_no": int(fem_mode_no)},
+        )
+    return _build_project_modal_mac_vectors_from_maps(
+        project_id=int(project_id),
+        test_mode_map=test_mode_map,
+        fem_mode_map=fem_mode_map,
+        test_mode_no=int(test_mode_no),
+        fem_mode_no=int(fem_mode_no),
+    )
+
+
+def compute_project_modal_mac(
+    *,
+    project_id: int,
+    test_mode_no: int,
+    fem_mode_no: int,
+    mac_scale: float = DEFAULT_MAC_SCALE,
+) -> Dict[str, Any]:
+    vectors = build_project_modal_mac_vectors(
+        project_id=int(project_id),
+        test_mode_no=int(test_mode_no),
+        fem_mode_no=int(fem_mode_no),
+    )
+    payload = run_modal_mac_sensitivity(
+        {
+            "phi_exp": vectors["phi_exp"].tolist(),
+            "phi_sim": vectors["phi_sim"].tolist(),
+            "dphi_dp": np.zeros((1, vectors["phi_sim"].shape[0], 1), dtype=np.float64).tolist(),
+            "pairs": [{"exp_mode": 1, "sim_mode": 1}],
+            "index_base": 1,
+            "parameter_names": ["dummy"],
+            "sensor_labels": list(vectors["sensor_labels"]),
+            "mac_scale": float(mac_scale),
+        }
+    )
+    pair_result = dict((payload.get("pair_results") or [{}])[0] or {})
+    return {
+        **vectors,
+        "mac": float(pair_result.get("mac")),
+        "mac_raw": float(pair_result.get("mac_raw")),
+        "sign_flips": payload.get("sign_flips") or [],
+        "phi_sim_aligned": np.asarray(payload.get("phi_sim_aligned") or [], dtype=np.float64),
+    }
+
+
+def compute_project_modal_mac_from_fem_mode_map(
+    *,
+    project_id: int,
+    test_mode_no: int,
+    fem_mode_map: Dict[Tuple[str, int], np.ndarray],
+    mac_scale: float = DEFAULT_MAC_SCALE,
+) -> Dict[str, Any]:
+    test_modes, _ = _load_project_modal_vectors(int(project_id))
+    test_mode_map = dict(test_modes.get(int(test_mode_no)) or {})
+    if not test_mode_map:
+        raise _validation_error(
+            "test mode not found for project MAC computation",
+            {"project_id": int(project_id), "test_mode_no": int(test_mode_no)},
+        )
+    vectors = _build_project_modal_mac_vectors_from_maps(
+        project_id=int(project_id),
+        test_mode_map=test_mode_map,
+        fem_mode_map=dict(fem_mode_map or {}),
+        test_mode_no=int(test_mode_no),
+    )
+    payload = run_modal_mac_sensitivity(
+        {
+            "phi_exp": vectors["phi_exp"].tolist(),
+            "phi_sim": vectors["phi_sim"].tolist(),
+            "dphi_dp": np.zeros((1, vectors["phi_sim"].shape[0], 1), dtype=np.float64).tolist(),
+            "pairs": [{"exp_mode": 1, "sim_mode": 1}],
+            "index_base": 1,
+            "parameter_names": ["dummy"],
+            "sensor_labels": list(vectors["sensor_labels"]),
+            "mac_scale": float(mac_scale),
+        }
+    )
+    pair_result = dict((payload.get("pair_results") or [{}])[0] or {})
+    return {
+        **vectors,
+        "mac": float(pair_result.get("mac")),
+        "mac_raw": float(pair_result.get("mac_raw")),
+        "sign_flips": payload.get("sign_flips") or [],
+        "phi_sim_aligned": np.asarray(payload.get("phi_sim_aligned") or [], dtype=np.float64),
+    }
+
+
+def expand_modal_mac_responses_to_sol200_displacements(
+    *,
+    project_id: int,
+    response_rows: Sequence[dict],
+) -> Dict[str, Any]:
+    node_matches = _load_project_node_matches(int(project_id))
+    if not node_matches:
+        raise _validation_error(
+            "node matches are required before expanding MODAL_MAC responses",
+            {"project_id": int(project_id)},
+        )
+
+    expanded_rows: List[dict] = []
+    mapping_rows: List[dict] = []
+    for raw_row in list(response_rows or []):
+        row = dict(raw_row or {})
+        response_type = _normalize_response_type(row.get("response_type") or row.get("type"))
+        if response_type != "MODAL_MAC":
+            continue
+        extra = dict(row.get("extra_json") or {})
+        fem_mode_no = extra.get("fem_mode_no", row.get("mode_number"))
+        test_mode_no = extra.get("test_mode_no")
+        if fem_mode_no is None or test_mode_no is None:
+            raise _validation_error(
+                "MODAL_MAC response is missing fem/test mode numbers",
+                {"response_name": row.get("response_name"), "response_row": row},
+            )
+        response_name = str(row.get("response_name") or f"MAC_MODE_FE{int(fem_mode_no)}_TEST{int(test_mode_no)}").strip()
+        generated_names: List[str] = []
+        for node_row in node_matches:
+            instance_name = str(node_row.get("instance_name") or "").strip()
+            fem_node_label = int(node_row["fem_node_label"])
+            test_node_id = str(node_row["test_node_id"])
+            for component in ("U1", "U2", "U3"):
+                disp_name = f"M{int(fem_mode_no)}T{int(test_mode_no)}N{int(fem_node_label)}{component}"
+                generated_names.append(disp_name)
+                expanded_rows.append(
+                    {
+                        "name": disp_name,
+                        "type": "DISP",
+                        "mode_number": int(fem_mode_no),
+                        "node_id": int(fem_node_label),
+                        "component": component,
+                        "extra_json": {
+                            "source_response_name": response_name,
+                            "response_type": "MODAL_MAC",
+                            "fem_mode_no": int(fem_mode_no),
+                            "test_mode_no": int(test_mode_no),
+                            "test_node_id": test_node_id,
+                            "instance_name": instance_name,
+                            "fem_node_label": int(fem_node_label),
+                            "component": component,
+                        },
+                    }
+                )
+        mapping_rows.append(
+            {
+                "response_name": response_name,
+                "response_type": "MODAL_MAC",
+                "fem_mode_no": int(fem_mode_no),
+                "test_mode_no": int(test_mode_no),
+                "expanded_response_count": len(generated_names),
+                "generated_response_names": generated_names,
+            }
+        )
+
+    if not expanded_rows:
+        raise _validation_error(
+            "no MODAL_MAC responses were available for SOL200 displacement expansion",
+            {"project_id": int(project_id)},
+        )
+    return {
+        "expanded_rows": expanded_rows,
+        "mapping_rows": mapping_rows,
+    }
+
+
+def build_modal_mac_matrix_from_displacement_sensitivity(
+    *,
+    project_id: int,
+    mac_response_rows: Sequence[dict],
+    parameter_columns: Sequence[dict],
+    displacement_response_rows: Sequence[dict],
+    displacement_matrix: Sequence[Sequence[float]],
+    mac_scale: float = DEFAULT_MAC_SCALE,
+) -> Dict[str, Any]:
+    matrix = np.asarray(displacement_matrix, dtype=np.float64)
+    disp_rows = [dict(item or {}) for item in (displacement_response_rows or [])]
+    if matrix.ndim != 2 or matrix.shape[0] != len(disp_rows):
+        raise _validation_error(
+            "displacement sensitivity matrix shape does not match response metadata",
+            {"matrix_shape": list(matrix.shape), "response_count": len(disp_rows)},
+        )
+
+    row_index: Dict[Tuple[int, int, str], int] = {}
+    for index, row in enumerate(disp_rows):
+        extra = dict(row.get("extra_json") or {})
+        mode_number = row.get("mode_number", extra.get("mode_number", extra.get("fem_mode_no")))
+        node_id = row.get("node_id", extra.get("node_id", extra.get("fem_node_label")))
+        component = row.get("component", extra.get("component"))
+        if mode_number is None or node_id is None or component is None:
+            continue
+        row_index[(int(mode_number), int(node_id), _normalize_component_token(component))] = index
+
+    response_rows: List[dict] = []
+    response_matrix_rows: List[List[float]] = []
+    for raw_row in list(mac_response_rows or []):
+        row = dict(raw_row or {})
+        extra = dict(row.get("extra_json") or {})
+        fem_mode_no = extra.get("fem_mode_no", row.get("mode_number"))
+        test_mode_no = extra.get("test_mode_no")
+        if fem_mode_no is None or test_mode_no is None:
+            raise _validation_error(
+                "MODAL_MAC response is missing fem/test mode numbers",
+                {"response_row": row},
+            )
+        vectors = build_project_modal_mac_vectors(
+            project_id=int(project_id),
+            test_mode_no=int(test_mode_no),
+            fem_mode_no=int(fem_mode_no),
+        )
+        sensor_labels = list(vectors["sensor_labels"])
+        node_pairs = list(vectors["node_pairs"])
+        dphi_dp = np.zeros((1, len(sensor_labels), len(parameter_columns or [])), dtype=np.float64)
+        sensor_offset = 0
+        for node_pair in node_pairs:
+            fem_node_label = int(node_pair["fem_node_label"])
+            for component in ("U1", "U2", "U3"):
+                lookup_key = (int(fem_mode_no), fem_node_label, component)
+                disp_index = row_index.get(lookup_key)
+                if disp_index is None:
+                    raise _validation_error(
+                        "required modal displacement sensitivity row is missing",
+                        {
+                            "project_id": int(project_id),
+                            "response_name": row.get("response_name"),
+                            "fem_mode_no": int(fem_mode_no),
+                            "test_mode_no": int(test_mode_no),
+                            "fem_node_label": fem_node_label,
+                            "component": component,
+                        },
+                    )
+                dphi_dp[0, sensor_offset, :] = matrix[disp_index, :]
+                sensor_offset += 1
+
+        result = run_modal_mac_sensitivity(
+            {
+                "phi_exp": vectors["phi_exp"].tolist(),
+                "phi_sim": vectors["phi_sim"].tolist(),
+                "dphi_dp": dphi_dp.tolist(),
+                "pairs": [{"exp_mode": 1, "sim_mode": 1}],
+                "index_base": 1,
+                "parameter_names": [
+                    str(item.get("parameter_name") or item.get("param_name") or f"p{index + 1}")
+                    for index, item in enumerate(parameter_columns or [])
+                ],
+                "sensor_labels": sensor_labels,
+                "mac_scale": float(mac_scale),
+            }
+        )
+        pair_result = dict((result.get("pair_results") or [{}])[0] or {})
+        response_rows.append(
+            {
+                "response_name": str(row.get("response_name") or f"MAC_MODE_FE{int(fem_mode_no)}_TEST{int(test_mode_no)}").strip(),
+                "response_type": "MODAL_MAC",
+                "mode_number": int(fem_mode_no),
+                "unit": "percent" if abs(float(mac_scale) - 100.0) <= 1.0e-12 else "scaled",
+            }
+        )
+        response_matrix_rows.append([float(value) for value in list(pair_result.get("dmac_dp") or [])])
+
+    return {
+        "response_rows": response_rows,
+        "parameter_columns": [dict(item or {}) for item in (parameter_columns or [])],
+        "matrix": response_matrix_rows,
+        "mac_scale": float(mac_scale),
     }

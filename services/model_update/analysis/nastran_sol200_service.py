@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 from pyNastran.bdf.bdf import BDF
 from db import ensure_tables_exist, get_connection
 from src.l3.core.errors import ValidationError
@@ -19,6 +20,12 @@ from .solver_service import (
     run_nastran_sol200_job,
 )
 from .console_log_service import safe_write_console_event
+from .modal_mac_service import (
+    build_modal_mac_matrix_from_displacement_sensitivity,
+    compute_project_modal_mac,
+    compute_project_modal_mac_from_fem_mode_map,
+    expand_modal_mac_responses_to_sol200_displacements,
+)
 from .project_status_service import update_work_condition_project_status
 
 
@@ -74,12 +81,13 @@ def _normalize_sol200_response_type(value: Any) -> str:
         "DISP": "DISP",
         "MODAL_DISPLACEMENT": "DISP",
         "NODAL_DISPLACEMENT": "DISP",
+        "MODAL_MAC": "MODAL_MAC",
     }
     resolved = mapping.get(token)
     if not resolved:
         raise ValidationError(
             "unsupported SOL200 response type",
-            {"response_type": value, "allowed": ["FREQ", "MODAL_FREQUENCY", "DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"]},
+            {"response_type": value, "allowed": ["FREQ", "MODAL_FREQUENCY", "DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT", "MODAL_MAC"]},
         )
     return resolved
 
@@ -271,6 +279,11 @@ def create_sol200_response_config_entry(
     if resolved_type == "FREQ" and resolved_mode_number is None:
         raise ValidationError(
             "mode_number is required for SOL200 FREQ response",
+            {"response_type": resolved_type, "mode_number": mode_number},
+        )
+    if resolved_type == "MODAL_MAC" and resolved_mode_number is None:
+        raise ValidationError(
+            "mode_number is required for SOL200 MODAL_MAC response",
             {"response_type": resolved_type, "mode_number": mode_number},
         )
     if resolved_type == "DISP":
@@ -524,6 +537,19 @@ def _map_catalog_response_to_sol200(response_row: Dict[str, Any]) -> Tuple[Optio
             "extra_json": extra,
         }, None
 
+    if response_type == "MODAL_MAC":
+        mode_number = extra.get("mode_number")
+        if mode_number is None:
+            mode_number = extra.get("fem_mode_no")
+        if mode_number is None:
+            return None, "mode_number_missing"
+        return {
+            "name": str(response_row.get("response_name") or f"MAC_MODE_{int(mode_number)}").strip(),
+            "type": "MODAL_MAC",
+            "mode_number": int(mode_number),
+            "extra_json": extra,
+        }, None
+
     return None, "response_is_not_supported_sol200_response"
 
 
@@ -698,6 +724,21 @@ def _load_project_sol200_responses(project_id: int) -> List[Dict[str, Any]]:
             "component": item.get("component") or extra.get("component") or extra.get("dof"),
             "extra_json": extra,
         })
+    return rows
+
+
+def _load_project_modal_mac_catalog_rows(project_id: int) -> List[Dict[str, Any]]:
+    from . import inp_service as _inp
+
+    payload = _inp.get_fe_response_catalog(int(project_id))
+    rows = []
+    for item in list(payload.get("responses") or []):
+        response_type = str(item.get("response_type") or "").strip().upper()
+        if response_type != "MODAL_MAC":
+            continue
+        if not bool(item.get("enabled", True)):
+            continue
+        rows.append(dict(item))
     return rows
 
 
@@ -1402,6 +1443,306 @@ def run_sol200_and_store_workflow(
         "store": store_payload,
         "write_cloud_result": bool(write_cloud_result),
         "warnings": list(run_payload.get("warnings") or []),
+    }
+
+
+def run_sol200_modal_mac_and_store_workflow(
+    *,
+    project_id: int,
+    batch_no: str = "1",
+    case_name: str = "nastran_sol200_modal_mac",
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    parameters: Optional[List[Dict[str, Any]]] = None,
+    parameter_preset: Optional[Dict[str, Any]] = None,
+    responses: Optional[List[Dict[str, Any]]] = None,
+    settings: Optional[Dict[str, Any]] = None,
+    nastran: Optional[str] = None,
+    run_solver: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+    parameter_names: Optional[Sequence[str]] = None,
+    response_names: Optional[Sequence[str]] = None,
+    write_cloud_result: bool = False,
+    cloud_result_group: Optional[str] = None,
+    cloud_step_name: str = "Sensitivity",
+    cloud_field_name: str = "SENSITIVITY_CLOUD",
+) -> dict:
+    from . import sensitivity_service as _sens
+    from ..importers.op2_service import build_modal_import_payload, preview_op2_sensitivity
+    from .solver_service import run_nastran_sol103_job
+
+    resolved_parameters, resolved_responses = _resolve_sol200_config_sources(
+        project_id=int(project_id),
+        parameters=parameters,
+        parameter_preset=parameter_preset,
+        responses=responses,
+    )
+    original_input_bdf = str(Path(input_bdf).expanduser().resolve())
+    if responses:
+        modal_mac_rows = [
+            {
+                "response_name": str(item.get("name") or "").strip(),
+                "response_type": str(item.get("type") or "").strip().upper(),
+                "mode_number": item.get("mode_number"),
+                "extra_json": dict(item.get("extra_json") or {}),
+            }
+            for item in list(resolved_responses or [])
+            if str(item.get("type") or "").strip().upper() == "MODAL_MAC"
+        ]
+    else:
+        modal_mac_rows = _load_project_modal_mac_catalog_rows(int(project_id))
+    if not modal_mac_rows:
+        raise ValidationError(
+            "no MODAL_MAC responses are available for SOL200 sensitivity extraction",
+            {"project_id": int(project_id)},
+        )
+
+    expanded = expand_modal_mac_responses_to_sol200_displacements(
+        project_id=int(project_id),
+        response_rows=modal_mac_rows,
+    )
+    expanded_responses = list(expanded.get("expanded_rows") or [])
+    if response_names:
+        selected_names = {str(item or "").strip() for item in list(response_names or []) if str(item or "").strip()}
+        modal_mac_rows = [row for row in modal_mac_rows if str(row.get("response_name") or "").strip() in selected_names]
+        expanded_responses = [
+            row for row in expanded_responses
+            if str(dict(row.get("extra_json") or {}).get("source_response_name") or "").strip() in selected_names
+        ]
+    if not expanded_responses:
+        raise ValidationError(
+            "no expanded modal displacement responses were generated for MODAL_MAC",
+            {"project_id": int(project_id), "response_names": list(response_names or [])},
+        )
+
+    run_payload = run_sol200_workflow(
+        project_id=None,
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        input_bdf=input_bdf,
+        output_bdf=output_bdf,
+        parameters=resolved_parameters,
+        parameter_preset=parameter_preset,
+        responses=expanded_responses,
+        settings=settings,
+        nastran=nastran,
+        run_solver=run_solver,
+        timeout_sec=timeout_sec,
+        extra_args=extra_args,
+    )
+    op2_path = _resolve_generated_sol200_op2_path(run_payload)
+    matrix_path = _resolve_generated_sol200_matrix_path(run_payload)
+    if not op2_path and not matrix_path:
+        raise ValidationError(
+            "SOL200 modal-mac solve completed but no matrix result file was found",
+            {
+                "project_id": int(project_id),
+                "batch_no": str(batch_no),
+                "output_bdf": run_payload.get("output_bdf"),
+                "generated_files": run_payload.get("generated_files"),
+            },
+        )
+
+    metadata_json = _pick_first_existing_path([
+        (run_payload.get("generated_files") or {}).get("metadata_json"),
+    ])
+    bdf_path = _pick_first_existing_path([run_payload.get("output_bdf")]) or str(
+        Path(str(run_payload.get("output_bdf") or "")).expanduser().resolve()
+    )
+    if matrix_path:
+        matrix_file = Path(str(matrix_path)).expanduser().resolve()
+        if (not matrix_file.exists()) or matrix_file.stat().st_size <= 0:
+            matrix_path = None
+    expanded_response_names = [str(item.get("name") or "").strip() for item in expanded_responses]
+    preview = preview_op2_sensitivity(
+        project_id=None,
+        batch_no=str(batch_no),
+        op2_path=op2_path,
+        matrix_path=matrix_path,
+        bdf_path=bdf_path,
+        metadata_json=metadata_json,
+        parameter_names=parameter_names,
+        response_names=expanded_response_names,
+    )
+    finite_difference_payload = None
+    try:
+        mac_matrix_payload = build_modal_mac_matrix_from_displacement_sensitivity(
+            project_id=int(project_id),
+            mac_response_rows=modal_mac_rows,
+            parameter_columns=preview.get("parameter_columns") or [],
+            displacement_response_rows=preview.get("response_rows") or [],
+            displacement_matrix=preview.get("matrix_preview") or [],
+            mac_scale=100.0,
+        )
+    except ValidationError as exc:
+        current_mac_by_pair = {}
+        for row in modal_mac_rows:
+            extra = dict(row.get("extra_json") or {})
+            fem_mode_no = int(extra.get("fem_mode_no", row.get("mode_number")))
+            test_mode_no = int(extra["test_mode_no"])
+            current_mac_by_pair[(test_mode_no, fem_mode_no)] = float(
+                compute_project_modal_mac(
+                    project_id=int(project_id),
+                    test_mode_no=test_mode_no,
+                    fem_mode_no=fem_mode_no,
+                    mac_scale=100.0,
+                )["mac"]
+            )
+
+        parameter_columns_for_fd = [dict(item or {}) for item in (resolved_parameters or [])]
+        fd_rows = []
+        fd_matrix_rows = []
+        fd_details = []
+        from .bayesian_service import _update_bdf_parameter_values
+
+        for response_row in modal_mac_rows:
+            extra = dict(response_row.get("extra_json") or {})
+            fem_mode_no = int(extra.get("fem_mode_no", response_row.get("mode_number")))
+            test_mode_no = int(extra["test_mode_no"])
+            base_value = float(current_mac_by_pair[(test_mode_no, fem_mode_no)])
+            derivatives = []
+            for param_index, param_meta in enumerate(parameter_columns_for_fd):
+                initial_value = float(param_meta.get("initial", param_meta.get("initial_value")))
+                delta = max(abs(initial_value) * 5.0e-2, 1.0)
+                perturbed_values = [float(item.get("initial", item.get("initial_value"))) for item in parameter_columns_for_fd]
+                perturbed_values[param_index] = initial_value + delta
+                perturbed_bdf = str(
+                    Path(original_input_bdf).with_name(f"{Path(original_input_bdf).stem}_fd_p{param_index + 1}.bdf")
+                )
+                _update_bdf_parameter_values(
+                    input_bdf=original_input_bdf,
+                    parameter_columns=parameter_columns_for_fd,
+                    updated_parameter_values=perturbed_values,
+                    output_bdf=perturbed_bdf,
+                )
+                sol103_out_bdf = str(Path(perturbed_bdf).with_name(f"{Path(perturbed_bdf).stem}_sol103.bdf"))
+                sol103_payload = run_nastran_sol103_job(
+                    input_bdf=perturbed_bdf,
+                    output_bdf=sol103_out_bdf,
+                    settings={
+                        "dynamic.vectors": max(int(fem_mode_no), 1),
+                        "dynamic.fmax": float((settings or {}).get("dynamic.fmax", 200.0)),
+                        "dynamic.norm": str((settings or {}).get("dynamic.norm", "MASS")),
+                        "result.target": "OP2",
+                        "post": -1,
+                    },
+                    nastran=nastran,
+                    run_solver=True,
+                    timeout_sec=timeout_sec,
+                    extra_args=list(extra_args or []),
+                )
+                summary = dict((sol103_payload.get("solver") or {}).get("artifacts_summary") or {})
+                op2_files = [str(item) for item in list(summary.get("op2_files") or []) if str(item or "").strip()]
+                perturbed_op2 = _pick_first_existing_path(op2_files)
+                if not perturbed_op2:
+                    raise ValidationError(
+                        "finite-difference SOL103 rerun did not produce an op2 file",
+                        {"parameter_name": param_meta.get("name"), "artifacts_summary": summary},
+                    )
+                modal_payload = build_modal_import_payload(
+                    op2_path=perturbed_op2,
+                    bdf_path=perturbed_bdf,
+                    subcase_id=None,
+                    mode_numbers=[int(fem_mode_no)],
+                    all_subcases=True,
+                )
+                modes = list(modal_payload.get("modes") or [])
+                if not modes:
+                    raise ValidationError(
+                        "finite-difference SOL103 rerun did not return any modal payload",
+                        {"parameter_name": param_meta.get("name"), "op2_path": perturbed_op2},
+                    )
+                fem_mode_map = {}
+                for node_item in list(modes[0].get("nodes") or []):
+                    instance_name = str(node_item.get("instance_name") or "BDF_MODEL").strip() or "BDF_MODEL"
+                    fem_node_map_key = (instance_name, int(node_item["fem_node_label"]))
+                    fem_mode_map[fem_node_map_key] = np.asarray(
+                        [
+                            float(node_item.get("u1", (node_item.get("vector") or [0.0, 0.0, 0.0])[0])),
+                            float(node_item.get("u2", (node_item.get("vector") or [0.0, 0.0, 0.0])[1])),
+                            float(node_item.get("u3", (node_item.get("vector") or [0.0, 0.0, 0.0])[2])),
+                        ],
+                        dtype=np.float64,
+                    )
+                perturbed_mac = float(
+                    compute_project_modal_mac_from_fem_mode_map(
+                        project_id=int(project_id),
+                        test_mode_no=int(test_mode_no),
+                        fem_mode_map=fem_mode_map,
+                        mac_scale=100.0,
+                    )["mac"]
+                )
+                derivatives.append((perturbed_mac - base_value) / delta)
+                fd_details.append(
+                    {
+                        "response_name": response_row.get("response_name"),
+                        "parameter_name": param_meta.get("name"),
+                        "base_value": base_value,
+                        "perturbed_value": perturbed_mac,
+                        "delta": delta,
+                        "derivative": derivatives[-1],
+                        "perturbed_bdf": perturbed_bdf,
+                        "perturbed_op2": perturbed_op2,
+                    }
+                )
+            fd_rows.append(
+                {
+                    "response_name": str(response_row.get("response_name") or f"MAC_MODE_FE{fem_mode_no}_TEST{test_mode_no}"),
+                    "response_type": "MODAL_MAC",
+                    "mode_number": int(fem_mode_no),
+                    "unit": "percent",
+                }
+            )
+            fd_matrix_rows.append([float(value) for value in derivatives])
+        mac_matrix_payload = {
+            "response_rows": fd_rows,
+            "parameter_columns": parameter_columns_for_fd,
+            "matrix": fd_matrix_rows,
+            "mac_scale": 100.0,
+        }
+        finite_difference_payload = {
+            "enabled": True,
+            "reason": str(exc),
+            "details": fd_details,
+        }
+    stored = _sens._persist_sensitivity_matrix(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        matrix_payload={
+            **mac_matrix_payload,
+            "source": {
+                "source_kind": "sol200_modal_mac",
+                "op2_path": op2_path,
+                "matrix_path": matrix_path,
+                "bdf_path": bdf_path,
+                "metadata_path": metadata_json,
+            },
+        },
+    )
+    update_work_condition_project_status(
+        int(project_id),
+        sensitivity_status=1,
+    )
+    return {
+        "workflow": "nastran_sol200_modal_mac_run_and_store",
+        "project_id": int(project_id),
+        "batch_no": str(batch_no),
+        "case_name": str(case_name),
+        "input_bdf": run_payload.get("input_bdf"),
+        "output_bdf": run_payload.get("output_bdf"),
+        "op2_path": op2_path,
+        "matrix_path": matrix_path,
+        "metadata_json": metadata_json,
+        "expanded_modal_mac": expanded,
+        "displacement_response_count": len(expanded_responses),
+        "modal_mac_response_count": len(mac_matrix_payload.get("response_rows") or []),
+        "run": run_payload,
+        "preview": preview,
+        "finite_difference_fallback": finite_difference_payload,
+        "store": stored,
+        "warnings": list(run_payload.get("warnings") or []) + list(preview.get("warnings") or []),
     }
 
 

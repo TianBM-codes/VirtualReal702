@@ -434,7 +434,7 @@ def _build_modal_response_catalog_row(
         unit = "Hz"
     elif resolved_type == "MODAL_MAC":
         response_code = f"MODE_MAC:FE{fem_mode_no}:TEST{test_mode_no}"
-        response_name = f"MAC_MODE_{fem_mode_no}"
+        response_name = f"MAC_MODE_FE{fem_mode_no}_TEST{test_mode_no}"
         component = "MAC"
         unit = None
     else:
@@ -465,6 +465,7 @@ def _build_modal_response_catalog_row(
             "freq_fem": _safe_float(row.get("freq_fem")),
             "freq_error_ratio": _safe_float(row.get("freq_error_ratio")),
             "matching_method": str(matching_method or "greedy"),
+            "target_value": 100.0 if resolved_type == "MODAL_MAC" else None,
         },
     }
 

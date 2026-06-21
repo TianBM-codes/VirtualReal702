@@ -2943,6 +2943,14 @@ def _normalize_modal_parameter_columns(parameter_columns: Sequence[dict]) -> Lis
     return rows
 
 
+def _parse_modal_mac_pair_from_name(response_name: Any) -> Tuple[Optional[int], Optional[int]]:
+    token = str(response_name or "").strip().upper()
+    match = re.search(r"FE(\d+)_TEST(\d+)", token)
+    if not match:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
+
+
 def _build_modal_response_payload(
         *,
         project_id: int,
@@ -2952,17 +2960,32 @@ def _build_modal_response_payload(
         max_freq_error_ratio: Optional[float],
         matching_method: str,
 ) -> dict:
-    matched_payload = _inp.match_modal_modes(
-        int(project_id),
-        mac_threshold=float(mac_threshold),
-        max_freq_error_ratio=max_freq_error_ratio,
-        method=str(matching_method or "greedy"),
+    stored_rows = [dict(item or {}) for item in (stored_response_rows or [])]
+    has_frequency_rows = any(
+        str(item.get("response_type") or item.get("type") or "").upper() in {"FREQ", "MODAL_FREQUENCY"}
+        for item in stored_rows
+    )
+    matched_payload = (
+        _inp.match_modal_modes(
+            int(project_id),
+            mac_threshold=float(mac_threshold),
+            max_freq_error_ratio=max_freq_error_ratio,
+            method=str(matching_method or "greedy"),
+        )
+        if has_frequency_rows
+        else {"rows": []}
     )
     matched_rows = list(matched_payload.get("rows") or [])
     matched_by_fem = {
         int(row["fem_mode_no"]): dict(row)
         for row in matched_rows
         if row.get("fem_mode_no") is not None
+    }
+    catalog_payload = _inp.get_fe_response_catalog(int(project_id))
+    catalog_by_name = {
+        str(row.get("response_name") or "").strip(): dict(row)
+        for row in (catalog_payload.get("responses") or [])
+        if str(row.get("response_name") or "").strip()
     }
 
     selected_indexes: List[int] = []
@@ -2971,60 +2994,135 @@ def _build_modal_response_payload(
     model_values: List[float] = []
     skipped_rows: List[dict] = []
 
-    for index, raw_row in enumerate(stored_response_rows or []):
+    for index, raw_row in enumerate(stored_rows):
         row = dict(raw_row or {})
         mode_number = row.get("mode_number")
         response_type = str(row.get("response_type") or row.get("type") or "").upper()
-        if mode_number is None or response_type not in {"FREQ", "MODAL_FREQUENCY"}:
-            skipped_rows.append(
+        response_name = str(row.get("response_name") or "").strip()
+        if response_type in {"FREQ", "MODAL_FREQUENCY"}:
+            if mode_number is None:
+                skipped_rows.append(
+                    {
+                        "seq_no": row.get("seq_no"),
+                        "response_name": row.get("response_name"),
+                        "response_type": response_type or None,
+                        "mode_number": mode_number,
+                        "reason": "mode_number_missing",
+                    }
+                )
+                continue
+            matched = matched_by_fem.get(int(mode_number))
+            if not matched:
+                skipped_rows.append(
+                    {
+                        "seq_no": row.get("seq_no"),
+                        "response_name": row.get("response_name"),
+                        "response_type": response_type,
+                        "mode_number": int(mode_number),
+                        "reason": "mode_not_in_modal_match_result",
+                    }
+                )
+                continue
+
+            selected_indexes.append(index)
+            response_name = response_name or f"FREQ_MODE_{int(mode_number)}"
+            tracking_name = f"{response_name}@FE{int(matched['fem_mode_no'])}_TEST{int(matched['test_mode_no'])}"
+            response_rows.append(
                 {
-                    "seq_no": row.get("seq_no"),
-                    "response_name": row.get("response_name"),
-                    "response_type": response_type or None,
-                    "mode_number": mode_number,
-                    "reason": "response_is_not_modal_frequency",
+                    **row,
+                    "response_name": response_name,
+                    "response_type": "FREQ",
+                    "mode_number": int(mode_number),
+                    "tracking_name": tracking_name,
+                    "fem_mode_no": int(matched["fem_mode_no"]),
+                    "test_mode_no": int(matched["test_mode_no"]),
+                    "mac": matched.get("mac"),
+                    "freq_error_ratio": matched.get("freq_error_ratio"),
                 }
             )
+            model_values.append(float(matched["freq_fem"]))
+            target_values.append(float(matched["freq_test"]))
             continue
-        matched = matched_by_fem.get(int(mode_number))
-        if not matched:
+
+        if response_type != "MODAL_MAC":
             skipped_rows.append(
                 {
                     "seq_no": row.get("seq_no"),
-                    "response_name": row.get("response_name"),
-                    "response_type": response_type,
-                    "mode_number": int(mode_number),
-                    "reason": "mode_not_in_modal_match_result",
+                    "response_name": response_name or None,
+                    "response_type": response_type or None,
+                    "mode_number": mode_number,
+                    "reason": "response_is_not_supported_modal_type",
                 }
             )
             continue
 
+        catalog_row = dict(catalog_by_name.get(response_name) or {})
+        if not catalog_row:
+            skipped_rows.append(
+                {
+                    "seq_no": row.get("seq_no"),
+                    "response_name": response_name or None,
+                    "response_type": response_type,
+                    "mode_number": int(mode_number) if mode_number is not None else None,
+                    "reason": "response_not_found_in_formal_catalog",
+                }
+            )
+            continue
+
+        catalog_extra = dict(catalog_row.get("extra_json") or {})
+        fem_mode_no = catalog_extra.get("fem_mode_no", mode_number)
+        test_mode_no = catalog_extra.get("test_mode_no")
+        if fem_mode_no is None or test_mode_no is None:
+            parsed_fem_mode_no, parsed_test_mode_no = _parse_modal_mac_pair_from_name(response_name)
+            if fem_mode_no is None:
+                fem_mode_no = parsed_fem_mode_no
+            if test_mode_no is None:
+                test_mode_no = parsed_test_mode_no
+        if fem_mode_no is None or test_mode_no is None:
+            skipped_rows.append(
+                {
+                    "seq_no": row.get("seq_no"),
+                    "response_name": response_name or None,
+                    "response_type": response_type,
+                    "reason": "mac_pair_not_resolved",
+                }
+            )
+            continue
+
+        from .modal_mac_service import compute_project_modal_mac
+
+        mac_payload = compute_project_modal_mac(
+            project_id=int(project_id),
+            test_mode_no=int(test_mode_no),
+            fem_mode_no=int(fem_mode_no),
+            mac_scale=100.0,
+        )
+        target_value = catalog_extra.get("target_value", catalog_extra.get("mac_target", 100.0))
         selected_indexes.append(index)
-        response_name = str(row.get("response_name") or f"FREQ_MODE_{int(mode_number)}").strip()
-        tracking_name = f"{response_name}@FE{int(matched['fem_mode_no'])}_TEST{int(matched['test_mode_no'])}"
+        tracking_name = f"{response_name}@FE{int(fem_mode_no)}_TEST{int(test_mode_no)}"
         response_rows.append(
             {
                 **row,
                 "response_name": response_name,
-                "response_type": "FREQ",
-                "mode_number": int(mode_number),
+                "response_type": "MODAL_MAC",
+                "mode_number": int(fem_mode_no),
                 "tracking_name": tracking_name,
-                "fem_mode_no": int(matched["fem_mode_no"]),
-                "test_mode_no": int(matched["test_mode_no"]),
-                "mac": matched.get("mac"),
-                "freq_error_ratio": matched.get("freq_error_ratio"),
+                "fem_mode_no": int(fem_mode_no),
+                "test_mode_no": int(test_mode_no),
+                "mac": float(mac_payload["mac"]),
+                "freq_error_ratio": catalog_extra.get("freq_error_ratio"),
             }
         )
-        model_values.append(float(matched["freq_fem"]))
-        target_values.append(float(matched["freq_test"]))
+        model_values.append(float(mac_payload["mac"]))
+        target_values.append(float(target_value))
 
     if not response_rows:
         raise ValidationError(
-            "no matched modal frequency responses are available for modal bayesian update",
+            "no matched modal responses are available for modal bayesian update",
             {
                 "project_id": int(project_id),
                 "matched_pair_count": len(matched_rows),
-                "stored_response_count": len(list(stored_response_rows or [])),
+                "stored_response_count": len(stored_rows),
                 "skipped_preview": skipped_rows[:20],
             },
         )
@@ -3366,10 +3464,11 @@ def _persist_final_iteration_modal_outputs(
         initial_value = float(initial_response_values[index])
         updated_value = float(updated_response_values[index])
         target_value = float(row.get("target_value"))
+        response_type = str(row.get("response_type") or "FREQ").upper()
         modal_rows.append(
             {
                 "response_name": str(row.get("response_name") or f"response_{index + 1}"),
-                "response_type": "FREQ",
+                "response_type": response_type,
                 "fem_mode_no": int(row["fem_mode_no"]),
                 "test_mode_no": int(row["test_mode_no"]),
                 "freq_fem_initial": initial_value,
@@ -3377,11 +3476,17 @@ def _persist_final_iteration_modal_outputs(
                 "freq_test": target_value,
                 "initial_relative_error": _response_difference_percent(initial_value, target_value),
                 "updated_relative_error": _response_difference_percent(updated_value, target_value),
-                "mac": float(row["mac"]) if row.get("mac") is not None else None,
+                "mac": (
+                    float(updated_value)
+                    if response_type == "MODAL_MAC"
+                    else (float(row["mac"]) if row.get("mac") is not None else None)
+                ),
                 "extra_json": {
                     "mode_number": int(row.get("mode_number") or row.get("fem_mode_no")),
                     "tracking_name": row.get("tracking_name"),
                     "freq_error_ratio_before_update": row.get("freq_error_ratio"),
+                    "target_value": target_value,
+                    "response_type": response_type,
                 },
             }
         )
@@ -3773,11 +3878,14 @@ def run_bayesian_update_workflow(
                 "skipped": True,
                 "reason": str(exc),
             }
-        update_work_condition_project_status(
-            int(project_id),
-            fixes_cal_status=1,
-            fixes_result_status=1,
-        )
+        try:
+            update_work_condition_project_status(
+                int(project_id),
+                fixes_cal_status=1,
+                fixes_result_status=1,
+            )
+        except Exception:
+            pass
         result = {
             "project_id": project_id,
             "batch_no": resolved_batch_no,
@@ -4077,11 +4185,14 @@ def run_modal_frequency_bayesian_update_workflow(
         )
         matched_payload = modal_payload.get("matched_payload") or {}
 
-        update_work_condition_project_status(
-            int(project_id),
-            fixes_cal_status=1,
-            fixes_result_status=1,
-        )
+        try:
+            update_work_condition_project_status(
+                int(project_id),
+                fixes_cal_status=1,
+                fixes_result_status=1,
+            )
+        except Exception:
+            pass
         result = {
             "project_id": int(project_id),
             "batch_no": str(resolved_batch_no),
@@ -4533,11 +4644,14 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             )
 
         matched_payload = modal_payload.get("matched_payload") or {}
-        update_work_condition_project_status(
-            int(project_id),
-            fixes_cal_status=1,
-            fixes_result_status=1,
-        )
+        try:
+            update_work_condition_project_status(
+                int(project_id),
+                fixes_cal_status=1,
+                fixes_result_status=1,
+            )
+        except Exception:
+            pass
         result = {
             "project_id": int(project_id),
             "batch_no": str(resolved_batch_no),
