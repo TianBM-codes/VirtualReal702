@@ -97,6 +97,12 @@ _NASTRAN_BINARY_SUFFIXES = {
 }
 
 _DSA_RESPONSE_TOKEN_RE = re.compile(r"^d_([A-Z0-9_]+?)(?:_[A-Z]+)?_?$", re.IGNORECASE)
+_ABAQUS_ERROR_MARKERS = (
+    "abaqus error:",
+    "abaqus/analysis exited with error",
+    "abaqus/analysis exited with errors",
+    "analysis input file processor exited with an error",
+)
 
 
 def _normalize_result_group_name(value: str) -> str:
@@ -550,10 +556,50 @@ def _run_local_solver(
         "stderr_tail": _tail_text(result.stderr),
         "artifacts": _collect_artifacts(workdir, artifact_stem, artifact_suffixes),
     }
+    if _looks_like_abaqus_command(command) and _abaqus_output_has_error_markers(
+        result.stdout,
+        result.stderr,
+    ):
+        payload["ok"] = False
     if artifact_suffixes is _NASTRAN_ARTIFACT_SUFFIXES:
         payload["artifacts"] = _collect_nastran_extra_artifacts(workdir, payload["artifacts"])
         payload["artifacts_summary"] = _summarize_nastran_artifacts(payload["artifacts"])
     return payload
+
+
+def _looks_like_abaqus_command(command: List[str]) -> bool:
+    if not command:
+        return False
+    token = Path(str(command[0])).name.strip().lower()
+    return "abaqus" in token or token.startswith("abq")
+
+
+def _abaqus_output_has_error_markers(stdout_text: Optional[str], stderr_text: Optional[str]) -> bool:
+    haystack = f"{stdout_text or ''}\n{stderr_text or ''}".lower()
+    return any(marker in haystack for marker in _ABAQUS_ERROR_MARKERS)
+
+
+def _copy_missing_relative_includes(*, source_inp: Path, generated_inp: Path, target_dir: Path) -> List[str]:
+    include_pattern = re.compile(r"^\*include\s*,\s*input\s*=\s*(.+?)\s*$", re.IGNORECASE)
+    copied: List[str] = []
+    text = generated_inp.read_text(encoding="utf-8", errors="ignore").splitlines()
+    for raw_line in text:
+        match = include_pattern.match(raw_line.strip())
+        if not match:
+            continue
+        include_ref = match.group(1).strip().strip("\"'")
+        include_path = Path(include_ref)
+        if include_path.is_absolute():
+            continue
+        source_path = (source_inp.parent / include_path).resolve()
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        target_path = (target_dir / include_path).resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if not target_path.exists():
+            shutil.copy2(source_path, target_path)
+            copied.append(str(target_path))
+    return copied
 
 
 def _build_abaqus_command(
@@ -829,6 +875,11 @@ def run_abaqus_sensitivity_job(
         element_vars=element_vars,
     )
     generated_inp = Path(sensitivity_inp_path).resolve()
+    copied_include_files = _copy_missing_relative_includes(
+        source_inp=input_path,
+        generated_inp=generated_inp,
+        target_dir=target_dir,
+    )
     resolved_job_name = _sanitize_job_name(job_name or generated_inp.stem)
     command = _build_abaqus_command(
         abaqus=abaqus,
@@ -851,6 +902,8 @@ def run_abaqus_sensitivity_job(
         "command_preview": command,
         "solver": None,
     }
+    if copied_include_files:
+        payload["generated_files"]["copied_include_files"] = copied_include_files
     if run_solver:
         # Returning both the command preview and the execution result makes it
         # easier to debug solver startup issues separately from deck generation.

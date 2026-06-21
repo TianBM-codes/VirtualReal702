@@ -1,9 +1,12 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from services.model_update.analysis.solver_service import (
     _build_abaqus_command,
+    _copy_missing_relative_includes,
     _build_project_result_parse_options,
     _build_nastran_command,
+    _run_local_solver,
     run_abaqus_adjoint_job,
     run_abaqus_sensitivity_job,
     run_nastran_sol103_and_store_modal_results,
@@ -49,6 +52,40 @@ def test_run_abaqus_sensitivity_job_prepares_files_without_running_solver(tmp_pa
     assert result["command_preview"][0].lower().endswith("abaqus.bat") or result["command_preview"][0] == "abaqus"
 
 
+def test_run_abaqus_sensitivity_job_copies_relative_include_dependencies(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _write_text(source_dir / "extra.inc", "*Comment\n")
+    input_inp = _write_text(
+        source_dir / "model.inp",
+        """*Heading
+*Include, input=extra.inc
+*Material, name=STEEL
+*Elastic
+210000., 0.3
+*Elset, elset=EALL
+1,
+*Nset, nset=NRESP
+1,
+*Step
+*Static
+0.1, 1.0
+*End Step
+""",
+    )
+
+    result = run_abaqus_sensitivity_job(
+        input_inp=str(input_inp),
+        output_dir=str(tmp_path / "out"),
+        run_solver=False,
+    )
+
+    copied = result["generated_files"].get("copied_include_files") or []
+    assert len(copied) == 1
+    assert Path(copied[0]).exists()
+    assert Path(copied[0]).read_text(encoding="utf-8") == "*Comment\n"
+
+
 def test_run_abaqus_adjoint_job_prepares_inp_without_running_solver(tmp_path: Path):
     input_inp = _write_text(
         tmp_path / "shell_model.inp",
@@ -84,6 +121,58 @@ def test_run_abaqus_adjoint_job_prepares_inp_without_running_solver(tmp_path: Pa
     assert Path(result["generated_files"]["analysis_inp"]).exists()
     assert result["solver"] is None
     assert result["command_preview"][0].lower().endswith("abaqus.bat") or result["command_preview"][0] == "abaqus"
+
+
+def test_copy_missing_relative_includes_only_copies_existing_relative_files(tmp_path: Path):
+    source_dir = tmp_path / "src"
+    target_dir = tmp_path / "out"
+    source_dir.mkdir()
+    target_dir.mkdir()
+    _write_text(source_dir / "a.inc", "A\n")
+    generated_inp = _write_text(
+        target_dir / "generated.inp",
+        """*Heading
+*Include, input=a.inc
+*Include, input=missing.inc
+*Include, input=C:/absolute/path.inc
+""",
+    )
+    source_inp = _write_text(source_dir / "model.inp", "*Heading\n")
+
+    copied = _copy_missing_relative_includes(
+        source_inp=source_inp,
+        generated_inp=generated_inp,
+        target_dir=target_dir,
+    )
+
+    assert copied == [str((target_dir / "a.inc").resolve())]
+    assert (target_dir / "a.inc").read_text(encoding="utf-8") == "A\n"
+
+
+def test_run_local_solver_marks_abaqus_stdout_errors_as_failure(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import solver_service
+
+    monkeypatch.setattr(
+        solver_service.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="Abaqus Error: Analysis Input File Processor exited with an error\n",
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(solver_service, "_collect_artifacts", lambda *args, **kwargs: {})
+
+    payload = _run_local_solver(
+        command=["abaqus", "job=demo", "input=demo.inp"],
+        workdir=tmp_path,
+        artifact_stem="demo",
+        artifact_suffixes=(".inp", ".odb"),
+        timeout_sec=None,
+    )
+
+    assert payload["returncode"] == 0
+    assert payload["ok"] is False
 
 
 def test_run_nastran_sol103_job_converts_bdf_without_running_solver(tmp_path: Path):

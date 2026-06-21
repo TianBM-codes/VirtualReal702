@@ -134,6 +134,27 @@ def _response_row_key(
     return f"{instance}|{response_field}|{component}|{response_position}|{response_label}"
 
 
+def _scoped_target_node_labels_for_instance(
+        targets: Sequence[object],
+        *,
+        instance_name: str,
+) -> List[int]:
+    labels: List[int] = []
+    for item in targets or []:
+        text = str(item)
+        if "::" in text:
+            scope_name, label_text = text.split("::", 1)
+            if str(scope_name) != str(instance_name):
+                continue
+        else:
+            label_text = text
+        try:
+            labels.append(int(label_text))
+        except ValueError:
+            continue
+    return sorted(set(labels))
+
+
 def _ordered_dsa_field_names(field_prefix: str, field_names: Sequence[str]) -> List[str]:
     def _sort_key(name: str) -> Tuple[int, int, str, str]:
         token = _sens._extract_dsa_field_token(field_prefix, name)
@@ -2300,34 +2321,78 @@ def build_dsa_normalized_sensitivity_matrix(
                     if explicit_response is not None
                     else spec.get("component_index")
                 )
+                _, response_targets = _sens._design_response_target_labels(dsa_model, spec)
+                response_target_set = {str(item) for item in response_targets}
+                response_target_node_labels = _scoped_target_node_labels_for_instance(
+                    response_targets,
+                    instance_name=str(instance_name),
+                )
+                source_component = candidate_component
+                if (
+                        str(candidate_component or "").strip().upper() == "MISES"
+                        and candidate_field_name != source_field_name
+                ):
+                    source_component = None
 
-                if source_mode in {"workspace", "registry"}:
-                    candidate_dsa_map = _sens._workspace_result_label_map(
+                if spec.get("region_type") == "NODE" and str(selected_position).upper() == "ELEMENT_NODAL":
+                    if source_mode not in {"workspace", "registry"}:
+                        raise ValidationError(
+                            "node-based ELEMENT_NODAL response normalization currently requires a local workspace",
+                            {
+                                "field": source_field_name,
+                                "instance": instance_name,
+                                "source_mode": source_mode,
+                            },
+                        )
+                    candidate_dsa_map = _sens._workspace_element_nodal_node_label_map(
                         resolved_workspace,
+                        inp_model=dsa_model,
                         step=discovery["step"],
                         field=source_field_name,
                         instance=instance_name,
-                        position=selected_position,
                         frame=resolved_frame,
                         aggregation=aggregation,
-                        component=candidate_component,
+                        node_labels=response_target_node_labels,
+                        component=source_component,
                         component_index=candidate_component_index,
                         result_group=result_group,
                     )
                 else:
-                    candidate_dsa_map = client.get_result_label_map(
-                        odb_id=odb_id,
-                        instance=instance_name,
-                        step=discovery["step"],
-                        field=source_field_name,
-                        position=selected_position,
-                        frame=resolved_frame,
-                        aggregation=aggregation,
-                        component=candidate_component,
-                        component_index=candidate_component_index,
-                        scoped=True,
-                    )
+                    if source_mode in {"workspace", "registry"}:
+                        candidate_dsa_map = _sens._workspace_result_label_map(
+                            resolved_workspace,
+                            step=discovery["step"],
+                            field=source_field_name,
+                            instance=instance_name,
+                            position=selected_position,
+                            frame=resolved_frame,
+                            aggregation=aggregation,
+                            component=source_component,
+                            component_index=candidate_component_index,
+                            result_group=result_group,
+                        )
+                    else:
+                        candidate_dsa_map = client.get_result_label_map(
+                            odb_id=odb_id,
+                            instance=instance_name,
+                            step=discovery["step"],
+                            field=source_field_name,
+                            position=selected_position,
+                            frame=resolved_frame,
+                            aggregation=aggregation,
+                            component=source_component,
+                            component_index=candidate_component_index,
+                            scoped=True,
+                        )
                 candidate_dsa_map = _sens._normalize_vtu_label_map(candidate_dsa_map)
+                if not candidate_dsa_map:
+                    continue
+                if response_target_set:
+                    candidate_dsa_map = {
+                        str(label): value
+                        for label, value in candidate_dsa_map.items()
+                        if str(label) in response_target_set
+                    }
                 if not candidate_dsa_map:
                     continue
 
@@ -2352,35 +2417,63 @@ def build_dsa_normalized_sensitivity_matrix(
                     str(aggregation),
                 )
                 if cache_key not in response_value_cache:
-                    if source_mode in {"workspace", "registry"}:
-                        cached_response_map = _sens._workspace_result_label_map(
+                    if spec.get("region_type") == "NODE" and str(candidate_position).upper() == "ELEMENT_NODAL":
+                        if source_mode not in {"workspace", "registry"}:
+                            raise ValidationError(
+                                "node-based ELEMENT_NODAL response normalization currently requires a local workspace",
+                                {
+                                    "field": candidate_field_name,
+                                    "instance": instance_name,
+                                    "source_mode": source_mode,
+                                },
+                            )
+                        cached_response_map = _sens._workspace_element_nodal_node_label_map(
                             resolved_workspace,
+                            inp_model=dsa_model,
                             step=discovery["step"],
                             field=candidate_field_name,
                             instance=instance_name,
-                            position=candidate_position,
                             frame=resolved_frame,
                             aggregation=aggregation,
+                            node_labels=response_target_node_labels,
                             component=candidate_component,
                             component_index=candidate_component_index,
                             result_group=result_group,
                         )
                     else:
-                        cached_response_map = client.get_result_label_map(
-                            odb_id=odb_id,
-                            instance=instance_name,
-                            step=discovery["step"],
-                            field=candidate_field_name,
-                            position=candidate_position,
-                            frame=resolved_frame,
-                            aggregation=aggregation,
-                            component=candidate_component,
-                            component_index=candidate_component_index,
-                            scoped=True,
-                        )
+                        if source_mode in {"workspace", "registry"}:
+                            cached_response_map = _sens._workspace_result_label_map(
+                                resolved_workspace,
+                                step=discovery["step"],
+                                field=candidate_field_name,
+                                instance=instance_name,
+                                position=candidate_position,
+                                frame=resolved_frame,
+                                aggregation=aggregation,
+                                component=candidate_component,
+                                component_index=candidate_component_index,
+                                result_group=result_group,
+                            )
+                        else:
+                            cached_response_map = client.get_result_label_map(
+                                odb_id=odb_id,
+                                instance=instance_name,
+                                step=discovery["step"],
+                                field=candidate_field_name,
+                                position=candidate_position,
+                                frame=resolved_frame,
+                                aggregation=aggregation,
+                                component=candidate_component,
+                                component_index=candidate_component_index,
+                                scoped=True,
+                            )
                     response_value_cache[cache_key] = _sens._normalize_vtu_label_map(cached_response_map)
 
-                candidate_response_map = response_value_cache[cache_key]
+                candidate_response_map = {
+                    str(label): value
+                    for label, value in dict(response_value_cache[cache_key]).items()
+                    if not response_target_set or str(label) in response_target_set
+                }
                 overlap = sorted(set(candidate_dsa_map.keys()) & set(candidate_response_map.keys()))
                 score = len(overlap)
                 if score <= 0:

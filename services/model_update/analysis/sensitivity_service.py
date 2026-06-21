@@ -3584,6 +3584,17 @@ def _parse_design_response_variable(variable: str) -> dict:
     if not token:
         raise ValidationError("design response variable is empty")
 
+    # Scalar invariants are represented in the model-update flow as a parent
+    # field plus a synthetic scalar "component" token so downstream matching can
+    # still discriminate among different invariants.
+    if token in {"MISES", "VONMISES", "VON_MISES"}:
+        return {
+            "variable": token,
+            "field_name": "S",
+            "component": "MISES",
+            "component_index": None,
+        }
+
     alias = _VECTOR_DIRECTION_ALIASES.get(token)
     if alias:
         field_name, component_name = alias
@@ -3625,7 +3636,11 @@ def _parse_explicit_response_component(response_component: Optional[str]) -> Opt
             "response_component must describe a concrete direction",
             {
                 "response_component": response_component,
-                "allowed_examples": ["U1", "U2", "U3", "UX", "UY", "UZ", "UR1", "UR2", "UR3", "RX", "RY", "RZ"],
+                "allowed_examples": [
+                    "U1", "U2", "U3", "UX", "UY", "UZ",
+                    "UR1", "UR2", "UR3", "RX", "RY", "RZ",
+                    "MISES",
+                ],
             },
         )
     return parsed
@@ -3643,7 +3658,11 @@ def _resolve_dsa_response_spec(model, *, step_name: Optional[str]) -> Optional[d
             {
                 **request,
                 **parsed,
-                "preferred_position": "NODAL" if request["region_type"] == "NODE" else None,
+                "preferred_position": (
+                    "ELEMENT_NODAL"
+                    if request["region_type"] == "NODE" and str(parsed.get("component") or "").upper() == "MISES"
+                    else ("NODAL" if request["region_type"] == "NODE" else None)
+                ),
             }
         )
     return specs
@@ -4299,6 +4318,200 @@ def _workspace_result_label_map(
                         value = value[0]
                     label_map[f"{instance}::{int(label)}"] = value
         return label_map
+    finally:
+        conn.close()
+
+
+def _compute_workspace_scalar_invariant(
+        values: np.ndarray,
+        *,
+        field: str,
+        component: Optional[str],
+) -> Optional[np.ndarray]:
+    component_name = str(component or "").strip().upper()
+    field_name = str(field or "").strip().upper()
+    arr = np.asarray(values, dtype=np.float64)
+    if component_name != "MISES" or field_name != "S":
+        return None
+    if arr.ndim == 0 or arr.shape[-1] < 3:
+        raise ValidationError(
+            "stress invariant MISES requires at least 3 tensor components",
+            {"field": field, "component": component, "shape": list(arr.shape)},
+        )
+    s11 = arr[..., 0]
+    s22 = arr[..., 1]
+    s33 = arr[..., 2]
+    s12 = arr[..., 3] if arr.shape[-1] > 3 else 0.0
+    s13 = arr[..., 4] if arr.shape[-1] > 4 else 0.0
+    s23 = arr[..., 5] if arr.shape[-1] > 5 else 0.0
+    return np.sqrt(
+        0.5 * (
+            (s11 - s22) ** 2
+            + (s22 - s33) ** 2
+            + (s33 - s11) ** 2
+            + 6.0 * (s12 ** 2 + s13 ** 2 + s23 ** 2)
+        )
+    )
+
+
+def _aggregate_scalar_series(values: List[float], aggregation: str) -> float:
+    arr = np.asarray([float(item) for item in values], dtype=np.float64)
+    if arr.size == 0:
+        raise ValidationError("cannot aggregate an empty scalar series", {"aggregation": aggregation})
+    if aggregation == "max_abs":
+        return float(np.nanmax(np.abs(arr)))
+    if aggregation == "mean_abs":
+        return float(np.nanmean(np.abs(arr)))
+    if aggregation == "max":
+        return float(np.nanmax(arr))
+    if aggregation == "min":
+        return float(np.nanmin(arr))
+    if aggregation == "mean":
+        return float(np.nanmean(arr))
+    if aggregation == "first":
+        return float(arr.reshape(-1)[0])
+    raise ValidationError(
+        f"unsupported scalar aggregation '{aggregation}'",
+        {"aggregation": aggregation, "allowed": sorted(_AGGREGATIONS | {'first'})},
+    )
+
+
+def _resolve_instance_part(model, instance_name: str):
+    assembly = getattr(model, "assembly", None)
+    instances = getattr(assembly, "instances", {}) if assembly is not None else {}
+    instance = instances.get(str(instance_name)) if instances else None
+    if instance is None:
+        raise ValidationError(
+            "instance was not found in inp model while resolving node-based element response",
+            {"instance_name": instance_name},
+        )
+    part_name = str(getattr(instance, "part_name", "") or "").strip()
+    parts = getattr(model, "parts", {}) or {}
+    part = parts.get(part_name)
+    if part is None:
+        raise ValidationError(
+            "instance part was not found in inp model while resolving node-based element response",
+            {"instance_name": instance_name, "part_name": part_name},
+        )
+    return part
+
+
+def _workspace_element_nodal_node_label_map(
+        workspace: str,
+        *,
+        inp_model,
+        step: str,
+        field: str,
+        instance: str,
+        frame: int,
+        aggregation: str,
+        node_labels: List[int],
+        component: Optional[str] = None,
+        component_index: Optional[int] = None,
+        result_group: Optional[str] = None,
+) -> Dict[str, float]:
+    workspace_abs = _workspace_path(workspace)
+    part = _resolve_instance_part(inp_model, str(instance))
+    requested_node_labels = sorted({int(item) for item in (node_labels or [])})
+    if not requested_node_labels:
+        return {}
+
+    conn = _manifest_conn(workspace_abs)
+    try:
+        if result_group is None:
+            rg_result_file_clause = "result_group IS NULL"
+            rg_result_file_params = []
+            rg_result_block_clause = "result_group IS NULL"
+            rg_result_block_params = []
+        else:
+            rg_result_file_clause = "result_group = ?"
+            rg_result_file_params = [str(result_group)]
+            rg_result_block_clause = "result_group = ?"
+            rg_result_block_params = [str(result_group)]
+
+        result_file = conn.execute(
+            f"SELECT file_path, components FROM result_files WHERE step_name = ? AND field_name = ? AND {rg_result_file_clause}",
+            [step, field] + rg_result_file_params,
+        ).fetchone()
+        if not result_file:
+            raise NotFoundError(
+                f"result file not found for step='{step}' field='{field}'",
+                {"step": step, "field": field, "result_group": result_group},
+            )
+
+        block_rows = conn.execute(
+            f"""
+            SELECT elem_type, h5_path
+            FROM result_blocks
+            WHERE step_name = ? AND field_name = ? AND instance_name = ? AND position = ? AND {rg_result_block_clause}
+            ORDER BY elem_type
+            """,
+            [step, field, instance, "ELEMENT_NODAL"] + rg_result_block_params,
+        ).fetchall()
+        if not block_rows:
+            raise NotFoundError(
+                f"ELEMENT_NODAL result block not found for field '{field}'",
+                {"step": step, "field": field, "instance": instance, "result_group": result_group},
+            )
+
+        h5_path = os.path.join(workspace_abs, str(result_file["file_path"]))
+        if not os.path.exists(h5_path):
+            raise NotFoundError(f"result h5 file not found: {h5_path}", {"file_path": h5_path})
+
+        components = _load_json_list(result_file["components"])
+        values_by_node: Dict[int, List[float]] = {int(label): [] for label in requested_node_labels}
+        target_node_label_set = set(values_by_node.keys())
+
+        with h5py.File(h5_path, "r") as h5:
+            for row in block_rows:
+                group = h5[str(row["h5_path"])]
+                labels = np.asarray(group["labels"][:], dtype=np.int64)
+                raw_frame = np.asarray(group["data"][int(frame)], dtype=np.float64)
+                invariant_values = _compute_workspace_scalar_invariant(
+                    raw_frame,
+                    field=field,
+                    component=component,
+                )
+                if invariant_values is not None:
+                    selected = np.asarray(invariant_values, dtype=np.float64)
+                else:
+                    selected, _ = _select_component_values(
+                        raw_frame,
+                        components,
+                        component,
+                        component_index,
+                    )
+                    selected = np.asarray(selected, dtype=np.float64)
+
+                if selected.ndim != 2:
+                    raise ValidationError(
+                        "node-based ELEMENT_NODAL extraction expects a scalar value at each local node",
+                        {
+                            "field": field,
+                            "instance": instance,
+                            "shape": list(selected.shape),
+                            "component": component,
+                        },
+                    )
+
+                for elem_index, elem_label in enumerate(labels.tolist()):
+                    element = part.elements.get(int(elem_label))
+                    if element is None:
+                        continue
+                    for local_idx, node_label in enumerate(list(getattr(element, "node_labels", []) or [])):
+                        node_label_int = int(node_label)
+                        if node_label_int not in target_node_label_set:
+                            continue
+                        if local_idx >= selected.shape[1]:
+                            continue
+                        values_by_node[node_label_int].append(float(selected[elem_index, local_idx]))
+
+        result: Dict[str, float] = {}
+        for node_label, values in values_by_node.items():
+            if not values:
+                continue
+            result[f"{instance}::{int(node_label)}"] = _aggregate_scalar_series(values, aggregation)
+        return result
     finally:
         conn.close()
 

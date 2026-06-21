@@ -132,6 +132,11 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
     monkeypatch.setattr(bayesian_service._sens, "_workspace_path", lambda path: str(Path(path).resolve()))
     monkeypatch.setattr(
         bayesian_service._sens,
+        "_resolve_workspace_step_frame",
+        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
         "_discover_sensitivity_fields_from_workspace",
         lambda workspace, **kwargs: {
             "workspace": workspace,
@@ -160,6 +165,11 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
         lambda **kwargs: {"field": "U", "components": ["U1", "U2", "U3"], "positions": ["NODAL"]},
     )
     monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_design_response_target_labels",
+        lambda model, spec: ("point", ["INST::10", "INST::20"]),
+    )
 
     def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None, result_group=None):
         if field == "d_U_T1" and component == "U2":
@@ -217,6 +227,11 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_componen
     monkeypatch.setattr(bayesian_service._sens, "_workspace_path", lambda path: str(Path(path).resolve()))
     monkeypatch.setattr(
         bayesian_service._sens,
+        "_resolve_workspace_step_frame",
+        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
         "_discover_sensitivity_fields_from_workspace",
         lambda workspace, **kwargs: {
             "workspace": workspace,
@@ -243,6 +258,11 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_componen
         lambda **kwargs: {"field": "U", "components": ["U1", "U2", "U3"], "positions": ["NODAL"]},
     )
     monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_design_response_target_labels",
+        lambda model, spec: ("point", ["INST::10"]),
+    )
 
     def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None, result_group=None):
         if field == "d_UR_T1":
@@ -266,6 +286,119 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_componen
     assert result["response_component"] == "U2"
     assert result["matrix"] == [[0.2]]
     assert [item["response_component"] for item in result["response_rows"]] == ["U2"]
+
+
+def test_parse_design_response_variable_treats_mises_as_stress_invariant():
+    parsed = bayesian_service._sens._parse_design_response_variable("MISES")
+
+    assert parsed == {
+        "variable": "MISES",
+        "field_name": "S",
+        "component": "MISES",
+        "component_index": None,
+    }
+
+
+def test_build_dsa_normalized_sensitivity_matrix_uses_node_mises_from_element_nodal(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "fake.inp"
+    inp_path.write_text("*Heading\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    model = SimpleNamespace(
+        parts={
+            "P1": SimpleNamespace(
+                elements={
+                    10: SimpleNamespace(label=10, node_labels=[4, 5, 6, 7]),
+                    20: SimpleNamespace(label=20, node_labels=[1, 4, 8, 9]),
+                }
+            )
+        },
+        assembly=SimpleNamespace(instances={"INST": SimpleNamespace(name="INST", part_name="P1")}),
+        parameters={"T1": SimpleNamespace(scalar_value=2.0)},
+        design_parameters=[SimpleNamespace(name="T1", order=1)],
+        design_responses=[
+            SimpleNamespace(
+                step_name="Step-1",
+                frequency=1,
+                requests=[
+                    SimpleNamespace(region_type="NODE", set_name="NSET4", variables=["MISES"]),
+                ],
+            )
+        ],
+    )
+
+    monkeypatch.setattr(bayesian_service, "parse_inp", lambda path: model)
+    monkeypatch.setattr(bayesian_service._sens, "_resolve_inp_path_from_project", lambda project_id: str(inp_path))
+    monkeypatch.setattr(bayesian_service._sens, "_workspace_path", lambda path: str(Path(path).resolve()))
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_resolve_workspace_step_frame",
+        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_discover_sensitivity_fields_from_workspace",
+        lambda workspace, **kwargs: {
+            "workspace": workspace,
+            "step": "Step-1",
+            "instances": ["INST"],
+            "per_instance": {
+                "INST": [
+                    {"field": "d_MISES_T1", "position": "ELEMENT_NODAL", "components": []},
+                ]
+            },
+            "field_names": ["d_MISES_T1"],
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_load_project_optimization_parameters",
+        lambda project_id: [
+            {"parameter_name": "T1", "set_name": "E1", "set_type": "ELSET", "set_scope": "PART", "scalar_value": 2.0},
+        ],
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_resolve_response_field_meta",
+        lambda **kwargs: {"field": "S", "components": ["S11", "S22", "S33", "S12"], "positions": ["ELEMENT_NODAL"]},
+    )
+    monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "ELEMENT_NODAL")
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_design_response_target_labels",
+        lambda model, spec: ("point", ["INST::4"]),
+    )
+
+    def fake_node_label_map(workspace, *, inp_model, step, field, instance, frame, aggregation, node_labels,
+                            component=None, component_index=None, result_group=None):
+        assert node_labels == [4]
+        if field == "d_MISES_T1":
+            assert component is None
+            return {"INST::4": 3.0}
+        if field == "S":
+            assert component == "MISES"
+            return {"INST::4": 12.0}
+        raise AssertionError(f"unexpected field {field}")
+
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_workspace_element_nodal_node_label_map",
+        fake_node_label_map,
+    )
+
+    result = bayesian_service.build_dsa_normalized_sensitivity_matrix(
+        project_id=1,
+        inp_path=str(inp_path),
+        workspace=str(workspace),
+        field_prefix="d_MISES_",
+        aggregation="max",
+    )
+
+    assert result["matrix"] == [[0.5]]
+    assert result["parameter_values"] == [2.0]
+    assert result["response_values"] == [12.0]
+    assert result["response_rows"][0]["response_component"] == "MISES"
 
 
 def test_build_dsa_normalized_sensitivity_matrix_uses_in_memory_optimization_parameter_rows(monkeypatch, tmp_path: Path):
@@ -295,6 +428,11 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_in_memory_optimization_par
     monkeypatch.setattr(bayesian_service._sens, "_workspace_path", lambda path: str(Path(path).resolve()))
     monkeypatch.setattr(
         bayesian_service._sens,
+        "_resolve_workspace_step_frame",
+        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
         "_discover_sensitivity_fields_from_workspace",
         lambda workspace, **kwargs: {
             "workspace": workspace,
@@ -321,8 +459,23 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_in_memory_optimization_par
     monkeypatch.setattr(bayesian_service._sens, "_pick_response_position", lambda field_meta, preferred: "NODAL")
     monkeypatch.setattr(
         bayesian_service._sens,
+        "_design_response_target_labels",
+        lambda model, spec: ("point", ["INST::10"]),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_design_response_target_labels",
+        lambda model, spec: ("point", ["INST::10", "INST::20"]),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
         "_resolve_dsa_parameter_scalar_value",
         lambda model, *, parameter_name, target_rows: float(target_rows[0]["scalar_value"]),
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_design_response_target_labels",
+        lambda model, spec: ("point", ["INST::10"]),
     )
 
     def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None, result_group=None):
