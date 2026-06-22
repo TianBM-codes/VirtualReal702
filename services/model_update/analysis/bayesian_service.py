@@ -3400,54 +3400,90 @@ def _update_bdf_parameter_values(
     missing_rows = []
     for index, row in enumerate(parameter_columns or []):
         item = dict(row or {})
-        parameter_name = str(item.get("parameter_name") or item.get("param_name") or f"parameter_{index + 1}")
+        parameter_name = str(
+            item.get("parameter_name")
+            or item.get("param_name")
+            or item.get("name")
+            or f"parameter_{index + 1}"
+        )
         parameter_type = str(item.get("param_type") or item.get("parameter_type") or item.get("type") or "").upper()
-        material_id = item.get("material_id")
-        if material_id is None:
-            material_id = item.get("source_material_id")
-        if material_id is None:
-            missing_rows.append({"parameter_name": parameter_name, "reason": "material_id_missing"})
-            continue
-        material = model.materials.get(int(material_id))
-        if material is None:
-            missing_rows.append({"parameter_name": parameter_name, "material_id": int(material_id), "reason": "material_not_found"})
-            continue
-        if str(getattr(material, "type", "")).upper() != "MAT1":
-            missing_rows.append(
-                {
-                    "parameter_name": parameter_name,
-                    "material_id": int(material_id),
-                    "material_type": str(getattr(material, "type", "")),
-                    "reason": "unsupported_material_type",
-                }
-            )
-            continue
 
         value = float(updated_parameter_values[index])
-        if parameter_type == "E":
-            material.e = value
-            if getattr(material, "g", None) is not None:
-                material.g = None
-        elif parameter_type == "RHO":
-            material.rho = value
+        if parameter_type in {"E", "RHO"}:
+            material_id = item.get("material_id")
+            if material_id is None:
+                material_id = item.get("source_material_id")
+            if material_id is None:
+                missing_rows.append({"parameter_name": parameter_name, "reason": "material_id_missing"})
+                continue
+            material = model.materials.get(int(material_id))
+            if material is None:
+                missing_rows.append({"parameter_name": parameter_name, "material_id": int(material_id), "reason": "material_not_found"})
+                continue
+            if str(getattr(material, "type", "")).upper() != "MAT1":
+                missing_rows.append(
+                    {
+                        "parameter_name": parameter_name,
+                        "material_id": int(material_id),
+                        "material_type": str(getattr(material, "type", "")),
+                        "reason": "unsupported_material_type",
+                    }
+                )
+                continue
+
+            if parameter_type == "E":
+                material.e = value
+                if getattr(material, "g", None) is not None:
+                    material.g = None
+            else:
+                material.rho = value
+            updated_rows.append(
+                {
+                    "parameter_name": parameter_name,
+                    "parameter_type": parameter_type,
+                    "material_id": int(material_id),
+                    "updated_value": value,
+                }
+            )
+        elif parameter_type in {"H", "T"}:
+            property_id = item.get("property_id")
+            if property_id is None:
+                property_id = item.get("source_property_id")
+            if property_id is None:
+                missing_rows.append({"parameter_name": parameter_name, "reason": "property_id_missing"})
+                continue
+            prop = model.properties.get(int(property_id))
+            if prop is None:
+                missing_rows.append({"parameter_name": parameter_name, "property_id": int(property_id), "reason": "property_not_found"})
+                continue
+            if str(getattr(prop, "type", "")).upper() != "PSHELL":
+                missing_rows.append(
+                    {
+                        "parameter_name": parameter_name,
+                        "property_id": int(property_id),
+                        "property_type": str(getattr(prop, "type", "")),
+                        "reason": "unsupported_property_type",
+                    }
+                )
+                continue
+            prop.t = value
+            updated_rows.append(
+                {
+                    "parameter_name": parameter_name,
+                    "parameter_type": parameter_type,
+                    "property_id": int(property_id),
+                    "updated_value": value,
+                }
+            )
         else:
             missing_rows.append(
                 {
                     "parameter_name": parameter_name,
-                    "material_id": int(material_id),
                     "parameter_type": parameter_type,
                     "reason": "unsupported_parameter_type",
                 }
             )
             continue
-        updated_rows.append(
-            {
-                "parameter_name": parameter_name,
-                "parameter_type": parameter_type,
-                "material_id": int(material_id),
-                "updated_value": value,
-            }
-        )
 
     if not updated_rows:
         raise ValidationError(

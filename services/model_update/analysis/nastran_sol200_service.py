@@ -834,6 +834,19 @@ def _material_scalar(material: Any, field: str) -> Optional[float]:
     return None
 
 
+def _property_thickness_scalar(prop: Any) -> Optional[float]:
+    ptype = str(getattr(prop, "type", "")).upper()
+    if ptype == "PSHELL":
+        value = getattr(prop, "t", None)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+    return None
+
+
 def _build_all_used_material_e_rho_parameters(
     *,
     input_bdf: str,
@@ -920,6 +933,24 @@ def _clone_property_with_material(prop: Any, *, new_pid: int, new_mid: int) -> A
     raise ValidationError(
         "property type does not support single-material E localization in phase 1",
         {"property_type": str(getattr(prop, "type", "")), "property_id": int(getattr(prop, "pid", new_pid))},
+    )
+
+
+def _clone_property_with_thickness(prop: Any, *, new_pid: int) -> Any:
+    cloned = copy.deepcopy(prop)
+    if hasattr(cloned, "pid"):
+        cloned.pid = int(new_pid)
+    ptype = str(getattr(cloned, "type", "")).upper()
+    if ptype == "PSHELL":
+        if getattr(cloned, "t", None) is None:
+            raise ValidationError(
+                "PSHELL thickness is missing during per-element thickness localization",
+                {"property_id": int(getattr(prop, "pid", new_pid))},
+            )
+        return cloned
+    raise ValidationError(
+        "property type does not support single-thickness localization in phase 1",
+        {"property_type": ptype, "property_id": int(getattr(prop, "pid", new_pid))},
     )
 
 
@@ -1022,6 +1053,83 @@ def _localize_elements_e_parameters(
     return str(output_path), parameters, info
 
 
+def _localize_elements_h_parameters(
+    *,
+    input_bdf: str,
+    output_bdf: str,
+    preset: Dict[str, Any],
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    model = BDF(debug=False)
+    model.read_bdf(input_bdf, xref=False)
+    lower_scale = float(preset.get("lower_scale", DEFAULT_PARAMETER_LOWER_SCALE))
+    upper_scale = float(preset.get("upper_scale", DEFAULT_PARAMETER_UPPER_SCALE))
+    requested_element_ids = {
+        int(item) for item in (preset.get("element_ids") or [])
+    } if preset.get("element_ids") else None
+
+    next_pid = (max(model.properties.keys()) if model.properties else 0) + 1
+    parameters: List[Dict[str, Any]] = []
+    localized_count = 0
+    skipped: List[dict] = []
+
+    for eid, element in sorted(model.elements.items()):
+        if requested_element_ids is not None and int(eid) not in requested_element_ids:
+            continue
+        pid = getattr(element, "pid", None)
+        if pid is None:
+            skipped.append({"element_id": int(eid), "reason": "element has no property id"})
+            continue
+        prop = model.properties.get(int(pid))
+        if prop is None:
+            skipped.append({"element_id": int(eid), "reason": f"property {int(pid)} not found"})
+            continue
+        thickness = _property_thickness_scalar(prop)
+        if thickness is None:
+            skipped.append(
+                {
+                    "element_id": int(eid),
+                    "property_id": int(pid),
+                    "property_type": str(getattr(prop, "type", "")),
+                    "reason": "property has no supported shell thickness",
+                }
+            )
+            continue
+
+        new_pid = int(next_pid)
+        next_pid += 1
+        cloned_property = _clone_property_with_thickness(prop, new_pid=new_pid)
+        model.properties[new_pid] = cloned_property
+        element.pid = int(new_pid)
+        localized_count += 1
+        parameters.append({
+            "name": f"H{int(eid)}",
+            "type": "H",
+            "element_id": int(eid),
+            "property_id": int(new_pid),
+            "source_property_id": int(pid),
+            "initial": float(thickness),
+            "lower": float(thickness * lower_scale),
+            "upper": float(thickness * upper_scale),
+        })
+
+    if not parameters:
+        raise ValidationError(
+            "parameter_preset did not produce any supported per-element H parameters",
+            {"input_bdf": input_bdf, "parameter_preset": preset, "skipped": skipped[:20]},
+        )
+
+    output_path = Path(output_bdf).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bdf(str(output_path), interspersed=False)
+    info = {
+        "localized_input_bdf": str(output_path),
+        "localized_element_count": int(localized_count),
+        "parameter_count": len(parameters),
+        "skipped_preview": skipped[:20],
+    }
+    return str(output_path), parameters, info
+
+
 def _resolve_phase1_parameters(
     *,
     input_bdf: str,
@@ -1041,7 +1149,7 @@ def _resolve_phase1_parameters(
                 "unsupported SOL200 parameter preset",
                 {
                     "preset": parameter_preset.get("preset"),
-                    "supported_presets": ["all_used_material_e_rho", "all_elements_e"],
+                    "supported_presets": ["all_used_material_e_rho", "all_elements_e", "all_elements_h"],
                 },
             )
     if not resolved:
@@ -1067,7 +1175,7 @@ def _resolve_phase1_input_and_parameters(
         ), {}
 
     preset_name = str(parameter_preset.get("preset") or "").strip().lower()
-    if preset_name != "all_elements_e":
+    if preset_name not in {"all_elements_e", "all_elements_h"}:
         return input_bdf, _resolve_phase1_parameters(
             input_bdf=input_bdf,
             parameters=parameters,
@@ -1076,27 +1184,41 @@ def _resolve_phase1_input_and_parameters(
 
     if parameters:
         raise ValidationError(
-            "all_elements_e preset must not be mixed with manual parameters in phase 1",
+            "per-element parameter presets must not be mixed with manual parameters in phase 1",
             {"parameters_count": len(parameters or []), "preset": parameter_preset},
         )
     if output_bdf:
         localized_output = str(Path(output_bdf).expanduser().resolve().with_name(
             Path(output_bdf).expanduser().resolve().stem + ".localized_source.bdf"
         ))
+        if preset_name == "all_elements_e":
+            localized_input_bdf, preset_parameters, info = _localize_elements_e_parameters(
+                input_bdf=input_bdf,
+                output_bdf=localized_output,
+                preset=parameter_preset,
+            )
+        else:
+            localized_input_bdf, preset_parameters, info = _localize_elements_h_parameters(
+                input_bdf=input_bdf,
+                output_bdf=localized_output,
+                preset=parameter_preset,
+            )
+        return localized_input_bdf, preset_parameters, info
+
+    base_input = Path(input_bdf).expanduser().resolve()
+    localized_output = str(base_input.with_name(f"{base_input.stem}_sol200_localized_source.bdf"))
+    if preset_name == "all_elements_e":
         localized_input_bdf, preset_parameters, info = _localize_elements_e_parameters(
             input_bdf=input_bdf,
             output_bdf=localized_output,
             preset=parameter_preset,
         )
-        return localized_input_bdf, preset_parameters, info
-
-    base_input = Path(input_bdf).expanduser().resolve()
-    localized_output = str(base_input.with_name(f"{base_input.stem}_sol200_localized_source.bdf"))
-    localized_input_bdf, preset_parameters, info = _localize_elements_e_parameters(
-        input_bdf=input_bdf,
-        output_bdf=localized_output,
-        preset=parameter_preset,
-    )
+    else:
+        localized_input_bdf, preset_parameters, info = _localize_elements_h_parameters(
+            input_bdf=input_bdf,
+            output_bdf=localized_output,
+            preset=parameter_preset,
+        )
     return localized_input_bdf, preset_parameters, info
 
 
@@ -1116,17 +1238,24 @@ def preview_sol200_workflow(
         responses=responses,
     )
     preset_name = str((parameter_preset or {}).get("preset") or "").strip().lower()
-    if preset_name == "all_elements_e":
+    if preset_name in {"all_elements_e", "all_elements_h"}:
         localized_preview_path = str(
             Path(input_bdf).expanduser().resolve().with_name(
                 Path(input_bdf).expanduser().resolve().stem + "_sol200_preview_localized_source.bdf"
             )
         )
-        localized_input_bdf, resolved_parameters, info = _localize_elements_e_parameters(
-            input_bdf=input_bdf,
-            output_bdf=localized_preview_path,
-            preset=parameter_preset or {},
-        )
+        if preset_name == "all_elements_e":
+            localized_input_bdf, resolved_parameters, info = _localize_elements_e_parameters(
+                input_bdf=input_bdf,
+                output_bdf=localized_preview_path,
+                preset=parameter_preset or {},
+            )
+        else:
+            localized_input_bdf, resolved_parameters, info = _localize_elements_h_parameters(
+                input_bdf=input_bdf,
+                output_bdf=localized_preview_path,
+                preset=parameter_preset or {},
+            )
         payload = preview_nastran_sol200_job(
             input_bdf=localized_input_bdf,
             parameters=resolved_parameters,
@@ -1550,6 +1679,25 @@ def run_sol200_modal_mac_and_store_workflow(
     metadata_json = _pick_first_existing_path([
         (run_payload.get("generated_files") or {}).get("metadata_json"),
     ])
+    effective_parameter_columns = [dict(item or {}) for item in (resolved_parameters or [])]
+    localized_input_bdf = _pick_first_existing_path([
+        (run_payload.get("generated_files") or {}).get("localized_input_bdf"),
+    ])
+    if (not effective_parameter_columns) and metadata_json and Path(metadata_json).exists():
+        try:
+            metadata_payload = json.loads(Path(metadata_json).read_text(encoding="utf-8"))
+            effective_parameter_columns = [
+                dict(item or {}) for item in list(metadata_payload.get("parameters") or [])
+            ]
+            if not localized_input_bdf:
+                localized_input_bdf = _pick_first_existing_path([
+                    metadata_payload.get("localized_input_bdf"),
+                ])
+        except Exception:
+            effective_parameter_columns = []
+    base_input_bdf_for_fd = str(
+        Path(localized_input_bdf or original_input_bdf).expanduser().resolve()
+    )
     bdf_path = _pick_first_existing_path([run_payload.get("output_bdf")]) or str(
         Path(str(run_payload.get("output_bdf") or "")).expanduser().resolve()
     )
@@ -1593,7 +1741,7 @@ def run_sol200_modal_mac_and_store_workflow(
                 )["mac"]
             )
 
-        parameter_columns_for_fd = [dict(item or {}) for item in (resolved_parameters or [])]
+        parameter_columns_for_fd = [dict(item or {}) for item in (effective_parameter_columns or [])]
         fd_rows = []
         fd_matrix_rows = []
         fd_details = []
@@ -1611,10 +1759,10 @@ def run_sol200_modal_mac_and_store_workflow(
                 perturbed_values = [float(item.get("initial", item.get("initial_value"))) for item in parameter_columns_for_fd]
                 perturbed_values[param_index] = initial_value + delta
                 perturbed_bdf = str(
-                    Path(original_input_bdf).with_name(f"{Path(original_input_bdf).stem}_fd_p{param_index + 1}.bdf")
+                    Path(base_input_bdf_for_fd).with_name(f"{Path(base_input_bdf_for_fd).stem}_fd_p{param_index + 1}.bdf")
                 )
                 _update_bdf_parameter_values(
-                    input_bdf=original_input_bdf,
+                    input_bdf=base_input_bdf_for_fd,
                     parameter_columns=parameter_columns_for_fd,
                     updated_parameter_values=perturbed_values,
                     output_bdf=perturbed_bdf,
