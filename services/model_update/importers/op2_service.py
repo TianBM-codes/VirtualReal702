@@ -1003,11 +1003,18 @@ def store_op2_sensitivity(
 def _resolve_cloud_target_instances(workspace: str, column_meta: dict) -> List[str]:
     from src.l3.infra.manifest_repo import ManifestRepo
 
-    repo = ManifestRepo(workspace)
     instance_name = str(column_meta.get("instance_name") or "").strip()
     if instance_name:
         return [instance_name]
 
+    manifest_path = os.path.join(os.path.abspath(workspace), "manifest.db")
+    # Nastran-only modal/BDF projects can legitimately skip the L3 workspace
+    # packaging step, so manifest.db may not exist. In that case we still want
+    # Bayesian history artifacts to record a usable single-instance mapping.
+    if not os.path.exists(manifest_path):
+        return ["BDF_MODEL"]
+
+    repo = ManifestRepo(workspace)
     part_name = str(column_meta.get("part_name") or "").strip()
     if part_name:
         matched = [str(item) for item in (repo.get_instances_by_part_name(part_name) or []) if str(item).strip()]

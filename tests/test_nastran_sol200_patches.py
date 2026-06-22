@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 
 from services.model_update.analysis.nastran_sol200_service import (
+    DEFAULT_PARAMETER_LOWER_SCALE,
+    DEFAULT_PARAMETER_UPPER_SCALE,
     _clone_property_with_material,
+    _build_all_used_material_e_rho_parameters,
+    _localize_elements_e_parameters,
     _material_copy_with_new_id,
     run_sol200_and_store_workflow,
 )
@@ -140,6 +144,71 @@ def test_material_copy_with_new_id_clears_mat1_g():
 
     assert cloned.mid == 20
     assert cloned.g is None
+
+
+def test_all_used_material_preset_uses_relaxed_default_bounds(tmp_path):
+    input_bdf = tmp_path / "material_model.bdf"
+    input_bdf.write_text(
+        "\n".join(
+            [
+                "SOL 103",
+                "CEND",
+                "BEGIN BULK",
+                "GRID,1,,0.,0.,0.",
+                "GRID,2,,1.,0.,0.",
+                "MAT1,1,210000.,,0.3,7.8E-9",
+                "PROD,1,1,1.0",
+                "CROD,1,1,1,2",
+                "ENDDATA",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    parameters = _build_all_used_material_e_rho_parameters(
+        input_bdf=str(input_bdf),
+        preset={},
+    )
+
+    e_param = next(item for item in parameters if item["type"] == "E")
+    rho_param = next(item for item in parameters if item["type"] == "RHO")
+    assert e_param["lower"] == e_param["initial"] * DEFAULT_PARAMETER_LOWER_SCALE
+    assert e_param["upper"] == e_param["initial"] * DEFAULT_PARAMETER_UPPER_SCALE
+    assert rho_param["lower"] == rho_param["initial"] * DEFAULT_PARAMETER_LOWER_SCALE
+    assert rho_param["upper"] == rho_param["initial"] * DEFAULT_PARAMETER_UPPER_SCALE
+
+
+def test_all_elements_e_preset_uses_relaxed_default_bounds(tmp_path):
+    input_bdf = tmp_path / "element_model.bdf"
+    output_bdf = tmp_path / "element_model_localized.bdf"
+    input_bdf.write_text(
+        "\n".join(
+            [
+                "SOL 103",
+                "CEND",
+                "BEGIN BULK",
+                "GRID,1,,0.,0.,0.",
+                "GRID,2,,1.,0.,0.",
+                "MAT1,1,210000.,,0.3",
+                "PROD,1,1,1.0",
+                "CROD,1,1,1,2",
+                "ENDDATA",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _, parameters, info = _localize_elements_e_parameters(
+        input_bdf=str(input_bdf),
+        output_bdf=str(output_bdf),
+        preset={},
+    )
+
+    assert info["localized_element_count"] == 1
+    assert parameters[0]["lower"] == parameters[0]["initial"] * DEFAULT_PARAMETER_LOWER_SCALE
+    assert parameters[0]["upper"] == parameters[0]["initial"] * DEFAULT_PARAMETER_UPPER_SCALE
 
 
 def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypatch, tmp_path):

@@ -3,6 +3,18 @@ from pathlib import Path
 from services.model_update.importers import op2_service
 
 
+def test_resolve_cloud_target_instances_falls_back_without_manifest(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = op2_service._resolve_cloud_target_instances(
+        str(workspace),
+        {"parameter_name": "E1"},
+    )
+
+    assert result == ["BDF_MODEL"]
+
+
 def test_store_op2_sensitivity_cloud_reuses_store_and_writes_cloud(monkeypatch, tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

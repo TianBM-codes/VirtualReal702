@@ -29,8 +29,8 @@ python tools/mac_modal_sensitivity_standalone.py build-sol200-bdf --config build
   "output_bdf": "D:/demo/model_sol200.bdf",
   "parameter_preset": {
     "preset": "all_elements_e",
-    "lower_scale": 0.8,
-    "upper_scale": 1.2
+    "lower_scale": 0.01,
+    "upper_scale": 1000000.0
   },
   "settings": {
     "sol200.deck_mode": "include",

@@ -26,8 +26,8 @@ RUN_CONFIG = {
     "case_name": "nastran_sol200_phase1",
     "parameter_preset": {
         "preset": "all_elements_e",
-        "lower_scale": 0.8,
-        "upper_scale": 1.2,
+        "lower_scale": 0.01,
+        "upper_scale": 1000000.0,
     },
     "responses": [
         {"name": "FREQ1", "type": "FREQ", "mode_number": 1},
@@ -78,8 +78,8 @@ def run_sol200_frequency_sensitivity(config: Dict[str, Any]) -> Dict[str, Any]:
     localized_input_bdf, parameters, preset_info = _localize_all_elements_e(
         input_bdf=input_bdf,
         localized_output=_localized_bdf_path(output_bdf),
-        lower_scale=float(preset.get("lower_scale", 0.8)),
-        upper_scale=float(preset.get("upper_scale", 1.2)),
+        lower_scale=float(preset.get("lower_scale", 0.01)),
+        upper_scale=float(preset.get("upper_scale", 1000000.0)),
     )
     generated = _generate_sol200_deck(
         localized_input_bdf=localized_input_bdf,

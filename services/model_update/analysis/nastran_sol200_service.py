@@ -34,6 +34,9 @@ from .project_status_service import update_work_condition_project_status
 # and matrix parsing; this service keeps the public SOL200 path centralized so
 # future phase-2/3 work can extend one place instead of scattering logic.
 
+DEFAULT_PARAMETER_LOWER_SCALE = 0.01
+DEFAULT_PARAMETER_UPPER_SCALE = 1.0e6
+
 
 def _json_dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False)
@@ -837,8 +840,8 @@ def _build_all_used_material_e_rho_parameters(
     preset: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     model = _load_bdf_model(input_bdf)
-    lower_scale = float(preset.get("lower_scale", 0.8))
-    upper_scale = float(preset.get("upper_scale", 1.2))
+    lower_scale = float(preset.get("lower_scale", DEFAULT_PARAMETER_LOWER_SCALE))
+    upper_scale = float(preset.get("upper_scale", DEFAULT_PARAMETER_UPPER_SCALE))
     include_e = bool(preset.get("include_e", True))
     include_rho = bool(preset.get("include_rho", True))
     if not include_e and not include_rho:
@@ -941,8 +944,8 @@ def _localize_elements_e_parameters(
 ) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     model = BDF(debug=False)
     model.read_bdf(input_bdf, xref=False)
-    lower_scale = float(preset.get("lower_scale", 0.8))
-    upper_scale = float(preset.get("upper_scale", 1.2))
+    lower_scale = float(preset.get("lower_scale", DEFAULT_PARAMETER_LOWER_SCALE))
+    upper_scale = float(preset.get("upper_scale", DEFAULT_PARAMETER_UPPER_SCALE))
     requested_element_ids = {
         int(item) for item in (preset.get("element_ids") or [])
     } if preset.get("element_ids") else None

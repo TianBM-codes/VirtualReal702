@@ -4616,7 +4616,10 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                     parameter_values=np.asarray(update_payload["p_new"], dtype=np.float64),
                 )
             rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
-            workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
+            # Iteration history only needs a stable scope key for parameter-to-
+            # element previews. Nastran-only projects may not have an L3
+            # manifest workspace yet, so avoid forcing manifest.db here.
+            workspace_path = os.path.abspath(resolve_project_workspace(int(project_id)))
             parameter_mappings = _build_op2_parameter_columns_with_mappings(
                 workspace=workspace_path,
                 bdf_path=str(updated_bdf_path),
@@ -4672,7 +4675,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 project_id=int(project_id),
                 batch_no=resolved_batch_no,
                 iteration_result=iteration_result,
-                stopped_early=bool(exit_check.get("converged")),
+                stopped_early=bool(exit_check and exit_check.get("converged")),
             )
             _persist_bayesian_tracking_results(
                 project_id=project_id,
@@ -4687,7 +4690,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             final_output_bdf = str(updated_bdf_path) if save_results else None
             final_sensitivity_payload = rerun_stored_payload
             cloud_export_base_url = cloud_export_base_url or None
-            stopped_early = bool(exit_check.get("converged"))
+            stopped_early = bool(exit_check and exit_check.get("converged"))
             if stopped_early:
                 break
 
