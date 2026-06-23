@@ -687,6 +687,64 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有限元模态相关性表';
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_response_overview (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        response_type BIGINT NOT NULL COMMENT '响应类型',
+        scatter FLOAT NOT NULL COMMENT '离散度',
+        value FLOAT NOT NULL COMMENT '当前值',
+        PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='响应总览表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_displacement_responses (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        data_source VARCHAR(32) NOT NULL COMMENT '数据来源',
+        load_case_no VARCHAR(32) NOT NULL COMMENT '载荷工况编号',
+        node_label BIGINT NOT NULL COMMENT '节点编号',
+        dof VARCHAR(32) NOT NULL COMMENT '自由度',
+        scatter FLOAT NOT NULL COMMENT '离散度',
+        value FLOAT NOT NULL COMMENT '当前值',
+        sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
+        PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='位移响应表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_strain_responses (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        data_source VARCHAR(32) NOT NULL COMMENT '数据来源',
+        load_case_no VARCHAR(32) NOT NULL COMMENT '载荷工况编号',
+        node_label BIGINT NOT NULL COMMENT '节点编号',
+        ele_nodes VARCHAR(100) NOT NULL COMMENT '单元节点列表',
+        group_type VARCHAR(32) NOT NULL COMMENT '分组',
+        direction VARCHAR(32) NOT NULL COMMENT '方向',
+        coord VARCHAR(32) NOT NULL COMMENT '坐标系',
+        scatter FLOAT NOT NULL COMMENT '离散度',
+        value FLOAT NOT NULL COMMENT '当前值',
+        sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
+        PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应变响应表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_fem_stress_responses (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        data_source VARCHAR(32) NOT NULL COMMENT '数据来源',
+        load_case_no VARCHAR(32) NOT NULL COMMENT '载荷工况编号',
+        node_label BIGINT NOT NULL COMMENT '节点编号',
+        ele_nodes VARCHAR(100) NOT NULL COMMENT '单元节点列表',
+        group_type VARCHAR(32) NOT NULL COMMENT '分组',
+        direction VARCHAR(32) NOT NULL COMMENT '方向',
+        coord VARCHAR(32) NOT NULL COMMENT '坐标系',
+        scatter FLOAT NOT NULL COMMENT '离散度',
+        value FLOAT NOT NULL COMMENT '当前值',
+        sub_response_type VARCHAR(32) NOT NULL COMMENT '子响应类型',
+        PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应力响应表';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_analysis_run (
         id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
         project_id BIGINT NULL COMMENT '项目ID',
@@ -957,11 +1015,7 @@ CREATE_TABLE_SQL_LIST = [
 ]
 
 OBSOLETE_TABLE_NAMES = (
-    "t_mt_py_fem_response_overview",
     "t_mt_py_fem_responses",
-    "t_mt_py_fem_displacement_responses",
-    "t_mt_py_fem_strain_responses",
-    "t_mt_py_fem_stress_responses",
     "t_mt_py_fem_relative_error",
     "t_mt_py_fem_confidence",
     "t_mt_py_fem_displacement_scale_factor",
