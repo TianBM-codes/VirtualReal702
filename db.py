@@ -111,6 +111,50 @@ CREATE_TABLE_SQL_LIST = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='试验静力结果表';
     """,
     """
+    CREATE TABLE IF NOT EXISTS t_mt_py_test_frf_curve (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        curve_name VARCHAR(255) NOT NULL COMMENT '曲线名称',
+        curve_no INT NOT NULL COMMENT '曲线序号',
+        title VARCHAR(255) NULL COMMENT '标题',
+        frf_type VARCHAR(64) NULL COMMENT '频响类型',
+        response_node INT NULL COMMENT '响应节点',
+        response_dir INT NULL COMMENT '响应方向',
+        reference_node INT NULL COMMENT '激励节点',
+        reference_dir INT NULL COMMENT '激励方向',
+        x_type INT NULL COMMENT '横坐标类型',
+        y_type INT NULL COMMENT '纵坐标类型',
+        denominator_type INT NULL COMMENT '分母物理量类型',
+        z_type INT NULL COMMENT 'Z类型',
+        ordinate_type INT NULL COMMENT '纵坐标数据类型',
+        abscissa_spacing INT NULL COMMENT '横坐标间距类型',
+        n_points INT NOT NULL DEFAULT 0 COMMENT '点数',
+        source_file VARCHAR(1024) NULL COMMENT '源文件路径',
+        extra_json JSON NULL COMMENT '扩展信息',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_curve_name (pid, curve_name),
+        KEY idx_pid_curve_no (pid, curve_no)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='试验FRF曲线信息表';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS t_mt_py_test_frf_point (
+        id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+        pid BIGINT NOT NULL COMMENT '工程ID',
+        curve_id BIGINT NOT NULL COMMENT '曲线ID',
+        point_no INT NOT NULL COMMENT '点序号',
+        frequency DOUBLE NOT NULL COMMENT '频率',
+        real_value DOUBLE NOT NULL COMMENT '实部',
+        imag_value DOUBLE NOT NULL COMMENT '虚部',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_pid_curve_point (pid, curve_id, point_no),
+        KEY idx_pid_curve_freq (pid, curve_id, frequency),
+        KEY idx_curve_id (curve_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='试验FRF曲线点数据表';
+    """,
+    """
     CREATE TABLE IF NOT EXISTS t_mt_py_test_coord (
         id INT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
         pid BIGINT NOT NULL COMMENT '工程ID',

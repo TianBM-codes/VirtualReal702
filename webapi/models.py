@@ -24,6 +24,16 @@ class SensorPositionRequest(BaseModel):
     project_id: int
 
 
+class FrfNamesRequest(BaseModel):
+    project_id: int
+
+
+class FrfCurveRequest(BaseModel):
+    project_id: int
+    name: str
+    index: int = Field(ge=1, le=4)
+
+
 class DeformSensorPositionRequest(BaseModel):
     project_id: int
     scale: float = 1.0

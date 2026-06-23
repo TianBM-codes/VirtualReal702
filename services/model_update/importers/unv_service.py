@@ -5,6 +5,12 @@ import numpy as np
 
 from db import get_connection, ensure_tables_exist, clear_unv_tables
 from FemToolsUNVParser import parse_unv
+from services.model_update.importers.unv_frf_service import (
+    get_project_frf_curve,
+    get_project_frf_names,
+    import_unv_frf_data,
+    list_dataset_ids,
+)
 from src.l3.core.errors import NotFoundError, ValidationError
 from services.model_update.analysis.console_log_service import safe_write_console_event
 from services.model_update.analysis.project_config_service import (
@@ -422,6 +428,20 @@ def parse_unv_file(file_path):
     return test_nodes, test_elements, test_modes, message
 
 
+def _summarize_imported_sections(*, has_dataset55: bool, has_dataset58: bool) -> tuple[list[str], list[str]]:
+    imported_sections = []
+    result_kinds = []
+    if has_dataset55:
+        imported_sections.append("dataset55")
+    if has_dataset58:
+        imported_sections.append("dataset58")
+    if has_dataset55:
+        result_kinds.append("modal_or_static")
+    if has_dataset58:
+        result_kinds.append("frf")
+    return imported_sections, result_kinds
+
+
 def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
     """
     导入unv文件至数据库
@@ -432,90 +452,117 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
     :return:
     """
     ensure_tables_exist()
-    try:
-        test_nodes, test_elements, test_modes, message = parse_unv_file(file_path)
-    except KeyError as e:
-        raise e
-    result_kind = _classify_unv_result(message, test_modes)
+    dataset_ids = set(list_dataset_ids(file_path))
+    has_dataset55 = "55" in dataset_ids
+    has_dataset58 = "58" in dataset_ids
+    if not has_dataset55 and not has_dataset58:
+        raise ValidationError("UNV file does not contain supported dataset 55/58 content", {"file_path": file_path})
+
+    test_nodes = []
+    test_elements = []
+    test_modes = []
+    message = {}
+    result_kind = None
+    if has_dataset55:
+        try:
+            test_nodes, test_elements, test_modes, message = parse_unv_file(file_path)
+        except KeyError as e:
+            raise e
+        result_kind = _classify_unv_result(message, test_modes)
 
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
-        if clear_before_insert:
+        if has_dataset55 and clear_before_insert:
             clear_unv_tables(cursor, project_id)
             _clear_measuring_points(cursor, project_id)
 
-        node_sql = """
-        INSERT INTO t_mt_py_test_node (nid, pid, fid, ics, ocs, x, y, z)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """
-
-        for node in test_nodes:
-            cursor.execute(node_sql, (
-                str(node['nid']),
-                project_id,
-                file_id,
-                _safe_int(node["ics"]),
-                _safe_int(node["ocs"]),
-                _safe_float(node["x"]),
-                _safe_float(node["y"]),
-                _safe_float(node["z"])
-            ))
-
-        measuring_point_count = _insert_measuring_points(cursor, project_id, test_nodes)
-
-        element_sql = """
-        INSERT INTO t_mt_py_test_element (
-            element_no, pid, element_type,
-            point1, point2, point3, point4
-        ) VALUES (
-            %s, %s, %s, %s,
-            %s, %s, %s
-        )
-        """
-
-        for elem in test_elements:
-            cursor.execute(element_sql, (
-                _safe_int(elem["element_no"]),
-                project_id,
-                elem["element_type"],
-                _safe_int(elem.get("point1")),
-                _safe_int(elem.get("point2")),
-                _safe_int(elem.get("point3")),
-                _safe_int(elem.get("point4")),
-            ))
-
         static_result_count = 0
-        if result_kind == "static":
-            static_result_count = _insert_static_results(cursor, project_id, file_id, test_modes)
-        else:
-            _insert_dynamic_modal_data(cursor, project_id, file_id, test_modes, message)
+        measuring_point_count = 0
+        project_config = None
+        if has_dataset55:
+            node_sql = """
+            INSERT INTO t_mt_py_test_node (nid, pid, fid, ics, ocs, x, y, z)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """
 
-        project_config = save_test_model_dimensions(
-            project_id=project_id,
-            points=[
-                (
-                    _safe_float(node["x"]) or 0.0,
-                    _safe_float(node["y"]) or 0.0,
-                    _safe_float(node["z"]) or 0.0,
-                )
-                for node in test_nodes
-            ],
-            cursor=cursor,
-        )
-        project_config = save_test_data_mode(
-            project_id=project_id,
-            test_data_mode="modal_unv" if result_kind == "dynamic" else "static_unv",
-            test_data_source="unv",
-            cursor=cursor,
-        )
+            for node in test_nodes:
+                cursor.execute(node_sql, (
+                    str(node['nid']),
+                    project_id,
+                    file_id,
+                    _safe_int(node["ics"]),
+                    _safe_int(node["ocs"]),
+                    _safe_float(node["x"]),
+                    _safe_float(node["y"]),
+                    _safe_float(node["z"])
+                ))
+
+            measuring_point_count = _insert_measuring_points(cursor, project_id, test_nodes)
+
+            element_sql = """
+            INSERT INTO t_mt_py_test_element (
+                element_no, pid, element_type,
+                point1, point2, point3, point4
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s
+            )
+            """
+
+            for elem in test_elements:
+                cursor.execute(element_sql, (
+                    _safe_int(elem["element_no"]),
+                    project_id,
+                    elem["element_type"],
+                    _safe_int(elem.get("point1")),
+                    _safe_int(elem.get("point2")),
+                    _safe_int(elem.get("point3")),
+                    _safe_int(elem.get("point4")),
+                ))
+
+            if result_kind == "static":
+                static_result_count = _insert_static_results(cursor, project_id, file_id, test_modes)
+            else:
+                _insert_dynamic_modal_data(cursor, project_id, file_id, test_modes, message)
+
+            project_config = save_test_model_dimensions(
+                project_id=project_id,
+                points=[
+                    (
+                        _safe_float(node["x"]) or 0.0,
+                        _safe_float(node["y"]) or 0.0,
+                        _safe_float(node["z"]) or 0.0,
+                    )
+                    for node in test_nodes
+                ],
+                cursor=cursor,
+            )
+            project_config = save_test_data_mode(
+                project_id=project_id,
+                test_data_mode="modal_unv" if result_kind == "dynamic" else "static_unv",
+                test_data_source="unv",
+                cursor=cursor,
+            )
 
         conn.commit()
+        frf_result = import_unv_frf_data(file_path, project_id) if has_dataset58 else {
+            "project_id": int(project_id),
+            "frf_curve_count": 0,
+            "frf_point_count": 0,
+            "curve_names": [],
+        }
+        imported_sections, result_kinds = _summarize_imported_sections(
+            has_dataset55=has_dataset55,
+            has_dataset58=has_dataset58,
+        )
 
         result = {
             "file_path": file_path,
             "result_kind": result_kind,
+            "imported_sections": imported_sections,
+            "result_kinds": result_kinds,
             "cleared_before_insert": clear_before_insert,
             "test_node_count": len(test_nodes),
             "measuring_point_count": measuring_point_count,
@@ -523,17 +570,22 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
             "test_mode_count": len(test_modes),
             "test_static_result_count": static_result_count,
             "project_config": project_config,
+            "frf_curve_count": int(frf_result.get("frf_curve_count") or 0),
+            "frf_point_count": int(frf_result.get("frf_point_count") or 0),
+            "frf_curve_names": list(frf_result.get("curve_names") or []),
         }
         safe_write_console_event(
             int(project_id),
             "UNV导入完成",
             [
                 f"文件: {file_path}",
-                f"结果类型: {result_kind}",
+                f"导入段落: {', '.join(imported_sections) or 'NONE'}",
+                f"结果类型: {result_kind or 'NONE'}",
                 f"测点数: {len(test_nodes)}",
                 f"测点表记录数: {measuring_point_count}",
                 f"单元数: {len(test_elements)}",
                 f"模态/结果数: {len(test_modes)}",
+                f"FRF曲线数: {int(frf_result.get('frf_curve_count') or 0)}",
             ],
         )
         return result
@@ -621,6 +673,7 @@ def get_modal_shape(project_id):
                                "ItemSize": 3},
                     "elements": {"type": 2, "index": eles, "ItemSize": 2},
                     "modal_shape": modal_shape}
+        return res_json
 
     except Exception:
         raise
@@ -629,7 +682,13 @@ def get_modal_shape(project_id):
         cursor.close()
         conn.close()
 
-    return res_json
+
+def get_frf_names(project_id: int) -> dict:
+    return get_project_frf_names(int(project_id))
+
+
+def get_frf_curve(project_id: int, name: str, index: int) -> dict:
+    return get_project_frf_curve(int(project_id), name, int(index))
 
 
 def get_sensor_relative_error(project_id):
