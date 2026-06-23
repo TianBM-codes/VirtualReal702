@@ -68,6 +68,17 @@ def test_import_unv_data_writes_static_results_to_static_table(monkeypatch):
     monkeypatch.setattr(unv_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(unv_service, "get_connection", lambda: fake_conn)
     monkeypatch.setattr(unv_service, "clear_unv_tables", fake_clear)
+    monkeypatch.setattr(unv_service, "list_dataset_ids", lambda _: ["55"])
+    monkeypatch.setattr(
+        unv_service,
+        "import_unv_frf_data",
+        lambda file_path, project_id: {
+            "project_id": project_id,
+            "frf_curve_count": 0,
+            "frf_point_count": 0,
+            "curve_names": [],
+        },
+    )
     monkeypatch.setattr(
         unv_service,
         "parse_unv_file",
@@ -140,6 +151,17 @@ def test_import_unv_data_keeps_dynamic_modal_tables_for_modal_results(monkeypatc
     monkeypatch.setattr(unv_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(unv_service, "get_connection", lambda: fake_conn)
     monkeypatch.setattr(unv_service, "clear_unv_tables", lambda cursor, pid: None)
+    monkeypatch.setattr(unv_service, "list_dataset_ids", lambda _: ["55"])
+    monkeypatch.setattr(
+        unv_service,
+        "import_unv_frf_data",
+        lambda file_path, project_id: {
+            "project_id": project_id,
+            "frf_curve_count": 0,
+            "frf_point_count": 0,
+            "curve_names": [],
+        },
+    )
     monkeypatch.setattr(
         unv_service,
         "parse_unv_file",
@@ -191,6 +213,17 @@ def test_import_unv_data_saves_test_model_dimensions(monkeypatch):
     monkeypatch.setattr(unv_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(unv_service, "get_connection", lambda: fake_conn)
     monkeypatch.setattr(unv_service, "clear_unv_tables", lambda cursor, pid: None)
+    monkeypatch.setattr(unv_service, "list_dataset_ids", lambda _: ["55"])
+    monkeypatch.setattr(
+        unv_service,
+        "import_unv_frf_data",
+        lambda file_path, project_id: {
+            "project_id": project_id,
+            "frf_curve_count": 0,
+            "frf_point_count": 0,
+            "curve_names": [],
+        },
+    )
     monkeypatch.setattr(
         unv_service,
         "parse_unv_file",
@@ -211,6 +244,11 @@ def test_import_unv_data_saves_test_model_dimensions(monkeypatch):
         "save_test_model_dimensions",
         lambda **kwargs: saved.append(kwargs) or {"test_model_dims": {"x": 3.0, "y": 6.0, "z": 10.0}},
     )
+    monkeypatch.setattr(
+        unv_service,
+        "save_test_data_mode",
+        lambda **kwargs: {"test_model_dims": {"x": 3.0, "y": 6.0, "z": 10.0}},
+    )
 
     result = unv_service.import_unv_data(
         file_path="modal.unv",
@@ -228,6 +266,42 @@ def test_import_unv_data_saves_test_model_dimensions(monkeypatch):
         }
     ]
     assert result["project_config"] == {"test_model_dims": {"x": 3.0, "y": 6.0, "z": 10.0}}
+
+
+def test_import_unv_data_imports_dataset58_without_clearing_modal_tables(monkeypatch):
+    fake_conn = _FakeConnection()
+    clear_calls = []
+
+    monkeypatch.setattr(unv_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(unv_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(unv_service, "clear_unv_tables", lambda cursor, pid: clear_calls.append(pid))
+    monkeypatch.setattr(unv_service, "list_dataset_ids", lambda _: ["58"])
+    monkeypatch.setattr(
+        unv_service,
+        "import_unv_frf_data",
+        lambda file_path, project_id: {
+            "project_id": project_id,
+            "frf_curve_count": 2,
+            "frf_point_count": 6,
+            "curve_names": ["FRF_A", "FRF_B"],
+        },
+    )
+
+    result = unv_service.import_unv_data(
+        file_path="frf.unv",
+        project_id=101,
+        file_id=202,
+        clear_before_insert=True,
+    )
+
+    assert fake_conn.committed is True
+    assert clear_calls == []
+    assert result["result_kind"] is None
+    assert result["imported_sections"] == ["dataset58"]
+    assert result["result_kinds"] == ["frf"]
+    assert result["frf_curve_count"] == 2
+    assert result["frf_point_count"] == 6
+    assert result["frf_curve_names"] == ["FRF_A", "FRF_B"]
 
 
 class _QueryCursor:

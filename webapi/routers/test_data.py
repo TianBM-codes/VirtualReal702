@@ -4,6 +4,8 @@ from services.model_update.importers.unv_service import (
     dump_unv_modal_shapes_to_vtk,
     dump_unv_modal_to_json,
     get_deform_sensor_positions,
+    get_frf_curve,
+    get_frf_names,
     get_modal_shape,
     get_sensor_positions,
     import_unv_data,
@@ -19,6 +21,8 @@ from ..models import (
     DeformSensorPositionRequest,
     DumpJsonRequest,
     DumpVtkRequest,
+    FrfCurveRequest,
+    FrfNamesRequest,
     ImportUnvRequest,
     PlotModalShapeRequest,
     SensorPositionRequest,
@@ -91,6 +95,30 @@ async def get_sensor_relative_error_api(request: Request, body: SensorPositionRe
     await log_request(request, model_to_dict(body))
     try:
         return success_response(get_sensor_relative_error(body.project_id), "测点位置获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/frf/names")
+async def get_frf_names_api(request: Request, body: FrfNamesRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        return success_response(get_frf_names(body.project_id), "FRF 曲线名称获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/frf/curve")
+async def get_frf_curve_api(request: Request, body: FrfCurveRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        return success_response(get_frf_curve(body.project_id, body.name, body.index), "FRF 曲线获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
