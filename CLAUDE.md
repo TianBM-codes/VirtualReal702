@@ -261,6 +261,7 @@ uvicorn src.modal_service.main:app --reload --port 8001
 | `docs/l3/L3-Render-Assembly-Design.md` | How L3 assembles render buffers from L1/L2 data |
 | `docs/l3/L3-Module-Boundary.md` | Router/Service/Repository responsibility separation |
 | `docs/l1/abaqus_dump_guide.md` | Practical guide for running L1 extraction |
+| `docs/Special-Element-Handling.md` | 特殊单元（耦合/连接器/质量/弹簧）在 ODB/INP 两路径的解析与显示约定 |
 | `temp/` | Historical design iterations (v1–v4) and review notes; not authoritative |
 | `docs/model_update/模型修正接口清单.md` | 模型修正全部接口清单（可能部分过时，以代码为准） |
 | `docs/model_update/DSA-Config-Preview-Design.md` | 灵敏度 DSA 配置预览设计 |

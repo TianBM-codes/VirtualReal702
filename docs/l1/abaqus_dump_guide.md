@@ -107,7 +107,20 @@ pip install h5py numpy
 /materials/<name>/ attrs: type; dataset: elastic_table
 /instance_sets/node_sets/<name>   [K] int32
 /instance_sets/element_sets/<name>[L] int32
+
+# 特殊单元（非曲面）——详见 docs/Special-Element-Handling.md
+/couplings/
+    positions  [Nseg*2, 3]  float32  # 分布式耦合(DCOUP3D)展开的 (ref,leaf) 线段对
+                                     # 每 2 个点 = 一段，前端 LineSegments 直接渲染
+/elements_special/<elem_type>/       # 变长/未识别特殊单元的原始连接（存档，L2/L3 暂不读）
+    labels        [M]      int32     # 单元 label
+    conn_flat     [sum]    int32     # 扁平节点 label（注意：是 label，非 row）
+    conn_offsets  [M+1]    int32     # CSR 偏移，第 i 个单元 = conn_flat[off[i]:off[i+1]]
 ```
+
+> **线/点单元**（梁/桁架/CONN3D2/SPRING2/MASS/ROTARYI 等）走普通
+> `/elements/<elem_type>/`：线只写 `labels`+`conn`（无 face 数组），点写
+> `[M,1]` 的 `conn`。L2 `collect_lines`/`collect_points` 据此渲染。
 
 > **`conn` 存 row index**：`conn[i, j]` 是第 i 个单元第 j 个角节点在
 > `/nodes/labels` 数组中的下标（0-based），不是 label 本身。
