@@ -45,6 +45,26 @@ def _apply_host_override(url: str) -> str:
     return new_url
 
 
+def _encode_url_path(url: str) -> str:
+    """对 URL 的 path 段做百分号编码，兜底「发送端传了未编码中文/空格」的情况。
+
+    urllib.request 发请求时按 ASCII 编码请求行，path 里有原始中文会直接抛
+    UnicodeEncodeError。这里对 path 逐段 quote（保留 '/'）；已经编码过的字符
+    （%xx）因为 safe 包含 '%' 不会被二次编码（double-encode）。query/host 不动。
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return url
+    if not parsed.path:
+        return url
+    # safe 保留 '/' 分隔符和 '%'（避免对已编码串二次编码）
+    new_path = urllib.parse.quote(parsed.path, safe="/%")
+    if new_path == parsed.path:
+        return url
+    return urllib.parse.urlunparse(parsed._replace(path=new_path))
+
+
 def _default_dest_dir() -> str:
     """读取 service_config.json 中的 APP_DATA_ROOT 作为默认下载目录。
     懒加载，避免在模块导入时就触发 settings 初始化。"""
@@ -78,6 +98,7 @@ def download_if_url(
         return url_or_path
 
     url_or_path = _apply_host_override(url_or_path)
+    url_or_path = _encode_url_path(url_or_path)
 
     if dest_dir is None:
         dest_dir = _default_dest_dir()
@@ -85,7 +106,9 @@ def download_if_url(
     if dest_name is None:
         parsed = urllib.parse.urlparse(url_or_path)
         # 去掉 query string 后取文件名；URL 没有路径时用 "download"
-        dest_name = os.path.basename(parsed.path.split("?")[0]) or "download"
+        raw_name = os.path.basename(parsed.path.split("?")[0]) or "download"
+        # URL 里的文件名是百分号编码（中文 → %E6...），落盘前还原成可读的中文
+        dest_name = urllib.parse.unquote(raw_name)
 
     os.makedirs(dest_dir, exist_ok=True)
     dest_path = os.path.join(dest_dir, dest_name)
