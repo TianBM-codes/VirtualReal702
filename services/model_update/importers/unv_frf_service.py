@@ -358,10 +358,49 @@ def get_project_frf_names(project_id: int) -> dict:
         conn.close()
 
 
-def get_project_frf_curve(project_id: int, name: str, index: int) -> dict:
-    curve_name = str(name or "").strip()
-    if not curve_name:
-        raise ValidationError("frf curve name is required", {"name": name})
+def _normalize_curve_names(name=None, names=None) -> list[str]:
+    merged = []
+    if name is not None and str(name).strip():
+        merged.append(str(name).strip())
+    for item in list(names or []):
+        text = str(item).strip()
+        if text:
+            merged.append(text)
+    deduped = []
+    seen = set()
+    for item in merged:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _build_curve_line_payload(rows: list[dict], resolved_index: int) -> dict:
+    x_values = []
+    series = []
+    for row in rows:
+        freq = float(row["frequency"])
+        real_value = float(row["real_value"])
+        imag_value = float(row["imag_value"])
+        h = complex(real_value, imag_value)
+        if resolved_index == 1:
+            value = h.real
+        elif resolved_index == 2:
+            value = h.imag
+        elif resolved_index == 3:
+            value = float(np.abs(h))
+        else:
+            value = float(np.angle(h, deg=True))
+        x_values.append(freq)
+        series.append([freq, float(value)])
+    return {"x": x_values, "series": series}
+
+
+def get_project_frf_curve(project_id: int, name: str = None, index: int = 1, names=None) -> dict:
+    requested_names = _normalize_curve_names(name=name, names=names)
+    if not requested_names:
+        raise ValidationError("frf curve name is required", {"name": name, "names": names})
     resolved_index = int(index)
     if resolved_index not in (1, 2, 3, 4):
         raise ValidationError("unsupported frf curve index", {"index": index, "allowed": [1, 2, 3, 4]})
@@ -377,19 +416,6 @@ def get_project_frf_curve(project_id: int, name: str, index: int) -> dict:
     try:
         cursor.execute(
             """
-            SELECT id, curve_name
-            FROM t_mt_py_test_frf_curve
-            WHERE pid = %s AND curve_name = %s
-            LIMIT 1
-            """,
-            (int(project_id), curve_name),
-        )
-        curve_row = cursor.fetchone()
-        if curve_row is None:
-            raise NotFoundError("FRF curve was not found", {"project_id": int(project_id), "name": curve_name})
-
-        cursor.execute(
-            """
             SELECT curve_name
             FROM t_mt_py_test_frf_curve
             WHERE pid = %s
@@ -398,49 +424,68 @@ def get_project_frf_curve(project_id: int, name: str, index: int) -> dict:
             (int(project_id),),
         )
         names = [str(row["curve_name"]) for row in (cursor.fetchall() or [])]
+        lines = []
+        missing_names = []
+        for curve_name in requested_names:
+            cursor.execute(
+                """
+                SELECT id, curve_name
+                FROM t_mt_py_test_frf_curve
+                WHERE pid = %s AND curve_name = %s
+                LIMIT 1
+                """,
+                (int(project_id), curve_name),
+            )
+            curve_row = cursor.fetchone()
+            if curve_row is None:
+                missing_names.append(curve_name)
+                continue
 
-        cursor.execute(
-            """
-            SELECT frequency, real_value, imag_value
-            FROM t_mt_py_test_frf_point
-            WHERE pid = %s AND curve_id = %s
-            ORDER BY point_no
-            """,
-            (int(project_id), int(curve_row["id"])),
-        )
-        rows = cursor.fetchall() or []
-        if not rows:
-            raise NotFoundError(
-                "FRF curve points were not found",
-                {"project_id": int(project_id), "name": curve_name},
+            cursor.execute(
+                """
+                SELECT frequency, real_value, imag_value
+                FROM t_mt_py_test_frf_point
+                WHERE pid = %s AND curve_id = %s
+                ORDER BY point_no
+                """,
+                (int(project_id), int(curve_row["id"])),
+            )
+            rows = cursor.fetchall() or []
+            if not rows:
+                raise NotFoundError(
+                    "FRF curve points were not found",
+                    {"project_id": int(project_id), "name": curve_name},
+                )
+            line_payload = _build_curve_line_payload(rows, resolved_index)
+            lines.append(
+                {
+                    "line_name": str(curve_row["curve_name"]),
+                    "x": line_payload["x"],
+                    "series": line_payload["series"],
+                }
             )
 
-        x_values = []
-        series = []
-        for row in rows:
-            freq = float(row["frequency"])
-            real_value = float(row["real_value"])
-            imag_value = float(row["imag_value"])
-            h = complex(real_value, imag_value)
-            if resolved_index == 1:
-                value = h.real
-            elif resolved_index == 2:
-                value = h.imag
-            elif resolved_index == 3:
-                value = float(np.abs(h))
-            else:
-                value = float(np.angle(h, deg=True))
-            x_values.append(freq)
-            series.append([freq, float(value)])
+        if missing_names:
+            raise NotFoundError(
+                "some FRF curves were not found",
+                {"project_id": int(project_id), "missing_names": missing_names},
+            )
+        if not lines:
+            raise NotFoundError(
+                "FRF curve was not found",
+                {"project_id": int(project_id), "requested_names": requested_names},
+            )
 
         return {
             "project_id": int(project_id),
             "names": names,
-            "line_name": str(curve_row["curve_name"]),
             "x_name": "Frequency[Hz]",
             "y_name": y_axis_map[resolved_index],
-            "x": x_values,
-            "series": series,
+            "line_name": str(lines[0]["line_name"]),
+            "x": list(lines[0]["x"]),
+            "series": list(lines[0]["series"]),
+            "line_names": [str(item["line_name"]) for item in lines],
+            "lines": lines,
         }
     finally:
         cursor.close()

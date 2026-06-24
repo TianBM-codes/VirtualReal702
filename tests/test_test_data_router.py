@@ -72,13 +72,22 @@ def test_frf_query_routes_proxy_service_payloads(monkeypatch):
     monkeypatch.setattr(
         test_data,
         "get_frf_curve",
-        lambda project_id, name, index: {
+        lambda project_id, name=None, names=None, index=1: {
             "project_id": project_id,
             "names": ["FRF_A", "FRF_B"],
-            "line_name": name,
+            "line_name": (names[0] if names else name),
+            "line_names": list(names or ([name] if name else [])),
             "x_name": "Frequency[Hz]",
             "y_name": "Phase",
             "x": [1.0],
+            "lines": [
+                {
+                    "line_name": item,
+                    "x": [1.0],
+                    "series": [[1.0, float(index)]],
+                }
+                for item in (names or ([name] if name else []))
+            ],
             "series": [[1.0, float(index)]],
         },
     )
@@ -98,3 +107,12 @@ def test_frf_query_routes_proxy_service_payloads(monkeypatch):
     assert curve_response.json()["data"]["y_name"] == "Phase"
     assert curve_response.json()["data"]["x"] == [1.0]
     assert curve_response.json()["data"]["series"] == [[1.0, 4.0]]
+
+    multi_curve_response = client.post(
+        "/frf/curve",
+        json={"project_id": 18, "names": ["FRF_A", "FRF_B"], "index": 3},
+    )
+    assert multi_curve_response.status_code == 200
+    assert multi_curve_response.json()["data"]["line_names"] == ["FRF_A", "FRF_B"]
+    assert len(multi_curve_response.json()["data"]["lines"]) == 2
+    assert multi_curve_response.json()["data"]["lines"][1]["line_name"] == "FRF_B"

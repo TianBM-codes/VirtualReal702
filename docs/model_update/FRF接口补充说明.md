@@ -121,7 +121,8 @@
 | 参数名 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `project_id` | `int` | 是 | 项目 ID |
-| `name` | `string` | 是 | FRF 曲线名称 |
+| `name` | `string` | 否 | 单条 FRF 曲线名称 |
+| `names` | `string[]` | 否 | 多条 FRF 曲线名称列表；与 `name` 二选一，或同时传入 |
 | `index` | `int` | 是 | 数据类型，`1=实部`，`2=虚部`，`3=幅值`，`4=相位` |
 
 请求示例：
@@ -150,6 +151,61 @@
   "series": [
     [1.0, 12.5],
     [2.0, 15.2]
+  ]
+}
+```
+
+多曲线请求示例：
+
+```json
+{
+  "project_id": 101,
+  "names": [
+    "TEST FRF 1 (+3UZ : +29UZ)",
+    "TEST FRF 2 (+5UX : +29UZ)"
+  ],
+  "index": 3
+}
+```
+
+多曲线返回 `data` 示例：
+
+```json
+{
+  "project_id": 101,
+  "names": [
+    "TEST FRF 1 (+3UZ : +29UZ)",
+    "TEST FRF 2 (+5UX : +29UZ)"
+  ],
+  "x_name": "Frequency[Hz]",
+  "y_name": "Magnitude",
+  "line_name": "TEST FRF 1 (+3UZ : +29UZ)",
+  "line_names": [
+    "TEST FRF 1 (+3UZ : +29UZ)",
+    "TEST FRF 2 (+5UX : +29UZ)"
+  ],
+  "x": [1.0, 2.0],
+  "series": [
+    [1.0, 12.5],
+    [2.0, 15.2]
+  ],
+  "lines": [
+    {
+      "line_name": "TEST FRF 1 (+3UZ : +29UZ)",
+      "x": [1.0, 2.0],
+      "series": [
+        [1.0, 12.5],
+        [2.0, 15.2]
+      ]
+    },
+    {
+      "line_name": "TEST FRF 2 (+5UX : +29UZ)",
+      "x": [1.0, 2.0],
+      "series": [
+        [1.0, 10.2],
+        [2.0, 11.6]
+      ]
+    }
   ]
 }
 ```

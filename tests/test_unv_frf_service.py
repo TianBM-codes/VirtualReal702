@@ -203,17 +203,21 @@ def test_import_unv_frf_data_replaces_same_name_curve_points(monkeypatch):
 
 def test_get_project_frf_curve_uses_expected_component_algorithms(monkeypatch):
     cursor = _FrfCursor()
-    cursor.curves = [{"id": 1, "pid": 7, "curve_name": "FRF_A", "curve_no": 1}]
+    cursor.curves = [
+        {"id": 1, "pid": 7, "curve_name": "FRF_A", "curve_no": 1},
+        {"id": 2, "pid": 7, "curve_name": "FRF_B", "curve_no": 2},
+    ]
     cursor.points = [
         {"pid": 7, "curve_id": 1, "point_no": 1, "frequency": 1.0, "real_value": 3.0, "imag_value": 4.0},
         {"pid": 7, "curve_id": 1, "point_no": 2, "frequency": 2.0, "real_value": 1.0, "imag_value": 0.0},
+        {"pid": 7, "curve_id": 2, "point_no": 1, "frequency": 1.5, "real_value": 6.0, "imag_value": 8.0},
     ]
     conn = _FrfConnection(cursor)
 
     monkeypatch.setattr(unv_frf_service, "get_connection", lambda: conn)
 
     names_payload = unv_frf_service.get_project_frf_names(7)
-    assert names_payload == {"project_id": 7, "names": ["FRF_A"]}
+    assert names_payload == {"project_id": 7, "names": ["FRF_A", "FRF_B"]}
 
     real_payload = unv_frf_service.get_project_frf_curve(7, "FRF_A", 1)
     imag_payload = unv_frf_service.get_project_frf_curve(7, "FRF_A", 2)
@@ -238,3 +242,16 @@ def test_get_project_frf_curve_uses_expected_component_algorithms(monkeypatch):
     assert phase_payload["series"][0][0] == 1.0
     assert round(phase_payload["series"][0][1], 6) == round(53.13010235415598, 6)
     assert phase_payload["line_name"] == "FRF_A"
+
+    multi_payload = unv_frf_service.get_project_frf_curve(7, names=["FRF_A", "FRF_B"], index=3)
+    assert multi_payload["line_names"] == ["FRF_A", "FRF_B"]
+    assert multi_payload["x_name"] == "Frequency[Hz]"
+    assert multi_payload["y_name"] == "Magnitude"
+    assert multi_payload["lines"][0]["line_name"] == "FRF_A"
+    assert multi_payload["lines"][0]["x"] == [1.0, 2.0]
+    assert multi_payload["lines"][0]["series"] == [[1.0, 5.0], [2.0, 1.0]]
+    assert multi_payload["lines"][1]["line_name"] == "FRF_B"
+    assert multi_payload["lines"][1]["x"] == [1.5]
+    assert multi_payload["lines"][1]["series"] == [[1.5, 10.0]]
+    assert multi_payload["line_name"] == "FRF_A"
+    assert multi_payload["x"] == [1.0, 2.0]

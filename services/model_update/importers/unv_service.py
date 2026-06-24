@@ -687,8 +687,8 @@ def get_frf_names(project_id: int) -> dict:
     return get_project_frf_names(int(project_id))
 
 
-def get_frf_curve(project_id: int, name: str, index: int) -> dict:
-    return get_project_frf_curve(int(project_id), name, int(index))
+def get_frf_curve(project_id: int, name: str = None, index: int = 1, names=None) -> dict:
+    return get_project_frf_curve(int(project_id), name=name, names=names, index=int(index))
 
 
 def get_sensor_relative_error(project_id):

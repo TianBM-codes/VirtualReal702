@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator
 
 
 class ImportUnvRequest(BaseModel):
@@ -30,8 +30,31 @@ class FrfNamesRequest(BaseModel):
 
 class FrfCurveRequest(BaseModel):
     project_id: int
-    name: str
+    name: Optional[str] = None
+    names: Optional[List[str]] = None
     index: int = Field(ge=1, le=4)
+
+    @root_validator
+    def _validate_name_fields(cls, values):
+        name = str(values.get("name") or "").strip()
+        raw_names = list(values.get("names") or [])
+        names = [str(item).strip() for item in raw_names if str(item).strip()]
+        if not name and not names:
+            raise ValueError("either name or names is required")
+        if name and names:
+            names.insert(0, name)
+        elif name:
+            names = [name]
+        deduped = []
+        seen = set()
+        for item in names:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        values["name"] = deduped[0] if deduped else None
+        values["names"] = deduped
+        return values
 
 
 class DeformSensorPositionRequest(BaseModel):

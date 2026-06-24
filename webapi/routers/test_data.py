@@ -118,7 +118,10 @@ async def get_frf_names_api(request: Request, body: FrfNamesRequest):
 async def get_frf_curve_api(request: Request, body: FrfCurveRequest):
     await log_request(request, model_to_dict(body))
     try:
-        return success_response(get_frf_curve(body.project_id, body.name, body.index), "FRF 曲线获取成功")
+        return success_response(
+            get_frf_curve(body.project_id, name=body.name, names=body.names, index=body.index),
+            "FRF 曲线获取成功",
+        )
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
