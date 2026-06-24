@@ -41,7 +41,11 @@ CONM1/2、CMASS1/2 → `MASS`。
 `1e-6`）拆分：非零长度留在 `SPRING2`/`DASHPOT2`（线），重合的移到
 `SPRING1`/`DASHPOT1`（点，只存第一个节点）。日志示例
 `N zero-length SPRING2 → SPRING1 (point)`。
-（接地弹簧——只有 1 个有效 GRID——在更早一步因 `len(nids) < n_corner` 被跳过。）
+
+**接地弹簧**（一端 grounded，只有 1 个有效 GRID）：在分组阶段命中
+`len(nids) < n_corner` 时，若是 `SPRING2`/`DASHPOT2` 则改判为
+`SPRING1`/`DASHPOT1`，按其唯一 GRID 落点显示（而非丢弃）；其它单元类型
+GRID 不足仍跳过（计 `*_no_grid`）。完全没有有效 GRID 的弹簧仍跳过。
 
 ## 类型码表三处必须同步
 
@@ -102,17 +106,6 @@ INP 路径在同名 `couplings/positions` 数据集写（`exporter._append_coupl
 3. **真正未识别的单元类型**（不在三处码表、又不是星形）仅归档进
    `elements_special/`，不渲染。运行日志里表现为
    `special type X (N elems): parsed (non-surface)`。
-
-## 待办（TODO）
-
-- **接地弹簧/阻尼显示**（2026-06-24 记）：只有 1 个有效 GRID 的接地
-  弹簧（CELAS/CBUSH 另一端 grounded）在 `src/l1/bdf_pack.py` 的
-  `len(nids) < n_corner` 判断处就被整条跳过（计入 `*_no_grid` 警告计数），
-  既不进 `SPRING2` 线组也不进 `SPRING1` 点组，因此**完全不显示**。
-  这与零长度弹簧（两端都有节点但坐标重合 → 已兜底为点）是**两码事**。
-  期望行为：接地弹簧按其唯一 GRID 落到 `SPRING1`/`DASHPOT1` 点显示。
-  改动点：放宽该跳过分支，对 `n_corner==2` 但只有 1 个有效 GRID 的
-  弹簧/阻尼，改判为点类型（n_corner=1）而非丢弃。
 
 ## 相关代码
 
