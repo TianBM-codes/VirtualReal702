@@ -147,6 +147,12 @@ def collect_faces(geom_h5):
             continue
 
         fnc = grp["face_node_conn"][:]   # [Mf, w]
+        # Defensive: some producers (older bdf_pack) wrote an empty 1-D
+        # face_node_conn for zero-face line/point types instead of omitting it.
+        # Such groups have no faces to collect — skip rather than crash on the
+        # `Mf, w = fnc.shape` unpack.
+        if fnc.ndim != 2 or fnc.shape[0] == 0:
+            continue
         fei = grp["face_elem_idx"][:]    # [Mf]
         fsq = grp["face_seq"][:]         # [Mf]
         Mf, w = fnc.shape

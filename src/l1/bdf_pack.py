@@ -521,10 +521,11 @@ def _pack_model(model, inst_name, workspace):
                 grp.create_dataset('face_seq',
                                    data=np.array(fseq_list, dtype=np.int32))
                 grp.create_dataset('face_node_conn', data=fnc_padded)
-            else:
-                grp.create_dataset('face_elem_idx',  data=np.array([], dtype=np.int32))
-                grp.create_dataset('face_seq',       data=np.array([], dtype=np.int32))
-                grp.create_dataset('face_node_conn', data=np.array([], dtype=np.int32))
+            # Zero-face element types (line/point/spring/mass: B31, MASS, SPRING…)
+            # write NO face datasets — consistent with abaqus_dump / inp exporter
+            # so L2 collect_faces skips them via the "face_node_conn not in grp"
+            # check. (Writing an empty 1-D face_node_conn would crash collect_faces
+            # at `Mf, w = fnc.shape`.)
 
             # Per-element color-code datasets (mirrors l1_pack.py)
             mat_arr = np.array(
