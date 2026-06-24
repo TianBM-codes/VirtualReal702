@@ -18,8 +18,23 @@ def test_select_optimization_parameters_for_update_marks_only_requested_rows(mon
         },
     )
     monkeypatch.setattr(
+        "services.model_update.analysis.fem_response_service.list_optimization_parameters",
+        lambda project_id: {
+            "parameters": [
+                {"parameter_name": "P1", "usage_scope": ["SENSITIVITY"]},
+                {"parameter_name": "P2", "usage_scope": ["SENSITIVITY", "UPDATE"]},
+                {"parameter_name": "P3", "usage_scope": ["SENSITIVITY"]},
+            ]
+        },
+    )
+    monkeypatch.setattr(
         inp_service,
         "update_optimization_parameter_usage",
+        lambda project_id, parameters: captured.update({"project_id": project_id, "parameters": parameters})
+        or {"project_id": project_id, "updated_parameter_count": len(parameters)},
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.fem_response_service.update_optimization_parameter_usage",
         lambda project_id, parameters: captured.update({"project_id": project_id, "parameters": parameters})
         or {"project_id": project_id, "updated_parameter_count": len(parameters)},
     )
@@ -90,6 +105,8 @@ def test_create_modal_match_response_catalog_entries_writes_selected_pairs(monke
     )
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr("services.model_update.analysis.fem_response_service.ensure_tables_exist", lambda: None)
+    monkeypatch.setattr("services.model_update.analysis.fem_response_service.get_connection", lambda: fake_conn)
 
     result = inp_service.create_modal_match_response_catalog_entries(
         18,
@@ -108,7 +125,7 @@ def test_create_modal_match_response_catalog_entries_writes_selected_pairs(monke
     first_insert = insert_calls[0][1]
     second_insert = insert_calls[1][1]
     assert first_insert[2] == "FREQ_MODE_2"
-    assert second_insert[2] == "MAC_MODE_2"
+    assert second_insert[2] == "MAC_MODE_FE2_TEST1"
     assert first_insert[12] == 0.05
     assert json.loads(first_insert[16]) == ["SOL200"]
     assert json.loads(second_insert[18])["mac"] == 97.5
@@ -118,8 +135,9 @@ def test_create_modal_match_response_catalog_entries_writes_selected_pairs(monke
 
 
 class _ModalFrequencyOptionsCursor:
-    def __init__(self, fem_rows):
+    def __init__(self, fem_rows, project_config=None):
         self.fem_rows = [dict(row) for row in fem_rows]
+        self.project_config = project_config
         self.executed = []
         self.last_sql = ""
 
@@ -132,13 +150,18 @@ class _ModalFrequencyOptionsCursor:
             return [dict(row) for row in self.fem_rows]
         return []
 
+    def fetchone(self):
+        if "FROM t_mt_work_condition_project" in self.last_sql:
+            return {"project_config": self.project_config}
+        return None
+
     def close(self):
         return None
 
 
 class _ModalFrequencyOptionsConnection:
-    def __init__(self, fem_rows):
-        self.cursor_obj = _ModalFrequencyOptionsCursor(fem_rows)
+    def __init__(self, fem_rows, project_config=None):
+        self.cursor_obj = _ModalFrequencyOptionsCursor(fem_rows, project_config=project_config)
 
     def cursor(self, dictionary=False):
         return self.cursor_obj
@@ -155,6 +178,7 @@ def test_get_modal_frequency_response_options_returns_fem_modes(monkeypatch):
         ]
     )
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr("services.model_update.analysis.fem_response_service.get_connection", lambda: fake_conn)
 
     result = inp_service.get_modal_frequency_response_options(18, "FEM")
 
@@ -168,8 +192,7 @@ def test_get_modal_frequency_response_options_returns_fem_modes(monkeypatch):
 
 def test_get_modal_frequency_response_options_returns_unique_test_matches(monkeypatch):
     monkeypatch.setattr(
-        inp_service,
-        "_ensure_modal_correlation_rows",
+        "services.model_update.analysis.fem_response_service._ensure_modal_correlation_rows_for_response",
         lambda project_id: [
             {
                 "test_mode_no": 1,
@@ -197,13 +220,64 @@ def test_get_modal_frequency_response_options_returns_unique_test_matches(monkey
             },
         ],
     )
+    fake_conn = _ModalFrequencyOptionsConnection(
+        [],
+        project_config=json.dumps({"mode_pair": {"mac_threshold": 91}}),
+    )
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr("services.model_update.analysis.fem_response_service.get_connection", lambda: fake_conn)
 
     result = inp_service.get_modal_frequency_response_options(18, "TEST")
 
     assert result["response_source"] == "TEST"
+    assert result["mac_threshold"] == 91.0
     assert result["summary"]["row_count"] == 2
     assert [item["title"] for item in result["columns"]] == ["试验频率", "试验阶次", "计算频率", "计算阶次"]
     assert result["rows"][0]["test_order"] == 1
     assert result["rows"][0]["fem_order"] == 2
     assert result["rows"][1]["test_order"] == 2
     assert result["rows"][1]["fem_order"] == 3
+
+
+def test_get_modal_frequency_response_options_filters_test_matches_by_project_config_threshold(monkeypatch):
+    monkeypatch.setattr(
+        "services.model_update.analysis.fem_response_service._ensure_modal_correlation_rows_for_response",
+        lambda project_id: [
+            {
+                "test_mode_no": 1,
+                "fem_mode_no": 2,
+                "mac": 95.0,
+                "freq_test": 11.0,
+                "freq_fem": 10.8,
+                "freq_error_ratio": -0.018,
+            },
+            {
+                "test_mode_no": 2,
+                "fem_mode_no": 3,
+                "mac": 89.0,
+                "freq_test": 21.0,
+                "freq_fem": 20.9,
+                "freq_error_ratio": -0.005,
+            },
+        ],
+    )
+    fake_conn = _ModalFrequencyOptionsConnection(
+        [],
+        project_config=json.dumps({"mode_pair": {"mac_threshold": 90}}),
+    )
+    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr("services.model_update.analysis.fem_response_service.get_connection", lambda: fake_conn)
+
+    result = inp_service.get_modal_frequency_response_options(18, "TEST")
+
+    assert result["response_source"] == "TEST"
+    assert result["mac_threshold"] == 90.0
+    assert result["summary"]["row_count"] == 1
+    assert result["rows"] == [
+        {
+            "test_frequency_hz": 11.0,
+            "test_order": 1,
+            "fem_frequency_hz": 10.8,
+            "fem_order": 2,
+        }
+    ]

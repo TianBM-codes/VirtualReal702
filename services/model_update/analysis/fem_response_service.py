@@ -1,5 +1,7 @@
 """FEM response catalog helpers."""
 
+import json
+
 from .fem_matching_service import *
 from .fem_catalog_service import (
     _ALLOWED_MODAL_RESPONSE_TYPES,
@@ -27,6 +29,52 @@ def _match_modal_modes_for_response(project_id: int, **kwargs):
     from .fem_correlation_service import match_modal_modes
 
     return match_modal_modes(project_id, **kwargs)
+
+
+def _load_work_condition_project_config(project_id: int) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT project_config
+            FROM t_mt_work_condition_project
+            WHERE project_id = %s
+            LIMIT 1
+            """,
+            (int(project_id),),
+        )
+        row = cursor.fetchone() or {}
+    finally:
+        cursor.close()
+        conn.close()
+
+    raw_config = row.get("project_config")
+    if not raw_config:
+        return {}
+    if isinstance(raw_config, dict):
+        project_config = raw_config
+    else:
+        try:
+            project_config = json.loads(raw_config)
+        except Exception as exc:
+            raise ValidationError(
+                "project_config is not valid JSON",
+                {"project_id": int(project_id), "error": str(exc)},
+            )
+    return dict(project_config) if isinstance(project_config, dict) else {}
+
+
+def _resolve_modal_frequency_options_mac_threshold(project_id: int) -> Optional[float]:
+    project_config = _load_work_condition_project_config(int(project_id))
+    mode_pair = project_config.get("mode_pair")
+    if not isinstance(mode_pair, dict):
+        return None
+    raw_threshold = mode_pair.get("mac_threshold")
+    if raw_threshold is None:
+        return None
+    return _normalize_modal_mac_threshold_value(raw_threshold)
+
 
 def build_fe_response_catalog(project_id, overwrite=True, include_test_modes=True, include_node_dofs=True):
     # Build a normalized response directory that mixes modal frequencies and
@@ -516,9 +564,19 @@ def get_modal_frequency_response_options(project_id: int, response_source: str) 
             },
         }
 
+    resolved_mac_threshold = _resolve_modal_frequency_options_mac_threshold(int(project_id))
     rows = _ensure_modal_correlation_rows_for_response(int(project_id))
     candidates = sorted(
-        [dict(row) for row in rows],
+        [
+            dict(row) for row in rows
+            if (
+                resolved_mac_threshold is None
+                or (
+                    row.get("mac") is not None
+                    and float(row["mac"]) >= float(resolved_mac_threshold)
+                )
+            )
+        ],
         key=lambda item: (
             -(float(item["mac"]) if item.get("mac") is not None else -1.0),
             abs(float(item["freq_error_ratio"])) if item.get("freq_error_ratio") is not None else math.inf,
@@ -552,6 +610,7 @@ def get_modal_frequency_response_options(project_id: int, response_source: str) 
     return {
         "project_id": int(project_id),
         "response_source": resolved_source,
+        "mac_threshold": resolved_mac_threshold,
         "columns": columns,
         "rows": matched_rows,
         "summary": {
