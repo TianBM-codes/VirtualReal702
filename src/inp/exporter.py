@@ -72,8 +72,10 @@ _ELEM_TYPE_CODE: Dict[str, int] = {
     # line elements — truss / beam / pipe (no faces, rendered as LineSegments)
     "T3D2": 9,  "B31": 9,  "B31OS": 9,  "PIPE31": 9,
     "T3D3": 10, "B32": 10, "B32OS": 10, "PIPE32": 10,
-    # point elements — concentrated mass / rotary inertia (rendered as Points)
-    "MASS": 11, "ROTARYI": 11,
+    # 2-node connector / spring / dashpot elements — rendered as LineSegments
+    "CONN3D2": 9, "SPRING2": 9, "SPRINGA": 9, "DASHPOT2": 9, "DASHPOTA": 9,
+    # point elements — concentrated mass / rotary inertia / grounded spring/dashpot
+    "MASS": 11, "ROTARYI": 11, "SPRING1": 11, "DASHPOT1": 11,
 }
 
 # Number of *corner* nodes per type code (used to slice connectivity)
@@ -635,7 +637,11 @@ def _append_coupling_lines(h5_path: str, model, part) -> None:
     seg_list: List[np.ndarray] = []
 
     for coup in asm.couplings:
-        if coup.coupling_type != "KINEMATIC":
+        # Both KINEMATIC and DISTRIBUTING couplings carry a ref node + surface and
+        # expand to identical ref→leaf spider lines; render both. (In the ODB path
+        # distributing couplings instead surface as DCOUP3D elements — see
+        # src/l1/abaqus_dump.py — but reach the same couplings/positions format.)
+        if coup.coupling_type not in ("KINEMATIC", "DISTRIBUTING"):
             continue
 
         # Resolve reference node

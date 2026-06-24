@@ -98,12 +98,19 @@ ELEM_TYPE_CODE = {
     # line elements: truss / beam (codes 9, 10 — no surface faces)
     'T3D2':   9, 'B31':   9, 'B31OS': 9, 'PIPE31': 9,
     'T3D3':  10, 'B32':  10, 'B32OS':10, 'PIPE32':10,
+    # 2-node connector / spring / dashpot elements (code 9 — line segments)
+    'CONN3D2': 9, 'SPRING2': 9, 'SPRINGA': 9, 'DASHPOT2': 9, 'DASHPOTA': 9,
+    # point elements: concentrated mass / rotary inertia / grounded spring /
+    # grounded dashpot (code 11 — single node, no faces). Kept in sync with
+    # src/l2/ingest.py POINT_ELEM_CODES so L2 collect_points() renders them.
+    'MASS':  11, 'ROTARYI': 11, 'SPRING1': 11, 'DASHPOT1': 11,
 }
 
 ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8,
                  8: 3,   # STRI65 corner count
                  9: 2,   # LINE2
-                 10: 2}  # LINE3 (2 corners + 1 mid-node)
+                 10: 2,  # LINE3 (2 corners + 1 mid-node)
+                 11: 1}  # MASS / ROTARYI (single node)
 
 HIGH_ORDER_CODES = {5, 6, 7, 8, 10}  # 8=STRI65, 10=LINE3 have mid-nodes
 
@@ -296,6 +303,17 @@ def npsave(path, arr):
 def _pos_str(position_const):
     s = str(position_const)
     return s.split('.')[-1]
+
+
+def _block_sp_num(blk):
+    """Return the section-point number for a bulkDataBlock, or None.
+
+    Module-level so both dump_results and _extract_ip_invariants can use it
+    (it was previously only a nested def inside dump_results, which raised
+    NameError when called from _extract_ip_invariants).
+    """
+    sp_obj = getattr(blk, 'sectionPoint', None)
+    return int(sp_obj.number) if sp_obj is not None else None
 
 
 def _fmt_t(secs):
@@ -687,10 +705,43 @@ def dump_geometry(odb, raw_dir, meta):
         total_elems = 0
         has_highorder = False
 
+        # Remaining non-surface / "special" elements not in the type table above
+        # — primarily distributing couplings (DCOUP3D / DCOUP2D) with variable
+        # 1-ref-to-N-leaf connectivity, plus exotic connectors/dashpots. We still
+        # parse them instead of silently dropping: keep raw connectivity, and
+        # expand the star-shaped ones into (ref, leaf) line segments so the front
+        # end's existing RBE2-spider display (couplings/positions) can draw them.
+        # (2-node connectors/springs and MASS points are now recognised line/
+        # point types and flow through the normal elements/ path above.)
+        special_elems = {}    # etype -> {'labels': ndarray, 'conn': [list-of-labels, ...]}
+        coupling_segs = []    # flat list of [3]-coord points; every 2 = one segment
+
         for etype, edata in elem_by_type.items():
             etype_code = _resolve_elem_code(etype)
             if etype_code is None:
-                print("    WARNING: unknown type {}, skipped".format(etype))
+                _sp_lbls = np.array(edata['labels'], dtype=np.int32)
+                special_elems[etype] = {'labels': _sp_lbls, 'conn': edata['conn']}
+                # Star expansion: conn[0] = reference/control node, conn[1:] = leaves.
+                # Coords come from THIS instance's node table; nodes belonging to
+                # another instance (e.g. an assembly-level ref point) are skipped,
+                # mirroring the INP exporter's label_to_row.get() behaviour.
+                for _conn in edata['conn']:
+                    if len(_conn) < 2:
+                        continue
+                    _carr   = np.array(_conn, dtype=np.int32)
+                    _rows   = np.searchsorted(node_labels, _carr)
+                    _rows_c = np.clip(_rows, 0, len(node_labels) - 1)
+                    _exact  = node_labels[_rows_c] == _carr      # searchsorted hit?
+                    if not _exact[0]:
+                        continue                                  # ref node not local
+                    _ref_xyz = node_coords[_rows_c[0]]
+                    for _k in range(1, len(_carr)):
+                        if not _exact[_k]:
+                            continue
+                        coupling_segs.append(_ref_xyz)
+                        coupling_segs.append(node_coords[_rows_c[_k]])
+                print("    special type {} ({} elems): parsed (non-surface)".format(
+                    etype, len(_sp_lbls)))
                 continue
 
             n_corner = ELEM_N_CORNER[etype_code]
@@ -734,6 +785,34 @@ def dump_geometry(odb, raw_dir, meta):
                 'n_faces':        n_faces,
                 'etype_code':     etype_code,
             }
+
+        # Special (non-surface) elements: raw connectivity as flat array + CSR
+        # offsets (per-element node count varies, so no fixed [M,k] matrix).
+        # Node labels are stored as-is (not row-mapped) — row mapping is deferred
+        # to whoever consumes them later (display only needs couplings_positions).
+        special_meta = {}
+        if special_elems:
+            sp_dir = os.path.join(d, 'special')
+            mkdirs(sp_dir)
+            for _etype, _sd in special_elems.items():
+                _std = os.path.join(sp_dir, safe(_etype))
+                mkdirs(_std)
+                _flat = []
+                _off  = [0]
+                for _c in _sd['conn']:
+                    _flat.extend(_c)
+                    _off.append(len(_flat))
+                npsave(os.path.join(_std, 'labels.npy'),       _sd['labels'])
+                npsave(os.path.join(_std, 'conn_flat.npy'),    np.array(_flat, dtype=np.int32))
+                npsave(os.path.join(_std, 'conn_offsets.npy'), np.array(_off,  dtype=np.int32))
+                special_meta[_etype] = {'count': int(len(_sd['labels']))}
+
+        # Coupling spider lines [N*2, 3] float32 — same contract as the INP
+        # exporter's couplings/positions (interleaved ref/leaf endpoint pairs).
+        n_coupling_segs = len(coupling_segs) // 2
+        if coupling_segs:
+            npsave(os.path.join(d, 'couplings_positions.npy'),
+                   np.array(coupling_segs, dtype=np.float32))
 
         # Instance sets
         isets_node = {}
@@ -886,6 +965,8 @@ def dump_geometry(odb, raw_dir, meta):
             'bbox_min':     bbox_min,
             'bbox_max':     bbox_max,
             'elem_types':   etype_meta,
+            'special_types': special_meta,
+            'coupling_segments': n_coupling_segs,
             'isets_node':   isets_node,
             'isets_elem':   isets_elem,
         }
@@ -1537,11 +1618,6 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 d = os.path.join(*parts)
                 mkdirs(d)
                 return d
-
-            def _block_sp_num(blk):
-                """Return the section-point number for a bulkDataBlock, or None."""
-                sp_obj = getattr(blk, 'sectionPoint', None)
-                return int(sp_obj.number) if sp_obj is not None else None
 
             # ── Discover structure: group blocks by key, merge labels ────────
             # Abaqus may split one (instance, elem_type, position, sp) group
