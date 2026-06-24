@@ -368,6 +368,31 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                         grp.create_dataset('material_name', data=mat_arr)
                         grp.create_dataset('section_type',  data=sec_arr)
 
+            # Coupling spider lines (DCOUP3D / CONN3D / SPRING2 ... expanded into
+            # ref→leaf segments by abaqus_dump). Same dataset key the INP exporter
+            # writes, so L2 collect_couplings + L3 /couplings + the front end's
+            # RBE2-spider display all work unchanged for the ODB path too.
+            cpl_path = os.path.join(d, 'couplings_positions.npy')
+            if os.path.exists(cpl_path):
+                f.create_dataset('couplings/positions', data=nload(cpl_path))
+
+            # Special (non-surface) elements: raw connectivity kept for the future
+            # (picking / results on couplings, connectors, masses, ...). Not read
+            # by L2/L3 yet — purely archival so nothing is lost.
+            special_raw = os.path.join(d, 'special')
+            if os.path.exists(special_raw):
+                for etype_safe in os.listdir(special_raw):
+                    std = os.path.join(special_raw, etype_safe)
+                    sgrp = f.require_group('elements_special/{}'.format(etype_safe))
+                    for fname, dsname in [
+                        ('labels.npy',       'labels'),
+                        ('conn_flat.npy',    'conn_flat'),
+                        ('conn_offsets.npy', 'conn_offsets'),
+                    ]:
+                        p = os.path.join(std, fname)
+                        if os.path.exists(p):
+                            sgrp.create_dataset(dsname, data=nload(p))
+
             # Sections
             sec_path = os.path.join(d, 'sections.json')
             if os.path.exists(sec_path):
