@@ -305,6 +305,17 @@ def _pos_str(position_const):
     return s.split('.')[-1]
 
 
+def _block_sp_num(blk):
+    """Return the section-point number for a bulkDataBlock, or None.
+
+    Module-level so both dump_results and _extract_ip_invariants can use it
+    (it was previously only a nested def inside dump_results, which raised
+    NameError when called from _extract_ip_invariants).
+    """
+    sp_obj = getattr(blk, 'sectionPoint', None)
+    return int(sp_obj.number) if sp_obj is not None else None
+
+
 def _fmt_t(secs):
     """Format elapsed seconds as '1m 23.4s' or '5.2s'."""
     if secs >= 60:
@@ -1607,11 +1618,6 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 d = os.path.join(*parts)
                 mkdirs(d)
                 return d
-
-            def _block_sp_num(blk):
-                """Return the section-point number for a bulkDataBlock, or None."""
-                sp_obj = getattr(blk, 'sectionPoint', None)
-                return int(sp_obj.number) if sp_obj is not None else None
 
             # ── Discover structure: group blocks by key, merge labels ────────
             # Abaqus may split one (instance, elem_type, position, sp) group
