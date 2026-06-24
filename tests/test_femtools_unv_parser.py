@@ -1,6 +1,71 @@
 from FemToolsUNVParser import parse_unv
 
 
+def test_parse_unv_dataset_2411_nodes(tmp_path):
+    unv_path = tmp_path / "nodes_2411.unv"
+    unv_path.write_text(
+        "\n".join(
+            [
+                "-1",
+                "2411",
+                "1001 0 0 0",
+                "1.0 2.0 3.0",
+                "-1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, nodes_dict, trace_lines, modes, elements, message = parse_unv(str(unv_path))
+
+    assert len(nodes) == 1
+    assert nodes[0].id == 1001
+    assert nodes_dict == {1001: [1.0, 2.0, 3.0]}
+    assert trace_lines == []
+    assert modes == []
+    assert elements == []
+    assert message["coordinate_system_count"] == 0
+    assert message["unsupported_coordinate_systems"] == []
+
+
+def test_parse_unv_dataset_2420_cartesian_cs_with_2411_nodes(tmp_path):
+    unv_path = tmp_path / "nodes_2411_with_cs.unv"
+    unv_path.write_text(
+        "\n".join(
+            [
+                "-1",
+                "2420",
+                "PART_NAME",
+                "PART_DESC",
+                "10 0 1",
+                "LOCAL_CARTESIAN",
+                "1.0 2.0 3.0",
+                "1.0 0.0 0.0",
+                "0.0 1.0 0.0",
+                "0.0 0.0 1.0",
+                "-1",
+                "-1",
+                "2411",
+                "1001 10 0 0",
+                "1.0 2.0 3.0",
+                "-1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, nodes_dict, trace_lines, modes, elements, message = parse_unv(str(unv_path))
+
+    assert len(nodes) == 1
+    assert nodes[0].id == 1001
+    assert nodes_dict == {1001: [2.0, 4.0, 6.0]}
+    assert trace_lines == []
+    assert modes == []
+    assert elements == []
+    assert message["coordinate_system_count"] == 1
+    assert message["unsupported_coordinate_systems"] == []
+
+
 def test_parse_unv_dataset_55_analysis_type_1_static_displacement(tmp_path):
     unv_path = tmp_path / "static_disp.unv"
     unv_path.write_text(

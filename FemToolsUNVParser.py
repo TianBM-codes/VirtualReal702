@@ -43,6 +43,108 @@ UNV_2412_SUPPORTED = {
 }
 
 
+def _to_unv_float(text: str) -> float:
+    return float(str(text).replace("D", "E").replace("d", "E"))
+
+
+def _identity_coordinate_system():
+    return {
+        "label": 0,
+        "type": 0,
+        "color": 0,
+        "name": "GLOBAL",
+        "origin": np.asarray([0.0, 0.0, 0.0], dtype=float),
+        "axes": np.asarray(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        ),
+    }
+
+
+def _transform_point_to_global(point, coordinate_systems: Dict[int, dict], cs_label: int):
+    coords = np.asarray(point, dtype=float)
+    cs = coordinate_systems.get(int(cs_label or 0))
+    if cs is None:
+        return coords
+    if int(cs.get("type", 0)) != 0:
+        return coords
+    origin = np.asarray(cs.get("origin", [0.0, 0.0, 0.0]), dtype=float)
+    axes = np.asarray(cs.get("axes"), dtype=float)
+    return origin + coords[0] * axes[0] + coords[1] * axes[1] + coords[2] * axes[2]
+
+
+def _parse_dataset_2420(lines: List[str], start_idx: int):
+    i = start_idx
+    coordinate_systems = {}
+    unsupported_types = []
+
+    if i >= len(lines):
+        return coordinate_systems, unsupported_types, i
+
+    # Record 1 / 2 are part metadata
+    if i < len(lines) and lines[i].strip() != "-1":
+        i += 1
+    if i < len(lines) and lines[i].strip() != "-1":
+        i += 1
+
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        if line == "-1":
+            i += 1
+            break
+
+        header = line.split()
+        if len(header) < 3:
+            i += 1
+            continue
+
+        label = int(header[0])
+        cs_type = int(header[1])
+        color = int(header[2])
+        i += 1
+
+        if i >= len(lines):
+            break
+        name = lines[i].strip() or f"CS_{label}"
+        i += 1
+
+        matrix_rows = []
+        for _ in range(4):
+            if i >= len(lines):
+                break
+            row_line = lines[i].strip()
+            if row_line == "-1":
+                break
+            row_vals = [_to_unv_float(x) for x in row_line.split()]
+            if len(row_vals) >= 3:
+                matrix_rows.append(row_vals[:3])
+            i += 1
+
+        if cs_type != 0:
+            unsupported_types.append({"label": label, "type": cs_type, "name": name})
+            continue
+        if len(matrix_rows) < 4:
+            continue
+
+        coordinate_systems[label] = {
+            "label": label,
+            "type": cs_type,
+            "color": color,
+            "name": name,
+            "origin": np.asarray(matrix_rows[0], dtype=float),
+            "axes": np.asarray(matrix_rows[1:4], dtype=float),
+        }
+
+    return coordinate_systems, unsupported_types, i
+
+
 def _unv2412_read_int_block(lines: List[str], start_idx: int, count: int):
     vals = []
     idx = start_idx
@@ -220,6 +322,8 @@ def parse_unv(filename: str):
     elements = []
     modes: List[dict] = []
     edge_keys_2412 = set()
+    coordinate_systems = {0: _identity_coordinate_system()}
+    unsupported_coordinate_systems = []
 
     while i < lines_count:
         line = lines[i].strip()
@@ -268,13 +372,67 @@ def parse_unv(filename: str):
                     node_id = int(parts[0])
                     ics = int(parts[1])
                     ocs = int(parts[2])
-                    x = float(parts[4])
-                    y = float(parts[5])
-                    z = float(parts[6])
-                    nodes.append(FemNode(node_id, x, y, z, ics, ocs))
-                    nodes_dict[node_id] = [x, y, z]
+                    x = _to_unv_float(parts[4])
+                    y = _to_unv_float(parts[5])
+                    z = _to_unv_float(parts[6])
+                    global_coord = _transform_point_to_global([x, y, z], coordinate_systems, ics)
+                    gx, gy, gz = (float(global_coord[0]), float(global_coord[1]), float(global_coord[2]))
+                    nodes.append(FemNode(node_id, gx, gy, gz, ics, ocs))
+                    nodes_dict[node_id] = [gx, gy, gz]
 
                 i += 1
+
+        # ----------------------
+        # Dataset 2411: Nodes
+        # ----------------------
+        elif dataset_id == 2411:
+            while i < lines_count:
+                l = lines[i].strip()
+                if l == "-1":
+                    i += 1
+                    break
+                if not l:
+                    i += 1
+                    continue
+
+                header_parts = l.split()
+                if len(header_parts) < 4:
+                    i += 1
+                    continue
+
+                node_id = int(header_parts[0])
+                ics = int(header_parts[1])
+                ocs = int(header_parts[2])
+                i += 1
+
+                if i >= lines_count:
+                    break
+
+                coord_line = lines[i].strip()
+                if coord_line == "-1":
+                    break
+
+                coord_parts = coord_line.split()
+                if len(coord_parts) < 3:
+                    i += 1
+                    continue
+
+                x = _to_unv_float(coord_parts[0])
+                y = _to_unv_float(coord_parts[1])
+                z = _to_unv_float(coord_parts[2])
+                global_coord = _transform_point_to_global([x, y, z], coordinate_systems, ics)
+                gx, gy, gz = (float(global_coord[0]), float(global_coord[1]), float(global_coord[2]))
+                nodes.append(FemNode(node_id, gx, gy, gz, ics, ocs))
+                nodes_dict[node_id] = [gx, gy, gz]
+                i += 1
+
+        # ----------------------
+        # Dataset 2420: Coordinate Systems
+        # ----------------------
+        elif dataset_id == 2420:
+            parsed_coordinate_systems, unsupported_types, i = _parse_dataset_2420(lines, i)
+            coordinate_systems.update(parsed_coordinate_systems)
+            unsupported_coordinate_systems.extend(unsupported_types)
 
         # ----------------------
         # Dataset 82: Tracelines
@@ -680,6 +838,8 @@ def parse_unv(filename: str):
     for i, item in enumerate(modes, 1):
         item["modal_number"] = i
 
+    message["coordinate_system_count"] = max(len(coordinate_systems) - 1, 0)
+    message["unsupported_coordinate_systems"] = unsupported_coordinate_systems
     message["message"] = "Reading..."
 
     return nodes, nodes_dict, trace_lines, modes, elements, message
