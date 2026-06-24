@@ -60,10 +60,10 @@ ELEM_TYPE_CODE = {
     # line elements (truss / beam) — no face data, silently ignored in collect_faces
     'T3D2':  9,  'B31':  9,  'B31OS': 9,  'PIPE31': 9,
     'T3D3': 10,  'B32': 10,  'B32OS':10,  'PIPE32':10,
-    # 2-node connector / spring elements — rendered as line segments
-    'CONN3D2': 9, 'SPRING2': 9, 'SPRINGA': 9,
-    # point elements — concentrated mass / rotary inertia / grounded spring
-    'MASS': 11,  'ROTARYI': 11,  'SPRING1': 11,
+    # 2-node connector / spring / dashpot elements — rendered as line segments
+    'CONN3D2': 9, 'SPRING2': 9, 'SPRINGA': 9, 'DASHPOT2': 9, 'DASHPOTA': 9,
+    # point elements — concentrated mass / rotary inertia / grounded spring/dashpot
+    'MASS': 11,  'ROTARYI': 11,  'SPRING1': 11,  'DASHPOT1': 11,
     # plane / axisymmetric (treated as shell faces)
     'CPS3': 0, 'CPS4': 1, 'CPS4R': 1,
     'CPE3': 0, 'CPE4': 1, 'CPE4R': 1,

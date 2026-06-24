@@ -23,12 +23,25 @@ L1/L2 的几何流水线本质是把单元三角化成可渲染的**表面**。�
 
 | 形态 | 典型单元 | 类型码 | 渲染 | 前端组件 |
 |---|---|---|---|---|
-| **线**（2 节点） | T3D2/B31、CONN3D2、SPRING2、SPRINGA | 9 / 10 | 线段 | `lineMeshes`（LineSegments） |
-| **点**（1 节点） | MASS、ROTARYI、SPRING1 | 11 | 点 | `pointMeshes`（Points） |
+| **线**（2 节点） | T3D2/B31、CONN3D2、SPRING2/SPRINGA、DASHPOT2/DASHPOTA | 9 / 10 | 线段 | `lineMeshes`（LineSegments） |
+| **点**（1 节点） | MASS、ROTARYI、SPRING1、DASHPOT1 | 11 | 点 | `pointMeshes`（Points） |
 | **星形**（1 ref + N，变长） | DCOUP3D / DCOUP2D（分布式耦合） | — | spider | `couplingMeshes`（LineSegments） |
 
 线/点单元走普通 `/elements/<type>/` 路径（带 label、可拾取）；
 星形耦合因连接数可变、塞不进固定 `[M,k]` 矩阵，单独展开成线段。
+
+### BDF 路径的弹簧/阻尼（含零长度兜底）
+
+Nastran 卡在 `src/l1/bdf_pack.py` `NASTRAN_TO_ABAQUS` 里映射到上面的 Abaqus 名：
+CBUSH/CBUSH1D/CELAS1/CELAS2 → `SPRING2`，CDAMP1/CDAMP2 → `DASHPOT2`，
+CONM1/2、CMASS1/2 → `MASS`。
+
+**零长度兜底**：弹簧/CBUSH 常用于重合节点（关节/绑定），两端点重合时画线会
+退化成不可见的点。`_split_zero_length_springs` 在打包时按两端点距离（容差
+`1e-6`）拆分：非零长度留在 `SPRING2`/`DASHPOT2`（线），重合的移到
+`SPRING1`/`DASHPOT1`（点，只存第一个节点）。日志示例
+`N zero-length SPRING2 → SPRING1 (point)`。
+（接地弹簧——只有 1 个有效 GRID——在更早一步因 `len(nids) < n_corner` 被跳过。）
 
 ## 类型码表三处必须同步
 
@@ -96,6 +109,7 @@ INP 路径在同名 `couplings/positions` 数据集写（`exporter._append_coupl
 |---|---|
 | ODB 单元分流 / spider 展开 / special 归档 | `src/l1/abaqus_dump.py` `dump_geometry` |
 | 几何 h5 打包（couplings/elements_special） | `src/l1/l1_pack.py` `pack_geometry` |
+| BDF 卡映射 / 弹簧零长度拆分 | `src/l1/bdf_pack.py` `NASTRAN_TO_ABAQUS` / `_split_zero_length_springs` |
 | INP 线/点/耦合导出 | `src/inp/exporter.py` `_write_geometry_h5` / `_append_coupling_lines` |
 | INP 耦合关键字解析 | `src/inp/parser.py` `_handle_coupling` |
 | L2 收集 | `src/l2/ingest.py` `collect_lines` / `collect_points` / `collect_couplings` |

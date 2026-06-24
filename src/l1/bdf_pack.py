@@ -54,14 +54,14 @@ NASTRAN_TO_ABAQUS = {
     'CROD':   ('B31',    2, 0),
     'CONROD': ('B31',    2, 0),   # inline material/section, no pid
     'CTUBE':  ('B31',    2, 0),
-    # Springs / connectors
-    'CBUSH':  ('SPRING', 2, 0),
-    'CBUSH1D':('SPRING', 2, 0),
-    'CELAS1': ('SPRING', 2, 0),
-    'CELAS2': ('SPRING', 2, 0),   # inline stiffness, no pid
-    # Dampers
-    'CDAMP1': ('DASHPOT',2, 0),
-    'CDAMP2': ('DASHPOT',2, 0),   # inline damping, no pid
+    # Springs / connectors (2-node; zero-length ones split to SPRING1 points below)
+    'CBUSH':  ('SPRING2', 2, 0),
+    'CBUSH1D':('SPRING2', 2, 0),
+    'CELAS1': ('SPRING2', 2, 0),
+    'CELAS2': ('SPRING2', 2, 0),   # inline stiffness, no pid
+    # Dampers (2-node; zero-length ones split to DASHPOT1 points below)
+    'CDAMP1': ('DASHPOT2', 2, 0),
+    'CDAMP2': ('DASHPOT2', 2, 0),   # inline damping, no pid
     # Concentrated masses (1-node; only G1 is stored in conn)
     'CONM1':  ('MASS',   1, 0),
     'CONM2':  ('MASS',   1, 0),
@@ -87,6 +87,58 @@ SOLID_BY_NNODE = {
 # Cards with no GRID-point connectivity (scalar points) or degenerate geometry —
 # silently skipped; a warning is printed for any other unrecognised card.
 _UNSUPPORTED_SKIP = {'CELAS4', 'CMASS4', 'CQUAD6'}
+
+# 2-node spring/damper line type → 1-node point type used for zero-length
+# (coincident-node) instances, so they render as a visible point instead of a
+# degenerate (invisible) line. See _split_zero_length_springs.
+_LINE_TO_POINT = {'SPRING2': 'SPRING1', 'DASHPOT2': 'DASHPOT1'}
+
+
+def _split_zero_length_springs(etype_groups, node_labels, node_coords, tol=1e-6):
+    """Move coincident-node (zero-length) spring/damper elements from their
+    2-node line group into a 1-node point group, in place on etype_groups.
+
+    Zero-length springs/CBUSH are extremely common (joints at coincident grids);
+    drawn as a line their two endpoints collapse to a point and nothing is
+    visible. We keep non-degenerate ones as lines and fall the rest back to
+    points (the choice confirmed for the BDF path)."""
+    tol2 = tol * tol
+    for line_name, point_name in list(_LINE_TO_POINT.items()):
+        g = etype_groups.get(line_name)
+        if not g or not g['conn_gids']:
+            continue
+        keep = {'labels': [], 'conn_gids': [], 'pids': []}
+        pts  = {'labels': [], 'conn_gids': [], 'pids': []}
+        for lbl, gids, pid in zip(g['labels'], g['conn_gids'], g['pids']):
+            r0 = int(np.searchsorted(node_labels, gids[0]))
+            r1 = int(np.searchsorted(node_labels, gids[1]))
+            delta = node_coords[r0] - node_coords[r1]
+            if float(delta.dot(delta)) <= tol2:
+                pts['labels'].append(lbl)
+                pts['conn_gids'].append([gids[0]])   # single node
+                pts['pids'].append(pid)
+            else:
+                keep['labels'].append(lbl)
+                keep['conn_gids'].append(gids)
+                keep['pids'].append(pid)
+
+        if keep['labels']:
+            g['labels'], g['conn_gids'], g['pids'] = (
+                keep['labels'], keep['conn_gids'], keep['pids'])
+        else:
+            del etype_groups[line_name]   # all were zero-length
+
+        if pts['labels']:
+            pg = etype_groups.get(point_name)
+            if pg is None:
+                pg = {'labels': [], 'conn_gids': [], 'pids': [],
+                      'n_faces': 0, 'n_corner': 1}
+                etype_groups[point_name] = pg
+            pg['labels'].extend(pts['labels'])
+            pg['conn_gids'].extend(pts['conn_gids'])
+            pg['pids'].extend(pts['pids'])
+            print('  {} zero-length {} → {} (point)'.format(
+                len(pts['labels']), line_name, point_name))
 
 FACE_DEFS = {
     # Linear shells
@@ -397,6 +449,10 @@ def _pack_model(model, inst_name, workspace):
         g['labels'].append(eid)
         g['conn_gids'].append(nids)
         g['pids'].append(pid)
+
+    # Split zero-length (coincident-node) springs/dampers into point groups so
+    # they stay visible instead of collapsing to an invisible degenerate line.
+    _split_zero_length_springs(etype_groups, node_labels, node_coords)
 
     for card, cnt in sorted(skipped_counts.items()):
         print('  WARNING: skipped {} {} element(s)'.format(cnt, card))

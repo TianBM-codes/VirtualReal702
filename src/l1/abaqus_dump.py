@@ -98,12 +98,12 @@ ELEM_TYPE_CODE = {
     # line elements: truss / beam (codes 9, 10 — no surface faces)
     'T3D2':   9, 'B31':   9, 'B31OS': 9, 'PIPE31': 9,
     'T3D3':  10, 'B32':  10, 'B32OS':10, 'PIPE32':10,
-    # 2-node connector / spring elements (code 9 — rendered as line segments)
-    'CONN3D2': 9, 'SPRING2': 9, 'SPRINGA': 9,
-    # point elements: concentrated mass / rotary inertia / grounded spring
-    # (code 11 — single node, no faces). Kept in sync with src/l2/ingest.py
-    # POINT_ELEM_CODES so L2 collect_points() renders them as point glyphs.
-    'MASS':  11, 'ROTARYI': 11, 'SPRING1': 11,
+    # 2-node connector / spring / dashpot elements (code 9 — line segments)
+    'CONN3D2': 9, 'SPRING2': 9, 'SPRINGA': 9, 'DASHPOT2': 9, 'DASHPOTA': 9,
+    # point elements: concentrated mass / rotary inertia / grounded spring /
+    # grounded dashpot (code 11 — single node, no faces). Kept in sync with
+    # src/l2/ingest.py POINT_ELEM_CODES so L2 collect_points() renders them.
+    'MASS':  11, 'ROTARYI': 11, 'SPRING1': 11, 'DASHPOT1': 11,
 }
 
 ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8,
