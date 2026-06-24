@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -376,6 +377,21 @@ def _normalize_curve_names(name=None, names=None) -> list[str]:
     return deduped
 
 
+def _display_line_name(curve_name: str) -> str:
+    text = str(curve_name or "").strip()
+    match = re.match(r"^(?:TEST\s+)?(FRF\s+\d+)\b", text, flags=re.IGNORECASE)
+    if match:
+        token = match.group(1)
+        parts = token.split()
+        if len(parts) == 2:
+            return f"{parts[0].upper()} {parts[1]}"
+    return text
+
+
+def _sig5(value: float) -> float:
+    return float(f"{float(value):.5g}")
+
+
 def _build_curve_line_payload(rows: list[dict], resolved_index: int) -> dict:
     x_values = []
     series = []
@@ -392,8 +408,10 @@ def _build_curve_line_payload(rows: list[dict], resolved_index: int) -> dict:
             value = float(np.abs(h))
         else:
             value = float(np.angle(h, deg=True))
-        x_values.append(freq)
-        series.append([freq, float(value)])
+        rounded_freq = _sig5(freq)
+        rounded_value = _sig5(value)
+        x_values.append(rounded_freq)
+        series.append([rounded_freq, rounded_value])
     return {"x": x_values, "series": series}
 
 
@@ -459,7 +477,7 @@ def get_project_frf_curve(project_id: int, name: str = None, index: int = 1, nam
             line_payload = _build_curve_line_payload(rows, resolved_index)
             lines.append(
                 {
-                    "line_name": str(curve_row["curve_name"]),
+                    "line_name": _display_line_name(curve_row["curve_name"]),
                     "x": line_payload["x"],
                     "series": line_payload["series"],
                 }

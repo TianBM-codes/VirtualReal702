@@ -204,12 +204,12 @@ def test_import_unv_frf_data_replaces_same_name_curve_points(monkeypatch):
 def test_get_project_frf_curve_uses_expected_component_algorithms(monkeypatch):
     cursor = _FrfCursor()
     cursor.curves = [
-        {"id": 1, "pid": 7, "curve_name": "FRF_A", "curve_no": 1},
-        {"id": 2, "pid": 7, "curve_name": "FRF_B", "curve_no": 2},
+        {"id": 1, "pid": 7, "curve_name": "TEST FRF 1 (+3UZ : +3UZ)", "curve_no": 1},
+        {"id": 2, "pid": 7, "curve_name": "TEST FRF 2 (+5UX : +3UZ)", "curve_no": 2},
     ]
     cursor.points = [
         {"pid": 7, "curve_id": 1, "point_no": 1, "frequency": 1.0, "real_value": 3.0, "imag_value": 4.0},
-        {"pid": 7, "curve_id": 1, "point_no": 2, "frequency": 2.0, "real_value": 1.0, "imag_value": 0.0},
+        {"pid": 7, "curve_id": 1, "point_no": 2, "frequency": 2.123456, "real_value": 1.234567, "imag_value": 0.0},
         {"pid": 7, "curve_id": 2, "point_no": 1, "frequency": 1.5, "real_value": 6.0, "imag_value": 8.0},
     ]
     conn = _FrfConnection(cursor)
@@ -217,41 +217,48 @@ def test_get_project_frf_curve_uses_expected_component_algorithms(monkeypatch):
     monkeypatch.setattr(unv_frf_service, "get_connection", lambda: conn)
 
     names_payload = unv_frf_service.get_project_frf_names(7)
-    assert names_payload == {"project_id": 7, "names": ["FRF_A", "FRF_B"]}
+    assert names_payload == {
+        "project_id": 7,
+        "names": ["TEST FRF 1 (+3UZ : +3UZ)", "TEST FRF 2 (+5UX : +3UZ)"],
+    }
 
-    real_payload = unv_frf_service.get_project_frf_curve(7, "FRF_A", 1)
-    imag_payload = unv_frf_service.get_project_frf_curve(7, "FRF_A", 2)
-    mag_payload = unv_frf_service.get_project_frf_curve(7, "FRF_A", 3)
-    phase_payload = unv_frf_service.get_project_frf_curve(7, "FRF_A", 4)
+    real_payload = unv_frf_service.get_project_frf_curve(7, "TEST FRF 1 (+3UZ : +3UZ)", 1)
+    imag_payload = unv_frf_service.get_project_frf_curve(7, "TEST FRF 1 (+3UZ : +3UZ)", 2)
+    mag_payload = unv_frf_service.get_project_frf_curve(7, "TEST FRF 1 (+3UZ : +3UZ)", 3)
+    phase_payload = unv_frf_service.get_project_frf_curve(7, "TEST FRF 1 (+3UZ : +3UZ)", 4)
 
     assert real_payload["x_name"] == "Frequency[Hz]"
     assert real_payload["y_name"] == "Real"
-    assert real_payload["x"] == [1.0, 2.0]
-    assert real_payload["series"] == [[1.0, 3.0], [2.0, 1.0]]
+    assert real_payload["x"] == [1.0, 2.1235]
+    assert real_payload["series"] == [[1.0, 3.0], [2.1235, 1.2346]]
     assert imag_payload["x_name"] == "Frequency[Hz]"
     assert imag_payload["y_name"] == "Imaginary"
-    assert imag_payload["x"] == [1.0, 2.0]
-    assert imag_payload["series"] == [[1.0, 4.0], [2.0, 0.0]]
+    assert imag_payload["x"] == [1.0, 2.1235]
+    assert imag_payload["series"] == [[1.0, 4.0], [2.1235, 0.0]]
     assert mag_payload["x_name"] == "Frequency[Hz]"
     assert mag_payload["y_name"] == "Magnitude"
-    assert mag_payload["x"] == [1.0, 2.0]
-    assert mag_payload["series"] == [[1.0, 5.0], [2.0, 1.0]]
+    assert mag_payload["x"] == [1.0, 2.1235]
+    assert mag_payload["series"] == [[1.0, 5.0], [2.1235, 1.2346]]
     assert phase_payload["x_name"] == "Frequency[Hz]"
     assert phase_payload["y_name"] == "Phase"
-    assert phase_payload["x"] == [1.0, 2.0]
+    assert phase_payload["x"] == [1.0, 2.1235]
     assert phase_payload["series"][0][0] == 1.0
-    assert round(phase_payload["series"][0][1], 6) == round(53.13010235415598, 6)
-    assert phase_payload["line_name"] == "FRF_A"
+    assert phase_payload["series"][0][1] == 53.13
+    assert phase_payload["line_name"] == "FRF 1"
 
-    multi_payload = unv_frf_service.get_project_frf_curve(7, names=["FRF_A", "FRF_B"], index=3)
-    assert multi_payload["line_names"] == ["FRF_A", "FRF_B"]
+    multi_payload = unv_frf_service.get_project_frf_curve(
+        7,
+        names=["TEST FRF 1 (+3UZ : +3UZ)", "TEST FRF 2 (+5UX : +3UZ)"],
+        index=3,
+    )
+    assert multi_payload["line_names"] == ["FRF 1", "FRF 2"]
     assert multi_payload["x_name"] == "Frequency[Hz]"
     assert multi_payload["y_name"] == "Magnitude"
-    assert multi_payload["lines"][0]["line_name"] == "FRF_A"
-    assert multi_payload["lines"][0]["x"] == [1.0, 2.0]
-    assert multi_payload["lines"][0]["series"] == [[1.0, 5.0], [2.0, 1.0]]
-    assert multi_payload["lines"][1]["line_name"] == "FRF_B"
+    assert multi_payload["lines"][0]["line_name"] == "FRF 1"
+    assert multi_payload["lines"][0]["x"] == [1.0, 2.1235]
+    assert multi_payload["lines"][0]["series"] == [[1.0, 5.0], [2.1235, 1.2346]]
+    assert multi_payload["lines"][1]["line_name"] == "FRF 2"
     assert multi_payload["lines"][1]["x"] == [1.5]
     assert multi_payload["lines"][1]["series"] == [[1.5, 10.0]]
-    assert multi_payload["line_name"] == "FRF_A"
-    assert multi_payload["x"] == [1.0, 2.0]
+    assert multi_payload["line_name"] == "FRF 1"
+    assert multi_payload["x"] == [1.0, 2.1235]
