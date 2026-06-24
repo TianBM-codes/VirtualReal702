@@ -98,10 +98,12 @@ ELEM_TYPE_CODE = {
     # line elements: truss / beam (codes 9, 10 — no surface faces)
     'T3D2':   9, 'B31':   9, 'B31OS': 9, 'PIPE31': 9,
     'T3D3':  10, 'B32':  10, 'B32OS':10, 'PIPE32':10,
-    # point elements: concentrated mass / rotary inertia (code 11 — single node,
-    # no faces). Kept in sync with src/l2/ingest.py POINT_ELEM_CODES so L2
-    # collect_points() renders them as point glyphs.
-    'MASS':  11, 'ROTARYI': 11,
+    # 2-node connector / spring elements (code 9 — rendered as line segments)
+    'CONN3D2': 9, 'SPRING2': 9, 'SPRINGA': 9,
+    # point elements: concentrated mass / rotary inertia / grounded spring
+    # (code 11 — single node, no faces). Kept in sync with src/l2/ingest.py
+    # POINT_ELEM_CODES so L2 collect_points() renders them as point glyphs.
+    'MASS':  11, 'ROTARYI': 11, 'SPRING1': 11,
 }
 
 ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8,
@@ -692,11 +694,14 @@ def dump_geometry(odb, raw_dir, meta):
         total_elems = 0
         has_highorder = False
 
-        # Non-surface / "special" elements (coupling DCOUP3D, connector CONN3D2,
-        # MASS, SPRING, DASHPOT, ...). They have no renderable face geometry, but
-        # we still parse them instead of silently dropping: keep raw connectivity,
-        # and expand star-shaped ones into (ref, leaf) line segments so the front
+        # Remaining non-surface / "special" elements not in the type table above
+        # — primarily distributing couplings (DCOUP3D / DCOUP2D) with variable
+        # 1-ref-to-N-leaf connectivity, plus exotic connectors/dashpots. We still
+        # parse them instead of silently dropping: keep raw connectivity, and
+        # expand the star-shaped ones into (ref, leaf) line segments so the front
         # end's existing RBE2-spider display (couplings/positions) can draw them.
+        # (2-node connectors/springs and MASS points are now recognised line/
+        # point types and flow through the normal elements/ path above.)
         special_elems = {}    # etype -> {'labels': ndarray, 'conn': [list-of-labels, ...]}
         coupling_segs = []    # flat list of [3]-coord points; every 2 = one segment
 
