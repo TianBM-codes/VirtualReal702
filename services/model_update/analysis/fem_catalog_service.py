@@ -2901,6 +2901,63 @@ def create_design_response_catalog_entry(
     return payload
 
 
+def resolve_abaqus_sensor_node_match(project_id: int, sensor_name: str) -> dict:
+    ensure_tables_exist()
+
+    resolved_sensor_name = str(sensor_name or "").strip()
+    if not resolved_sensor_name:
+        raise ValidationError("sensor_name is required", {"sensor_name": sensor_name})
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT test_node_id, instance_name, fem_node_label
+            FROM t_mt_py_fem_node_match
+            WHERE pid = %s AND test_node_id = %s
+            LIMIT 2
+            """,
+            (int(project_id), resolved_sensor_name),
+        )
+        rows = [dict(row) for row in (cursor.fetchall() or [])]
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not rows:
+        raise NotFoundError(
+            "sensor_name was not found in node-match results",
+            {"project_id": int(project_id), "sensor_name": resolved_sensor_name},
+        )
+
+    if len(rows) > 1:
+        raise ValidationError(
+            "sensor_name maps to multiple node-match rows",
+            {"project_id": int(project_id), "sensor_name": resolved_sensor_name, "match_count": len(rows)},
+        )
+
+    row = rows[0]
+    instance_name = str(row.get("instance_name") or "").strip()
+    fem_node_label = row.get("fem_node_label")
+    if not instance_name:
+        raise ValidationError(
+            "sensor_name match has no instance_name",
+            {"project_id": int(project_id), "sensor_name": resolved_sensor_name},
+        )
+    if fem_node_label is None:
+        raise ValidationError(
+            "sensor_name match has no fem_node_label",
+            {"project_id": int(project_id), "sensor_name": resolved_sensor_name},
+        )
+
+    return {
+        "sensor_name": resolved_sensor_name,
+        "instance_name": instance_name,
+        "node_label": int(fem_node_label),
+    }
+
+
 def list_design_response_catalog_entries(project_id: int) -> dict:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)

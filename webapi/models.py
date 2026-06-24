@@ -129,6 +129,7 @@ class CreateAbaqusStaticResponseRequest(BaseModel):
     project_id: int
     region_type: str
     variables: List[str]
+    sensor_name: Optional[str] = None
     set_name: Optional[str] = None
     instance_name: Optional[str] = None
     node_labels: Optional[List[int]] = None

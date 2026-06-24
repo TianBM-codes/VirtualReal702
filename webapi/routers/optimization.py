@@ -24,6 +24,7 @@ from services.model_update.analysis.inp_service import (
     list_design_response_catalog_entries,
     remove_optimization_parameters_from_update,
     resolve_abaqus_instance_context,
+    resolve_abaqus_sensor_node_match,
     select_optimization_parameters_for_update,
     update_optimization_parameter_usage,
     validate_abaqus_instance_node_label,
@@ -118,6 +119,57 @@ def _normalize_node_labels(raw_value) -> list[int]:
 def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseRequest):
     node_labels = _normalize_node_labels(body.node_labels)
     element_labels = _normalize_element_labels(body.element_labels)
+    resolved_sensor_name = str(body.sensor_name or "").strip()
+
+    if resolved_sensor_name:
+        if str(body.region_type or "").strip().upper() != "NODE":
+            raise ValidationError(
+                "sensor_name mode only supports NODE responses",
+                {"region_type": body.region_type, "sensor_name": resolved_sensor_name},
+            )
+        if not str(body.step_name or "").strip():
+            raise ValidationError(
+                "step_name is required when creating a response from sensor_name",
+                {"sensor_name": resolved_sensor_name},
+            )
+        if body.set_name or body.instance_name or node_labels or element_labels:
+            raise ValidationError(
+                "sensor_name mode cannot be combined with set_name, instance_name, node_labels, or element_labels",
+                {
+                    "sensor_name": resolved_sensor_name,
+                    "set_name": body.set_name,
+                    "instance_name": body.instance_name,
+                    "node_label_count": len(node_labels),
+                    "element_label_count": len(element_labels),
+                },
+            )
+        requested_variables = [str(item or "").strip().upper() for item in (body.variables or []) if str(item or "").strip()]
+        invalid_variables = [item for item in requested_variables if item not in {"U1", "U2", "U3"}]
+        if invalid_variables:
+            raise ValidationError(
+                "sensor_name mode only supports U1/U2/U3 variables",
+                {"sensor_name": resolved_sensor_name, "invalid_variables": invalid_variables},
+            )
+
+        sensor_match = resolve_abaqus_sensor_node_match(body.project_id, resolved_sensor_name)
+        context = resolve_abaqus_instance_context(body.project_id, sensor_match["instance_name"])
+        payload = create_design_response_catalog_entry(
+            project_id=body.project_id,
+            region_type="NODE",
+            variables=body.variables,
+            set_name=None,
+            set_scope=context["set_scope"],
+            instance_name=sensor_match["instance_name"],
+            part_name=context["part_name"],
+            node_labels=[int(sensor_match["node_label"])],
+            element_labels=None,
+            step_name=body.step_name,
+            frequency=body.frequency,
+            response_name=None,
+        )
+        payload["sensor_name"] = resolved_sensor_name
+        return payload
+
     resolved_set_scope = None
     resolved_part_name = None
     if body.instance_name:
