@@ -428,9 +428,17 @@ def _pack_model(model, inst_name, workspace):
 
         nids = raw_nids[:n_corner]
         if len(nids) < n_corner:
-            # Not enough valid GRID nodes (e.g. grounded spring, scalar-point ref)
-            skipped_counts[card + '_no_grid'] = skipped_counts.get(card + '_no_grid', 0) + 1
-            continue
+            # Grounded spring/damper: a 2-node SPRING2/DASHPOT2 whose other end is
+            # grounded (only 1 valid GRID). Render it at its single GRID as a point
+            # instead of dropping it. Anything else with too few GRIDs is skipped.
+            if abaqus_name in _LINE_TO_POINT and len(raw_nids) >= 1:
+                abaqus_name = _LINE_TO_POINT[abaqus_name]   # SPRING2→SPRING1, DASHPOT2→DASHPOT1
+                n_corner, n_faces = 1, 0
+                nids = raw_nids[:1]
+            else:
+                # Not enough valid GRID nodes (e.g. scalar-point ref, malformed)
+                skipped_counts[card + '_no_grid'] = skipped_counts.get(card + '_no_grid', 0) + 1
+                continue
 
         pid = getattr(elem, 'pid', -1)
         try:
