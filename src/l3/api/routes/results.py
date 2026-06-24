@@ -185,6 +185,12 @@ async def get_frame_scalars(
     mode: str = Query("smooth", pattern="^(smooth|flat)$"),
     result_group: Optional[str] = Query(None, description="Result group (project mode)"),
     set: Optional[str] = Query(None, description="User set name to filter triangles"),
+    set_mode: str = Query(
+        "clip", pattern="^(clip|mask)$",
+        description="clip = return only the set's vertices (mode A); "
+                    "mask = return all vertices, non-set ones NaN/grey, only the set "
+                    "region colored (mode B). Range is over the set in both modes.",
+    ),
     feature_angle: Optional[float] = Query(
         default=20.0,
         description="Shell/membrane geometric split angle (degrees). Omit to disable."
@@ -232,6 +238,7 @@ async def get_frame_scalars(
         render_mode=mode,
         result_group=resolved_result_group,
         set_name=set,
+        set_mode=set_mode,
         feature_angle=feature_angle,
         average_threshold=average_threshold,
         use_geometry_split=use_geometry_split,
@@ -274,6 +281,7 @@ async def get_frame_scalar_range(
     component_idx: Optional[int] = Query(default=None, ge=0),
     mode: str = Query("smooth", pattern="^(smooth|flat)$"),
     result_group: Optional[List[str]] = Query(None),
+    set: Optional[str] = Query(None, description="User/element set name; range is computed over this set only"),
     feature_angle: Optional[float] = Query(default=20.0),
     average_threshold: float = Query(default=0.75, ge=0.0, le=1.0),
     use_geometry_split: bool = Query(default=True),
@@ -286,6 +294,9 @@ async def get_frame_scalar_range(
     instances: comma-separated list of instance names.
     result_group: one or more result group names (repeat the param). Each is tried
                   in order; the first one that contains data for the given field wins.
+    set: when given, each instance's range is computed over only that set's elements
+         (min=blue / max=red over the selected set). Instances without the set are
+         skipped (no data), same as fields with no data.
     Returns JSON { global_min, global_max, instance_ranges: { name: [min, max] } }.
     """
     from ...core.errors import NotFoundError as _NFE
@@ -315,6 +326,7 @@ async def get_frame_scalar_range(
                     component_idx=component_idx,
                     render_mode=mode,
                     result_group=rg,
+                    set_name=set,
                     feature_angle=feature_angle,
                     average_threshold=average_threshold,
                     use_geometry_split=use_geometry_split,

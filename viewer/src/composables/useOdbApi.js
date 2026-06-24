@@ -111,6 +111,7 @@ export function useOdbApi() {
     componentIdx = null,
     renderMode = 'smooth',
     resultGroup = null,
+    set = null,
     featureAngle = null,
     averageThreshold = null,
     useGeometrySplit = null,
@@ -124,6 +125,7 @@ export function useOdbApi() {
     })
     if (componentIdx != null)      params.set('component_idx',      componentIdx)
     if (resultGroup)               params.set('result_group',        resultGroup)
+    if (set)                       params.set('set',                 set)
     if (featureAngle != null)      params.set('feature_angle',       featureAngle)
     if (averageThreshold != null)  params.set('average_threshold',   averageThreshold)
     if (useGeometrySplit != null)  params.set('use_geometry_split',  useGeometrySplit)

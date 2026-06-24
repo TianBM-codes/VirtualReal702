@@ -291,14 +291,9 @@ class ManifestRepo:
                         inv_parent[f["field_name"]] = candidate
 
         # Collect invariant suffixes per parent  (e.g. "S" → ["MISES"])
-        # Non-MISES invariants are computed from components via numpy formulas and
-        # not yet verified — hide them from the frontend until confirmed correct.
-        _HIDDEN_INV_SUFFIXES = {"PRESS", "INV3", "MAX_PRINCIPAL", "MID_PRINCIPAL", "MIN_PRINCIPAL"}
         inv_suffixes: dict[str, list] = {}
         for inv_name, parent_name in sorted(inv_parent.items()):
             suffix = inv_name[len(parent_name) + 1:]
-            if suffix in _HIDDEN_INV_SUFFIXES:
-                continue
             inv_suffixes.setdefault(parent_name, []).append(suffix)
 
         result = []

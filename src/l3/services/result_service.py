@@ -510,6 +510,7 @@ def compute_scalar_range(
     component_idx: Optional[int] = None,
     render_mode: str = "smooth",
     result_group: str = None,
+    set_name: str = None,
     feature_angle: Optional[float] = 20.0,
     average_threshold: float = 0.75,
     use_geometry_split: bool = True,
@@ -517,6 +518,11 @@ def compute_scalar_range(
     """
     Return (val_min, val_max) for the given instance/field/frame using the same
     range logic as frame_scalars(), but without building u_per_vertex.
+
+    set_name: when given, the range is computed over only the elements in that
+    set (the "min=blue / max=red over the selected set" case). We delegate to
+    frame_scalars() with no override so it returns the set-subset range via its
+    legend_range, keeping the set-filter semantics identical to actual coloring.
 
     Returns None if no result data is found for this instance.
     Raises NotFoundError / NotReadyError / ValidationError on hard failures.
@@ -527,6 +533,49 @@ def compute_scalar_range(
             f"frame_idx must be >= 0, got {frame_idx}",
             {"frame_idx": frame_idx},
         )
+
+    # Set filter: reuse frame_scalars' set→subset→range path so the range matches
+    # exactly what coloring will use. Subsets are small, so the extra scatter is cheap.
+    #
+    # First probe whether this instance actually contains the set. frame_scalars
+    # silently falls back to the full instance when a set is absent, which would
+    # pollute the union range — so for the range endpoint we instead skip such an
+    # instance (return None), mirroring "no data for this field" handling.
+    if set_name is not None:
+        idx = registry.get(odb_id)
+        if idx is None:
+            raise NotFoundError(f"ODB '{odb_id}' not found")
+        if not idx.is_render_ready:
+            raise NotReadyError(f"ODB '{odb_id}' is not render-ready yet")
+        _manifest = ManifestRepo(idx.workspace)
+        _rows = _manifest.get_user_set_render_rows(set_name, instance)
+        if _rows is None:
+            _labels = _manifest.get_element_set_labels(set_name, instance)
+            if _labels is None or len(_labels) == 0:
+                return None
+            from .user_field_service import get_face_mask_for_elem_labels
+            _mask = get_face_mask_for_elem_labels(idx, instance, set(_labels.tolist()))
+            if not bool(_mask.any()):
+                return None
+        elif len(_rows) == 0:
+            return None
+        _, legend_range, _ = frame_scalars(
+            registry=registry,
+            odb_id=odb_id,
+            instance=instance,
+            step=step,
+            field=field,
+            frame_idx=frame_idx,
+            component_idx=component_idx,
+            render_mode=render_mode,
+            result_group=result_group,
+            set_name=set_name,
+            feature_angle=feature_angle,
+            average_threshold=average_threshold,
+            use_geometry_split=use_geometry_split,
+        )
+        return (float(legend_range[0]), float(legend_range[1]))
+
     field, frame_idx = _resolve_sensitivity_frame_alias(field, frame_idx)
 
     idx = registry.get(odb_id)
@@ -625,6 +674,7 @@ def frame_scalars(
     render_mode: str = "smooth",
     result_group: str = None,
     set_name: str = None,
+    set_mode: str = "clip",
     feature_angle: Optional[float] = 20.0,
     average_threshold: float = 0.75,
     use_geometry_split: bool = True,
@@ -641,6 +691,12 @@ def frame_scalars(
 
     component_idx=None → magnitude (L2 norm).
     component_idx=0,1,2,... → direct index into the result component axis.
+
+    set_name: optional user/element set to restrict to. set_mode controls how:
+      'clip' = drop non-set vertices (pair with geometry subset, mode A);
+      'mask' = keep all vertices, set non-set ones to NaN so the full model stays
+               visible and only the set region is colored (mode B). Either way the
+               normalization range is computed over the set only.
 
     override_min/override_max: when both are provided, skip per-instance range
     computation and use these values directly (global normalization mode).
@@ -838,7 +894,14 @@ def frame_scalars(
             {"frame_idx": frame_idx},
         )
 
-    # Apply set filter: keep only vertices belonging to the named set
+    # Apply set filter. Two modes:
+    #   clip (mode A): drop non-set vertices entirely — caller pairs this with
+    #                  geometry subset (render-buffers?set=) so only the set shows.
+    #   mask (mode B): keep ALL vertices but blank out non-set ones to NaN, so the
+    #                  full model stays visible and only the set region gets the
+    #                  colormap (the frontend already renders NaN vertices grey).
+    # In both modes the normalization range below ends up over the set only (NaN
+    # is excluded from finite), giving "min=blue / max=red over the selected set".
     if set_name is not None:
         manifest = ManifestRepo(idx.workspace)
         render_rows = manifest.get_user_set_render_rows(set_name, instance)
@@ -853,19 +916,38 @@ def frame_scalars(
         if render_rows is not None and len(render_rows) > 0:
             render_idx = idx.render_indices.get(instance)
             if render_idx is not None:
-                # indexed geometry: compact to unique vertices of the selected triangles
-                used_vtx = np.unique(render_idx[render_rows].ravel())
-                scalar_vertex = scalar_vertex[used_vtx]
+                # indexed geometry: unique vertices of the selected triangles
+                set_vtx = np.unique(render_idx[render_rows].ravel())
             else:
                 # soup geometry: each triangle occupies 3 contiguous vertices
-                vtx_idx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
-                scalar_vertex = scalar_vertex[vtx_idx]
+                set_vtx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
+            if set_mode == "mask":
+                keep = np.zeros(scalar_vertex.shape[0], dtype=bool)
+                keep[set_vtx] = True
+                scalar_vertex = np.where(
+                    keep, scalar_vertex, np.nan
+                ).astype(np.float32)
+            else:  # clip
+                scalar_vertex = scalar_vertex[set_vtx]
 
     # NaN = element type has no data for this component (e.g. shell missing S33).
     # Preserve NaN through normalization so the frontend can render those faces grey.
-    # Priority: caller-supplied override (global mode) > full-model range > surface fallback.
+    # Priority: caller-supplied override (global mode) > set-subset range (when a set
+    # filter is active) > full-model range > surface fallback.
+    #
+    # When set_name is given, scalar_vertex was already compacted to the set's faces
+    # above, so its own min/max IS the set-subset range — exactly what "min=blue /
+    # max=red over the selected set" needs. We put it ahead of global_range so a set
+    # filter shrinks the color scale to the set. override still wins (the frontend's
+    # two-step flow passes the set-subset range it just fetched as override).
     if override_min is not None and override_max is not None:
         val_min, val_max = float(override_min), float(override_max)
+    elif set_name is not None:
+        finite = scalar_vertex[np.isfinite(scalar_vertex)]
+        if finite.size > 0:
+            val_min, val_max = float(finite.min()), float(finite.max())
+        else:
+            val_min, val_max = 0.0, 0.0
     elif global_range is not None and np.isfinite(global_range[0]):
         val_min, val_max = float(global_range[0]), float(global_range[1])
     else:

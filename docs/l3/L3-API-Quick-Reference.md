@@ -1,6 +1,8 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
+更新时间：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
+
+历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
 历史：2026-06-09（新增 color-code scheme=section_assignment 按真实截面指派上色/统计，与既有 section=平均域并存互不影响；legend-entries 新增 elem_count——实际单元数含内部，来自 L1，section 例外为表面单元数；color-code 全局调色板与 L1 扫描结果在 ModelIndex 上做只读缓存，修复 all 模式 O(N²) 慢查询）
 
@@ -162,6 +164,7 @@ project_id + result_group
 | geometry | POST | `/api/odb/{odb_id}/geometry/{instance}/render-buffers-subset` |
 | results | GET | `/api/odb/{odb_id}/results/frame-colors` |
 | results | GET | `/api/odb/{odb_id}/results/frame-scalars` |
+| results | GET | `/api/odb/{odb_id}/results/frame-scalar-range` |
 | results | GET | `/api/odb/{odb_id}/results/deformed-positions` |
 | results | GET | `/api/odb/{odb_id}/results/vertex-displacements` |
 | results | GET | `/api/odb/{odb_id}/results/deformed-normals` |
@@ -1064,7 +1067,10 @@ L3BE sections：
 | `component_idx` | 否 | 0-based component index；省略时取 magnitude |
 | `mode` | 否 | `smooth` / `flat`，默认 `smooth` |
 | `result_group` | 否 | Project 模式结果组 |
-| `set` | 否 | user set / element set 过滤 |
+| `set` | 否 | user set / element set 名。归一化范围按该 set 子集计算（set 内最小值=蓝、最大值=红）；传了 `global_min/global_max` 则以 override 为准（前端两段式：先取 set 范围，再作 override 传回） |
+| `set_mode` | 否 | 配合 `set` 用，`clip`（默认）/ `mask`。`clip`=只返回该 set 单元的顶点（模式 A，需配合 `render-buffers?set=` 裁几何）；`mask`=**返回整模型全部顶点，set 外顶点值为 NaN（前端渲成灰），只有 set 区域出云图（模式 B）**。两种模式归一化范围都只按 set 内算 |
+| `global_min` | 否 | 覆盖归一化最小值（全局/外部范围模式）；与 `global_max` 同时传才生效 |
+| `global_max` | 否 | 覆盖归一化最大值；与 `global_min` 同时传才生效 |
 | `feature_angle` | 否 | shell/membrane 几何分域角度，默认 `20.0` |
 | `average_threshold` | 否 | 条件平均阈值，默认 `0.75` |
 | `use_geometry_split` | 否 | 是否使用几何分裂，默认 `true` |
@@ -1096,6 +1102,44 @@ L3BE sections：
 - indexed geometry 下通常返回 `[Nv]`。
 - Triangle Soup fallback 下可能返回 `[Rf*3]`。
 - 前端当前用这个接口拿标量，再自行应用 colormap。
+
+### `GET /api/odb/{odb_id}/results/frame-scalar-range`
+
+计算给定 instance 集合在某 step/field/frame 下的**统一归一化范围**（min/max），供前端在多 instance 共享 colormap 前先取范围，再把范围作为 `global_min/global_max` 传给 `frame-scalars`。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instances` | 是 | 逗号分隔的 instance 名列表 |
+| `step` | 是 | step name |
+| `field` | 是 | field name |
+| `frame` | 否 | 默认 `0` |
+| `component_idx` | 否 | 0-based component index；省略时取 magnitude |
+| `mode` | 否 | `smooth` / `flat`，默认 `smooth` |
+| `result_group` | 否 | 可重复传多个；按顺序尝试，第一个含该 field 数据的生效 |
+| `set` | 否 | user set / element set 名；传入后**范围只在该 set 的单元上计算**（set 内最小值=蓝、最大值=红）。不含该 set 的 instance 视为无数据被跳过，不污染 union 范围 |
+| `feature_angle` | 否 | 默认 `20.0` |
+| `average_threshold` | 否 | 默认 `0.75` |
+| `use_geometry_split` | 否 | 默认 `true` |
+
+响应 JSON：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "global_min": 0.0,
+    "global_max": 1.23,
+    "instance_ranges": {"PART-1-1": [0.0, 1.23]}
+  },
+  "message": ""
+}
+```
+
+- 所有给定 instance 都无数据（或都不含指定 `set`）时，`global_min`/`global_max` 返回 `null`，`instance_ranges` 为空对象。
+- **按 set 显示云图（模式 B，整模型保留、只给 set 区域上色）的典型用法**：① 几何保持整模型 `geometry/{instance}/render-buffers`（**不裁**）；② 调本接口带 `set=...` 拿到该 set 子集范围；③ 把范围作为 `global_min/global_max`、并带 `set=...&set_mode=mask` 调 `frame-scalars` —— set 外顶点返回 NaN（前端渲成灰），set 区域按 set 内 min/max 蓝→红。
+- **若要"只显示选中 set 单元"（模式 A）**：几何改用 `render-buffers?set=...` 裁成子集，`frame-scalars` 用 `set_mode=clip`（默认），其余步骤相同。
 
 ### `GET /api/odb/{odb_id}/results/deformed-positions`
 

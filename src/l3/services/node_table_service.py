@@ -36,9 +36,8 @@ def _result_h5_path(workspace: str, step: str, field: str,
     return os.path.join(workspace, "l1", "results", fname)
 
 
-# Synthetic invariant suffixes computed from stress components via numpy formulas.
-# MISES is kept (Abaqus-consistent); the rest are hidden until verified.
-_HIDDEN_INV_SUFFIXES = ("_PRESS", "_INV3", "_MAX_PRINCIPAL", "_MID_PRINCIPAL", "_MIN_PRINCIPAL")
+# Invariant suffixes are now extracted via Abaqus getScalarField — all visible.
+_HIDDEN_INV_SUFFIXES = ()
 
 
 # ── public API ─────────────────────────────────────────────────────────────────

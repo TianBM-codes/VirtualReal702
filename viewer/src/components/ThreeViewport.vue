@@ -1151,12 +1151,17 @@ async function loadEdges(type) {
 }
 
 // ── Apply Frame Colors (uses frame-scalars + colormap texture sampler) ────
-async function applyColors({ field, componentVal, componentIdx, renderMode, step, frameIdx, resultGroup }) {
+async function applyColors({ field, componentVal, componentIdx, renderMode, step, frameIdx, resultGroup, set }) {
   const instNames = Object.keys(store.instanceMeshes)
   if (instNames.length === 0) { store.setStatus('Load geometry first', 'err'); return }
   const compParam = componentIdx != null ? `&component_idx=${componentIdx}` : ''
   // resultGroup override: per-call result_group takes precedence over store.activeResultGroup
   const resolvedRg = resultGroup !== undefined ? resultGroup : store.activeResultGroup
+  // set filter (mode B): keep the FULL model geometry loaded; frame-scalars is asked
+  // for the set in mask mode, so it returns all vertices with non-set ones NaN (the
+  // frontend renders NaN grey). The range is computed over the set only, so the
+  // selected set region gets min=blue / max=red while the rest stays neutral.
+  const setParam = set ? `&set=${encodeURIComponent(set)}&set_mode=mask` : ''
   try {
     // Phase 1: fetch global min/max across all currently loaded instances
     store.setStatus(`Fetching global range for ${instNames.length} instance(s)…`)
@@ -1164,6 +1169,7 @@ async function applyColors({ field, componentVal, componentIdx, renderMode, step
       componentIdx,
       renderMode,
       resultGroup: resolvedRg,
+      set,
     })
     const { global_min: globalMin, global_max: globalMax } = rangeData
 
@@ -1174,7 +1180,7 @@ async function applyColors({ field, componentVal, componentIdx, renderMode, step
       const qstr = `instance=${encodeURIComponent(instName)}&step=${encodeURIComponent(step)}&frame=${frameIdx}&field=${field}${compParam}&mode=${renderMode}`
       const rgParam = resolvedRg ? `&result_group=${encodeURIComponent(resolvedRg)}` : ''
       const rangeParam = `&global_min=${globalMin}&global_max=${globalMax}`
-      const url = `${base}?${qstr}${rgParam}${rangeParam}`
+      const url = `${base}?${qstr}${rgParam}${rangeParam}${setParam}`
       const res = await http.get(url, { responseType: 'arraybuffer' })
       const sections = parseL3BE(res.data)
       const tValues = new Float32Array(sections.u_per_vertex.data)   // [Nv_global]
