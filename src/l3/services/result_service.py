@@ -1232,6 +1232,30 @@ def _en_per_vertex_averaged(
     return scalar_vertex, num_frames, global_range
 
 
+def _load_full_conn_rows(geom_f, geom_h5_path: str, etype_key: str):
+    """Full (mid-node) connectivity rows for one etype, or None.
+
+    conn_full in <inst>_highorder.h5 stores node LABELS; map to rows via the
+    geometry file's sorted node label array.  Used so high-order mid-node
+    values reach the legend range (see HighOrder-Midside-Subdivision-Design).
+    """
+    if not geom_h5_path.endswith(".h5"):
+        return None
+    ho_path = geom_h5_path[:-3] + "_highorder.h5"
+    if not os.path.exists(ho_path) or "nodes/labels" not in geom_f:
+        return None
+    node_labels = geom_f["nodes/labels"][:]
+    try:
+        with h5py.File(ho_path, "r") as f_ho:
+            grp_path = f"elements/{etype_key}"
+            if grp_path not in f_ho or "conn_full" not in f_ho[grp_path]:
+                return None
+            cf = f_ho[grp_path]["conn_full"][:]
+    except Exception:
+        return None
+    return np.searchsorted(node_labels, cf).astype(np.int32)
+
+
 def _compute_en_global_range(
     result_h5,
     geom_h5_path: str,
@@ -1269,6 +1293,14 @@ def _compute_en_global_range(
 
                 sec_id   = geom_grp['section_id'][:]   # [N_geom] int32
                 conn     = geom_grp['conn'][:]          # [N_geom, n_corner] int32
+                # Prefer full connectivity (corner + mid-nodes) so mid-node
+                # extrema — which often hold the field min/max on high-order
+                # elements — are included in the legend range, matching Abaqus.
+                conn_full = _load_full_conn_rows(geom_f, geom_h5_path, etype_key)
+                if (conn_full is not None
+                        and conn_full.shape[0] == conn.shape[0]
+                        and conn_full.shape[1] > conn.shape[1]):
+                    conn = conn_full
                 N_geom   = len(sec_id)
                 n_corner = conn.shape[1]
 

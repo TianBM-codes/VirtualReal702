@@ -1,8 +1,26 @@
 # 高阶单元中节点细分渲染 — 设计方案
 
 **更新时间**：2026-06-25
-**状态**：方案待评审（尚未实现）
+**状态**：方案 A2 第一步已实现（C3D20/C3D10/C3D15 + 二次壳），需重跑 L2 验证；面心点(A1)未做
 **适用主线**：ODB 可视化（L2 预处理 + L3 取值）
+
+> **实现进展（2026-06-25）**
+> A2 第一步已落地，覆盖 C3D20(R/H)、C3D10(M/H)、C3D15、二次壳(S6/S8R/STRI65)：
+> - **L2（`src/l2/ingest.py`）**：新增 `FACE_DEFS_FULL` / `SHELL_FULL_FACE_BY_NFULL`
+>   /`_subdivide_boundary_cols` / `build_render_faces`；`process_instance` 读
+>   `<inst>_highorder.h5` 的 `conn_full`(标签→行)，把高阶表面面细分为含中节点的
+>   小三角，`source_local_node_idx` 改用全连接列号。线性单元逐值不变。
+> - **L3（`src/l3/services/result_service.py`）**：实现中发现 legend 覆盖函数
+>   `_compute_en_global_range` 也只取角节点（`conn[:, :n_corner]`），会把 legend
+>   封顶在角节点值上。已新增 `_load_full_conn_rows`，该函数改用全连接，使中节点
+>   极值进入 legend。EN 逐顶点取值 `sc[er, li]` 因 `li` 现在是全连接列号、自动命中
+>   中节点列，无需改动。
+> - **不改前端、不改接口、不重跑 Abaqus**；但**需要重跑 L2**(`python src/l2/ingest.py
+>   --workspace /data/<odb_id>/`)生成含中节点的渲染缓冲。
+> - 测试：`tests/test_l2_highorder_subdivision.py`（细分纯逻辑）、
+>   `tests/test_l3_highorder_legend_range.py`（legend 纳入中节点极值）。
+> - 待办：面心合成点(A1)、三角数膨胀后的内存/octree 复核、真实数据重跑后与
+>   Abaqus 云图/ legend 对照。
 
 ---
 

@@ -455,6 +455,164 @@ def build_indexed_geometry(coords_global, surf_fnc,
             tri_elem_row, tri_face_seq, tri_etype_code, tri_etype_str)
 
 
+# ─── High-order (mid-node) face subdivision ──────────────────────────────────
+#
+# Quadratic elements (C3D20/C3D10/C3D15, quadratic shells) carry edge mid-nodes
+# that often hold the field extrema.  The corner-only face pipeline above never
+# samples them, so the cloud map and legend disagree with Abaqus.  Here each
+# high-order *surface* face is subdivided into smaller triangles whose vertices
+# include the edge mid-nodes (A2: boundary nodes only, no synthesized face
+# centre).  See docs/l2/HighOrder-Midside-Subdivision-Design.md.
+#
+# Boundary column sequences index columns of the FULL connectivity (conn_full;
+# corner nodes first, then edge mid-nodes — Abaqus node ordering), laid out as
+# [corner0, mid01, corner1, mid12, ...] around the face perimeter.
+
+# Solid high-order faces, keyed by ELEM_TYPE_CODE, indexed by face_seq-1
+# (face_seq matches the order in src/l1/abaqus_dump.py FACE_DEFS).
+FACE_DEFS_FULL = {
+    # C3D10 tet: 4 six-node triangular faces
+    5: [
+        [0, 4, 1, 5, 2, 6],
+        [0, 7, 3, 8, 1, 4],
+        [1, 8, 3, 9, 2, 5],
+        [2, 9, 3, 7, 0, 6],
+    ],
+    # C3D15 wedge: 2 six-node tri faces + 3 eight-node quad faces
+    6: [
+        [0, 6, 1, 7, 2, 8],
+        [3, 11, 5, 10, 4, 9],
+        [0, 6, 1, 13, 4, 9, 3, 12],
+        [1, 7, 2, 14, 5, 10, 4, 13],
+        [2, 8, 0, 12, 3, 11, 5, 14],
+    ],
+    # C3D20 hex: 6 eight-node quad faces
+    7: [
+        [0, 8, 1, 9, 2, 10, 3, 11],
+        [4, 12, 5, 13, 6, 14, 7, 15],
+        [0, 8, 1, 17, 5, 12, 4, 16],
+        [1, 9, 2, 18, 6, 13, 5, 17],
+        [2, 10, 3, 19, 7, 14, 6, 18],
+        [3, 11, 0, 16, 4, 15, 7, 19],
+    ],
+}
+
+# Quadratic shells have a single face = the element itself.  Keyed by n_full
+# (full node count) because shell ELEM_TYPE_CODE (0=tri, 1=quad, 8=STRI65) is
+# shared with linear shells; only quadratic shells own a conn_full.
+SHELL_FULL_FACE_BY_NFULL = {
+    6: [0, 3, 1, 4, 2, 5],        # S6 / STRI65: 3 corners + 3 edge mids
+    8: [0, 4, 1, 5, 2, 6, 3, 7],  # S8R: 4 corners + 4 edge mids
+}
+
+
+def _full_boundary_cols(etype_code, face_seq, n_full):
+    """conn_full boundary column sequence for one high-order face, or None if
+    this (code, face_seq) is not a recognized high-order face."""
+    defs = FACE_DEFS_FULL.get(int(etype_code))
+    if defs is not None:
+        if 1 <= face_seq <= len(defs):
+            return defs[face_seq - 1]
+        return None
+    return SHELL_FULL_FACE_BY_NFULL.get(int(n_full))
+
+
+def _subdivide_boundary_cols(boundary):
+    """Subdivide a quadratic face boundary [c0,m0,c1,m1,...] into mid-node
+    triangles (boundary nodes only).  Returns a list of (a,b,c) column-index
+    triples, or None if the corner count is unsupported."""
+    nc = len(boundary) // 2
+    if nc == 3:
+        c0, m0, c1, m1, c2, m2 = boundary
+        return [(c0, m0, m2), (m0, c1, m1), (m2, m1, c2), (m0, m1, m2)]
+    if nc == 4:
+        c0, m0, c1, m1, c2, m2, c3, m3 = boundary
+        return [(c0, m0, m3), (m0, c1, m1), (m1, c2, m2),
+                (m2, c3, m3), (m0, m1, m3), (m1, m2, m3)]
+    return None
+
+
+def build_render_faces(surf_fnc, surf_elem_rows, surf_face_seqs,
+                       surf_etype_codes, surf_etype_strs,
+                       conn_full_rows_by_etype):
+    """Expand high-order surface faces into mid-node subdivided triangles.
+
+    Linear faces pass through unchanged (corner node rows).  Each high-order
+    face is replaced by several 3-node triangles whose vertices are real FEM
+    nodes including edge mid-nodes, so mid-node extrema reach the cloud map.
+
+    conn_full_rows_by_etype maps etype_str -> [N_elem, n_full] node rows; an
+    etype absent from it is treated as linear.
+
+    Returns render_fnc [Rf, W] int32 (-1 pad) plus parallel render_elem_rows,
+    render_face_seqs, render_etype_codes, render_etype_strs.
+    """
+    if len(surf_fnc) == 0 or not conn_full_rows_by_etype:
+        return (surf_fnc, surf_elem_rows, surf_face_seqs,
+                surf_etype_codes, surf_etype_strs)
+
+    W = surf_fnc.shape[1]
+    fnc_parts, er_parts, fs_parts, ec_parts, es_parts = [], [], [], [], []
+
+    # Which faces are high-order (etype owns a full connectivity)?
+    is_ho = np.zeros(len(surf_fnc), dtype=bool)
+    for etype_bytes in np.unique(surf_etype_strs):
+        etype_str = etype_bytes.decode("ascii").rstrip("\x00")
+        if etype_str in conn_full_rows_by_etype:
+            is_ho |= (surf_etype_strs == etype_bytes)
+
+    # ── Linear faces: pass through unchanged ──────────────────────────────
+    lin = ~is_ho
+    if lin.any():
+        fnc_parts.append(surf_fnc[lin])
+        er_parts.append(surf_elem_rows[lin])
+        fs_parts.append(surf_face_seqs[lin])
+        ec_parts.append(surf_etype_codes[lin])
+        es_parts.append(surf_etype_strs[lin])
+
+    # ── High-order faces: subdivide per (etype, face_seq) group ───────────
+    ho_etypes = np.unique(surf_etype_strs[is_ho]) if is_ho.any() else []
+    for etype_bytes in ho_etypes:
+        etype_str = etype_bytes.decode("ascii").rstrip("\x00")
+        cfr    = conn_full_rows_by_etype[etype_str]   # [N_elem, n_full]
+        n_full = cfr.shape[1]
+        et_mask = is_ho & (surf_etype_strs == etype_bytes)
+        codes_here = surf_etype_codes[et_mask]
+        code = int(codes_here[0]) if len(codes_here) else -1
+
+        for fs in np.unique(surf_face_seqs[et_mask]):
+            grp      = et_mask & (surf_face_seqs == fs)
+            erows    = surf_elem_rows[grp]                  # [G]
+            boundary = _full_boundary_cols(code, int(fs), n_full)
+            subtris  = _subdivide_boundary_cols(boundary) if boundary else None
+            if subtris is None:
+                # Unknown high-order face → keep corner face as-is.
+                fnc_parts.append(surf_fnc[grp])
+                er_parts.append(erows)
+                fs_parts.append(surf_face_seqs[grp])
+                ec_parts.append(surf_etype_codes[grp])
+                es_parts.append(surf_etype_strs[grp])
+                continue
+            rows = cfr[erows]                              # [G, n_full] node rows
+            for (a, b, c) in subtris:
+                tri = np.full((len(erows), W), -1, dtype=np.int32)
+                tri[:, 0] = rows[:, a]
+                tri[:, 1] = rows[:, b]
+                tri[:, 2] = rows[:, c]
+                fnc_parts.append(tri)
+                er_parts.append(erows)
+                fs_parts.append(np.full(len(erows), fs, dtype=surf_face_seqs.dtype))
+                ec_parts.append(np.full(len(erows), code, dtype=surf_etype_codes.dtype))
+                es_parts.append(np.full(len(erows), etype_bytes, dtype=surf_etype_strs.dtype))
+
+    render_fnc = np.vstack(fnc_parts) if fnc_parts else surf_fnc[:0]
+    render_er  = np.concatenate(er_parts) if er_parts else surf_elem_rows[:0]
+    render_fs  = np.concatenate(fs_parts) if fs_parts else surf_face_seqs[:0]
+    render_ec  = np.concatenate(ec_parts) if ec_parts else surf_etype_codes[:0]
+    render_es  = np.concatenate(es_parts) if es_parts else surf_etype_strs[:0]
+    return render_fnc, render_er, render_fs, render_ec, render_es
+
+
 # ─── Averaging domain helpers ────────────────────────────────────────────────
 
 # elem_kind codes
@@ -1088,6 +1246,28 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             if "conn" in f_in["elements/{}".format(et)]:
                 conn_by_etype[et] = f_in["elements/{}/conn".format(et)][:]
 
+    # Load full (mid-node) connectivity for high-order elements → node rows.
+    # conn_full in <inst>_highorder.h5 stores node LABELS; map to rows via the
+    # sorted node label array (same convention as L1 label_to_row).
+    conn_full_rows_by_etype = {}
+    ho_path = (geom_path[:-3] + "_highorder.h5"
+               if geom_path.endswith(".h5") else None)
+    if ho_path and os.path.exists(ho_path):
+        with h5py.File(ho_path, "r") as f_ho:
+            for et in f_ho.get("elements", {}):
+                g = f_ho["elements/{}".format(et)]
+                if "conn_full" not in g:
+                    continue
+                cf_lbl = g["conn_full"][:]                       # [N_elem, n_full] labels
+                conn_full_rows_by_etype[et] = \
+                    np.searchsorted(labels, cf_lbl).astype(np.int32)
+
+    # source_local_node_idx must resolve mid-node vertices to their FULL
+    # connectivity column (= ELEMENT_NODAL data column).  Use full rows for
+    # high-order etypes, corner rows for the rest (identical for linear elems).
+    conn_lookup_by_etype = dict(conn_by_etype)
+    conn_lookup_by_etype.update(conn_full_rows_by_etype)
+
     # 3. Filter to surface faces (face-level, before triangulation)
     surf_fnc       = fnc[is_surface]
     surf_elem_rows = elem_rows[is_surface]
@@ -1097,13 +1277,21 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     Sf_faces = len(surf_fnc)
     logger.info("  {} surface faces".format(Sf_faces))
 
+    # 3b. Expand high-order surface faces into mid-node subdivided triangles.
+    #     Linear faces pass through unchanged. Averaging/adjacency below keep
+    #     using the corner surf_* arrays (per-element), unaffected by this.
+    (render_fnc, render_face_elem_rows, render_face_seqs,
+     render_face_etype_codes, render_face_etype_strs) = build_render_faces(
+        surf_fnc, surf_elem_rows, surf_face_seqs,
+        surf_etype_codes, surf_etype_strs, conn_full_rows_by_etype)
+
     # 4. Indexed geometry (positions [Nv,3] + indices [Nt,3]; normals computed by frontend)
     (render_positions, render_indices,
      vtx_node_row, vtx_tri_idx,
      tri_elem_row, tri_face_seq, tri_etype_code, tri_etype_str) = \
-        build_indexed_geometry(coords_global, surf_fnc,
-                               surf_elem_rows, surf_face_seqs,
-                               surf_etype_codes, surf_etype_strs)
+        build_indexed_geometry(coords_global, render_fnc,
+                               render_face_elem_rows, render_face_seqs,
+                               render_face_etype_codes, render_face_etype_strs)
 
     Nv = len(render_positions)
     Nt = len(render_indices)
@@ -1115,7 +1303,8 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     # 4b. source_local_node_idx [Nt, 3]: local index of each triangle corner
     #     within its source element's connectivity array (for EN per-node lookup)
     source_local_node_idx = compute_source_local_node_idx(
-        tri_etype_str, tri_elem_row, vtx_node_row, render_indices, conn_by_etype
+        tri_etype_str, tri_elem_row, vtx_node_row, render_indices,
+        conn_lookup_by_etype
     )
 
     # 4c. Averaging domain data ────────────────────────────────────────────────
