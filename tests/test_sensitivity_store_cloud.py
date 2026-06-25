@@ -341,11 +341,17 @@ def test_run_sensitivity_inp_and_store_resets_project_status_on_failure(monkeypa
     output_dir.mkdir()
 
     statuses = []
+    console_events = []
 
     monkeypatch.setattr(
         sensitivity_service,
         "_update_project_sensitivity_status",
         lambda project_id, status: statuses.append((project_id, status)),
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "safe_write_console_event",
+        lambda project_id, title, lines=None: console_events.append((project_id, title, list(lines or []))),
     )
     monkeypatch.setattr(
         sensitivity_service,
@@ -380,7 +386,9 @@ def test_run_sensitivity_inp_and_store_resets_project_status_on_failure(monkeypa
     else:  # pragma: no cover - defensive
         raise AssertionError("expected run_sensitivity_inp_and_store to fail")
 
-    assert statuses == [(7, 0), (7, -1)]
+    assert statuses == [(7, 0), (7, 2)]
+    assert console_events
+    assert console_events[0][0] == 7
 
 
 def test_nested_sensitivity_status_wrapper_updates_only_once(monkeypatch):

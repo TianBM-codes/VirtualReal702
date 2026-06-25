@@ -33,6 +33,28 @@ from . import solver_service as _solver
 _PARAMETER_ASSIGNMENT_RE = re.compile(r"^\s*([^=\s,]+)\s*=\s*(.+?)\s*$")
 _ITERATION_CLEANUP_SUFFIXES = (".com", ".prt", ".pmg", ".pes", ".par", ".msg", ".sta", ".dat")
 _DEFAULT_SOL200_BAYESIAN_RESULT_GROUP = "bayesian_sol200"
+_WORKFLOW_STATUS_RUNNING = 0
+_WORKFLOW_STATUS_DONE = 1
+_WORKFLOW_STATUS_FAILED = 2
+
+
+def _set_project_fix_status(
+    project_id: int,
+    *,
+    fixes_cal_status: Optional[int] = None,
+    fixes_result_status: Optional[int] = None,
+) -> None:
+    update_work_condition_project_status(
+        int(project_id),
+        fixes_cal_status=fixes_cal_status,
+        fixes_result_status=fixes_result_status,
+    )
+
+
+def _log_fix_workflow_failure(project_id: int, title: str, exc: Exception, lines: Optional[Sequence[object]] = None) -> None:
+    detail_lines = [str(item) for item in list(lines or []) if str(item or "").strip()]
+    detail_lines.append(f"错误: {str(exc)}")
+    safe_write_console_event(int(project_id), title, detail_lines)
 
 
 def _format_scalar(value: float) -> str:
@@ -3691,6 +3713,14 @@ def run_bayesian_update_workflow(
             f"清理表数: {len(cleanup_result.get('deleted') or {})}",
         ],
     )
+    try:
+        _set_project_fix_status(
+            int(project_id),
+            fixes_cal_status=_WORKFLOW_STATUS_RUNNING,
+            fixes_result_status=_WORKFLOW_STATUS_RUNNING,
+        )
+    except Exception:
+        pass
 
     input_path = _solver._abs_file(input_inp, "input_inp")
     input_base_stem = input_path.stem
@@ -4008,10 +4038,10 @@ def run_bayesian_update_workflow(
                 "reason": str(exc),
             }
         try:
-            update_work_condition_project_status(
+            _set_project_fix_status(
                 int(project_id),
-                fixes_cal_status=1,
-                fixes_result_status=1,
+                fixes_cal_status=_WORKFLOW_STATUS_DONE,
+                fixes_result_status=_WORKFLOW_STATUS_DONE,
             )
         except Exception:
             pass
@@ -4050,6 +4080,25 @@ def run_bayesian_update_workflow(
             ],
         )
         return result
+    except Exception as exc:
+        try:
+            _set_project_fix_status(
+                int(project_id),
+                fixes_cal_status=_WORKFLOW_STATUS_FAILED,
+                fixes_result_status=_WORKFLOW_STATUS_FAILED,
+            )
+        except Exception:
+            pass
+        _log_fix_workflow_failure(
+            int(project_id),
+            "??????",
+            exc,
+            [
+                f"???: {resolved_batch_no}",
+                f"??INP: {str(input_path)}",
+            ],
+        )
+        raise
     finally:
         if cleanup_root_dir is not None:
             shutil.rmtree(cleanup_root_dir, ignore_errors=True)
@@ -4121,6 +4170,14 @@ def run_modal_frequency_bayesian_update_workflow(
             "已先清空上一轮模型修正结果",
         ],
     )
+    try:
+        _set_project_fix_status(
+            int(project_id),
+            fixes_cal_status=_WORKFLOW_STATUS_RUNNING,
+            fixes_result_status=_WORKFLOW_STATUS_RUNNING,
+        )
+    except Exception:
+        pass
 
     root_dir: Path
     cleanup_root_dir: Optional[Path] = None
@@ -4315,10 +4372,10 @@ def run_modal_frequency_bayesian_update_workflow(
         matched_payload = modal_payload.get("matched_payload") or {}
 
         try:
-            update_work_condition_project_status(
+            _set_project_fix_status(
                 int(project_id),
-                fixes_cal_status=1,
-                fixes_result_status=1,
+                fixes_cal_status=_WORKFLOW_STATUS_DONE,
+                fixes_result_status=_WORKFLOW_STATUS_DONE,
             )
         except Exception:
             pass
@@ -4357,6 +4414,25 @@ def run_modal_frequency_bayesian_update_workflow(
             ],
         )
         return result
+    except Exception as exc:
+        try:
+            _set_project_fix_status(
+                int(project_id),
+                fixes_cal_status=_WORKFLOW_STATUS_FAILED,
+                fixes_result_status=_WORKFLOW_STATUS_FAILED,
+            )
+        except Exception:
+            pass
+        _log_fix_workflow_failure(
+            int(project_id),
+            "??????????",
+            exc,
+            [
+                f"???: {resolved_batch_no}",
+                f"?????: {resolved_sensitivity_batch_no}",
+            ],
+        )
+        raise
     finally:
         if cleanup_root_dir is not None:
             shutil.rmtree(cleanup_root_dir, ignore_errors=True)
@@ -4505,6 +4581,14 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             "已先清空上一轮模型修正结果",
         ],
     )
+    try:
+        _set_project_fix_status(
+            int(project_id),
+            fixes_cal_status=_WORKFLOW_STATUS_RUNNING,
+            fixes_result_status=_WORKFLOW_STATUS_RUNNING,
+        )
+    except Exception:
+        pass
 
     try:
         current_parameter_values = np.asarray(
@@ -4777,10 +4861,10 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
 
         matched_payload = modal_payload.get("matched_payload") or {}
         try:
-            update_work_condition_project_status(
+            _set_project_fix_status(
                 int(project_id),
-                fixes_cal_status=1,
-                fixes_result_status=1,
+                fixes_cal_status=_WORKFLOW_STATUS_DONE,
+                fixes_result_status=_WORKFLOW_STATUS_DONE,
             )
         except Exception:
             pass
@@ -4834,6 +4918,25 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             ],
         )
         return result
+    except Exception as exc:
+        try:
+            _set_project_fix_status(
+                int(project_id),
+                fixes_cal_status=_WORKFLOW_STATUS_FAILED,
+                fixes_result_status=_WORKFLOW_STATUS_FAILED,
+            )
+        except Exception:
+            pass
+        _log_fix_workflow_failure(
+            int(project_id),
+            "SOL200??????????",
+            exc,
+            [
+                f"???: {resolved_batch_no}",
+                f"?????: {resolved_sensitivity_batch_no}",
+            ],
+        )
+        raise
     finally:
         if cleanup_root_dir is not None:
             shutil.rmtree(cleanup_root_dir, ignore_errors=True)

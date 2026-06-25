@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from src.l3.core.errors import ValidationError
 from services.model_update.analysis.nastran_sol200_service import (
     DEFAULT_PARAMETER_LOWER_SCALE,
     DEFAULT_PARAMETER_UPPER_SCALE,
@@ -220,6 +221,7 @@ def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypat
     metadata_path.write_text("{}", encoding="utf-8")
 
     captured = {}
+    status_calls = []
 
     def fake_run_sol200_workflow(**kwargs):
         return {
@@ -247,6 +249,10 @@ def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypat
         "services.model_update.analysis.nastran_sol200_service.store_sol200_sensitivity",
         fake_store_sol200_sensitivity,
     )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
 
     payload = run_sol200_and_store_workflow(
         project_id=3,
@@ -262,6 +268,10 @@ def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypat
     assert captured["bdf_path"] == str(output_bdf.resolve())
     assert captured["metadata_json"] == str(metadata_path.resolve())
     assert payload["store"]["stored"] is True
+    assert status_calls == [
+        (3, {"sensitivity_status": 0}),
+        (3, {"sensitivity_status": 1}),
+    ]
 
 
 def test_run_sol200_and_store_workflow_falls_back_to_sensitivity_csv(monkeypatch, tmp_path):
@@ -323,3 +333,41 @@ def test_run_sol200_and_store_workflow_falls_back_to_sensitivity_csv(monkeypatch
     assert captured["matrix_path"] == str(csv_path.resolve())
     assert payload["matrix_path"] == str(csv_path.resolve())
     assert payload["store"]["stored"] is True
+
+
+def test_run_sol200_and_store_workflow_marks_failed_status_and_logs_console(monkeypatch, tmp_path):
+    console_events = []
+    status_calls = []
+
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.run_sol200_workflow",
+        lambda **kwargs: (_ for _ in ()).throw(ValidationError("solver failed", {})),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.safe_write_console_event",
+        lambda project_id, title, lines=None: console_events.append((project_id, title, list(lines or []))),
+    )
+
+    try:
+        run_sol200_and_store_workflow(
+            project_id=3,
+            batch_no="1",
+            case_name="modal_freq_sens",
+            input_bdf=str(tmp_path / "input.bdf"),
+            output_bdf=str(tmp_path / "demo_sol200.bdf"),
+            settings={"dynamic.norm": "MASS"},
+        )
+    except ValidationError:
+        pass
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected run_sol200_and_store_workflow to fail")
+
+    assert status_calls == [
+        (3, {"sensitivity_status": 0}),
+        (3, {"sensitivity_status": 2}),
+    ]
+    assert console_events

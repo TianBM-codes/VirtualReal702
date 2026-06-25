@@ -66,6 +66,7 @@ _DEFAULT_RESPONSE_SCATTER = 0.01
 _SENSITIVITY_STATUS_PENDING = -1
 _SENSITIVITY_STATUS_RUNNING = 0
 _SENSITIVITY_STATUS_DONE = 1
+_SENSITIVITY_STATUS_FAILED = 2
 _SENSITIVITY_STATUS_LOCAL = threading.local()
 
 
@@ -111,8 +112,16 @@ def _run_with_project_sensitivity_status(project_id: int, fn):
     _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_RUNNING)
     try:
         result = fn()
-    except Exception:
-        _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_PENDING)
+    except Exception as exc:
+        _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_FAILED)
+        safe_write_console_event(
+            int(project_id),
+            "灵敏度计算失败",
+            [
+                f"项目ID: {int(project_id)}",
+                f"错误: {str(exc)}",
+            ],
+        )
         raise
     else:
         _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_DONE)
