@@ -57,6 +57,7 @@ def _make_sensitivity_app(monkeypatch, tmp_path: Path):
                 ("sensitivity_batch_5_demo_123",),
                 ("sensitivity_5_U",),
                 ("sol200_all_elements_e",),
+                ("viz_rg_PART-1-1_U1_10",),
                 ("plain_result",),
             ],
         )
@@ -73,6 +74,7 @@ def _make_sensitivity_app(monkeypatch, tmp_path: Path):
                 ("sensitivity_batch_5_demo_123", "Step-1", "d_4_U1_T", "external"),
                 ("sensitivity_5_U", "Step-1", "d_4_U1_T", "external"),
                 ("sol200_all_elements_e", "Sensitivity", "SENSITIVITY_CLOUD", "external"),
+                ("viz_rg_PART-1-1_U1_10", "Sensitivity", "E", "external"),
                 ("plain_result", "Step-1", "U", "odb"),
             ],
         )
@@ -111,6 +113,7 @@ def test_sensitivity_result_groups_include_external_cloud_groups(monkeypatch, tm
     assert response.json()["data"]["result_groups"] == [
         "sensitivity_5_U",
         "sol200_all_elements_e",
+        "viz_rg_PART-1-1_U1_10",
     ]
 
 
@@ -128,6 +131,7 @@ def test_sensitivity_result_groups_merge_only_false_keeps_raw_groups(monkeypatch
         "sensitivity_batch_5_demo_123",
         "sensitivity_5_U",
         "sol200_all_elements_e",
+        "viz_rg_PART-1-1_U1_10",
     ]
 
 

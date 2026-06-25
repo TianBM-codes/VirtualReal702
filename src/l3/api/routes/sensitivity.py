@@ -39,7 +39,7 @@ def _list_external_sensitivity_groups(manifest: ManifestRepo) -> set[str]:
         with manifest._get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT result_group, field_name
+                SELECT DISTINCT result_group, field_name, step_name
                   FROM result_files
                  WHERE source='external'
                    AND result_group IS NOT NULL
@@ -53,9 +53,13 @@ def _list_external_sensitivity_groups(manifest: ManifestRepo) -> set[str]:
     for row in rows:
         result_group = str(row["result_group"] or "").strip()
         field_name = str(row["field_name"] or "").strip()
+        step_name = str(row["step_name"] or "").strip()
         if not result_group:
             continue
         if result_group.startswith(_SENSITIVITY_PREFIX):
+            groups.add(result_group)
+            continue
+        if step_name == "Sensitivity":
             groups.add(result_group)
             continue
         if _EXTERNAL_SENSITIVITY_FIELD_RE.search(result_group) or (

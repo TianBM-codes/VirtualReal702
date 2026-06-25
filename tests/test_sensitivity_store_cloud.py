@@ -13,11 +13,11 @@ from webapi.routers import sensitivity as sensitivity_router
 
 
 def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch):
-    captured = {}
+    captured = {"bodies": []}
 
     def fake_write_external_field_local(odb_id: str, body: dict):
         captured["odb_id"] = odb_id
-        captured["body"] = body
+        captured["bodies"].append(body)
         return {
             "field_name": body["field_name"],
             "step_name": body["step_name"],
@@ -46,7 +46,8 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
             ],
             "parameter_columns": [
                 {
-                    "parameter_name": "P1",
+                    "parameter_name": "E1",
+                    "type": "E",
                     "field": "d_U_P1",
                     "element_mapping": {
                         "target_kind": "cell",
@@ -54,7 +55,8 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
                     },
                 },
                 {
-                    "parameter_name": "P2",
+                    "parameter_name": "RHO1",
+                    "type": "RHO",
                     "field": "d_U_P2",
                     "element_mapping": {
                         "target_kind": "cell",
@@ -70,34 +72,33 @@ def test_write_sensitivity_cloud_result_posts_external_field_payload(monkeypatch
     )
 
     assert captured["odb_id"] == "odb-demo"
-    assert captured["body"]["type"] == "element"
-    assert captured["body"]["components"] == ["SENSITIVITY"]
-    assert captured["body"]["result_group"] == "viz_rg"
-    assert len(captured["body"]["instances"]) == 1
-    assert captured["body"]["instances"][0]["instance"] == "PART-1-1"
-    assert len(captured["body"]["instances"][0]["frames"]) == 2
-    frame0 = captured["body"]["instances"][0]["frames"][0]
-    frame1 = captured["body"]["instances"][0]["frames"][1]
+    assert len(captured["bodies"]) == 4
+    first = captured["bodies"][0]
+    assert first["type"] == "element"
+    assert first["components"] == ["value"]
+    assert first["field_name"] == "E"
+    assert first["result_group"] == "viz_rg_R1"
+    assert len(first["instances"]) == 1
+    assert first["instances"][0]["instance"] == "PART-1-1"
+    assert len(first["instances"][0]["frames"]) == 1
+    frame0 = first["instances"][0]["frames"][0]
     assert frame0["frame_idx"] == 0
-    assert frame0["frame_value"] == 1.0
-    assert frame1["frame_idx"] == 1
-    assert frame1["frame_value"] == 2.0
+    assert frame0["frame_value"] == 0.0
     assert frame0["description"] == "sensitivity_PART-1-1::10_U"
-    first_entry, second_entry, third_entry = frame0["data"]
+    first_entry, second_entry = frame0["data"]
     assert first_entry["label"] == 101
     assert np.isclose(first_entry["values"][0], 0.1)
     assert second_entry["label"] == 102
     assert np.isclose(second_entry["values"][0], 0.1)
-    assert third_entry["label"] == 103
-    assert np.isclose(third_entry["values"][0], 0.2)
-    assert frame1["data"][1]["label"] == 102
-    assert np.isclose(frame1["data"][1]["values"][0], 0.3)
-    assert frame1["data"][2]["label"] == 103
-    assert np.isclose(frame1["data"][2]["values"][0], 0.4)
+    rho_body = next(body for body in captured["bodies"] if body["result_group"] == "viz_rg_R1" and body["field_name"] == "RHO")
+    assert rho_body["instances"][0]["frames"][0]["data"][0]["label"] == 103
+    assert np.isclose(rho_body["instances"][0]["frames"][0]["data"][0]["values"][0], 0.2)
     assert result["odb_id"] == "odb-demo"
-    assert result["frame_count"] == 2
-    assert result["components"] == ["SENSITIVITY"]
+    assert result["frame_count"] == 1
+    assert result["components"] == ["value"]
     assert result["frames"][0]["description"] == "sensitivity_PART-1-1::10_U"
+    assert sorted(result["result_groups"]) == ["viz_rg_R1", "viz_rg_R2"]
+    assert result["fields"] == ["E", "RHO"]
     assert result["query_hint"]["endpoint"] == "/api/odb/{odb_id}/results/frame-scalars"
     assert result["write_response"]["instances_written"] == 1
 
@@ -121,7 +122,8 @@ def test_store_dsa_sensitivity_results_writes_cloud_result_metadata(monkeypatch,
         "parameter_columns": [
             {
                 "field": "d_U_P1",
-                "parameter_name": "P1",
+                "parameter_name": "E1",
+                "type": "E",
                 "element_mapping": {
                     "target_kind": "cell",
                     "targets_by_scope": {"PART-1-1": [101]},
@@ -139,17 +141,25 @@ def test_store_dsa_sensitivity_results_writes_cloud_result_metadata(monkeypatch,
     monkeypatch.setattr(
         sensitivity_service,
         "_persist_sensitivity_matrix",
-        lambda **kwargs: {"analysis_run_id": 12, "project_id": 3, "batch_no": "2"},
+        lambda **kwargs: {
+            "analysis_run_id": 12,
+            "project_id": 3,
+            "batch_no": "2",
+            "response_count": 1,
+            "parameter_count": 1,
+        },
     )
 
     def fake_write_cloud(**kwargs):
         cloud_calls.update(kwargs)
         return {
-            "result_group": "viz_rg",
+            "result_group": "viz_rg_R1",
             "step": "Sensitivity Step",
-            "field": "SENSITIVITY_CLOUD",
-            "components": ["P1"],
+            "field": "E",
+            "components": ["value"],
             "frame_count": 1,
+            "result_groups": ["viz_rg_R1"],
+            "fields": ["E"],
         }
 
     monkeypatch.setattr(sensitivity_service, "_write_sensitivity_cloud_result", fake_write_cloud)
@@ -175,8 +185,8 @@ def test_store_dsa_sensitivity_results_writes_cloud_result_metadata(monkeypatch,
     assert cloud_calls["step_name"] == "Sensitivity Step"
     assert cloud_calls["field_name"] == "SENSITIVITY_CLOUD"
     assert cloud_calls["matrix_payload"] is matrix_payload
-    assert result["cloud_result"]["result_group"] == "viz_rg"
-    assert result["cloud_result"]["components"] == ["P1"]
+    assert result["cloud_result"]["result_group"] == "viz_rg_R1"
+    assert result["cloud_result"]["components"] == ["value"]
     assert result["analysis_run_id"] == 12
 
 
@@ -196,7 +206,7 @@ def test_store_dsa_sensitivity_results_updates_project_status(monkeypatch, tmp_p
         "field_prefix": "d_U_",
         "matrix": [[0.1]],
         "response_rows": [{"row_key": "R1", "response_label": "PART-1-1::10"}],
-        "parameter_columns": [{"field": "d_U_P1", "parameter_name": "P1"}],
+        "parameter_columns": [{"field": "d_U_P1", "parameter_name": "E1", "type": "E"}],
     }
 
     monkeypatch.setattr(
@@ -212,7 +222,13 @@ def test_store_dsa_sensitivity_results_updates_project_status(monkeypatch, tmp_p
     monkeypatch.setattr(
         sensitivity_service,
         "_persist_sensitivity_matrix",
-        lambda **kwargs: {"analysis_run_id": 15, "project_id": 3, "batch_no": "2"},
+        lambda **kwargs: {
+            "analysis_run_id": 15,
+            "project_id": 3,
+            "batch_no": "2",
+            "response_count": 1,
+            "parameter_count": 1,
+        },
     )
 
     result = sensitivity_service.store_dsa_sensitivity_results(
@@ -278,7 +294,13 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     monkeypatch.setattr(
         sensitivity_service,
         "_persist_sensitivity_matrix",
-        lambda **kwargs: {"analysis_run_id": 20, "project_id": 7, "batch_no": "3"},
+        lambda **kwargs: {
+            "analysis_run_id": 20,
+            "project_id": 7,
+            "batch_no": "3",
+            "response_count": 1,
+            "parameter_count": 1,
+        },
     )
     monkeypatch.setattr(
         sensitivity_service,
@@ -442,7 +464,13 @@ def test_run_sensitivity_inp_and_store_writes_cloud_result_metadata(monkeypatch,
     monkeypatch.setattr(
         sensitivity_service,
         "_persist_sensitivity_matrix",
-        lambda **kwargs: {"analysis_run_id": 21, "project_id": 7, "batch_no": "4"},
+        lambda **kwargs: {
+            "analysis_run_id": 21,
+            "project_id": 7,
+            "batch_no": "4",
+            "response_count": 1,
+            "parameter_count": 1,
+        },
     )
     monkeypatch.setattr(
         sensitivity_service,
@@ -453,11 +481,13 @@ def test_run_sensitivity_inp_and_store_writes_cloud_result_metadata(monkeypatch,
     def fake_write_cloud(**kwargs):
         cloud_calls.update(kwargs)
         return {
-            "result_group": "viz_rg",
+            "result_group": "viz_rg_R1",
             "step": "Sensitivity Step",
-            "field": "SENSITIVITY_CLOUD",
-            "components": ["T1"],
+            "field": "THICKNESS",
+            "components": ["value"],
             "frame_count": 1,
+            "result_groups": ["viz_rg_R1"],
+            "fields": ["THICKNESS"],
         }
 
     monkeypatch.setattr(sensitivity_service, "_write_sensitivity_cloud_result", fake_write_cloud)
@@ -485,8 +515,8 @@ def test_run_sensitivity_inp_and_store_writes_cloud_result_metadata(monkeypatch,
     assert cloud_calls["step_name"] == "Sensitivity Step"
     assert cloud_calls["field_name"] == "SENSITIVITY_CLOUD"
     assert cloud_calls["matrix_payload"] is matrix_payload
-    assert result["cloud_result"]["result_group"] == "viz_rg"
-    assert result["cloud_result"]["components"] == ["T1"]
+    assert result["cloud_result"]["result_group"] == "viz_rg_R1"
+    assert result["cloud_result"]["components"] == ["value"]
 
 
 def test_run_sensitivity_inp_and_store_uses_project_result_group_when_enabled(monkeypatch, tmp_path: Path):
@@ -552,7 +582,13 @@ def test_run_sensitivity_inp_and_store_uses_project_result_group_when_enabled(mo
     monkeypatch.setattr(
         sensitivity_service,
         "_persist_sensitivity_matrix",
-        lambda **kwargs: {"analysis_run_id": 22, "project_id": 7, "batch_no": "5"},
+        lambda **kwargs: {
+            "analysis_run_id": 22,
+            "project_id": 7,
+            "batch_no": "5",
+            "response_count": 1,
+            "parameter_count": 1,
+        },
     )
 
     result = sensitivity_service.run_sensitivity_inp_and_store(
@@ -648,7 +684,7 @@ def test_generate_sensitivity_inp_and_store_loads_project_metadata_and_reuses_ru
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [{"parameter_name": "T1"}],
+        lambda project_id, required_scope=None: [{"parameter_name": "T1"}],
     )
     monkeypatch.setattr(
         sensitivity_service,
@@ -723,7 +759,7 @@ def test_generate_sensitivity_inp_and_store_uses_project_defaults_when_paths_omi
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [{"parameter_name": "T1"}],
+        lambda project_id, required_scope=None: [{"parameter_name": "T1"}],
     )
     monkeypatch.setattr(
         sensitivity_service,
