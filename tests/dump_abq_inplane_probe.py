@@ -152,6 +152,8 @@ def main():
         except Exception as e:
             print("   %-24s [getScalarField 失败: %s]" % (inv, e)); continue
         worst = 0.0; worst_key = None; nblk = 0; skipped = 0
+        worst_abs = 0.0   # 仅 MAX_PRINCIPAL_ABS: 候选"取绝对值(无符号幅值)"公式的误差
+        abq_lo = abq_hi = our_lo = our_hi = None
         for key in all_keys:
             d = tens[key]
             if d.ndim < 2 or d.shape[1] < 4:
@@ -165,9 +167,26 @@ def main():
             nblk += 1
             if diff > worst:
                 worst = diff; worst_key = key
+            # 累积两边 min/max,看符号约定
+            a = abq[key]; a = a[np.isfinite(a)]; o = our[np.isfinite(our)]
+            if a.size:
+                abq_lo = a.min() if abq_lo is None else min(abq_lo, a.min())
+                abq_hi = a.max() if abq_hi is None else max(abq_hi, a.max())
+            if o.size:
+                our_lo = o.min() if our_lo is None else min(our_lo, o.min())
+                our_hi = o.max() if our_hi is None else max(our_hi, o.max())
+            if inv == 'MAX_PRINCIPAL_ABS':
+                d2, _ = _sorted_maxdiff(np.abs(our), abq[key])   # 候选: 无符号幅值
+                if d2 is not None and d2 > worst_abs:
+                    worst_abs = d2
         tag = "  最差块=%s" % (worst_key,) if worst_key else ""
-        print("   %-24s 比了%d块 跳过%d  最大误差=%.3g%s"
-              % (inv, nblk, skipped, worst, tag))
+        extra = ""
+        if inv == 'MAX_PRINCIPAL_ABS':
+            extra = ("\n        Abaqus值域=[%.4g, %.4g]  我们(带符号)值域=[%.4g, %.4g]"
+                     "\n        候选公式 abs(absmax)[无符号] 最大误差=%.3g"
+                     % (abq_lo, abq_hi, our_lo, our_hi, worst_abs))
+        print("   %-24s 比了%d块 跳过%d  最大误差=%.3g%s%s"
+              % (inv, nblk, skipped, worst, tag, extra))
 
     print("=" * 72)
     print("判读: 第4段误差全 ~0 → 公式与索引假设都对; 第3段'面内有数据'为壳的几种")
