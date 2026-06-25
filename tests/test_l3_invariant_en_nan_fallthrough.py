@@ -19,7 +19,10 @@ def _write_inv_result_file(workspace, instance, *, step, field, n_elem):
     """EN 全 NaN、IP 有真实值的单 etype(C3D8R)结果文件。"""
     fname = f"{step.replace(' ', '_')}__{field}.h5"
     path = workspace / "l1" / "results" / fname
-    ip_vals = np.arange(2 * n_elem, dtype=np.float32).reshape(2, n_elem, 1, 1)
+    # 带负值：不变量(压力/主应力)可正可负，借此验证取值保留符号、不被求模成绝对值。
+    # 每帧都横跨负→正，保证 frame 1 的前几个单元也含负值。
+    per_frame = np.linspace(-12660.0, 25610.0, n_elem, dtype=np.float32)
+    ip_vals = np.stack([per_frame, per_frame * 0.5]).reshape(2, n_elem, 1, 1)
     with h5py.File(path, "w") as f:
         en = f.create_group(f"/ELEMENT_NODAL/{instance}/C3D8R")
         en.create_dataset("data", data=np.full((2, n_elem, 8, 1), np.nan, np.float32))
@@ -57,9 +60,11 @@ def test_compute_scalar_range_falls_through_to_ip_when_en_all_nan(
     )
 
     assert rng is not None, "EN 全 NaN 时应回退到 IP，而不是返回 None"
-    # 渲染面只覆盖前 3 个单元；frame 1 的 IP 值是 n_elem..2*n_elem-1
+    # 渲染面只覆盖前 3 个单元
     faces = ip_vals[1, :3, 0, 0]
-    assert rng[0] == float(faces.min())
+    # 该帧前 3 个单元含负值 → 若被错误求模成绝对值，min 会被抬成正数
+    assert faces.min() < 0
+    assert rng[0] == float(faces.min()), "范围最小值应保留负号，不能被取绝对值"
     assert rng[1] == float(faces.max())
 
 

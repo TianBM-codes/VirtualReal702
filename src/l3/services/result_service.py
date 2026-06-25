@@ -34,12 +34,20 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.nda
 
     data:          [..., ncomp] or scalar [...]
     component_idx: int → use as direct index into last axis
-                   None → compute magnitude (L2 norm over last axis)
+                   None → magnitude (L2 norm) for vector fields, but the raw
+                          signed value for scalar fields (ncomp == 1)
     Returns float32 array with one fewer dimension.
     """
     if data.ndim == 1:
         return data.astype(np.float32)
     if component_idx is None:
+        # Scalar fields (e.g. Abaqus invariants S_PRESS / S_INV3 / principal
+        # stresses, which are stored as ncomp==1) must keep their sign. Taking the
+        # L2 norm of a single component is just abs(), which flips negative values
+        # positive and makes the cloud map disagree with Abaqus. Only true vector
+        # fields (U, RF, …) should collapse to a magnitude.
+        if data.shape[-1] == 1:
+            return data[..., 0].astype(np.float32)
         return np.linalg.norm(data, axis=-1).astype(np.float32)
     ci = int(component_idx)
     if ci < data.shape[-1]:
