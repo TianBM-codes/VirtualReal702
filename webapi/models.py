@@ -101,6 +101,7 @@ class ImportProjectStaticResultRequest(BaseModel):
     frame: Optional[int] = None
     instances: Optional[List[str]] = None
     overwrite: bool = True
+    async_submit: bool = True
 
 
 class CreateOptimizationParameterRequest(BaseModel):
