@@ -37,7 +37,11 @@ def main():
 
     rng = {}  # comp -> [min, max]
     out_csv = 'abaqus_%s_ip.csv' % field
-    f = open(out_csv, 'wb')
+    # Abaqus 新版是 Python 3、老版是 2.7，csv 打开方式不同
+    if sys.version_info[0] >= 3:
+        f = open(out_csv, 'w', newline='')
+    else:
+        f = open(out_csv, 'wb')
     w = csv.writer(f)
     w.writerow(['instance', 'elemLabel', 'ip'] + comp_labels)
 
