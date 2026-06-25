@@ -191,6 +191,29 @@ Abaqus）。可分两步落地：先做 A2（边界节点细分，6 片）拿到
 
 ---
 
+## 5b. 不变量(Mises 等)单元节点值的口径修复（2026-06-25）
+
+中节点细分上线后，应力**分量**(S11…S23)的云图能和 Abaqus 对上，但 **Mises 对不上**。
+用 `tests/dump_abq_mises_compare.py` 把"单元节点 Mises"的两种口径并排导出，定位到根因：
+
+| 口径 | 算法 | HEAD-1(C3D10M) min/max | 负值 |
+|---|---|---|---|
+| **A** 旧实现 | `getScalarField(MISES).getSubset(EN)`：先在积分点算 Mises 标量，再**外推标量** | -19021 / 64076 | 967 个 |
+| **B** 正确 | 先把**张量**外推到节点(`getSubset(EN)`)，再算 Mises（= Abaqus `block.mises`） | 186.7 / 66983 | 0 |
+
+Mises 是**非线性**不变量，`先算标量再外推` ≠ `先外推张量再算`。A 会过冲出**负 Mises**
+（物理上不可能），且峰值偏低；Abaqus 云图用的是 B。验证中 `block.mises` 与"我们用
+Voigt 公式从 EN 张量自算"逐值相等，说明 `_compute_invariants_numpy` 的公式与 Abaqus 一致。
+
+**修复（`src/l1/abaqus_dump.py` `_extract_ip_invariants`）**：
+- **EN / NODAL** 位置的不变量改为**从父张量的 EN/NODAL 子集**用 `_compute_invariants_numpy`
+  现算（方法 B）；每帧只调一次 `field_out.getSubset(ELEMENT_NODAL/NODAL)`，再对各不变量
+  套 numpy 公式。
+- **IP** 位置不动，仍用 `getScalarField`（积分点无外推，本就正确）。
+- 覆盖全部非线性不变量（Mises/Tresca/INV3/主应力/面内主应力）；PRESS 等线性量 A=B 不受影响。
+- 需**重跑 L1**(`abaqus python src/l1/abaqus_dump.py ... --invariants full` + `l1_pack`)再重跑 L2。
+- 对照脚本：`tests/dump_abq_mises_compare.py`（A vs block.mises vs numpy 三方对照）。
+
 ## 6. 待确认问题
 
 1. 目标模型主要高阶单元类型？（C3D20R / C3D10 / C3D15 / 二次壳）——决定优先实现

@@ -214,6 +214,25 @@ INV_ATTR_MAP = {
     'MAGNITUDE':              'magnitude',
 }
 
+# Abaqus invariant name → _compute_invariants_numpy() name. Used to recompute
+# ELEMENT_NODAL / NODAL invariants from the extrapolated tensor (method B),
+# which stays physically valid (e.g. Mises ≥ 0) and matches Abaqus
+# block.<invariant>; extrapolating the IP-computed scalar invariant instead
+# overshoots (negative Mises). See docs/l2/HighOrder-Midside-Subdivision-Design.md.
+_NUMPY_INV_NAME = {
+    'MISES':                  'MISES',
+    'TRESCA':                 'TRESCA',
+    'PRESS':                  'PRESS',
+    'INV3':                   'INV3',
+    'MAX_PRINCIPAL':          'MAX_PRINCIPAL',
+    'MID_PRINCIPAL':          'MID_PRINCIPAL',
+    'MIN_PRINCIPAL':          'MIN_PRINCIPAL',
+    'MAX_IN_PLANE_PRINCIPAL': 'MAX_INPLANE_PRINCIPAL',
+    'MIN_IN_PLANE_PRINCIPAL': 'MIN_INPLANE_PRINCIPAL',
+    'OUT_OF_PLANE_PRINCIPAL': 'OUTOFPLANE_PRINCIPAL',
+    'MAGNITUDE':              'MAGNITUDE',
+}
+
 # Invariant suffixes skipped even when --invariants full is passed.
 # MAGNITUDE excluded — L3 computes it on-the-fly from components (identical result).
 _HIDDEN_INV_SUFFIXES = frozenset({
@@ -1299,61 +1318,68 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
             continue
         field_out = frame.fieldOutputs[field_name]
 
-        for inv_name, _ in active_invs:
-            inv_const = _INV_CONSTANTS[inv_name]
+        # ── Method B precompute: extrapolated tensor at EN / NODAL, ONCE per ──
+        # frame. EN/NODAL invariants are computed from these tensor components
+        # (via _compute_invariants_numpy), matching Abaqus block.<invariant> and
+        # staying physically valid (Mises ≥ 0). Extrapolating the IP-computed
+        # scalar invariant instead overshoots (negative Mises) — see
+        # docs/l2/HighOrder-Midside-Subdivision-Design.md.
+        tensor_en = {}     # (iname, etype, sp) → [(u_elems, tensor_nd[N,nnode,ncomp]), ...]
+        if en_blocks and _ELEM_NODAL_CONST is not None:
+            try:
+                ten_en_field = field_out.getSubset(position=_ELEM_NODAL_CONST)
+                for b in ten_en_field.bulkDataBlocks:
+                    if b.instance is None:
+                        continue
+                    et = (getattr(b, 'elementType', None)
+                          or getattr(b, 'baseElementType', None))
+                    key = (_canon_inst(b.instance.name), et, _block_sp_num(b))
+                    u_e, ten_nd = reshape_element_nodal_block(b)
+                    tensor_en.setdefault(key, []).append((u_e, ten_nd))
+            except Exception as exc:
+                if frame_idx == 0:
+                    print("    [inv] getSubset(ELEMENT_NODAL) tensor failed: {}".format(exc))
 
-            # Ask Abaqus to compute this invariant — returns a scalar FieldOutput
+        tensor_nodal = {}  # (iname, etype, sp) → [(nodeLabels, tensor_nd[N,ncomp]), ...]
+        if nodal_blocks and _NODAL_CONST is not None:
+            try:
+                ten_nodal_field = field_out.getSubset(position=_NODAL_CONST)
+                for b in ten_nodal_field.bulkDataBlocks:
+                    if b.instance is None:
+                        continue
+                    et = (getattr(b, 'elementType', None)
+                          or getattr(b, 'baseElementType', None))
+                    key = (_canon_inst(b.instance.name), et, _block_sp_num(b))
+                    lbls = np.array(b.nodeLabels, dtype=np.int32)
+                    tensor_nodal.setdefault(key, []).append((lbls, _block_data_2d(b)))
+            except Exception as exc:
+                if frame_idx == 0:
+                    print("    [inv] getSubset(NODAL) tensor failed: {}".format(exc))
+
+        for inv_name, _ in active_invs:
+            inv_const  = _INV_CONSTANTS[inv_name]
+            numpy_name = _NUMPY_INV_NAME.get(inv_name, inv_name)
+
+            # IP: getScalarField is correct at integration points (no extrapolation,
+            # so no overshoot). EN/NODAL use method B below.
+            ip_scalar_blocks = {}  # (iname, etype, sp) → list of blocks
             try:
                 scalar_field = field_out.getScalarField(invariant=inv_const)
+                for block in scalar_field.bulkDataBlocks:
+                    if block.instance is None:
+                        continue
+                    if _pos_str(block.position) != 'INTEGRATION_POINT':
+                        continue
+                    et = (getattr(block, 'elementType', None)
+                          or getattr(block, 'baseElementType', None))
+                    ip_scalar_blocks.setdefault(
+                        (_canon_inst(block.instance.name), et, _block_sp_num(block)), []
+                    ).append(block)
             except Exception as exc:
                 if frame_idx == 0:
                     print("    [inv] getScalarField({}) failed: {}".format(inv_name, exc))
-                continue
 
-            # getScalarField() on an integration-point field returns blocks at
-            # INTEGRATION_POINT position only — it does NOT extrapolate to element
-            # nodes. So we additionally extrapolate the scalar invariant to
-            # ELEMENT_NODAL via getSubset(position=ELEMENT_NODAL); otherwise the EN
-            # blocks below would never match any data and get written as all-NaN
-            # (which makes the EN render path show an all-grey cloud). This mirrors
-            # how the parent tensor field gets its ELEMENT_NODAL values.
-            scalar_field_en = None
-            if en_blocks and _ELEM_NODAL_CONST is not None:
-                try:
-                    scalar_field_en = scalar_field.getSubset(position=_ELEM_NODAL_CONST)
-                except Exception as exc:
-                    if frame_idx == 0:
-                        print("    [inv] getSubset(ELEMENT_NODAL) for {} failed: {}".format(
-                            inv_name, exc))
-
-            # Collect scalar blocks, keyed the same way as parent. Pull EN blocks
-            # from the extrapolated field and IP/NODAL blocks from the raw scalar
-            # field; both feed the same dict so the write loops below stay unchanged.
-            scalar_blocks = {}  # key → list of blocks
-
-            def _collect_blocks(src_field):
-                if src_field is None:
-                    return
-                for block in src_field.bulkDataBlocks:
-                    if block.instance is None:
-                        continue
-                    inst_name = _canon_inst(block.instance.name)
-                    position  = _pos_str(block.position)
-                    elem_type = (getattr(block, 'elementType', None)
-                                 or getattr(block, 'baseElementType', None))
-                    if elem_type is None:
-                        _d = np.array(block.data)
-                        _n = len(getattr(block, 'elementLabels',
-                                 getattr(block, 'nodeLabels', [])))
-                        elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                    sp_num = _block_sp_num(block)
-                    key    = (inst_name, position, elem_type, sp_num)
-                    scalar_blocks.setdefault(key, []).append(block)
-
-            _collect_blocks(scalar_field)
-            _collect_blocks(scalar_field_en)
-
-            # ── Write ELEMENT_NODAL invariant data ───────────────────────────
+            # ── Write ELEMENT_NODAL invariant data (method B: from EN tensor) ─
             for (iname, etype, sp_num_key), info in en_blocks.items():
                 canon    = info['labels']
                 n_enodes = info['n_enodes']
@@ -1366,25 +1392,17 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_inv_parts.append('sp{}'.format(sp_num_key))
                 fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
-                s_key = (iname, 'ELEMENT_NODAL', etype, sp_num_key)
-                fr_blocks = scalar_blocks.get(s_key, [])
-
-                if not fr_blocks:
-                    npsave(fr_path, np.full((M_c, n_enodes, 1), np.nan, dtype=np.float32))
-                    continue
-
                 out = np.full((M_c, n_enodes, 1), np.nan, dtype=np.float32)
-                for b in fr_blocks:
-                    u_e, data_nd = reshape_element_nodal_block(b)
-                    # data_nd shape: [N_elem, n_enodes, 1] (scalar)
-                    if data_nd.ndim == 2:
-                        data_nd = data_nd[:, :, np.newaxis]
+                for (u_e, ten_nd) in tensor_en.get((iname, etype, sp_num_key), []):
+                    inv_nd = _compute_invariants_numpy(ten_nd, numpy_name)  # [N,nnode,1]
+                    if inv_nd is None:
+                        continue
                     rows  = np.searchsorted(canon, u_e)
                     valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
-                    out[rows[valid]] = data_nd[valid]
+                    out[rows[valid]] = inv_nd[valid]
                 npsave(fr_path, out)
 
-            # ── Write INTEGRATION_POINT invariant data ───────────────────────
+            # ── Write INTEGRATION_POINT invariant data (getScalarField) ──────
             for (iname, etype, sp_num_key), info in ip_blocks.items():
                 canon     = info['labels']
                 ip_labels = info['ip_labels']
@@ -1398,8 +1416,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_parts.append('sp{}'.format(sp_num_key))
                 fr_path = os.path.join(*(bd_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
-                s_key = (iname, 'INTEGRATION_POINT', etype, sp_num_key)
-                fr_blocks = scalar_blocks.get(s_key, [])
+                fr_blocks = ip_scalar_blocks.get((iname, etype, sp_num_key), [])
 
                 if not fr_blocks:
                     npsave(fr_path, np.full((M_c, n_ip, 1), np.nan, dtype=np.float32))
@@ -1416,7 +1433,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     out[rows[valid]] = data_nd[valid]
                 npsave(fr_path, out)
 
-            # ── Write NODAL invariant data ───────────────────────────────────
+            # ── Write NODAL invariant data (method B: from NODAL tensor) ─────
             for (iname, etype, sp_num_key), info in nodal_blocks.items():
                 canon = info['labels']
                 M_c   = len(canon)
@@ -1428,20 +1445,14 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_inv_parts.append('sp{}'.format(sp_num_key))
                 fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
-                s_key = (iname, 'NODAL', etype, sp_num_key)
-                fr_blocks = scalar_blocks.get(s_key, [])
-
-                if not fr_blocks:
-                    npsave(fr_path, np.full((M_c, 1), np.nan, dtype=np.float32))
-                    continue
-
                 out = np.full((M_c, 1), np.nan, dtype=np.float32)
-                for b in fr_blocks:
-                    lbls  = np.array(b.nodeLabels, dtype=np.int32)
-                    dflat = _block_data_2d(b)  # [N, 1]
+                for (lbls, ten2d) in tensor_nodal.get((iname, etype, sp_num_key), []):
+                    inv2d = _compute_invariants_numpy(ten2d, numpy_name)  # [N,1]
+                    if inv2d is None:
+                        continue
                     rows  = np.searchsorted(canon, lbls)
                     valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == lbls)
-                    out[rows[valid]] = dflat[valid]
+                    out[rows[valid]] = inv2d[valid]
                 npsave(fr_path, out)
 
     # ── Write meta.json for each synthetic invariant field ────────────────────
