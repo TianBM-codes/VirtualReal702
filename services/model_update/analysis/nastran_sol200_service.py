@@ -713,6 +713,86 @@ def sync_sol200_config_from_catalog(
     }
 
 
+def sync_generate_run_and_store_sol200_workflow(
+    *,
+    project_id: int,
+    batch_no: str = "1",
+    case_name: str = "nastran_sol200",
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    overwrite: bool = True,
+    response_source: str = "response_catalog",
+    mac_threshold: Optional[float] = None,
+    max_freq_error_ratio: Optional[float] = 0.2,
+    matching_method: str = "greedy",
+    settings: Optional[Dict[str, Any]] = None,
+    nastran: Optional[str] = None,
+    run_solver: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+    write_cloud_result: bool = True,
+    cloud_result_group: Optional[str] = None,
+    cloud_step_name: str = "Sensitivity",
+    cloud_field_name: str = "SENSITIVITY_CLOUD",
+) -> dict:
+    resolved_settings = dict(settings or {})
+    sync_payload = sync_sol200_config_from_catalog(
+        project_id=int(project_id),
+        overwrite=bool(overwrite),
+        parameter_source="selected_parameter",
+        response_source=str(response_source or "response_catalog"),
+        mac_threshold=mac_threshold,
+        max_freq_error_ratio=max_freq_error_ratio,
+        matching_method=str(matching_method or "greedy"),
+    )
+    generate_payload = generate_sol200_workflow(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        input_bdf=input_bdf,
+        output_bdf=output_bdf,
+        settings=resolved_settings,
+    )
+    run_payload = run_sol200_and_store_workflow(
+        project_id=int(project_id),
+        batch_no=str(batch_no),
+        case_name=str(case_name),
+        input_bdf=input_bdf,
+        output_bdf=output_bdf,
+        settings=resolved_settings,
+        nastran=nastran,
+        run_solver=run_solver,
+        timeout_sec=timeout_sec,
+        extra_args=list(extra_args or []),
+        write_cloud_result=write_cloud_result,
+        cloud_result_group=cloud_result_group,
+        cloud_step_name=cloud_step_name,
+        cloud_field_name=cloud_field_name,
+    )
+    resolved_output_bdf = str(
+        Path(
+            str(
+                output_bdf
+                or generate_payload.get("output_bdf")
+                or run_payload.get("output_bdf")
+                or ""
+            )
+        ).expanduser().resolve()
+    )
+    return {
+        "workflow": "nastran_sol200_sync_generate_run_and_store",
+        "project_id": int(project_id),
+        "batch_no": str(batch_no),
+        "case_name": str(case_name),
+        "input_bdf": str(Path(input_bdf).expanduser().resolve()),
+        "output_bdf": resolved_output_bdf,
+        "response_source": str(response_source or "response_catalog"),
+        "sync_config": sync_payload,
+        "generate": generate_payload,
+        "run_and_store": run_payload,
+    }
+
+
 def _load_project_sol200_parameters(project_id: int) -> List[Dict[str, Any]]:
     payload = list_sol200_parameter_config_entries(project_id)
     return [

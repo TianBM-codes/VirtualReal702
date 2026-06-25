@@ -9,7 +9,10 @@ from services.model_update.analysis.nastran_sol200_service import (
     _localize_elements_e_parameters,
     _material_copy_with_new_id,
     run_sol200_and_store_workflow,
+    sync_generate_run_and_store_sol200_workflow,
 )
+from webapi.models import NastranSol200SyncGenerateRunAndStoreRequest
+from webapi.routers import solver as solver_router
 from services.model_update.solver_prep.nastran_sol200 import (
     _build_response_lines,
     build_sol200_controls,
@@ -371,3 +374,67 @@ def test_run_sol200_and_store_workflow_marks_failed_status_and_logs_console(monk
         (3, {"sensitivity_status": 2}),
     ]
     assert console_events
+
+
+def test_sync_generate_run_and_store_sol200_workflow_chains_existing_steps(monkeypatch, tmp_path):
+    calls = []
+    output_bdf = tmp_path / "demo_sol200.bdf"
+
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.sync_sol200_config_from_catalog",
+        lambda **kwargs: calls.append(("sync", kwargs)) or {"synced": True, "response_count": 2},
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.generate_sol200_workflow",
+        lambda **kwargs: calls.append(("generate", kwargs)) or {"output_bdf": str(output_bdf), "generated": True},
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.run_sol200_and_store_workflow",
+        lambda **kwargs: calls.append(("run_and_store", kwargs)) or {"stored": True, "output_bdf": str(output_bdf)},
+    )
+
+    payload = sync_generate_run_and_store_sol200_workflow(
+        project_id=8,
+        batch_no="11",
+        case_name="auto_case",
+        input_bdf=str(tmp_path / "input.bdf"),
+        output_bdf=str(output_bdf),
+        response_source="response_catalog",
+        settings={"dynamic.norm": "MASS"},
+        write_cloud_result=False,
+    )
+
+    assert [item[0] for item in calls] == ["sync", "generate", "run_and_store"]
+    assert calls[0][1]["project_id"] == 8
+    assert calls[1][1]["input_bdf"] == str(tmp_path / "input.bdf")
+    assert calls[2][1]["output_bdf"] == str(output_bdf)
+    assert payload["sync_config"]["synced"] is True
+    assert payload["generate"]["generated"] is True
+    assert payload["run_and_store"]["stored"] is True
+
+
+def test_sol200_sync_generate_run_and_store_kwargs_defaults_output_name(monkeypatch, tmp_path):
+    input_bdf = tmp_path / "fem15_sol103.bdf"
+    output_bdf = tmp_path / "fem15_sol200.bdf"
+
+    monkeypatch.setattr(
+        solver_router,
+        "_resolve_sol200_input_bdf",
+        lambda **kwargs: str(input_bdf),
+    )
+    monkeypatch.setattr(
+        solver_router,
+        "_resolve_project_local_output_file",
+        lambda **kwargs: str(output_bdf),
+    )
+
+    body = NastranSol200SyncGenerateRunAndStoreRequest(
+        project_id=20,
+        input_bdf_name="fem15_sol103.bdf",
+    )
+    kwargs = solver_router._sol200_sync_generate_run_and_store_kwargs(body)
+
+    assert kwargs["input_bdf"] == str(input_bdf)
+    assert kwargs["output_bdf"] == str(output_bdf)
+    assert kwargs["settings"]["sol200.deck_mode"] == "include"
+    assert kwargs["settings"]["sol200.sensitivity_csv"] is True

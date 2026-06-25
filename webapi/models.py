@@ -921,6 +921,31 @@ class NastranSol200RunAndStoreRequest(BaseModel):
     async_submit: bool = False
 
 
+class NastranSol200SyncGenerateRunAndStoreRequest(BaseModel):
+    project_id: int
+    batch_no: str = "1"
+    case_name: str = "nastran_sol200"
+    input_bdf: Optional[str] = None
+    input_bdf_name: Optional[str] = None
+    output_bdf: Optional[str] = None
+    output_bdf_name: Optional[str] = None
+    overwrite: bool = True
+    response_source: str = "response_catalog"
+    mac_threshold: Optional[float] = None
+    max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
+    matching_method: str = "greedy"
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    nastran: Optional[str] = None
+    run_solver: bool = True
+    timeout_sec: Optional[int] = None
+    extra_args: List[str] = Field(default_factory=list)
+    write_cloud_result: bool = True
+    cloud_result_group: Optional[str] = None
+    cloud_step_name: str = "Sensitivity"
+    cloud_field_name: str = "SENSITIVITY_CLOUD"
+    async_submit: bool = False
+
+
 class Op2ModalPreviewRequest(BaseModel):
     project_id: Optional[int] = None
     op2_path: Optional[str] = None
