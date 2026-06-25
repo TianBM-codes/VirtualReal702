@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
+更新时间：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
 
 历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
@@ -1069,8 +1069,8 @@ L3BE sections：
 | `result_group` | 否 | Project 模式结果组 |
 | `set` | 否 | user set / element set 名。归一化范围按该 set 子集计算（set 内最小值=蓝、最大值=红）；传了 `global_min/global_max` 则以 override 为准（前端两段式：先取 set 范围，再作 override 传回） |
 | `set_mode` | 否 | 配合 `set` 用，`clip`（默认）/ `mask`。`clip`=只返回该 set 单元的顶点（模式 A，需配合 `render-buffers?set=` 裁几何）；`mask`=**返回整模型全部顶点，set 外顶点值为 NaN（前端渲成灰），只有 set 区域出云图（模式 B）**。两种模式归一化范围都只按 set 内算 |
-| `global_min` | 否 | 覆盖归一化最小值（全局/外部范围模式）；与 `global_max` 同时传才生效 |
-| `global_max` | 否 | 覆盖归一化最大值；与 `global_min` 同时传才生效 |
+| `global_min` | 否 | 覆盖归一化最小值（全局/外部范围模式）；与 `global_max` 同时传才生效。容忍字面量 `null`/空串（视作未传，回退按 instance 自动范围） |
+| `global_max` | 否 | 覆盖归一化最大值；与 `global_min` 同时传才生效。容忍字面量 `null`/空串 |
 | `feature_angle` | 否 | shell/membrane 几何分域角度，默认 `20.0` |
 | `average_threshold` | 否 | 条件平均阈值，默认 `0.75` |
 | `use_geometry_split` | 否 | 是否使用几何分裂，默认 `true` |
@@ -1485,8 +1485,8 @@ L3BE sections：
 |---|---|---|
 | `name` | 是 | user field name |
 | `instance` | 是 | instance name |
-| `val_min` | 否 | 归一化最小值 |
-| `val_max` | 否 | 归一化最大值 |
+| `val_min` | 否 | 归一化最小值。容忍字面量 `null`/空串（视作未传） |
+| `val_max` | 否 | 归一化最大值。容忍字面量 `null`/空串 |
 
 L3BE sections：
 
