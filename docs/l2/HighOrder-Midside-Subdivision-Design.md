@@ -243,8 +243,10 @@ Voigt 公式从 EN 张量自算"逐值相等，说明 `_compute_invariants_numpy
   `(instance,etype)` 判定，与 Abaqus 有效范围逐块一致。IP 位置：getScalarField 口径的面内不变量
   对实体本就无数据(自动 NaN)；`MAX_INPLANE_PRINCIPAL_ABS`(numpy-only) 的 IP 从 `tensor_ip` 算并同样门控。
 - `Max/Mid/Min Principal` 与 `MAX_PRINCIPAL_ABS` **不置灰**（实体也有效）。
-- 前端/L3 不改：合成字段(`S_MAX_INPLANE_PRINCIPAL`、`S_MAX_PRINCIPAL_ABS` 等)自动进字段目录，
-  NaN→灰 已有。需重跑 L1(`--invariants full`)+ l1_pack。
+- 前端/L3 不改：合成字段(`S_MAX_INPLANE_PRINCIPAL`、`S_MAX_PRINCIPAL_ABS` 等，`components` 为空)
+  会被 `ManifestRepo._group_invariant_fields`(manifest_repo.py)**自动折进父字段 S 的 `invariants`
+  列表**(后缀如 `MAX_INPLANE_PRINCIPAL`)，即出现在 S 的“分量下拉”里，与 `S_MISES` 同一机制；
+  前端选某项时按 `S_<后缀>` 取数。NaN→灰 已有。需重跑 L1(`--invariants full`)+ l1_pack。
 - 验证脚本：`tests/dump_abq_inplane_probe.py`(Abaqus 端前提) + `tests/dump_ours_inplane_check.py`
   (我方 H5：逐块 finite/NaN，确认实体全 NaN、壳有值)。
 
