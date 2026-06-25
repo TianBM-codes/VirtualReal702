@@ -33,11 +33,13 @@ def _dump_position(f, pos, comps, frame, out_csv):
     if root not in f:
         return None
     allvals = {}
+    # 标量合成场(如 S_MISES) meta/components 为空 → 用通用列名，否则统计会被跳过
+    cols = list(comps) if len(comps) else None
     with open(out_csv, "w", newline="") as out:
         w = csv.writer(out)
         # IP 第三列是积分点号，EN 第三列是单元内节点序号
         third = "ip" if pos == "INTEGRATION_POINT" else "nodeIdx"
-        w.writerow(["instance", "elemLabel", third] + list(comps))
+        header_written = False
         for inst in f[root]:
             base = f[root + "/" + inst]
             for et in base:
@@ -48,12 +50,18 @@ def _dump_position(f, pos, comps, frame, out_csv):
                 nf = g["data"].shape[0]
                 fi = min(frame, nf - 1)
                 data = g["data"][fi]                     # [N_elem, n_pt, ncomp]
+                if cols is None:
+                    ncomp = data.shape[-1]
+                    cols = ["VAL"] if ncomp == 1 else ["c%d" % i for i in range(ncomp)]
+                if not header_written:
+                    w.writerow(["instance", "elemLabel", third] + cols)
+                    header_written = True
                 for ei in range(data.shape[0]):
                     lab = int(labels[ei]) if labels is not None else ei
                     for k in range(data.shape[1]):
                         vals = [float(x) for x in data[ei, k]]
                         w.writerow([inst, lab, k + 1] + vals)
-                        for ci, cl in enumerate(comps):
+                        for ci, cl in enumerate(cols):
                             if ci < len(vals) and np.isfinite(vals[ci]):
                                 allvals.setdefault(cl, []).append(vals[ci])
     return allvals
