@@ -1310,23 +1310,48 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     print("    [inv] getScalarField({}) failed: {}".format(inv_name, exc))
                 continue
 
-            # Collect scalar blocks, keyed the same way as parent
+            # getScalarField() on an integration-point field returns blocks at
+            # INTEGRATION_POINT position only — it does NOT extrapolate to element
+            # nodes. So we additionally extrapolate the scalar invariant to
+            # ELEMENT_NODAL via getSubset(position=ELEMENT_NODAL); otherwise the EN
+            # blocks below would never match any data and get written as all-NaN
+            # (which makes the EN render path show an all-grey cloud). This mirrors
+            # how the parent tensor field gets its ELEMENT_NODAL values.
+            scalar_field_en = None
+            if en_blocks and _ELEM_NODAL_CONST is not None:
+                try:
+                    scalar_field_en = scalar_field.getSubset(position=_ELEM_NODAL_CONST)
+                except Exception as exc:
+                    if frame_idx == 0:
+                        print("    [inv] getSubset(ELEMENT_NODAL) for {} failed: {}".format(
+                            inv_name, exc))
+
+            # Collect scalar blocks, keyed the same way as parent. Pull EN blocks
+            # from the extrapolated field and IP/NODAL blocks from the raw scalar
+            # field; both feed the same dict so the write loops below stay unchanged.
             scalar_blocks = {}  # key → list of blocks
-            for block in scalar_field.bulkDataBlocks:
-                if block.instance is None:
-                    continue
-                inst_name = _canon_inst(block.instance.name)
-                position  = _pos_str(block.position)
-                elem_type = (getattr(block, 'elementType', None)
-                             or getattr(block, 'baseElementType', None))
-                if elem_type is None:
-                    _d = np.array(block.data)
-                    _n = len(getattr(block, 'elementLabels',
-                             getattr(block, 'nodeLabels', [])))
-                    elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
-                sp_num = _block_sp_num(block)
-                key    = (inst_name, position, elem_type, sp_num)
-                scalar_blocks.setdefault(key, []).append(block)
+
+            def _collect_blocks(src_field):
+                if src_field is None:
+                    return
+                for block in src_field.bulkDataBlocks:
+                    if block.instance is None:
+                        continue
+                    inst_name = _canon_inst(block.instance.name)
+                    position  = _pos_str(block.position)
+                    elem_type = (getattr(block, 'elementType', None)
+                                 or getattr(block, 'baseElementType', None))
+                    if elem_type is None:
+                        _d = np.array(block.data)
+                        _n = len(getattr(block, 'elementLabels',
+                                 getattr(block, 'nodeLabels', [])))
+                        elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
+                    sp_num = _block_sp_num(block)
+                    key    = (inst_name, position, elem_type, sp_num)
+                    scalar_blocks.setdefault(key, []).append(block)
+
+            _collect_blocks(scalar_field)
+            _collect_blocks(scalar_field_en)
 
             # ── Write ELEMENT_NODAL invariant data ───────────────────────────
             for (iname, etype, sp_num_key), info in en_blocks.items():

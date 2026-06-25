@@ -129,7 +129,14 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         return None
     # global_range from surface faces only (matches Abaqus: legend uses visible surface values)
     valid_face = scalar_face[np.isfinite(scalar_face)]
-    global_range = (float(valid_face.min()), float(valid_face.max())) if valid_face.size > 0 else None
+    # All-NaN means this position's group exists but carries no usable values for
+    # this instance (e.g. invariant fields whose ELEMENT_NODAL block was never
+    # populated by L1 — only INTEGRATION_POINT got real data). Return None so the
+    # caller falls through to the next position instead of rendering an all-grey
+    # cloud / failing to compute a range.
+    if valid_face.size == 0:
+        return None
+    global_range = (float(valid_face.min()), float(valid_face.max()))
     return scalar_face, num_frames, global_range
 _COMP_IDX = {"U1": 0, "U2": 1, "U3": 2}
 
@@ -1208,7 +1215,12 @@ def _en_per_vertex_averaged(
     # np.isfinite excludes vertices with no matching element data (NaN) so they
     # don't corrupt the range via nan_to_num(nan=0.0) later.
     surf_valid = scalar_vertex[np.isfinite(scalar_vertex)]
-    global_range = (float(surf_valid.min()), float(surf_valid.max())) if surf_valid.size > 0 else None
+    # All-NaN ELEMENT_NODAL (e.g. invariant fields whose EN block L1 left empty) →
+    # treat as "no EN data" so frame_scalars falls through to INTEGRATION_POINT
+    # instead of locking onto an all-grey EN result.
+    if surf_valid.size == 0:
+        return None
+    global_range = (float(surf_valid.min()), float(surf_valid.max()))
     return scalar_vertex, num_frames, global_range
 
 
