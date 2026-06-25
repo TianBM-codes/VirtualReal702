@@ -27,7 +27,7 @@ from ...services.user_field_service import (
     list_user_fields,
     save_user_field,
 )
-from ..response import ok, err
+from ..response import ok, err, nullable_float
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["user-field"])
 
@@ -79,8 +79,8 @@ async def get_user_field_colors(
     odb_id: str,
     name: str,
     instance: str,
-    val_min: Optional[float] = Query(None),
-    val_max: Optional[float] = Query(None),
+    val_min: Optional[str] = Query(None, description="Normalization min. Accepts 'null'."),
+    val_max: Optional[str] = Query(None, description="Normalization max. Accepts 'null'."),
 ):
     """
     Render a named user field as a per-vertex RGBA cloud map (L3BE binary).
@@ -96,8 +96,8 @@ async def get_user_field_colors(
         odb_id=odb_id,
         name=name,
         instance=instance,
-        val_min=val_min,
-        val_max=val_max,
+        val_min=nullable_float(val_min),
+        val_max=nullable_float(val_max),
     )
 
     payload = l3be_build([

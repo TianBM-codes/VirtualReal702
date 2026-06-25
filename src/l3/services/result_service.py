@@ -34,12 +34,20 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.nda
 
     data:          [..., ncomp] or scalar [...]
     component_idx: int → use as direct index into last axis
-                   None → compute magnitude (L2 norm over last axis)
+                   None → magnitude (L2 norm) for vector fields, but the raw
+                          signed value for scalar fields (ncomp == 1)
     Returns float32 array with one fewer dimension.
     """
     if data.ndim == 1:
         return data.astype(np.float32)
     if component_idx is None:
+        # Scalar fields (e.g. Abaqus invariants S_PRESS / S_INV3 / principal
+        # stresses, which are stored as ncomp==1) must keep their sign. Taking the
+        # L2 norm of a single component is just abs(), which flips negative values
+        # positive and makes the cloud map disagree with Abaqus. Only true vector
+        # fields (U, RF, …) should collapse to a magnitude.
+        if data.shape[-1] == 1:
+            return data[..., 0].astype(np.float32)
         return np.linalg.norm(data, axis=-1).astype(np.float32)
     ci = int(component_idx)
     if ci < data.shape[-1]:
@@ -129,7 +137,14 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         return None
     # global_range from surface faces only (matches Abaqus: legend uses visible surface values)
     valid_face = scalar_face[np.isfinite(scalar_face)]
-    global_range = (float(valid_face.min()), float(valid_face.max())) if valid_face.size > 0 else None
+    # All-NaN means this position's group exists but carries no usable values for
+    # this instance (e.g. invariant fields whose ELEMENT_NODAL block was never
+    # populated by L1 — only INTEGRATION_POINT got real data). Return None so the
+    # caller falls through to the next position instead of rendering an all-grey
+    # cloud / failing to compute a range.
+    if valid_face.size == 0:
+        return None
+    global_range = (float(valid_face.min()), float(valid_face.max()))
     return scalar_face, num_frames, global_range
 _COMP_IDX = {"U1": 0, "U2": 1, "U3": 2}
 
@@ -1208,8 +1223,37 @@ def _en_per_vertex_averaged(
     # np.isfinite excludes vertices with no matching element data (NaN) so they
     # don't corrupt the range via nan_to_num(nan=0.0) later.
     surf_valid = scalar_vertex[np.isfinite(scalar_vertex)]
-    global_range = (float(surf_valid.min()), float(surf_valid.max())) if surf_valid.size > 0 else None
+    # All-NaN ELEMENT_NODAL (e.g. invariant fields whose EN block L1 left empty) →
+    # treat as "no EN data" so frame_scalars falls through to INTEGRATION_POINT
+    # instead of locking onto an all-grey EN result.
+    if surf_valid.size == 0:
+        return None
+    global_range = (float(surf_valid.min()), float(surf_valid.max()))
     return scalar_vertex, num_frames, global_range
+
+
+def _load_full_conn_rows(geom_f, geom_h5_path: str, etype_key: str):
+    """Full (mid-node) connectivity rows for one etype, or None.
+
+    conn_full in <inst>_highorder.h5 stores node LABELS; map to rows via the
+    geometry file's sorted node label array.  Used so high-order mid-node
+    values reach the legend range (see HighOrder-Midside-Subdivision-Design).
+    """
+    if not geom_h5_path.endswith(".h5"):
+        return None
+    ho_path = geom_h5_path[:-3] + "_highorder.h5"
+    if not os.path.exists(ho_path) or "nodes/labels" not in geom_f:
+        return None
+    node_labels = geom_f["nodes/labels"][:]
+    try:
+        with h5py.File(ho_path, "r") as f_ho:
+            grp_path = f"elements/{etype_key}"
+            if grp_path not in f_ho or "conn_full" not in f_ho[grp_path]:
+                return None
+            cf = f_ho[grp_path]["conn_full"][:]
+    except Exception:
+        return None
+    return np.searchsorted(node_labels, cf).astype(np.int32)
 
 
 def _compute_en_global_range(
@@ -1249,6 +1293,14 @@ def _compute_en_global_range(
 
                 sec_id   = geom_grp['section_id'][:]   # [N_geom] int32
                 conn     = geom_grp['conn'][:]          # [N_geom, n_corner] int32
+                # Prefer full connectivity (corner + mid-nodes) so mid-node
+                # extrema — which often hold the field min/max on high-order
+                # elements — are included in the legend range, matching Abaqus.
+                conn_full = _load_full_conn_rows(geom_f, geom_h5_path, etype_key)
+                if (conn_full is not None
+                        and conn_full.shape[0] == conn.shape[0]
+                        and conn_full.shape[1] > conn.shape[1]):
+                    conn = conn_full
                 N_geom   = len(sec_id)
                 n_corner = conn.shape[1]
 

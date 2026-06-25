@@ -18,7 +18,7 @@ from ...core.errors import NotFoundError as CoreNotFoundError
 from ...core.state import registry
 from ...infra.manifest_repo import ManifestRepo
 from ...infra.l3be import build as l3be_build
-from ..response import ok
+from ..response import ok, nullable_float
 from ...services.result_service import (
     compute_scalar_range,
     frame_colors,
@@ -204,8 +204,8 @@ async def get_frame_scalars(
         default=True,
         description="False = section-only domains, ignore feature_angle.",
     ),
-    global_min: Optional[float] = Query(None, description="Override normalization min (global mode)."),
-    global_max: Optional[float] = Query(None, description="Override normalization max (global mode)."),
+    global_min: Optional[str] = Query(None, description="Override normalization min (global mode). Accepts 'null'."),
+    global_max: Optional[str] = Query(None, description="Override normalization max (global mode). Accepts 'null'."),
 ):
     """
     Return per-vertex normalized scalar t ∈ [0,1] + legend range.
@@ -221,6 +221,11 @@ async def get_frame_scalars(
     global_min/global_max: when both provided, skip per-instance range and normalize
                            against the supplied global range (multi-instance mode).
     """
+    # 前端会把 JS 的 null 序列化成字符串 "null" 塞进 URL；这里容错解析成
+    # Optional[float]，避免 FastAPI 因为 "null" 无法转 float 而直接 422。
+    gmin = nullable_float(global_min)
+    gmax = nullable_float(global_max)
+
     resolved_result_group, resolved_step = _resolve_single_result_target(
         odb_id=odb_id,
         step=step,
@@ -242,11 +247,11 @@ async def get_frame_scalars(
         feature_angle=feature_angle,
         average_threshold=average_threshold,
         use_geometry_split=use_geometry_split,
-        override_min=global_min,
-        override_max=global_max,
+        override_min=gmin,
+        override_max=gmax,
     )
 
-    norm_scope = "global" if (global_min is not None and global_max is not None) else "instance"
+    norm_scope = "global" if (gmin is not None and gmax is not None) else "instance"
 
     payload = l3be_build([
         ("u_per_vertex", u),       # [Nv] float32
