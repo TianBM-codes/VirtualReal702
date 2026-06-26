@@ -26,7 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **ODB 可视化实现状态**：L1 已完成；L2 基本完成（表面提取 + Triangle Soup + Feature Edges + Octree，缺 Partitioning）；L3 核心骨架已完成（health/pick/bbox/frame-colors 等端点），L3 尚未加载 L2 的 octree/feature-edge 数据。
 
-**当前主要入口（前端实际走的链路）**：`POST /api/projects`（2.3 Projects 分支）。前端通过 project 模式提交 ODB/INP，所有查询也带 `project_id`。`POST /api/jobs`（2.2 Legacy ODB Jobs）是旧接口，仅保留兼容性，新功能不在此分支迭代。进度日志接口 `GET /api/jobs/{odb_id}/logs` 目前仅覆盖 legacy jobs，project 分支进度暂未接入。
+**当前主要入口（前端实际走的链路）**：`POST /api/projects`（2.3 Projects 分支）。前端通过 project 模式提交 ODB/INP，所有查询也带 `project_id`。`POST /api/jobs`（2.2 Legacy ODB Jobs）是旧接口，仅保留兼容性，新功能不在此分支迭代。进度日志：legacy jobs 用 `GET /api/jobs/{odb_id}/logs`，project 分支用 `GET /api/projects/{project_id}/logs`（另有 `POST /api/projects/{project_id}/logs/clear` 清空）。两者底层共用 `registry.db` 的 `job_logs` 表，job_runner 对 project 的几何管道（INP/ODB 的 L1+L2）和各 result_group 解析都按 `project_id` 写入同一张表。
 
 **主设计文档**：`ODB-Service-Architecture.md`（v5，项目内最高权威）。所有 ODB 可视化的实现细节、HDF5 schema、算法伪代码、manifest.db schema 均以该文档为准。遇到歧义时以该文档为准，不以代码为准。
 
