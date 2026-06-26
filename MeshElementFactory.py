@@ -175,6 +175,10 @@ class MeshElementFactory:
                 return MeshTRIA3(e_id), True
             elif "CELAS" in e_type:
                 return MeshTruss(e_id), True
+            elif "CBUSH" in e_type:
+                # CBUSH / CBUSH1D / CBUSH2D: generalized spring-damper connector,
+                # 2-node line element (GA→GB), no surface. Same as CELAS spring.
+                return MeshTruss(e_id), True
             elif "CTETRA" in e_type:
                 return MeshTetra(e_id), True
             elif "CHEXA" in e_type:
