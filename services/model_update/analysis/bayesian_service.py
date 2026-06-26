@@ -2820,6 +2820,11 @@ def _collect_workspace_static_displacement_rows(
         if not chosen_step:
             available = [str(row.get("step_name")) for row in step_rows if row.get("step_name") is not None]
             raise ValidationError("step is required because multiple steps are available", {"available": available})
+        resolved_frame = _sens._resolve_workspace_step_frame(
+            workspace_abs,
+            step=str(chosen_step),
+            requested_frame=frame,
+        )
 
         available_instances = [
             str(row["instance_name"])
