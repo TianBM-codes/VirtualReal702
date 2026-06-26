@@ -735,62 +735,80 @@ def sync_generate_run_and_store_sol200_workflow(
     cloud_step_name: str = "Sensitivity",
     cloud_field_name: str = "SENSITIVITY_CLOUD",
 ) -> dict:
-    resolved_settings = dict(settings or {})
-    sync_payload = sync_sol200_config_from_catalog(
-        project_id=int(project_id),
-        overwrite=bool(overwrite),
-        parameter_source="selected_parameter",
-        response_source=str(response_source or "response_catalog"),
-        mac_threshold=mac_threshold,
-        max_freq_error_ratio=max_freq_error_ratio,
-        matching_method=str(matching_method or "greedy"),
-    )
-    generate_payload = generate_sol200_workflow(
-        project_id=int(project_id),
-        batch_no=str(batch_no),
-        case_name=str(case_name),
-        input_bdf=input_bdf,
-        output_bdf=output_bdf,
-        settings=resolved_settings,
-    )
-    run_payload = run_sol200_and_store_workflow(
-        project_id=int(project_id),
-        batch_no=str(batch_no),
-        case_name=str(case_name),
-        input_bdf=input_bdf,
-        output_bdf=output_bdf,
-        settings=resolved_settings,
-        nastran=nastran,
-        run_solver=run_solver,
-        timeout_sec=timeout_sec,
-        extra_args=list(extra_args or []),
-        write_cloud_result=write_cloud_result,
-        cloud_result_group=cloud_result_group,
-        cloud_step_name=cloud_step_name,
-        cloud_field_name=cloud_field_name,
-    )
-    resolved_output_bdf = str(
-        Path(
-            str(
-                output_bdf
-                or generate_payload.get("output_bdf")
-                or run_payload.get("output_bdf")
-                or ""
-            )
-        ).expanduser().resolve()
-    )
-    return {
-        "workflow": "nastran_sol200_sync_generate_run_and_store",
-        "project_id": int(project_id),
-        "batch_no": str(batch_no),
-        "case_name": str(case_name),
-        "input_bdf": str(Path(input_bdf).expanduser().resolve()),
-        "output_bdf": resolved_output_bdf,
-        "response_source": str(response_source or "response_catalog"),
-        "sync_config": sync_payload,
-        "generate": generate_payload,
-        "run_and_store": run_payload,
-    }
+    try:
+        resolved_settings = dict(settings or {})
+        sync_payload = sync_sol200_config_from_catalog(
+            project_id=int(project_id),
+            overwrite=bool(overwrite),
+            parameter_source="selected_parameter",
+            response_source=str(response_source or "response_catalog"),
+            mac_threshold=mac_threshold,
+            max_freq_error_ratio=max_freq_error_ratio,
+            matching_method=str(matching_method or "greedy"),
+        )
+        generate_payload = generate_sol200_workflow(
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            input_bdf=input_bdf,
+            output_bdf=output_bdf,
+            settings=resolved_settings,
+        )
+        run_payload = run_sol200_and_store_workflow(
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            input_bdf=input_bdf,
+            output_bdf=output_bdf,
+            settings=resolved_settings,
+            nastran=nastran,
+            run_solver=run_solver,
+            timeout_sec=timeout_sec,
+            extra_args=list(extra_args or []),
+            write_cloud_result=write_cloud_result,
+            cloud_result_group=cloud_result_group,
+            cloud_step_name=cloud_step_name,
+            cloud_field_name=cloud_field_name,
+        )
+        resolved_output_bdf = str(
+            Path(
+                str(
+                    output_bdf
+                    or generate_payload.get("output_bdf")
+                    or run_payload.get("output_bdf")
+                    or ""
+                )
+            ).expanduser().resolve()
+        )
+        return {
+            "workflow": "nastran_sol200_sync_generate_run_and_store",
+            "project_id": int(project_id),
+            "batch_no": str(batch_no),
+            "case_name": str(case_name),
+            "input_bdf": str(Path(input_bdf).expanduser().resolve()),
+            "output_bdf": resolved_output_bdf,
+            "response_source": str(response_source or "response_catalog"),
+            "sync_config": sync_payload,
+            "generate": generate_payload,
+            "run_and_store": run_payload,
+        }
+    except Exception as exc:
+        try:
+            _set_project_sensitivity_status(project_id, _WORKFLOW_STATUS_FAILED)
+        except Exception:
+            pass
+        _log_project_workflow_failure(
+            project_id,
+            "SOL200 sync-generate-run workflow failed",
+            exc,
+            [
+                f"batch_no: {str(batch_no)}",
+                f"case_name: {str(case_name)}",
+                f"input_bdf: {str(input_bdf)}",
+                f"response_source: {str(response_source or 'response_catalog')}",
+            ],
+        )
+        raise
 
 
 def _load_project_sol200_parameters(project_id: int) -> List[Dict[str, Any]]:

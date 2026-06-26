@@ -413,6 +413,50 @@ def test_sync_generate_run_and_store_sol200_workflow_chains_existing_steps(monke
     assert payload["run_and_store"]["stored"] is True
 
 
+def test_sync_generate_run_and_store_sol200_workflow_marks_failed_status_when_sync_step_fails(monkeypatch, tmp_path):
+    status_calls = []
+    console_events = []
+
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.sync_sol200_config_from_catalog",
+        lambda **kwargs: (_ for _ in ()).throw(
+            ValidationError(
+                "no SOL200-compatible responses could be resolved from response catalog",
+                {"project_id": 8},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.safe_write_console_event",
+        lambda project_id, title, lines=None: console_events.append((project_id, title, list(lines or []))),
+    )
+
+    try:
+        sync_generate_run_and_store_sol200_workflow(
+            project_id=8,
+            batch_no="11",
+            case_name="auto_case",
+            input_bdf=str(tmp_path / "input.bdf"),
+            output_bdf=str(tmp_path / "demo_sol200.bdf"),
+            response_source="response_catalog",
+            settings={"dynamic.norm": "MASS"},
+            write_cloud_result=False,
+        )
+    except ValidationError as exc:
+        assert "no SOL200-compatible responses could be resolved from response catalog" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected sync_generate_run_and_store_sol200_workflow to fail")
+
+    assert status_calls == [
+        (8, {"sensitivity_status": 2}),
+    ]
+    assert console_events
+
+
 def test_sol200_sync_generate_run_and_store_kwargs_defaults_output_name(monkeypatch, tmp_path):
     input_bdf = tmp_path / "fem15_sol103.bdf"
     output_bdf = tmp_path / "fem15_sol200.bdf"

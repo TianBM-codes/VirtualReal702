@@ -56,7 +56,7 @@ async def import_bdf(request: Request, body: ImportBdfRequest):
             body.project_id,
             clear_before_insert=body.clear_before_insert,
         )
-        return success_response(result, "BDF 瀵煎叆鎴愬姛")
+        return success_response(result, "BDF 导入成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -77,7 +77,7 @@ async def import_inp_catalog_api(request: Request, body: ImportInpCatalogRequest
             build_octree=body.build_octree,
             force_rebuild_octree=body.force_rebuild_octree,
         )
-        return success_response(result, "INP 鐩綍瀵煎叆鎴愬姛")
+        return success_response(result, "INP 目录导入成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -91,7 +91,7 @@ async def get_inp_catalog_api(request: Request, body: InpCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
         result = get_inp_catalog(body.project_id)
-        return success_response(result, "INP 鐩綍鏌ヨ鎴愬姛")
+        return success_response(result, "INP 目录查询成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -106,7 +106,7 @@ async def get_inp_parameter_options_api(request: Request, body: InpCatalogReques
     await log_request(request, model_to_dict(body))
     try:
         result = get_inp_parameter_options(body.project_id)
-        return success_response(result, "INP 鍙傛暟閫夐」鏌ヨ鎴愬姛")
+        return success_response(result, "INP 参数选项查询成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -124,7 +124,7 @@ async def get_inp_tree_api(request: Request, body: InpTreeRequest):
             show_labels=body.show_labels,
             max_labels=body.max_labels,
         )
-        return success_response(result, "INP 鏍戣В鏋愭垚鍔?")
+        return success_response(result, "INP 树解析成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -156,7 +156,7 @@ async def import_fem_static_from_project_result_api(request: Request, body: Impo
             )
             return success_response(result, "project result静力位移导入任务已提交")
         result = _import_fem_static_from_project_result_job(**kwargs)
-        return success_response(result, "project result闈欏姏浣嶇Щ瀵煎叆鎴愬姛")
+        return success_response(result, "project result静力位移导入成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
