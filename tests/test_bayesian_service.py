@@ -1227,11 +1227,81 @@ P1=1.0
         (
             7,
             {
+                "fixes_cal_status": 0,
+                "fixes_result_status": 0,
+            },
+        ),
+        (
+            7,
+            {
                 "fixes_cal_status": 1,
                 "fixes_result_status": 1,
             },
         )
     ]
+
+
+def test_run_bayesian_update_workflow_marks_project_fix_status_failed(monkeypatch, tmp_path: Path):
+    inp_path = tmp_path / "model.inp"
+    inp_path.write_text(
+        """*Heading
+*PARAMETER
+P1=1.0
+*Step
+*Static
+*End Step
+""",
+        encoding="utf-8",
+    )
+
+    status_calls = []
+    console_events = []
+    monkeypatch.setattr(
+        bayesian_service,
+        "update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "safe_write_console_event",
+        lambda project_id, title, lines=None: console_events.append((project_id, title, list(lines or []))),
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "build_dsa_normalized_sensitivity_matrix",
+        lambda **kwargs: (_ for _ in ()).throw(bayesian_service.ValidationError("boom", {})),
+    )
+
+    try:
+        bayesian_service.run_bayesian_update_workflow(
+            project_id=7,
+            input_inp=str(inp_path),
+            workspace=str(tmp_path / "initial_ws"),
+            target_responses=[8.0],
+            output_dir=str(tmp_path / "out"),
+            iterations=1,
+            run_solver=False,
+        )
+    except bayesian_service.ValidationError:
+        pass
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected run_bayesian_update_workflow to fail")
+
+    assert status_calls[0] == (
+        7,
+        {
+            "fixes_cal_status": 0,
+            "fixes_result_status": 0,
+        },
+    )
+    assert status_calls[-1] == (
+        7,
+        {
+            "fixes_cal_status": 2,
+            "fixes_result_status": 2,
+        },
+    )
+    assert console_events
 
 
 def test_run_bayesian_update_from_text_reads_external_matrix_and_responses(tmp_path: Path):

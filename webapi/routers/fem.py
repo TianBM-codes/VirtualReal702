@@ -10,6 +10,7 @@ from services.model_update.analysis.inp_service import (
 from services.model_update.analysis.inp_tree_service import get_inp_tree
 from src.l3.core.errors import AppError
 
+from ..background_jobs import submit_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
     ImportBdfRequest,
@@ -21,6 +22,28 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
+_IMPORT_PROJECT_STATIC_RESULT_INTERFACE_CODE = "import.fem.static.from_project_result"
+
+
+def _import_fem_static_from_project_result_job(
+    *,
+    project_id: int,
+    result_group: str,
+    load_case_no: int,
+    step=None,
+    frame=None,
+    instances=None,
+    overwrite: bool = True,
+):
+    return import_fe_static_results_from_project_result(
+        project_id=project_id,
+        result_group=result_group,
+        load_case_no=load_case_no,
+        step=step,
+        frame=frame,
+        instances=instances,
+        overwrite=overwrite,
+    )
 
 
 @router.post("/import/bdf")
@@ -113,15 +136,26 @@ async def get_inp_tree_api(request: Request, body: InpTreeRequest):
 async def import_fem_static_from_project_result_api(request: Request, body: ImportProjectStaticResultRequest):
     await log_request(request, model_to_dict(body))
     try:
-        result = import_fe_static_results_from_project_result(
-            project_id=body.project_id,
-            result_group=body.result_group,
-            load_case_no=body.load_case_no,
-            step=body.step,
-            frame=body.frame,
-            instances=body.instances,
-            overwrite=body.overwrite,
-        )
+        kwargs = {
+            "project_id": body.project_id,
+            "result_group": body.result_group,
+            "load_case_no": body.load_case_no,
+            "step": body.step,
+            "frame": body.frame,
+            "instances": body.instances,
+            "overwrite": body.overwrite,
+        }
+        if body.async_submit:
+            result = submit_background_task(
+                task_type=_IMPORT_PROJECT_STATIC_RESULT_INTERFACE_CODE,
+                interface_code=_IMPORT_PROJECT_STATIC_RESULT_INTERFACE_CODE,
+                fn=_import_fem_static_from_project_result_job,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                project_id=body.project_id,
+            )
+            return success_response(result, "project result静力位移导入任务已提交")
+        result = _import_fem_static_from_project_result_job(**kwargs)
         return success_response(result, "project result静力位移导入成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)

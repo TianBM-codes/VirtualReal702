@@ -1,6 +1,8 @@
 from services.model_update.analysis import inp_service
 import numpy as np
 
+from services.model_update.analysis import fem_matching_service
+
 
 class _WriteCursor:
     def __init__(self):
@@ -288,7 +290,7 @@ def test_match_test_nodes_marks_space_match_status_done(monkeypatch):
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
     monkeypatch.setattr(
-        inp_service,
+        fem_matching_service,
         "get_node_match_parameter_context",
         lambda project_id, cursor=None: {
             "tolerance": 1e-6,
@@ -322,6 +324,47 @@ def test_match_test_nodes_marks_space_match_status_done(monkeypatch):
         "UPDATE t_mt_work_condition_project SET space_match_status = %s WHERE project_id = %s",
         (1, 101),
     )
+
+
+def test_match_test_nodes_overwrite_clears_node_pairs_and_node_match(monkeypatch):
+    fake_conn = _NodeMatchConnection()
+    monkeypatch.setattr(fem_matching_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(fem_matching_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(
+        fem_matching_service,
+        "get_node_match_parameter_context",
+        lambda project_id, cursor=None: {
+            "tolerance": 1e-6,
+            "maximum_node_point_distance": 0.25,
+        },
+    )
+    monkeypatch.setattr(fem_matching_service, "_get_latest_octree_meta", lambda cursor, project_id: {
+        "cache_file_path": "fake_cache.npz",
+    })
+    monkeypatch.setattr(fem_matching_service, "_load_octree_cache", lambda path: {
+        "point_instances": ["PART-1-1"],
+        "point_labels": [501],
+        "point_coords": np.array([[1.0, 2.0, 3.0]], dtype=np.float64),
+    })
+    monkeypatch.setattr(
+        fem_matching_service,
+        "_load_test_nodes_for_matching",
+        lambda cursor, project_id: (
+            [{"test_node_id": "WY1", "x_position": 1.0, "y_position": 2.0, "z_position": 3.0}],
+            "t_mt_measuring_point_info",
+        ),
+    )
+    monkeypatch.setattr(fem_matching_service, "_cache_part_lookup", lambda cache: {
+        ("PART-1-1", 501): "PART-1",
+    })
+    monkeypatch.setattr(fem_matching_service, "_octree_nearest", lambda cache, point: (0, 0.0))
+    monkeypatch.setattr(inp_service.os.path, "exists", lambda path: True)
+
+    inp_service.match_test_nodes(project_id=101, auto_translate=False, overwrite=True)
+
+    executed_sql = [sql for sql, _params in fake_conn.cursor_obj.executed]
+    assert "DELETE FROM t_mt_py_fem_node_pairs WHERE pid = %s" in executed_sql
+    assert "DELETE FROM t_mt_py_fem_node_match WHERE pid = %s" in executed_sql
 
 
 def test_match_test_dofs_uses_channel_direction_and_sign(monkeypatch):

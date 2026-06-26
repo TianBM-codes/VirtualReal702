@@ -129,6 +129,81 @@ def test_create_abaqus_static_response_route_autofills_instance_context(monkeypa
     assert captured["node_labels"] == [4]
 
 
+def test_create_abaqus_static_response_route_defaults_to_last_step_for_sensor_mode(monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import optimization
+
+    captured = {}
+
+    def fake_get_project_abaqus_instances_and_steps(project_id):
+        return {
+            "project_id": project_id,
+            "steps": [
+                {"step_name": "Step-1", "step_index": 0},
+                {"step_name": "Step-2", "step_index": 1},
+            ],
+        }
+
+    def fake_resolve_abaqus_sensor_node_match(project_id, sensor_name):
+        return {"project_id": project_id, "instance_name": "PART-1-1", "node_label": 4}
+
+    def fake_resolve_abaqus_instance_context(project_id, instance_name):
+        return {
+            "project_id": project_id,
+            "instance_name": instance_name,
+            "part_name": "PART-1",
+            "set_scope": "ASSEMBLY",
+        }
+
+    def fake_create_design_response_catalog_entry(**kwargs):
+        captured.update(kwargs)
+        return kwargs
+
+    monkeypatch.setattr(
+        optimization,
+        "get_project_abaqus_instances_and_steps",
+        fake_get_project_abaqus_instances_and_steps,
+    )
+    monkeypatch.setattr(
+        optimization,
+        "resolve_abaqus_sensor_node_match",
+        fake_resolve_abaqus_sensor_node_match,
+    )
+    monkeypatch.setattr(
+        optimization,
+        "resolve_abaqus_instance_context",
+        fake_resolve_abaqus_instance_context,
+    )
+    monkeypatch.setattr(
+        optimization,
+        "create_design_response_catalog_entry",
+        fake_create_design_response_catalog_entry,
+    )
+
+    app = FastAPI()
+    app.include_router(optimization.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/optimization/abaqus/static_response/create",
+        json={
+            "project_id": 5,
+            "region_type": "NODE",
+            "sensor_name": "WY1",
+            "variables": ["U2"],
+            "frequency": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["step_name"] == "Step-2"
+    assert captured["instance_name"] == "PART-1-1"
+    assert captured["node_labels"] == [4]
+
+
 def test_create_abaqus_static_response_route_rejects_removed_fields():
     fastapi = pytest.importorskip("fastapi")
     from fastapi import FastAPI

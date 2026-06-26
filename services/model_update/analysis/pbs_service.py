@@ -150,6 +150,22 @@ def _update_simulation_result_status(project_id: Optional[int], status: int) -> 
     )
 
 
+def _build_nastran_modal_parse_options(
+        *,
+        input_bdf_path: str,
+) -> Dict[str, Any]:
+    # Keep PBS Nastran aligned with the existing SOL103 run_and_store path:
+    # once the OP2 result_group is packed, immediately import modal data into
+    # the model-update tables before the API returns.
+    return {
+        "modal_import": {
+            "bdf_path": os.path.abspath(str(input_bdf_path)),
+            "overwrite": True,
+            "async_submit": False,
+        }
+    }
+
+
 def _submit_local_project_result_group_and_wait(
         *,
         project_id: int,
@@ -1115,7 +1131,9 @@ def run_pbs_solver_job(
                         result_group=result_group,
                         display_name=display_name,
                         base_url=base_url,
-                        parse_options=None,
+                        parse_options=_build_nastran_modal_parse_options(
+                            input_bdf_path=str(source_path),
+                        ),
                         timeout=upload_timeout,
                         wait_timeout_sec=wait_timeout_sec,
                         poll_interval_sec=poll_interval_sec,

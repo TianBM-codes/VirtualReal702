@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Request
 
 from services.model_update.analysis.bayesian_service import (
@@ -116,21 +117,40 @@ def _normalize_node_labels(raw_value) -> list[int]:
     return result
 
 
+def _resolve_abaqus_static_response_step_name(project_id: int, step_name: Optional[str]) -> str:
+    resolved_step_name = str(step_name or "").strip()
+    if resolved_step_name:
+        return resolved_step_name
+
+    project_steps = get_project_abaqus_instances_and_steps(int(project_id))
+    steps = list(project_steps.get("steps") or [])
+    if not steps:
+        raise ValidationError(
+            "no Abaqus step found for current project",
+            {"project_id": int(project_id)},
+        )
+
+    last_step = steps[-1]
+    resolved_step_name = str(last_step.get("step_name") or "").strip()
+    if not resolved_step_name:
+        raise ValidationError(
+            "unable to resolve default Abaqus step name",
+            {"project_id": int(project_id)},
+        )
+    return resolved_step_name
+
+
 def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseRequest):
     node_labels = _normalize_node_labels(body.node_labels)
     element_labels = _normalize_element_labels(body.element_labels)
     resolved_sensor_name = str(body.sensor_name or "").strip()
+    resolved_step_name = _resolve_abaqus_static_response_step_name(body.project_id, body.step_name)
 
     if resolved_sensor_name:
         if str(body.region_type or "").strip().upper() != "NODE":
             raise ValidationError(
                 "sensor_name mode only supports NODE responses",
                 {"region_type": body.region_type, "sensor_name": resolved_sensor_name},
-            )
-        if not str(body.step_name or "").strip():
-            raise ValidationError(
-                "step_name is required when creating a response from sensor_name",
-                {"sensor_name": resolved_sensor_name},
             )
         if body.set_name or body.instance_name or node_labels or element_labels:
             raise ValidationError(
@@ -163,11 +183,12 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
             part_name=context["part_name"],
             node_labels=[int(sensor_match["node_label"])],
             element_labels=None,
-            step_name=body.step_name,
+            step_name=resolved_step_name,
             frequency=body.frequency,
             response_name=None,
         )
         payload["sensor_name"] = resolved_sensor_name
+        payload["step_name"] = resolved_step_name
         return payload
 
     resolved_set_scope = None
@@ -186,7 +207,7 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
         part_name=resolved_part_name,
         node_labels=node_labels or None,
         element_labels=element_labels or None,
-        step_name=body.step_name,
+        step_name=resolved_step_name,
         frequency=body.frequency,
         response_name=body.response_name,
     )

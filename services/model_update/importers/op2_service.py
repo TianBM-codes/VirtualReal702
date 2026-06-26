@@ -1138,49 +1138,58 @@ def _write_element_cloud_result_to_workspace(
     from services.model_update.analysis import sensitivity_service as _sens
     from src.l3.services.external_result_writer import ExternalResultWriter
 
-    request_body, metadata = _sens._build_sensitivity_cloud_request(
+    request_payloads = _sens._build_sensitivity_cloud_requests(
         batch_no=str(batch_no),
         matrix_payload=matrix_payload,
         result_group=result_group,
         step_name=step_name,
-        field_name=field_name,
     )
+    written_results = []
+    for payload in request_payloads:
+        request_body = dict(payload.get("request_body") or {})
+        metadata = dict(payload.get("metadata") or {})
+        writer = ExternalResultWriter(os.path.abspath(workspace), metadata["result_group"])
+        total_frames = 0
+        for instance_entry in list(request_body.get("instances") or []):
+            total_frames = max(
+                total_frames,
+                writer.write_element(
+                    instance=str(instance_entry["instance"]),
+                    step=str(request_body["step_name"]),
+                    field=str(request_body["field_name"]),
+                    components=list(request_body.get("components") or []),
+                    frames=list(instance_entry.get("frames") or []),
+                ),
+            )
 
-    writer = ExternalResultWriter(os.path.abspath(workspace), metadata["result_group"])
-    total_frames = 0
-    for instance_entry in list(request_body.get("instances") or []):
-        total_frames = max(
-            total_frames,
-            writer.write_element(
-                instance=str(instance_entry["instance"]),
-                step=str(request_body["step_name"]),
-                field=str(request_body["field_name"]),
-                components=list(request_body.get("components") or []),
-                frames=list(instance_entry.get("frames") or []),
-            ),
+        item = dict(metadata)
+        item.update(
+            {
+                "workspace": os.path.abspath(workspace),
+                "write_response": {
+                    "field_name": request_body["field_name"],
+                    "step_name": request_body["step_name"],
+                    "instances_written": len(list(request_body.get("instances") or [])),
+                    "frames_written": int(total_frames),
+                    "source": "external",
+                },
+                "query_hint": {
+                    "result_group": metadata["result_group"],
+                    "step": metadata["step"],
+                    "field": metadata["field"],
+                    "frame": 0,
+                    "component_idx": 0,
+                },
+            }
         )
+        written_results.append(item)
 
-    result = dict(metadata)
-    result.update(
-        {
-            "workspace": os.path.abspath(workspace),
-            "write_response": {
-                "field_name": request_body["field_name"],
-                "step_name": request_body["step_name"],
-                "instances_written": len(list(request_body.get("instances") or [])),
-                "frames_written": int(total_frames),
-                "source": "external",
-            },
-            "query_hint": {
-                "result_group": metadata["result_group"],
-                "step": metadata["step"],
-                "field": metadata["field"],
-                "frame": 0,
-                "component_idx": 0,
-            },
-        }
-    )
-    return result
+    first = dict(written_results[0])
+    first["written_results"] = written_results
+    first["result_groups"] = sorted({str(item["result_group"]) for item in written_results})
+    first["fields"] = sorted({str(item["field"]) for item in written_results})
+    first["field_name"] = first.get("field")
+    return first
 
 
 def _register_external_sensitivity_result_group(

@@ -26,6 +26,7 @@ from services.model_update.analysis.nastran_sol200_service import (
     run_sol200_modal_mac_and_store_workflow,
     run_sol200_and_store_workflow,
     run_sol200_workflow,
+    sync_generate_run_and_store_sol200_workflow,
     store_sol200_sensitivity_cloud,
     store_sol200_sensitivity,
 )
@@ -54,6 +55,7 @@ from ..models import (
     NastranSol200PreviewRequest,
     NastranSol200RunAndStoreRequest,
     NastranSol200RunRequest,
+    NastranSol200SyncGenerateRunAndStoreRequest,
     NastranSol103GenerateRequest,
     NastranSol103PreviewRequest,
     NastranSol103RunAndStoreModalRequest,
@@ -356,6 +358,48 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
         "extra_args": body.extra_args,
         "parameter_names": body.parameter_names,
         "response_names": body.response_names,
+        "write_cloud_result": body.write_cloud_result,
+        "cloud_result_group": body.cloud_result_group,
+        "cloud_step_name": body.cloud_step_name,
+        "cloud_field_name": body.cloud_field_name,
+    }
+
+
+def _sol200_sync_generate_run_and_store_kwargs(body: NastranSol200SyncGenerateRunAndStoreRequest) -> dict:
+    input_bdf = _resolve_sol200_input_bdf(
+        project_id=body.project_id,
+        explicit_path=body.input_bdf,
+        file_name=body.input_bdf_name,
+    )
+    output_bdf = _resolve_project_local_output_file(
+        project_id=body.project_id,
+        explicit_path=body.output_bdf,
+        file_name=body.output_bdf_name,
+        category_parts=("solver", "nastran_sol200"),
+        field_name="output_bdf",
+        default_name=f"{Path(input_bdf).stem}_sol200.bdf",
+    )
+    settings = dict(body.settings or {})
+    settings.setdefault("sol200.deck_mode", "include")
+    settings.setdefault("sol200.sensitivity_csv", True)
+    settings.setdefault("result.target", "F06")
+    settings.setdefault("post", -1)
+    return {
+        "project_id": body.project_id,
+        "batch_no": body.batch_no,
+        "case_name": body.case_name,
+        "input_bdf": input_bdf,
+        "output_bdf": output_bdf,
+        "overwrite": body.overwrite,
+        "response_source": body.response_source,
+        "mac_threshold": body.mac_threshold,
+        "max_freq_error_ratio": body.max_freq_error_ratio,
+        "matching_method": body.matching_method,
+        "settings": settings,
+        "nastran": body.nastran,
+        "run_solver": body.run_solver,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
         "write_cloud_result": body.write_cloud_result,
         "cloud_result_group": body.cloud_result_group,
         "cloud_step_name": body.cloud_step_name,
@@ -806,6 +850,29 @@ async def run_nastran_sol200_and_store_api(request: Request, body: NastranSol200
             return success_response(data, "Nastran SOL200 求解并入库任务已提交")
         data = run_sol200_and_store_workflow(**kwargs)
         return success_response(data, "Nastran SOL200 求解并入库成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/nastran/sol200/sync_generate_run_and_store")
+async def sync_generate_run_and_store_nastran_sol200_api(request: Request, body: NastranSol200SyncGenerateRunAndStoreRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        kwargs = _sol200_sync_generate_run_and_store_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="solver.nastran.sol200.sync_generate_run_and_store",
+                fn=sync_generate_run_and_store_sol200_workflow,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                task_kind="external_solver",
+            )
+            return success_response(data, "Nastran SOL200 一键工作流任务已提交")
+        data = sync_generate_run_and_store_sol200_workflow(**kwargs)
+        return success_response(data, "Nastran SOL200 一键工作流执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

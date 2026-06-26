@@ -419,6 +419,114 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
     assert captured["status_updates"][-1] == (32, {"simulation_result_status": 1})
 
 
+def test_run_pbs_solver_job_uses_modal_import_parse_for_nastran(monkeypatch, tmp_path):
+    input_file = tmp_path / "model.bdf"
+    input_file.write_text("BEGIN BULK\n", encoding="utf-8")
+    op2_file = tmp_path / "job_n.op2"
+    op2_file.write_text("op2", encoding="utf-8")
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, config, *, timeout):
+            captured["config"] = config
+            captured["timeout"] = timeout
+
+        def get_application_config(self, application):
+            return {
+                "application_id": "Nastran",
+                "application_name": "Nastran",
+                "version": "2019",
+                "platform": "queue-n",
+                "primary_file_exts": [".bdf"],
+                "result_exts": [".op2"],
+            }
+
+        def run_job(self, **kwargs):
+            captured["run_job_kwargs"] = kwargs
+            return {
+                "job_id": "pbs-002",
+                "resolved_job_state": "C",
+                "downloaded_files": [str(op2_file)],
+            }
+
+    monkeypatch.setattr(
+        pbs_service,
+        "_load_project_pbs_settings",
+        lambda project_id: {
+            "env": "prod",
+            "ApplicationId": "Nastran",
+            "ApplicationName": "Nastran",
+            "VERSION": "2019",
+            "CORES": 8,
+            "PLATFORM": "queue-n",
+        },
+    )
+    monkeypatch.setattr(
+        pbs_service,
+        "load_pbs_environment_config",
+        lambda env: pbs_service.PBSEnvironmentConfig(
+            name=str(env),
+            base_url="https://pbs.example.com",
+            server_name="a4mgt1",
+            stage_path_template="/stage/${USER}",
+            username="user",
+            password="pass",
+            verify_ssl=False,
+            api_paths={
+                "login": "/api/login",
+                "expand_vars": "/api/expandvars",
+                "create_dir": "/api/dir/create",
+                "upload_file": "/api/files/upload",
+                "file_exists": "/api/files/exists",
+                "submit_job": "/api/jobs",
+                "job_status": "/api/jobs/{job_id}",
+                "list_files": "/api/files/list",
+                "download_file": "/api/files/download",
+            },
+            applications={
+                "Nastran": {
+                    "application_id": "Nastran",
+                    "application_name": "Nastran",
+                    "version": "2019",
+                    "platform": "queue-n",
+                    "cores": 8,
+                    "primary_file_exts": [".bdf"],
+                    "result_exts": [".op2"],
+                }
+            },
+        ),
+    )
+    monkeypatch.setattr(pbs_service, "PBSClient", _FakeClient)
+    monkeypatch.setattr(
+        pbs_service,
+        "_submit_generic_project_result_group_and_wait",
+        lambda **kwargs: captured.update({"generic_parse_kwargs": kwargs}) or {
+            "result_group": kwargs["result_group"] or "solver_result_job_n",
+            "status": "ready",
+            "workspace": str(tmp_path / "workspace"),
+        },
+    )
+
+    result = pbs_service.run_pbs_solver_job(
+        project_id=32,
+        application="Nastran",
+        input_file=str(input_file),
+        job_name="job_n",
+        wait=True,
+    )
+
+    assert result["uploaded_result_file"] == str(op2_file.resolve())
+    assert captured["generic_parse_kwargs"]["source_path"] == str(op2_file.resolve())
+    assert captured["generic_parse_kwargs"]["parse_options"] == {
+        "modal_import": {
+            "bdf_path": str(input_file.resolve()),
+            "overwrite": True,
+            "async_submit": False,
+        }
+    }
+
+
 def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_abaqus_failure(monkeypatch, tmp_path):
     input_file = tmp_path / "model.inp"
     input_file.write_text("*Heading\n", encoding="utf-8")

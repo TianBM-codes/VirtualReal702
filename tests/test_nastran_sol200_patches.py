@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from src.l3.core.errors import ValidationError
 from services.model_update.analysis.nastran_sol200_service import (
     DEFAULT_PARAMETER_LOWER_SCALE,
     DEFAULT_PARAMETER_UPPER_SCALE,
@@ -8,7 +9,10 @@ from services.model_update.analysis.nastran_sol200_service import (
     _localize_elements_e_parameters,
     _material_copy_with_new_id,
     run_sol200_and_store_workflow,
+    sync_generate_run_and_store_sol200_workflow,
 )
+from webapi.models import NastranSol200SyncGenerateRunAndStoreRequest
+from webapi.routers import solver as solver_router
 from services.model_update.solver_prep.nastran_sol200 import (
     _build_response_lines,
     build_sol200_controls,
@@ -220,6 +224,7 @@ def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypat
     metadata_path.write_text("{}", encoding="utf-8")
 
     captured = {}
+    status_calls = []
 
     def fake_run_sol200_workflow(**kwargs):
         return {
@@ -247,6 +252,10 @@ def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypat
         "services.model_update.analysis.nastran_sol200_service.store_sol200_sensitivity",
         fake_store_sol200_sensitivity,
     )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
 
     payload = run_sol200_and_store_workflow(
         project_id=3,
@@ -262,6 +271,10 @@ def test_run_sol200_and_store_workflow_uses_generated_op2_and_metadata(monkeypat
     assert captured["bdf_path"] == str(output_bdf.resolve())
     assert captured["metadata_json"] == str(metadata_path.resolve())
     assert payload["store"]["stored"] is True
+    assert status_calls == [
+        (3, {"sensitivity_status": 0}),
+        (3, {"sensitivity_status": 1}),
+    ]
 
 
 def test_run_sol200_and_store_workflow_falls_back_to_sensitivity_csv(monkeypatch, tmp_path):
@@ -323,3 +336,149 @@ def test_run_sol200_and_store_workflow_falls_back_to_sensitivity_csv(monkeypatch
     assert captured["matrix_path"] == str(csv_path.resolve())
     assert payload["matrix_path"] == str(csv_path.resolve())
     assert payload["store"]["stored"] is True
+
+
+def test_run_sol200_and_store_workflow_marks_failed_status_and_logs_console(monkeypatch, tmp_path):
+    console_events = []
+    status_calls = []
+
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.run_sol200_workflow",
+        lambda **kwargs: (_ for _ in ()).throw(ValidationError("solver failed", {})),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.safe_write_console_event",
+        lambda project_id, title, lines=None: console_events.append((project_id, title, list(lines or []))),
+    )
+
+    try:
+        run_sol200_and_store_workflow(
+            project_id=3,
+            batch_no="1",
+            case_name="modal_freq_sens",
+            input_bdf=str(tmp_path / "input.bdf"),
+            output_bdf=str(tmp_path / "demo_sol200.bdf"),
+            settings={"dynamic.norm": "MASS"},
+        )
+    except ValidationError:
+        pass
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected run_sol200_and_store_workflow to fail")
+
+    assert status_calls == [
+        (3, {"sensitivity_status": 0}),
+        (3, {"sensitivity_status": 2}),
+    ]
+    assert console_events
+
+
+def test_sync_generate_run_and_store_sol200_workflow_chains_existing_steps(monkeypatch, tmp_path):
+    calls = []
+    output_bdf = tmp_path / "demo_sol200.bdf"
+
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.sync_sol200_config_from_catalog",
+        lambda **kwargs: calls.append(("sync", kwargs)) or {"synced": True, "response_count": 2},
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.generate_sol200_workflow",
+        lambda **kwargs: calls.append(("generate", kwargs)) or {"output_bdf": str(output_bdf), "generated": True},
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.run_sol200_and_store_workflow",
+        lambda **kwargs: calls.append(("run_and_store", kwargs)) or {"stored": True, "output_bdf": str(output_bdf)},
+    )
+
+    payload = sync_generate_run_and_store_sol200_workflow(
+        project_id=8,
+        batch_no="11",
+        case_name="auto_case",
+        input_bdf=str(tmp_path / "input.bdf"),
+        output_bdf=str(output_bdf),
+        response_source="response_catalog",
+        settings={"dynamic.norm": "MASS"},
+        write_cloud_result=False,
+    )
+
+    assert [item[0] for item in calls] == ["sync", "generate", "run_and_store"]
+    assert calls[0][1]["project_id"] == 8
+    assert calls[1][1]["input_bdf"] == str(tmp_path / "input.bdf")
+    assert calls[2][1]["output_bdf"] == str(output_bdf)
+    assert payload["sync_config"]["synced"] is True
+    assert payload["generate"]["generated"] is True
+    assert payload["run_and_store"]["stored"] is True
+
+
+def test_sync_generate_run_and_store_sol200_workflow_marks_failed_status_when_sync_step_fails(monkeypatch, tmp_path):
+    status_calls = []
+    console_events = []
+
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.sync_sol200_config_from_catalog",
+        lambda **kwargs: (_ for _ in ()).throw(
+            ValidationError(
+                "no SOL200-compatible responses could be resolved from response catalog",
+                {"project_id": 8},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.update_work_condition_project_status",
+        lambda project_id, **fields: status_calls.append((project_id, fields)),
+    )
+    monkeypatch.setattr(
+        "services.model_update.analysis.nastran_sol200_service.safe_write_console_event",
+        lambda project_id, title, lines=None: console_events.append((project_id, title, list(lines or []))),
+    )
+
+    try:
+        sync_generate_run_and_store_sol200_workflow(
+            project_id=8,
+            batch_no="11",
+            case_name="auto_case",
+            input_bdf=str(tmp_path / "input.bdf"),
+            output_bdf=str(tmp_path / "demo_sol200.bdf"),
+            response_source="response_catalog",
+            settings={"dynamic.norm": "MASS"},
+            write_cloud_result=False,
+        )
+    except ValidationError as exc:
+        assert "no SOL200-compatible responses could be resolved from response catalog" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected sync_generate_run_and_store_sol200_workflow to fail")
+
+    assert status_calls == [
+        (8, {"sensitivity_status": 2}),
+    ]
+    assert console_events
+
+
+def test_sol200_sync_generate_run_and_store_kwargs_defaults_output_name(monkeypatch, tmp_path):
+    input_bdf = tmp_path / "fem15_sol103.bdf"
+    output_bdf = tmp_path / "fem15_sol200.bdf"
+
+    monkeypatch.setattr(
+        solver_router,
+        "_resolve_sol200_input_bdf",
+        lambda **kwargs: str(input_bdf),
+    )
+    monkeypatch.setattr(
+        solver_router,
+        "_resolve_project_local_output_file",
+        lambda **kwargs: str(output_bdf),
+    )
+
+    body = NastranSol200SyncGenerateRunAndStoreRequest(
+        project_id=20,
+        input_bdf_name="fem15_sol103.bdf",
+    )
+    kwargs = solver_router._sol200_sync_generate_run_and_store_kwargs(body)
+
+    assert kwargs["input_bdf"] == str(input_bdf)
+    assert kwargs["output_bdf"] == str(output_bdf)
+    assert kwargs["settings"]["sol200.deck_mode"] == "include"
+    assert kwargs["settings"]["sol200.sensitivity_csv"] is True

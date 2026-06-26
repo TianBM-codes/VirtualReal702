@@ -66,6 +66,7 @@ _DEFAULT_RESPONSE_SCATTER = 0.01
 _SENSITIVITY_STATUS_PENDING = -1
 _SENSITIVITY_STATUS_RUNNING = 0
 _SENSITIVITY_STATUS_DONE = 1
+_SENSITIVITY_STATUS_FAILED = 2
 _SENSITIVITY_STATUS_LOCAL = threading.local()
 
 
@@ -111,8 +112,16 @@ def _run_with_project_sensitivity_status(project_id: int, fn):
     _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_RUNNING)
     try:
         result = fn()
-    except Exception:
-        _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_PENDING)
+    except Exception as exc:
+        _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_FAILED)
+        safe_write_console_event(
+            int(project_id),
+            "灵敏度计算失败",
+            [
+                f"项目ID: {int(project_id)}",
+                f"错误: {str(exc)}",
+            ],
+        )
         raise
     else:
         _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_DONE)
@@ -1679,14 +1688,14 @@ def _finalize_sensitivity_store_result(
 
     cloud_result = None
     if write_cloud_result:
-        resolved_cloud_odb_id = str(project_id or "").strip() or _resolve_loaded_odb_id_for_workspace(matrix_payload.get("workspace"))
+        resolved_cloud_odb_id = str(odb_id or "").strip() or _resolve_loaded_odb_id_for_workspace(matrix_payload.get("workspace"))
         if not resolved_cloud_odb_id:
             raise ValidationError(
                 "cloud export via external-field api requires odb_id or a workspace already loaded in the L3 registry",
                 {
                     "project_id": int(project_id),
                     "batch_no": batch_no,
-                    "odb_id": project_id,
+                    "odb_id": odb_id,
                     "workspace": matrix_payload.get("workspace"),
                 },
             )
@@ -1757,6 +1766,37 @@ def _response_frame_name(row_meta: dict) -> str:
     return f"sensitivity_{response_label}_{response_field}"
 
 
+def _sensitivity_parameter_field_name(column_meta: dict) -> str:
+    mapping = {
+        "E": "E",
+        "RHO": "RHO",
+        "T": "THICKNESS",
+        "H": "THICKNESS",
+        "THICKNESS": "THICKNESS",
+    }
+    for raw in (
+        column_meta.get("quantity_code"),
+        column_meta.get("param_type"),
+        column_meta.get("type"),
+    ):
+        token = str(raw or "").strip().upper()
+        if token in mapping:
+            return mapping[token]
+
+    parameter_name = str(column_meta.get("parameter_name") or "").strip().upper()
+    match = re.match(r"^[A-Z_]+", parameter_name)
+    if match:
+        token = match.group(0)
+        if token in mapping:
+            return mapping[token]
+    return parameter_name or "SENSITIVITY"
+
+
+def _sensitivity_response_result_group(base_result_group: str, row_meta: dict) -> str:
+    response_name = _response_display_name(dict(row_meta)) or _response_frame_name(dict(row_meta))
+    return _normalize_result_group_name(f"{base_result_group}_{response_name}")
+
+
 def _workspace_instance_element_labels(workspace: str, instance: str) -> List[int]:
     geom_path = ManifestRepo(workspace).get_geom_path(instance) or os.path.join(
         workspace,
@@ -1782,14 +1822,13 @@ def _workspace_instance_element_labels(workspace: str, instance: str) -> List[in
     return sorted(set(labels))
 
 
-def _build_sensitivity_cloud_request(
+def _build_sensitivity_cloud_requests(
         *,
         batch_no: str,
         matrix_payload: dict,
         result_group: Optional[str] = None,
         step_name: str = "Sensitivity",
-        field_name: str = "SENSITIVITY_CLOUD",
-) -> tuple[dict, dict]:
+) -> list[dict]:
     parameter_columns = list(matrix_payload.get("parameter_columns") or [])
     response_rows = list(matrix_payload.get("response_rows") or [])
     matrix = np.asarray(matrix_payload.get("matrix") or [], dtype=np.float64)
@@ -1813,126 +1852,154 @@ def _build_sensitivity_cloud_request(
             },
         )
 
-    resolved_result_group = str(result_group or f"sensitivity_batch_{batch_no}")
+    resolved_result_group = str(result_group or f"sensitivity_batch_{batch_no}").strip() or f"sensitivity_batch_{batch_no}"
     resolved_step_name = str(step_name or "Sensitivity").strip() or "Sensitivity"
-    resolved_field_name = str(field_name or "SENSITIVITY_CLOUD").strip() or "SENSITIVITY_CLOUD"
     resolved_workspace = os.path.abspath(str(matrix_payload.get("workspace"))) if matrix_payload.get("workspace") else None
-    components = ["SENSITIVITY"]
-
-    instance_frames: Dict[str, List[dict]] = {}
-    instance_counts: Dict[str, List[int]] = {}
     instance_label_cache: Dict[str, List[int]] = {}
+    request_payloads: list[dict] = []
 
-    for frame_index, row_meta in enumerate(response_rows):
-        per_instance_labels: Dict[str, Dict[int, float]] = {}
-        for column_index, column_meta in enumerate(parameter_columns):
-            mapping = dict(column_meta.get("element_mapping") or {})
-            target_kind = str(mapping.get("target_kind") or "").lower()
-            if target_kind not in {"cell", ""}:
-                raise ValidationError(
-                    "sensitivity cloud export currently supports element targets only",
-                    {
-                        "target_kind": mapping.get("target_kind"),
+    for row_index, row_meta in enumerate(response_rows):
+        response_result_group = _sensitivity_response_result_group(resolved_result_group, row_meta)
+        parameter_types = sorted(
+            {
+                _sensitivity_parameter_field_name(dict(column_meta))
+                for column_meta in parameter_columns
+            }
+        )
+
+        for parameter_type in parameter_types:
+            per_instance_labels: Dict[str, Dict[int, float]] = {}
+
+            for column_index, column_meta in enumerate(parameter_columns):
+                if _sensitivity_parameter_field_name(dict(column_meta)) != parameter_type:
+                    continue
+                mapping = dict(column_meta.get("element_mapping") or {})
+                target_kind = str(mapping.get("target_kind") or "").lower()
+                if target_kind not in {"cell", ""}:
+                    raise ValidationError(
+                        "sensitivity cloud export currently supports element targets only",
+                        {
+                            "target_kind": mapping.get("target_kind"),
+                            "parameter_name": column_meta.get("parameter_name"),
+                            "field": column_meta.get("field"),
+                        },
+                    )
+
+                scalar_value = _ensure_finite_float(
+                    matrix[row_index, column_index],
+                    context="sensitivity cloud matrix value",
+                    details={
+                        "response_index": int(row_index),
+                        "component_index": int(column_index),
                         "parameter_name": column_meta.get("parameter_name"),
                         "field": column_meta.get("field"),
                     },
                 )
-
-            scalar_value = _ensure_finite_float(
-                matrix[frame_index, column_index],
-                context="sensitivity cloud matrix value",
-                details={
-                    "frame_index": int(frame_index),
-                    "component_index": int(column_index),
-                    "parameter_name": column_meta.get("parameter_name"),
-                    "field": column_meta.get("field"),
-                },
-            )
-            for scope_name, labels in dict(mapping.get("targets_by_scope") or {}).items():
-                instance_name = str(scope_name or "").strip()
-                if not instance_name:
-                    continue
-                if instance_name not in per_instance_labels:
+                for scope_name, labels in dict(mapping.get("targets_by_scope") or {}).items():
+                    instance_name = str(scope_name or "").strip()
+                    if not instance_name:
+                        continue
+                    per_instance_labels.setdefault(instance_name, {})
                     if resolved_workspace:
                         instance_label_cache.setdefault(
                             instance_name,
                             _workspace_instance_element_labels(resolved_workspace, instance_name),
                         )
-                        per_instance_labels[instance_name] = {}
-                    else:
-                        per_instance_labels[instance_name] = {}
-                label_map = per_instance_labels[instance_name]
-                for label in labels or []:
-                    element_label = int(label)
-                    current_value = label_map.get(element_label)
-                    if current_value is not None and not np.isclose(current_value, 0.0) and not np.isclose(current_value, scalar_value):
-                        raise ValidationError(
-                            "multiple sensitivity parameters map to the same element in assembled cloud export",
+                    label_map = per_instance_labels[instance_name]
+                    for label in labels or []:
+                        element_label = int(label)
+                        current_value = label_map.get(element_label)
+                        if current_value is not None and not np.isclose(current_value, scalar_value):
+                            raise ValidationError(
+                                "multiple sensitivity parameters map to the same element in assembled cloud export",
+                                {
+                                    "response": dict(row_meta),
+                                    "instance": instance_name,
+                                    "element_label": element_label,
+                                    "existing_value": float(current_value),
+                                    "incoming_value": float(scalar_value),
+                                    "parameter_name": column_meta.get("parameter_name"),
+                                    "field": column_meta.get("field"),
+                                },
+                            )
+                        label_map[element_label] = float(scalar_value)
+
+            instances_payload = []
+            instance_element_counts: Dict[str, List[int]] = {}
+            for instance_name, label_map in sorted(per_instance_labels.items()):
+                if not label_map:
+                    continue
+                frame_entry = {
+                    "frame_idx": 0,
+                    "frame_value": 0.0,
+                    "description": _response_frame_name(dict(row_meta)),
+                    "data": [
+                        {"label": int(label), "values": [float(value)]}
+                        for label, value in sorted(label_map.items())
+                    ],
+                }
+                instances_payload.append({"instance": instance_name, "frames": [frame_entry]})
+                instance_element_counts[instance_name] = [len(frame_entry["data"])]
+
+            if not instances_payload:
+                continue
+
+            request_payloads.append(
+                {
+                    "request_body": {
+                        "step_name": resolved_step_name,
+                        "field_name": parameter_type,
+                        "components": ["value"],
+                        "result_group": response_result_group,
+                        "type": "element",
+                        "instances": instances_payload,
+                    },
+                    "metadata": {
+                        "result_group": response_result_group,
+                        "step": resolved_step_name,
+                        "field": parameter_type,
+                        "position": "ELEMENT_NODAL",
+                        "frame_count": 1,
+                        "frames": [
                             {
-                                "frame_index": int(frame_index),
+                                "frame_idx": 0,
+                                "frame_value": 0.0,
+                                "description": _response_frame_name(dict(row_meta)),
                                 "response": dict(row_meta),
-                                "instance": instance_name,
-                                "element_label": element_label,
-                                "existing_value": float(current_value),
-                                "incoming_value": float(scalar_value),
-                                "parameter_name": column_meta.get("parameter_name"),
-                                "field": column_meta.get("field"),
-                            },
-                        )
-                    label_map[element_label] = float(scalar_value)
+                            }
+                        ],
+                        "components": ["value"],
+                        "instances": [str(item["instance"]) for item in instances_payload],
+                        "instance_element_counts": instance_element_counts,
+                    },
+                }
+            )
 
-        for instance_name, label_map in sorted(per_instance_labels.items()):
-            instance_frame_entry = {
-                "frame_idx": frame_index,
-                "frame_value": float(frame_index + 1),
-                "description": _response_frame_name(dict(row_meta)),
-                "data": [
-                    {"label": int(label), "values": [float(value)]}
-                    for label, value in sorted(label_map.items())
-                ],
-            }
-            instance_frames.setdefault(instance_name, []).append(instance_frame_entry)
-            instance_counts.setdefault(instance_name, []).append(len(instance_frame_entry["data"]))
-
-    if not instance_frames:
+    if not request_payloads:
         raise ValidationError("no element targets were resolved for sensitivity cloud export")
 
-    instances_payload = [
-        {"instance": instance_name, "frames": frames}
-        for instance_name, frames in sorted(instance_frames.items())
-    ]
-    response_frames = [
-        {
-            "frame_idx": index,
-            "frame_value": float(index + 1),
-            "description": _response_frame_name(dict(row_meta)),
-            "response": dict(row_meta),
-        }
-        for index, row_meta in enumerate(response_rows)
-    ]
+    return request_payloads
 
-    request_body = {
-        "step_name": resolved_step_name,
-        "field_name": resolved_field_name,
-        "components": components,
-        "result_group": resolved_result_group,
-        "type": "element",
-        "instances": instances_payload,
-    }
-    metadata = {
-        "result_group": resolved_result_group,
-        "step": resolved_step_name,
-        "field": resolved_field_name,
-        "position": "ELEMENT_NODAL",
-        "frame_count": len(response_rows),
-        "frames": response_frames,
-        "components": components,
-        "instances": [str(item["instance"]) for item in instances_payload],
-        "instance_element_counts": {
-            instance_name: [int(count) for count in counts]
-            for instance_name, counts in sorted(instance_counts.items())
-        },
-    }
+
+def _build_sensitivity_cloud_request(
+        *,
+        batch_no: str,
+        matrix_payload: dict,
+        result_group: Optional[str] = None,
+        step_name: str = "Sensitivity",
+        field_name: str = "SENSITIVITY_CLOUD",
+) -> tuple[dict, dict]:
+    request_payloads = _build_sensitivity_cloud_requests(
+        batch_no=batch_no,
+        matrix_payload=matrix_payload,
+        result_group=result_group,
+        step_name=step_name,
+    )
+    first = dict(request_payloads[0])
+    request_body = dict(first.get("request_body") or {})
+    metadata = dict(first.get("metadata") or {})
+    if field_name and not metadata.get("field"):
+        metadata["field"] = str(field_name)
     return request_body, metadata
 
 
@@ -1951,34 +2018,40 @@ def _write_sensitivity_cloud_result(
     if not resolved_odb_id:
         raise ValidationError("odb_id is required for cloud export via external-field api")
 
-    request_body, metadata = _build_sensitivity_cloud_request(
+    request_payloads = _build_sensitivity_cloud_requests(
         batch_no=batch_no,
         matrix_payload=matrix_payload,
         result_group=result_group,
         step_name=step_name,
-        field_name=field_name,
     )
     resolved_base_url = str(base_url or "").strip().rstrip("/")
-    write_response = write_external_field_local(resolved_odb_id, request_body)
+    published_results = []
+    for payload in request_payloads:
+        write_response = write_external_field_local(resolved_odb_id, payload["request_body"])
+        item = dict(payload["metadata"])
+        item["write_response"] = write_response
+        published_results.append(item)
 
-    result = dict(metadata)
-    result.update(
+    first = dict(published_results[0])
+    first.update(
         {
             "odb_id": resolved_odb_id,
             "base_url": resolved_base_url,
-            "write_response": write_response,
+            "published_results": published_results,
+            "result_groups": sorted({str(item["result_group"]) for item in published_results}),
+            "fields": sorted({str(item["field"]) for item in published_results}),
             "query_hint": {
                 "endpoint": "/api/odb/{odb_id}/results/frame-scalars",
                 "odb_id": resolved_odb_id,
-                "result_group": metadata["result_group"],
-                "step": metadata["step"],
-                "field": metadata["field"],
+                "result_group": first["result_group"],
+                "step": first["step"],
+                "field": first["field"],
                 "frame": 0,
                 "component_idx": 0,
             },
         }
     )
-    return result
+    return first
 
 
 def _load_existing_analysis_run_ids(cursor, *, project_id: int, batch_no: str) -> List[int]:
@@ -2735,9 +2808,13 @@ def run_sensitivity_inp_and_store(
                 )
                 result["merge_result"] = merge_result
                 result["merge_result_group"] = resolved_merge_result_group
+                result["merge_result_groups"] = sorted(
+                    {str(item.get("result_group")) for item in merge_result if str(item.get("result_group") or "").strip()}
+                )
             except Exception as exc:
                 result["merge_result"] = {"error": str(exc)}
                 result["merge_result_group"] = None
+                result["merge_result_groups"] = []
 
         return result
 
