@@ -1777,6 +1777,27 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         _comp_set.add(_c)
             components  = _comp_union if _comp_union else list(first_field.componentLabels)
             invariants  = [str(i) for i in first_field.validInvariants]
+            # 混合 solid+shell 模型: first_field.validInvariants 返回的是跨单元类型的
+            # "交集"(与 componentLabels 同理)。实体不支持面内/面外主应力, 交集会把
+            # MAX/MIN_INPLANE_PRINCIPAL、OUTOFPLANE_PRINCIPAL 全部剔除 → 它们永远进不了
+            # active_invs, 面内/面外不变量场不会生成(纯壳模型则正常)。这里用 Abaqus
+            # getScalarField(MAX_INPLANE_PRINCIPAL) 探测: 若该场存在面内可算的块(=含壳/膜),
+            # 就把三个面内/面外不变量并回 invariants。下游对实体块按 _SHELL_ONLY_INVS
+            # 置 NaN(前端置灰), 与纯壳模型行为完全一致。
+            _shell_invs = ('MAX_INPLANE_PRINCIPAL', 'MIN_INPLANE_PRINCIPAL',
+                           'OUTOFPLANE_PRINCIPAL')
+            if (any(si not in invariants for si in _shell_invs)
+                    and 'MAX_INPLANE_PRINCIPAL' in _INV_CONSTANTS):
+                try:
+                    _probe = first_field.getScalarField(
+                        invariant=_INV_CONSTANTS['MAX_INPLANE_PRINCIPAL'])
+                    if any(b.instance is not None for b in _probe.bulkDataBlocks):
+                        for si in _shell_invs:
+                            if si not in invariants:
+                                invariants.append(si)
+                        print("    [inv] 混合模型: 探测到面内可算块, 补回面内/面外不变量")
+                except Exception:
+                    pass
 
             safe_step  = safe(step_name)
             safe_field = safe(field_name)
