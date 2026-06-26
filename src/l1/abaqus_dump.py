@@ -270,9 +270,20 @@ _SHELL_ONLY_INVS = frozenset({
     'OUTOFPLANE_PRINCIPAL', 'MAX_INPLANE_PRINCIPAL_ABS',
 })
 
-# 没有 getScalarField 常量的不变量: IP 位置也要用 numpy 从张量算(而非 getScalarField)。
+# 用 numpy 从张量自算的不变量(IP 位置也走 numpy, 不走 getScalarField):
+#   - MAX_INPLANE_PRINCIPAL_ABS: 无 getScalarField 常量;
+#   - MAX_PRINCIPAL_ABS: Abaqus getScalarField 该量为"无符号幅值", 与 viewer 云图
+#     (带符号, 可为负)不一致 → 统一用我方带符号公式自算, 三个位置口径一致。
 _NUMPY_ONLY_INVS = frozenset({
     'MAX_INPLANE_PRINCIPAL_ABS',
+    'MAX_PRINCIPAL_ABS',
+})
+
+# 应变类场: Abaqus 输出的剪切分量是工程剪应变 γ = 2ε, 算主值/不变量前须 ÷2 还原成
+# 张量剪应变 ε。应力场不在此列(应力剪切本就是真张量分量)。清单先按 Abaqus 常见
+# 张量应变场全列, 后续按需校对。
+_STRAIN_FIELDS = frozenset({
+    'E', 'LE', 'NE', 'PE', 'EE', 'IE', 'THE', 'CE', 'VE', 'SE',
 })
 
 
@@ -1147,13 +1158,15 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
     print("  fields_manifest.json written.")
 
 
-def _compute_invariants_numpy(comp, inv_name):
+def _compute_invariants_numpy(comp, inv_name, is_strain=False):
     """
     Compute a scalar invariant from a component array.
 
-    comp     : [..., ncomp] float32/float64
-    inv_name : e.g. 'MISES', 'MAX_PRINCIPAL', 'PRESS', ...
-    Returns  : [..., 1] float32, or None if ncomp < 4.
+    comp      : [..., ncomp] float32/float64
+    inv_name  : e.g. 'MISES', 'MAX_PRINCIPAL', 'PRESS', ...
+    is_strain : True 时, 把剪切分量当工程剪应变 γ=2ε 处理, 组张量前 ÷2 还原成
+                张量剪应变 ε(应力场为 False)。
+    Returns   : [..., 1] float32, or None if ncomp < 4.
 
     Supports Voigt 6-component (full 3-D tensor: 11,22,33,12,13,23) and
     4-component (in-plane shell: 11,22,33,12, treats 13=23=0).
@@ -1173,6 +1186,12 @@ def _compute_invariants_numpy(comp, inv_name):
     c12 = comp[..., 3].astype(np.float64)
     c13 = comp[..., 4].astype(np.float64) if ncomp >= 6 else np.zeros_like(c11)
     c23 = comp[..., 5].astype(np.float64) if ncomp >= 6 else np.zeros_like(c11)
+
+    # 应变场: 剪切分量是工程剪应变 γ=2ε, ÷2 还原成张量剪应变后再参与主值/不变量计算。
+    if is_strain:
+        c12 = c12 * 0.5
+        c13 = c13 * 0.5
+        c23 = c23 * 0.5
 
     if inv_name == 'MISES':
         result = np.sqrt(np.maximum(0.0,
@@ -1197,17 +1216,20 @@ def _compute_invariants_numpy(comp, inv_name):
         elif inv_name == 'MIN_PRINCIPAL': result = eigs[..., 0]
         elif inv_name == 'TRESCA':        result = eigs[..., 2] - eigs[..., 0]
         else:
-            # MAX_PRINCIPAL_ABS: 三主应力中绝对值最大者的无符号幅值(恒 ≥ 0)。
-            # 已在含壳模型积分点逐点验证, 与 Abaqus getScalarField(MAX_PRINCIPAL_ABS)
-            # 一致(Abaqus 该不变量值域恒 ≥ 0, 即不保留拉/压符号)。
-            result = np.maximum(np.abs(eigs[..., 0]), np.abs(eigs[..., 2]))
+            # MAX_PRINCIPAL_ABS: 三主应力中绝对值最大者, 保留其正负号(可为负)。
+            # 与 Abaqus viewer "Max. Principal (Abs)" 云图一致(压应力主导区为负值)。
+            lo = eigs[..., 0]; hi = eigs[..., 2]
+            result = np.where(np.abs(hi) >= np.abs(lo), hi, lo)
 
     elif inv_name == 'INV3':
+        # Abaqus "Third Invariant": r = (9/2 · S·S·S)^(1/3) = (27/2 · J3)^(1/3),
+        # J3 = det(偏量)。np.cbrt 处理 J3<0 (保留符号 → 结果可为负)。
         p    = (c11 + c22 + c33) / 3.0
         d11  = c11 - p;  d22 = c22 - p;  d33 = c33 - p
-        result = (d11*(d22*d33 - c23**2)
-                  - c12*(c12*d33 - c23*c13)
-                  + c13*(c12*c23 - d22*c13))
+        J3 = (d11*(d22*d33 - c23**2)
+              - c12*(c12*d33 - c23*c13)
+              + c13*(c12*c23 - d22*c13))
+        result = np.cbrt(13.5 * J3)
 
     elif inv_name == 'MAX_INPLANE_PRINCIPAL':
         avg = (c11 + c22) * 0.5
@@ -1218,11 +1240,12 @@ def _compute_invariants_numpy(comp, inv_name):
         result = avg - np.sqrt(np.maximum(0.0, ((c11-c22)*0.5)**2 + c12**2))
 
     elif inv_name == 'MAX_INPLANE_PRINCIPAL_ABS':
-        # 面内两主应力中绝对值最大者的无符号幅值(恒 ≥ 0)。壳/膜专属;
+        # 面内两主应力中绝对值最大者, 保留其正负号(可为负)。壳/膜专属;
         # 实体单元由调用方按 _SHELL_ONLY_INVS 置 NaN(置灰), 不会走到这里出值。
         avg = (c11 + c22) * 0.5
         rad = np.sqrt(np.maximum(0.0, ((c11-c22)*0.5)**2 + c12**2))
-        result = np.maximum(np.abs(avg + rad), np.abs(avg - rad))
+        ipmax = avg + rad; ipmin = avg - rad
+        result = np.where(np.abs(ipmax) >= np.abs(ipmin), ipmax, ipmin)
 
     elif inv_name == 'OUTOFPLANE_PRINCIPAL':
         result = c33.copy()
@@ -1247,11 +1270,16 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
     INTEGRATION_POINT path: stores [N_elem, n_ip, 1] per block.
     NODAL path: stores [N_nodes, 1] per block.
     """
+    is_strain = field_name in _STRAIN_FIELDS
+
     active_invs = [
         (inv, INV_ATTR_MAP[inv]) for inv in invariants
         if inv in INV_ATTR_MAP and inv not in _HIDDEN_INV_SUFFIXES
         and inv in _NUMPY_INV_NAME
     ]
+    # Mises 只对应力场算; 应变场不需要 Mises(等效应变定义另说), 直接剔除不生成。
+    if is_strain:
+        active_invs = [(n, a) for (n, a) in active_invs if n != 'MISES']
     # Abs 变体不在 Abaqus validInvariants 里(viewer 端口径), 按需补上:
     #   MAX_PRINCIPAL_ABS         —— 任何张量场(有 3D 主应力)都加, 实体也有效;
     #   MAX_INPLANE_PRINCIPAL_ABS —— 仅当该场有面内主应力(=模型含壳/膜)时加。
@@ -1460,7 +1488,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
             # so no overshoot). EN/NODAL use method B below. numpy-only invariants
             # (no getScalarField constant) compute IP from tensor_ip further down.
             ip_scalar_blocks = {}  # (iname, etype, sp) → list of blocks
-            if inv_const is not None:
+            if inv_const is not None and inv_name not in _NUMPY_ONLY_INVS:
                 try:
                     scalar_field = field_out.getScalarField(invariant=inv_const)
                     for block in scalar_field.bulkDataBlocks:
@@ -1494,7 +1522,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                 # 面内/面外类不变量: 非壳/膜块保持 NaN(实体置灰), 与 Abaqus 一致。
                 if not (shell_only and (iname, etype) not in shell_keys):
                     for (u_e, ten_nd) in tensor_en.get((iname, etype, sp_num_key), []):
-                        inv_nd = _compute_invariants_numpy(ten_nd, numpy_name)  # [N,nnode,1]
+                        inv_nd = _compute_invariants_numpy(ten_nd, numpy_name, is_strain)  # [N,nnode,1]
                         if inv_nd is None:
                             continue
                         rows  = np.searchsorted(canon, u_e)
@@ -1522,7 +1550,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     # 无 getScalarField 常量: IP 也从张量自算(壳/膜专属, 实体保持 NaN 置灰)
                     if not (shell_only and (iname, etype) not in shell_keys):
                         for (u_e, ip_nd) in tensor_ip.get((iname, etype, sp_num_key), []):
-                            inv_ip = _compute_invariants_numpy(ip_nd, numpy_name)  # [N,n_ip,1]
+                            inv_ip = _compute_invariants_numpy(ip_nd, numpy_name, is_strain)  # [N,n_ip,1]
                             if inv_ip is None:
                                 continue
                             rows  = np.searchsorted(canon, u_e)
@@ -1562,7 +1590,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                 # 面内/面外类不变量: 非壳/膜块保持 NaN(实体置灰), 与 Abaqus 一致。
                 if not (shell_only and (iname, etype) not in shell_keys):
                     for (lbls, ten2d) in tensor_nodal.get((iname, etype, sp_num_key), []):
-                        inv2d = _compute_invariants_numpy(ten2d, numpy_name)  # [N,1]
+                        inv2d = _compute_invariants_numpy(ten2d, numpy_name, is_strain)  # [N,1]
                         if inv2d is None:
                             continue
                         rows  = np.searchsorted(canon, lbls)
