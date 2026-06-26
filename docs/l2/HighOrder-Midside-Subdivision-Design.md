@@ -214,6 +214,42 @@ Voigt 公式从 EN 张量自算"逐值相等，说明 `_compute_invariants_numpy
 - 需**重跑 L1**(`abaqus python src/l1/abaqus_dump.py ... --invariants full` + `l1_pack`)再重跑 L2。
 - 对照脚本：`tests/dump_abq_mises_compare.py`（A vs block.mises vs numpy 三方对照）。
 
+## 5c. 面内/面外主应力 + Abs 变体（含壳模型，2026-06-25）
+
+含 shell/membrane 的模型，Abaqus 的应力/应变分量下拉除 Max/Mid/Min Principal 外，还提供
+`Max. In-Plane Principal`、`Min. In-Plane Principal`、`Out-of-Plane Principal`、
+`Max. Principal (Abs)`、`Max. In-Plane Principal (Abs)`；实体单元没有面内/面外之分，选这些
+时 Abaqus 把实体显示为**灰色**。
+
+用 `tests/dump_abq_inplane_probe.py` 在含壳模型(door.odb)上验证后确定的实现前提：
+
+- **命名**：Abaqus `validInvariants` 实际吐 `MAX_INPLANE_PRINCIPAL`（无下划线），而旧映射表键写成
+  `MAX_IN_PLANE_PRINCIPAL`（有下划线）→ `inv in INV_ATTR_MAP` 永远不匹配 → **面内不变量此前根本没生成**。
+  已把 `_INV_CONSTANTS / INV_ATTR_MAP / _NUMPY_INV_NAME` 的键统一为 Abaqus 形式。
+- **壳是 4 分量含 S33**（`['S11','S22','S33','S12']`）→ `_compute_invariants_numpy` 的
+  `[11,22,33,12]` 索引假设成立，壳不用特判。
+- **公式正确性**：积分点上 numpy 口径 vs `getScalarField` 逐点 diff ~1e-7，主应力/面内/面外全过。
+- **`MAX_PRINCIPAL_ABS` 是 Abaqus 真常量**（`getScalarField` 认），但**不在 validInvariants 里**；
+  且其值**恒 ≥ 0（无符号幅值 `max(|主应力|)`，不保留拉/压符号）**——已逐点验证（`abs(absmax)` diff ~0）。
+- **`MAX_INPLANE_PRINCIPAL_ABS` 无 Abaqus 常量** → 三个位置都由 numpy 从张量算。
+
+**实现（`src/l1/abaqus_dump.py`）**：
+- `_compute_invariants_numpy` 加 `MAX_PRINCIPAL_ABS`（3D 主应力幅值）、`MAX_INPLANE_PRINCIPAL_ABS`
+  （面内两主应力幅值），均**无符号**。
+- `active_invs`：面内/面外由 validInvariants 驱动自动带；两个 Abs **手动补**
+  （`MAX_PRINCIPAL_ABS` 任何张量场都加；`MAX_INPLANE_PRINCIPAL_ABS` 仅当该场含面内项=模型有壳）。
+- **实体置灰**：`_SHELL_ONLY_INVS`(面内/面外/面内-abs) 的 EN/NODAL 写入按 `shell_keys` 门控，
+  非壳块保持 NaN（→前端自动灰）。`shell_keys` 用 `getScalarField(MAX_INPLANE_PRINCIPAL)` 命中的
+  `(instance,etype)` 判定，与 Abaqus 有效范围逐块一致。IP 位置：getScalarField 口径的面内不变量
+  对实体本就无数据(自动 NaN)；`MAX_INPLANE_PRINCIPAL_ABS`(numpy-only) 的 IP 从 `tensor_ip` 算并同样门控。
+- `Max/Mid/Min Principal` 与 `MAX_PRINCIPAL_ABS` **不置灰**（实体也有效）。
+- 前端/L3 不改：合成字段(`S_MAX_INPLANE_PRINCIPAL`、`S_MAX_PRINCIPAL_ABS` 等，`components` 为空)
+  会被 `ManifestRepo._group_invariant_fields`(manifest_repo.py)**自动折进父字段 S 的 `invariants`
+  列表**(后缀如 `MAX_INPLANE_PRINCIPAL`)，即出现在 S 的“分量下拉”里，与 `S_MISES` 同一机制；
+  前端选某项时按 `S_<后缀>` 取数。NaN→灰 已有。需重跑 L1(`--invariants full`)+ l1_pack。
+- 验证脚本：`tests/dump_abq_inplane_probe.py`(Abaqus 端前提) + `tests/dump_ours_inplane_check.py`
+  (我方 H5：逐块 finite/NaN，确认实体全 NaN、壳有值)。
+
 ## 6. 待确认问题
 
 1. 目标模型主要高阶单元类型？（C3D20R / C3D10 / C3D15 / 二次壳）——决定优先实现

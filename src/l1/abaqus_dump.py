@@ -55,6 +55,18 @@ except Exception:
     except Exception:
         pass
 
+# INTEGRATION_POINT constant — needed to fetch the IP tensor for invariants that
+# have no getScalarField constant (e.g. MAX_INPLANE_PRINCIPAL_ABS), which must be
+# computed by numpy at the integration point too.
+_IP_CONST = None
+try:
+    from abaqusConstants import INTEGRATION_POINT as _IP_CONST  # noqa: F401
+except Exception:
+    try:
+        _IP_CONST = odbAccess.INTEGRATION_POINT
+    except Exception:
+        pass
+
 # Invariant constants for getScalarField(invariant=...) API calls.
 # Maps our internal key → Abaqus constant. Loaded defensively because older
 # Abaqus versions may not expose all of these.
@@ -66,15 +78,23 @@ try:
         MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL,
         MAGNITUDE,
     )
+    # 键名用 Abaqus validInvariants 实际吐出的形式(MAX_INPLANE_PRINCIPAL, 无下划线),
+    # 否则 'inv in INV_ATTR_MAP / _INV_CONSTANTS' 永远匹配不上 → 面内不变量不会生成。
     _INV_CONSTANTS = {
         'MISES': MISES, 'TRESCA': TRESCA, 'PRESS': PRESS, 'INV3': INV3,
         'MAX_PRINCIPAL': MAX_PRINCIPAL, 'MID_PRINCIPAL': MID_PRINCIPAL,
         'MIN_PRINCIPAL': MIN_PRINCIPAL,
-        'MAX_IN_PLANE_PRINCIPAL': MAX_INPLANE_PRINCIPAL,
-        'MIN_IN_PLANE_PRINCIPAL': MIN_INPLANE_PRINCIPAL,
-        'OUT_OF_PLANE_PRINCIPAL': OUTOFPLANE_PRINCIPAL,
+        'MAX_INPLANE_PRINCIPAL': MAX_INPLANE_PRINCIPAL,
+        'MIN_INPLANE_PRINCIPAL': MIN_INPLANE_PRINCIPAL,
+        'OUTOFPLANE_PRINCIPAL': OUTOFPLANE_PRINCIPAL,
         'MAGNITUDE': MAGNITUDE,
     }
+    # Max.Principal(Abs): 较老 Abaqus 可能没有此常量, 单独防御导入。
+    try:
+        from abaqusConstants import MAX_PRINCIPAL_ABS  # noqa: F401
+        _INV_CONSTANTS['MAX_PRINCIPAL_ABS'] = MAX_PRINCIPAL_ABS
+    except Exception:
+        pass
 except Exception:
     pass
 
@@ -201,17 +221,19 @@ PROCEDURE_MAP = {
 # e.g. field "S" + "MISES" → synthetic field "S_MISES"
 # Component fields (if ever split) use full componentLabel: "S_S11", "E_E11"
 INV_ATTR_MAP = {
-    'MISES':                  'mises',
-    'TRESCA':                 'tresca',
-    'PRESS':                  'press',
-    'INV3':                   'inv3',
-    'MAX_PRINCIPAL':          'maxPrincipal',
-    'MID_PRINCIPAL':          'midPrincipal',
-    'MIN_PRINCIPAL':          'minPrincipal',
-    'MAX_IN_PLANE_PRINCIPAL': 'maxInPlanePrincipal',
-    'MIN_IN_PLANE_PRINCIPAL': 'minInPlanePrincipal',
-    'OUT_OF_PLANE_PRINCIPAL': 'outOfPlanePrincipal',
-    'MAGNITUDE':              'magnitude',
+    'MISES':                     'mises',
+    'TRESCA':                    'tresca',
+    'PRESS':                     'press',
+    'INV3':                      'inv3',
+    'MAX_PRINCIPAL':             'maxPrincipal',
+    'MID_PRINCIPAL':             'midPrincipal',
+    'MIN_PRINCIPAL':             'minPrincipal',
+    'MAX_INPLANE_PRINCIPAL':     'maxInPlanePrincipal',
+    'MIN_INPLANE_PRINCIPAL':     'minInPlanePrincipal',
+    'OUTOFPLANE_PRINCIPAL':      'outOfPlanePrincipal',
+    'MAX_PRINCIPAL_ABS':         'maxPrincipalAbs',
+    'MAX_INPLANE_PRINCIPAL_ABS': 'maxInPlanePrincipalAbs',
+    'MAGNITUDE':                 'magnitude',
 }
 
 # Abaqus invariant name → _compute_invariants_numpy() name. Used to recompute
@@ -220,23 +242,37 @@ INV_ATTR_MAP = {
 # block.<invariant>; extrapolating the IP-computed scalar invariant instead
 # overshoots (negative Mises). See docs/l2/HighOrder-Midside-Subdivision-Design.md.
 _NUMPY_INV_NAME = {
-    'MISES':                  'MISES',
-    'TRESCA':                 'TRESCA',
-    'PRESS':                  'PRESS',
-    'INV3':                   'INV3',
-    'MAX_PRINCIPAL':          'MAX_PRINCIPAL',
-    'MID_PRINCIPAL':          'MID_PRINCIPAL',
-    'MIN_PRINCIPAL':          'MIN_PRINCIPAL',
-    'MAX_IN_PLANE_PRINCIPAL': 'MAX_INPLANE_PRINCIPAL',
-    'MIN_IN_PLANE_PRINCIPAL': 'MIN_INPLANE_PRINCIPAL',
-    'OUT_OF_PLANE_PRINCIPAL': 'OUTOFPLANE_PRINCIPAL',
-    'MAGNITUDE':              'MAGNITUDE',
+    'MISES':                     'MISES',
+    'TRESCA':                    'TRESCA',
+    'PRESS':                     'PRESS',
+    'INV3':                      'INV3',
+    'MAX_PRINCIPAL':             'MAX_PRINCIPAL',
+    'MID_PRINCIPAL':             'MID_PRINCIPAL',
+    'MIN_PRINCIPAL':             'MIN_PRINCIPAL',
+    'MAX_INPLANE_PRINCIPAL':     'MAX_INPLANE_PRINCIPAL',
+    'MIN_INPLANE_PRINCIPAL':     'MIN_INPLANE_PRINCIPAL',
+    'OUTOFPLANE_PRINCIPAL':      'OUTOFPLANE_PRINCIPAL',
+    'MAX_PRINCIPAL_ABS':         'MAX_PRINCIPAL_ABS',
+    'MAX_INPLANE_PRINCIPAL_ABS': 'MAX_INPLANE_PRINCIPAL_ABS',
+    'MAGNITUDE':                 'MAGNITUDE',
 }
 
 # Invariant suffixes skipped even when --invariants full is passed.
 # MAGNITUDE excluded — L3 computes it on-the-fly from components (identical result).
 _HIDDEN_INV_SUFFIXES = frozenset({
     'MAGNITUDE',
+})
+
+# 仅对壳/膜单元有效的不变量。实体单元块写 NaN(前端置灰), 与 Abaqus 行为一致:
+# 实体没有面内/面外之分, 选这些分量时 Abaqus 把实体显示为灰色。
+_SHELL_ONLY_INVS = frozenset({
+    'MAX_INPLANE_PRINCIPAL', 'MIN_INPLANE_PRINCIPAL',
+    'OUTOFPLANE_PRINCIPAL', 'MAX_INPLANE_PRINCIPAL_ABS',
+})
+
+# 没有 getScalarField 常量的不变量: IP 位置也要用 numpy 从张量算(而非 getScalarField)。
+_NUMPY_ONLY_INVS = frozenset({
+    'MAX_INPLANE_PRINCIPAL_ABS',
 })
 
 
@@ -1146,7 +1182,8 @@ def _compute_invariants_numpy(comp, inv_name):
     elif inv_name == 'PRESS':
         result = -(c11 + c22 + c33) / 3.0
 
-    elif inv_name in ('MAX_PRINCIPAL', 'MID_PRINCIPAL', 'MIN_PRINCIPAL', 'TRESCA'):
+    elif inv_name in ('MAX_PRINCIPAL', 'MID_PRINCIPAL', 'MIN_PRINCIPAL',
+                      'TRESCA', 'MAX_PRINCIPAL_ABS'):
         shape = c11.shape
         N = max(int(np.prod(shape)), 1)
         T = np.empty((N, 3, 3), dtype=np.float64)
@@ -1158,7 +1195,12 @@ def _compute_invariants_numpy(comp, inv_name):
         if   inv_name == 'MAX_PRINCIPAL': result = eigs[..., 2]
         elif inv_name == 'MID_PRINCIPAL': result = eigs[..., 1]
         elif inv_name == 'MIN_PRINCIPAL': result = eigs[..., 0]
-        else:                             result = eigs[..., 2] - eigs[..., 0]  # TRESCA
+        elif inv_name == 'TRESCA':        result = eigs[..., 2] - eigs[..., 0]
+        else:
+            # MAX_PRINCIPAL_ABS: 三主应力中绝对值最大者的无符号幅值(恒 ≥ 0)。
+            # 已在含壳模型积分点逐点验证, 与 Abaqus getScalarField(MAX_PRINCIPAL_ABS)
+            # 一致(Abaqus 该不变量值域恒 ≥ 0, 即不保留拉/压符号)。
+            result = np.maximum(np.abs(eigs[..., 0]), np.abs(eigs[..., 2]))
 
     elif inv_name == 'INV3':
         p    = (c11 + c22 + c33) / 3.0
@@ -1174,6 +1216,13 @@ def _compute_invariants_numpy(comp, inv_name):
     elif inv_name == 'MIN_INPLANE_PRINCIPAL':
         avg = (c11 + c22) * 0.5
         result = avg - np.sqrt(np.maximum(0.0, ((c11-c22)*0.5)**2 + c12**2))
+
+    elif inv_name == 'MAX_INPLANE_PRINCIPAL_ABS':
+        # 面内两主应力中绝对值最大者的无符号幅值(恒 ≥ 0)。壳/膜专属;
+        # 实体单元由调用方按 _SHELL_ONLY_INVS 置 NaN(置灰), 不会走到这里出值。
+        avg = (c11 + c22) * 0.5
+        rad = np.sqrt(np.maximum(0.0, ((c11-c22)*0.5)**2 + c12**2))
+        result = np.maximum(np.abs(avg + rad), np.abs(avg - rad))
 
     elif inv_name == 'OUTOFPLANE_PRINCIPAL':
         result = c33.copy()
@@ -1201,8 +1250,18 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
     active_invs = [
         (inv, INV_ATTR_MAP[inv]) for inv in invariants
         if inv in INV_ATTR_MAP and inv not in _HIDDEN_INV_SUFFIXES
-        and inv in _INV_CONSTANTS
+        and inv in _NUMPY_INV_NAME
     ]
+    # Abs 变体不在 Abaqus validInvariants 里(viewer 端口径), 按需补上:
+    #   MAX_PRINCIPAL_ABS         —— 任何张量场(有 3D 主应力)都加, 实体也有效;
+    #   MAX_INPLANE_PRINCIPAL_ABS —— 仅当该场有面内主应力(=模型含壳/膜)时加。
+    _inv_set  = set(invariants)
+    _have_inv = set(n for n, _ in active_invs)
+    if 'MAX_PRINCIPAL' in _inv_set and 'MAX_PRINCIPAL_ABS' not in _have_inv:
+        active_invs.append(('MAX_PRINCIPAL_ABS', INV_ATTR_MAP['MAX_PRINCIPAL_ABS']))
+    if 'MAX_INPLANE_PRINCIPAL' in _inv_set and 'MAX_INPLANE_PRINCIPAL_ABS' not in _have_inv:
+        active_invs.append(
+            ('MAX_INPLANE_PRINCIPAL_ABS', INV_ATTR_MAP['MAX_INPLANE_PRINCIPAL_ABS']))
     if not active_invs:
         return
 
@@ -1356,28 +1415,67 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                 if frame_idx == 0:
                     print("    [inv] getSubset(NODAL) tensor failed: {}".format(exc))
 
-        for inv_name, _ in active_invs:
-            inv_const  = _INV_CONSTANTS[inv_name]
-            numpy_name = _NUMPY_INV_NAME.get(inv_name, inv_name)
-
-            # IP: getScalarField is correct at integration points (no extrapolation,
-            # so no overshoot). EN/NODAL use method B below.
-            ip_scalar_blocks = {}  # (iname, etype, sp) → list of blocks
+        # ── 壳/膜单元集合 (iname, etype): 面内类不变量只在这些块出值, 实体置灰。 ──
+        # 用 Abaqus getScalarField(MAX_INPLANE_PRINCIPAL) 命中的块判定, 与 Abaqus
+        # 的有效范围逐块一致(实体块对面内不变量本就无数据)。
+        shell_keys = set()
+        if 'MAX_INPLANE_PRINCIPAL' in _INV_CONSTANTS:
             try:
-                scalar_field = field_out.getScalarField(invariant=inv_const)
-                for block in scalar_field.bulkDataBlocks:
-                    if block.instance is None:
+                _ipf = field_out.getScalarField(
+                    invariant=_INV_CONSTANTS['MAX_INPLANE_PRINCIPAL'])
+                for b in _ipf.bulkDataBlocks:
+                    if b.instance is None:
                         continue
-                    if _pos_str(block.position) != 'INTEGRATION_POINT':
+                    et = (getattr(b, 'elementType', None)
+                          or getattr(b, 'baseElementType', None))
+                    shell_keys.add((_canon_inst(b.instance.name), et))
+            except Exception:
+                pass
+
+        # ── IP 张量: 仅当存在 numpy-only 不变量(无 getScalarField 常量, 如 ──
+        # MAX_INPLANE_PRINCIPAL_ABS)时才取, 供其 IP 位置从张量算。
+        tensor_ip = {}   # (iname, etype, sp) → [(u_elems, data_nd[N,n_ip,ncomp]), ...]
+        _need_ip_tensor = any(n in _NUMPY_ONLY_INVS for n, _ in active_invs)
+        if _need_ip_tensor and _IP_CONST is not None:
+            try:
+                ten_ip_field = field_out.getSubset(position=_IP_CONST)
+                for b in ten_ip_field.bulkDataBlocks:
+                    if b.instance is None:
                         continue
-                    et = (getattr(block, 'elementType', None)
-                          or getattr(block, 'baseElementType', None))
-                    ip_scalar_blocks.setdefault(
-                        (_canon_inst(block.instance.name), et, _block_sp_num(block)), []
-                    ).append(block)
+                    et = (getattr(b, 'elementType', None)
+                          or getattr(b, 'baseElementType', None))
+                    key = (_canon_inst(b.instance.name), et, _block_sp_num(b))
+                    u_e, _u_i, _sp, data_nd = reshape_ip_block(b)
+                    tensor_ip.setdefault(key, []).append((u_e, data_nd))
             except Exception as exc:
                 if frame_idx == 0:
-                    print("    [inv] getScalarField({}) failed: {}".format(inv_name, exc))
+                    print("    [inv] getSubset(INTEGRATION_POINT) tensor failed: {}".format(exc))
+
+        for inv_name, _ in active_invs:
+            inv_const  = _INV_CONSTANTS.get(inv_name)
+            numpy_name = _NUMPY_INV_NAME.get(inv_name, inv_name)
+            shell_only = inv_name in _SHELL_ONLY_INVS
+
+            # IP: getScalarField is correct at integration points (no extrapolation,
+            # so no overshoot). EN/NODAL use method B below. numpy-only invariants
+            # (no getScalarField constant) compute IP from tensor_ip further down.
+            ip_scalar_blocks = {}  # (iname, etype, sp) → list of blocks
+            if inv_const is not None:
+                try:
+                    scalar_field = field_out.getScalarField(invariant=inv_const)
+                    for block in scalar_field.bulkDataBlocks:
+                        if block.instance is None:
+                            continue
+                        if _pos_str(block.position) != 'INTEGRATION_POINT':
+                            continue
+                        et = (getattr(block, 'elementType', None)
+                              or getattr(block, 'baseElementType', None))
+                        ip_scalar_blocks.setdefault(
+                            (_canon_inst(block.instance.name), et, _block_sp_num(block)), []
+                        ).append(block)
+                except Exception as exc:
+                    if frame_idx == 0:
+                        print("    [inv] getScalarField({}) failed: {}".format(inv_name, exc))
 
             # ── Write ELEMENT_NODAL invariant data (method B: from EN tensor) ─
             for (iname, etype, sp_num_key), info in en_blocks.items():
@@ -1393,13 +1491,15 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                 fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
                 out = np.full((M_c, n_enodes, 1), np.nan, dtype=np.float32)
-                for (u_e, ten_nd) in tensor_en.get((iname, etype, sp_num_key), []):
-                    inv_nd = _compute_invariants_numpy(ten_nd, numpy_name)  # [N,nnode,1]
-                    if inv_nd is None:
-                        continue
-                    rows  = np.searchsorted(canon, u_e)
-                    valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
-                    out[rows[valid]] = inv_nd[valid]
+                # 面内/面外类不变量: 非壳/膜块保持 NaN(实体置灰), 与 Abaqus 一致。
+                if not (shell_only and (iname, etype) not in shell_keys):
+                    for (u_e, ten_nd) in tensor_en.get((iname, etype, sp_num_key), []):
+                        inv_nd = _compute_invariants_numpy(ten_nd, numpy_name)  # [N,nnode,1]
+                        if inv_nd is None:
+                            continue
+                        rows  = np.searchsorted(canon, u_e)
+                        valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                        out[rows[valid]] = inv_nd[valid]
                 npsave(fr_path, out)
 
             # ── Write INTEGRATION_POINT invariant data (getScalarField) ──────
@@ -1416,13 +1516,26 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_parts.append('sp{}'.format(sp_num_key))
                 fr_path = os.path.join(*(bd_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
-                fr_blocks = ip_scalar_blocks.get((iname, etype, sp_num_key), [])
+                out = np.full((M_c, n_ip, 1), np.nan, dtype=np.float32)
 
-                if not fr_blocks:
-                    npsave(fr_path, np.full((M_c, n_ip, 1), np.nan, dtype=np.float32))
+                if inv_name in _NUMPY_ONLY_INVS:
+                    # 无 getScalarField 常量: IP 也从张量自算(壳/膜专属, 实体保持 NaN 置灰)
+                    if not (shell_only and (iname, etype) not in shell_keys):
+                        for (u_e, ip_nd) in tensor_ip.get((iname, etype, sp_num_key), []):
+                            inv_ip = _compute_invariants_numpy(ip_nd, numpy_name)  # [N,n_ip,1]
+                            if inv_ip is None:
+                                continue
+                            rows  = np.searchsorted(canon, u_e)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                            out[rows[valid]] = inv_ip[valid]
+                    npsave(fr_path, out)
                     continue
 
-                out = np.full((M_c, n_ip, 1), np.nan, dtype=np.float32)
+                # getScalarField 口径: 实体块对面内不变量本就无数据 → 留 NaN 置灰。
+                fr_blocks = ip_scalar_blocks.get((iname, etype, sp_num_key), [])
+                if not fr_blocks:
+                    npsave(fr_path, out)
+                    continue
                 for b in fr_blocks:
                     u_e, _, sp, data_nd = reshape_ip_block(b)
                     # data_nd shape: [N_elem, n_ip, 1] (scalar)
@@ -1446,13 +1559,15 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                 fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
                 out = np.full((M_c, 1), np.nan, dtype=np.float32)
-                for (lbls, ten2d) in tensor_nodal.get((iname, etype, sp_num_key), []):
-                    inv2d = _compute_invariants_numpy(ten2d, numpy_name)  # [N,1]
-                    if inv2d is None:
-                        continue
-                    rows  = np.searchsorted(canon, lbls)
-                    valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == lbls)
-                    out[rows[valid]] = inv2d[valid]
+                # 面内/面外类不变量: 非壳/膜块保持 NaN(实体置灰), 与 Abaqus 一致。
+                if not (shell_only and (iname, etype) not in shell_keys):
+                    for (lbls, ten2d) in tensor_nodal.get((iname, etype, sp_num_key), []):
+                        inv2d = _compute_invariants_numpy(ten2d, numpy_name)  # [N,1]
+                        if inv2d is None:
+                            continue
+                        rows  = np.searchsorted(canon, lbls)
+                        valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == lbls)
+                        out[rows[valid]] = inv2d[valid]
                 npsave(fr_path, out)
 
     # ── Write meta.json for each synthetic invariant field ────────────────────
