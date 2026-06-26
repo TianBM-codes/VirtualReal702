@@ -400,12 +400,12 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                 # sections.json is a list (new) or dict (old) — handle both.
                 # New: each entry is one sectionAssignment; key = "{i}__{safe(name)}"
                 # Old: keyed by sectionName (one entry per unique name).
-                print("[DBG] sections.json type={} len={}".format(
-                    type(sec_data).__name__, len(sec_data) if sec_data else 0))
+                # print("[DBG] sections.json type={} len={}".format(
+                #     type(sec_data).__name__, len(sec_data) if sec_data else 0))
                 if isinstance(sec_data, list):
                     sec_items = []
                     for i, se in enumerate(sec_data):
-                        print("[DBG] item[{}] type={} val={}".format(i, type(se).__name__, repr(se)[:120]))
+                        # print("[DBG] item[{}] type={} val={}".format(i, type(se).__name__, repr(se)[:120]))
                         grp_key = '{}__{}'.format(i, safe(se.get('section_name', str(i))))
                         sec_items.append((grp_key, se))
                 else:
@@ -948,18 +948,18 @@ def patch_sections_into_geom(raw_dir, workspace):
         section_names   = load_json(snames_path) if os.path.exists(snames_path) else []
         isets_elem_dir  = os.path.join(d, 'isets', 'elem_sets')
 
-        print("  Patching sections → {}".format(inst_safe + '.h5'))
-        print("[DBG2] sections.json type={} len={}".format(
-            type(sec_data).__name__, len(sec_data) if sec_data else 0))
+        # print("  Patching sections → {}".format(inst_safe + '.h5'))
+        # print("[DBG2] sections.json type={} len={}".format(
+            # type(sec_data).__name__, len(sec_data) if sec_data else 0))
         with h5py.File(h5_path, 'a') as f:
             if isinstance(sec_data, list):
                 sec_items = []
                 for i, s in enumerate(sec_data):
-                    print("[DBG2] item[{}] type={} val={}".format(i, type(s).__name__, repr(s)[:120]))
+                    # print("[DBG2] item[{}] type={} val={}".format(i, type(s).__name__, repr(s)[:120]))
                     grp_key = '{}__{}'.format(i, safe(s.get('section_name', str(i))))
                     sec_items.append((grp_key, s))
             else:
-                print("[DBG2] dict keys={}".format(list(sec_data.keys())[:5]))
+                # print("[DBG2] dict keys={}".format(list(sec_data.keys())[:5]))
                 sec_items = list(sec_data.items())
             for grp_key, sinfo in sec_items:
                 sg = f.require_group('sections/{}'.format(grp_key))
