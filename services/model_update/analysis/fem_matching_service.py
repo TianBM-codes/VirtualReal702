@@ -214,6 +214,7 @@ def match_test_nodes(project_id, max_distance=None, overwrite=True,
                 stage="node_match_overwrite",
                 percent=10,
             )
+            cursor.execute("DELETE FROM t_mt_py_fem_node_pairs WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_node_match WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_dof_match WHERE pid = %s", (project_id,))
             cursor.execute("DELETE FROM t_mt_py_fem_dynamic_response_catalog WHERE pid = %s", (project_id,))
