@@ -130,7 +130,7 @@ class CreateAbaqusStaticResponseRequest(BaseModel):
     project_id: int
     region_type: str
     variables: List[str]
-    sensor_name: Optional[str] = None
+    sensor_name: Optional[List[str]] = None
     set_name: Optional[str] = None
     instance_name: Optional[str] = None
     node_labels: Optional[List[int]] = None
@@ -138,6 +138,29 @@ class CreateAbaqusStaticResponseRequest(BaseModel):
     step_name: Optional[str] = None
     frequency: int = Field(default=1, ge=1)
     response_name: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _normalize_sensor_names(self):
+        raw_sensor_names = self.sensor_name
+        if raw_sensor_names is None:
+            return self
+
+        if isinstance(raw_sensor_names, str):
+            candidates = [raw_sensor_names]
+        else:
+            candidates = list(raw_sensor_names or [])
+
+        normalized = []
+        seen = set()
+        for item in candidates:
+            token = str(item or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            normalized.append(token)
+
+        self.sensor_name = normalized or None
+        return self
 
     class Config:
         extra = "forbid"

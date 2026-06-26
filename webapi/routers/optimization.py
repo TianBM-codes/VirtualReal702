@@ -143,20 +143,20 @@ def _resolve_abaqus_static_response_step_name(project_id: int, step_name: Option
 def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseRequest):
     node_labels = _normalize_node_labels(body.node_labels)
     element_labels = _normalize_element_labels(body.element_labels)
-    resolved_sensor_name = str(body.sensor_name or "").strip()
+    resolved_sensor_names = [str(item or "").strip() for item in (body.sensor_name or []) if str(item or "").strip()]
     resolved_step_name = _resolve_abaqus_static_response_step_name(body.project_id, body.step_name)
 
-    if resolved_sensor_name:
+    if resolved_sensor_names:
         if str(body.region_type or "").strip().upper() != "NODE":
             raise ValidationError(
                 "sensor_name mode only supports NODE responses",
-                {"region_type": body.region_type, "sensor_name": resolved_sensor_name},
+                {"region_type": body.region_type, "sensor_name": resolved_sensor_names},
             )
         if body.set_name or body.instance_name or node_labels or element_labels:
             raise ValidationError(
                 "sensor_name mode cannot be combined with set_name, instance_name, node_labels, or element_labels",
                 {
-                    "sensor_name": resolved_sensor_name,
+                    "sensor_name": resolved_sensor_names,
                     "set_name": body.set_name,
                     "instance_name": body.instance_name,
                     "node_label_count": len(node_labels),
@@ -168,10 +168,24 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
         if invalid_variables:
             raise ValidationError(
                 "sensor_name mode only supports U1/U2/U3 variables",
-                {"sensor_name": resolved_sensor_name, "invalid_variables": invalid_variables},
+                {"sensor_name": resolved_sensor_names, "invalid_variables": invalid_variables},
             )
 
-        sensor_match = resolve_abaqus_sensor_node_match(body.project_id, resolved_sensor_name)
+        sensor_matches = [
+            resolve_abaqus_sensor_node_match(body.project_id, sensor_name)
+            for sensor_name in resolved_sensor_names
+        ]
+        instance_names = {str(item["instance_name"]) for item in sensor_matches}
+        if len(instance_names) != 1:
+            raise ValidationError(
+                "sensor_name mode requires all sensors to map to the same instance",
+                {
+                    "sensor_name": resolved_sensor_names,
+                    "instance_names": sorted(instance_names),
+                },
+            )
+
+        sensor_match = sensor_matches[0]
         context = resolve_abaqus_instance_context(body.project_id, sensor_match["instance_name"])
         payload = create_design_response_catalog_entry(
             project_id=body.project_id,
@@ -181,13 +195,13 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
             set_scope=context["set_scope"],
             instance_name=sensor_match["instance_name"],
             part_name=context["part_name"],
-            node_labels=[int(sensor_match["node_label"])],
+            node_labels=[int(item["node_label"]) for item in sensor_matches],
             element_labels=None,
             step_name=resolved_step_name,
             frequency=body.frequency,
             response_name=None,
         )
-        payload["sensor_name"] = resolved_sensor_name
+        payload["sensor_name"] = resolved_sensor_names
         payload["step_name"] = resolved_step_name
         return payload
 
