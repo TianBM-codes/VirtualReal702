@@ -96,6 +96,7 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
     scalar_face = np.full(Rf, np.nan, dtype=np.float32)
     num_frames = None
     found_any = False
+    comp_oob_all = True   # 选中分量是否对所有 etype 块都越界(=该实例无此分量)
 
     for etype_bytes in np.unique(src_etype):
         etype_str = etype_bytes.decode("ascii").rstrip("\x00")
@@ -125,6 +126,11 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         while frame_data.ndim > 2:
             frame_data = frame_data.mean(axis=1)
 
+        # 该块是否真的有这个分量(壳块只有 4 分量, 选 S13/S23 时越界)。
+        if (component_idx is None or frame_data.ndim == 1
+                or int(component_idx) < frame_data.shape[-1]):
+            comp_oob_all = False
+
         scalar_elem = _extract_component(frame_data, component_idx)   # [N_elem]
 
         mask = src_etype == etype_bytes
@@ -137,12 +143,15 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         return None
     # global_range from surface faces only (matches Abaqus: legend uses visible surface values)
     valid_face = scalar_face[np.isfinite(scalar_face)]
-    # All-NaN means this position's group exists but carries no usable values for
-    # this instance (e.g. invariant fields whose ELEMENT_NODAL block was never
-    # populated by L1 — only INTEGRATION_POINT got real data). Return None so the
-    # caller falls through to the next position instead of rendering an all-grey
-    # cloud / failing to compute a range.
     if valid_face.size == 0:
+        # 区分两种"全 NaN":
+        #   (a) 选中分量对该实例所有单元类型都越界(如纯壳/壳块选 S13/S23/E13/E23)→
+        #       这是合法的"该实例无此分量", 返回全 NaN 结果(range=None)让前端置灰,
+        #       不再 fall through 到其他 position, 否则会一路 None → 报 no result data。
+        #   (b) 块存在但 L1 未填值(不变量场的 ELEMENT_NODAL 块只在 IP 出值)→ 返回
+        #       None, 让调用方继续尝试 INTEGRATION_POINT。
+        if component_idx is not None and comp_oob_all:
+            return scalar_face, num_frames, None
         return None
     global_range = (float(valid_face.min()), float(valid_face.max()))
     return scalar_face, num_frames, global_range
