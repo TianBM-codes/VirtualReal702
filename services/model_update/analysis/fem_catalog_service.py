@@ -1722,6 +1722,7 @@ def get_inp_parameter_options(project_id):
                    is_internal, supports_global, supports_local, current_value, extra_json
             FROM t_mt_py_fem_quantity_set_capability
             WHERE pid = %s
+            AND supports_global=1
             ORDER BY quantity_code, set_scope, set_type, set_name, instance_name, part_name
         """, (project_id,))
         quantity_set_capabilities = cursor.fetchall() or []

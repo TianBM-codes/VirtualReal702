@@ -90,12 +90,16 @@ class BDFParser(object):
             e_type = elem_obj.type
             ele_node_list = list(elem_obj.node_ids)
             ele_node_list = list(OrderedDict.fromkeys(ele_node_list))
-            iter_ele, is_solid = MeshElementFactory.CreateElement(
-                e_type=e_type,
-                e_id=eid,
-                opt=len(ele_node_list),
-                fem_software="NASTRAN"
-            )
+            try:
+                iter_ele, is_solid = MeshElementFactory.CreateElement(
+                    e_type=e_type,
+                    e_id=eid,
+                    opt=len(ele_node_list),
+                    fem_software="NASTRAN"
+                )
+            except:
+                print(f"unsupported element type: {e_type}")
+                continue
 
             try:
                 iter_ele.setFaces(ele_node_list)
@@ -348,7 +352,6 @@ class BDFParser(object):
                 except Exception:
                     return None
             return None
-
 
         for mat_id, mat in sorted(self.bdf.materials.items()):
             # =========================
