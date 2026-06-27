@@ -1440,6 +1440,8 @@ def _resolve_model_update_bdf_path(raw_bdf_path: str, workspace: str):
     raw_text = str(raw_bdf_path or "").strip()
     if not raw_text:
         return None
+    if Path(raw_text).suffix.lower() not in {".bdf", ".dat", ".nas"}:
+        return None
 
     file_name = Path(raw_text).name
     if file_name:

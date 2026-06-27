@@ -56,3 +56,17 @@ def test_resolve_model_update_bdf_path_falls_back_to_existing_raw_path(tmp_path:
     )
 
     assert resolved == str(raw_bdf.resolve())
+
+
+def test_resolve_model_update_bdf_path_rejects_non_bdf_extensions(tmp_path: Path):
+    workspace = tmp_path / "project_18"
+    workspace.mkdir()
+    op2_path = workspace / "result.op2"
+    op2_path.write_text("not a bdf\n", encoding="utf-8")
+
+    resolved = job_runner._resolve_model_update_bdf_path(
+        str(op2_path),
+        str(workspace),
+    )
+
+    assert resolved is None
