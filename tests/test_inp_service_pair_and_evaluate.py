@@ -8,12 +8,20 @@ class _WriteCursor:
     def __init__(self):
         self.executed = []
         self.fetchone_result = None
+        self.fetchall_result = []
+        self.last_sql = ""
+        self.last_params = None
 
     def execute(self, sql, params=None):
-        self.executed.append((" ".join(sql.split()), params))
+        self.last_sql = " ".join(sql.split())
+        self.last_params = params
+        self.executed.append((self.last_sql, params))
 
     def fetchone(self):
         return self.fetchone_result
+
+    def fetchall(self):
+        return self.fetchall_result
 
     def close(self):
         return None
@@ -121,6 +129,38 @@ class _ModalQueryConnection:
 
     def close(self):
         return None
+
+
+class _TransformWriteCursor(_WriteCursor):
+    def fetchone(self):
+        if "FROM t_mt_py_fem_transform_operation" in self.last_sql:
+            return {
+                "matrix4_json": "[[1.0, 0.0, 0.0, 10.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]",
+            }
+        return self.fetchone_result
+
+    def fetchall(self):
+        if "FROM t_mt_py_test_node" in self.last_sql:
+            return [
+                {
+                    "nid": "1001",
+                    "fid": 202,
+                    "x": 11.0,
+                    "y": 2.0,
+                    "z": 3.0,
+                    "origin_x": 1.0,
+                    "origin_y": 2.0,
+                    "origin_z": 3.0,
+                }
+            ]
+        return self.fetchall_result
+
+
+class _TransformWriteConnection(_WriteConnection):
+    def __init__(self):
+        self.cursor_obj = _TransformWriteCursor()
+        self.committed = False
+        self.rolled_back = False
 
 
 class _NodeMatchCursor(_WriteCursor):
@@ -637,11 +677,11 @@ def test_get_latest_octree_meta_normalizes_quoted_paths():
 
 
 def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
-    fake_conn = _WriteConnection()
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    fake_conn = _TransformWriteConnection()
+    monkeypatch.setattr(fem_matching_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(fem_matching_service, "get_connection", lambda: fake_conn)
 
-    result = inp_service.save_transform_operation(
+    result = fem_matching_service.save_transform_operation(
         project_id=101,
         matrix4_fem=[
             [1, 0, 0, 0],
@@ -666,7 +706,7 @@ def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
             [0.0, 0.0, 0.0, 1.0],
         ],
         "matrix4_test": [
-            [1.0, 0.0, 0.0, 3.0],
+            [1.0, 0.0, 0.0, 13.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
@@ -675,21 +715,33 @@ def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
     assert fake_conn.committed is True
     assert fake_conn.cursor_obj.executed == [
         (
+            "SELECT matrix4_json FROM t_mt_py_fem_transform_operation WHERE pid = %s AND transform_type = %s LIMIT 1",
+            (101, "test"),
+        ),
+        (
             "INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE matrix4_json = VALUES(matrix4_json), updated_at = CURRENT_TIMESTAMP",
             (101, "fem", "[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 2.0], [0.0, 0.0, 0.0, 1.0]]"),
         ),
         (
             "INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE matrix4_json = VALUES(matrix4_json), updated_at = CURRENT_TIMESTAMP",
-            (101, "test", "[[1.0, 0.0, 0.0, 3.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]"),
+            (101, "test", "[[1.0, 0.0, 0.0, 13.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]"),
+        ),
+        (
+            "SELECT nid, fid, x, y, z, origin_x, origin_y, origin_z FROM t_mt_py_test_node WHERE pid = %s ORDER BY nid, fid",
+            (101,),
+        ),
+        (
+            "UPDATE t_mt_py_test_node SET x = %s, y = %s, z = %s WHERE pid = %s AND nid = %s AND fid = %s",
+            (14.0, 2.0, 3.0, 101, "1001", 202),
         ),
     ]
 
 
 def test_get_transform_auto_info_returns_both_matrix4(monkeypatch):
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: _QueryConnection())
+    monkeypatch.setattr(fem_matching_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(fem_matching_service, "get_connection", lambda: _QueryConnection())
 
-    result = inp_service.get_transform_auto_info(project_id=101)
+    result = fem_matching_service.get_transform_auto_info(project_id=101)
 
     assert result == {
         "matrix4_fem": [

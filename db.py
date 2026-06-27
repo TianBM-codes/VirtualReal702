@@ -27,6 +27,9 @@ CREATE_TABLE_SQL_LIST = [
         x DOUBLE NOT NULL COMMENT 'X坐标值',
         y DOUBLE NOT NULL COMMENT 'Y坐标值',
         z DOUBLE NOT NULL COMMENT 'Z坐标值',
+        origin_x DOUBLE NULL COMMENT '原始X坐标值',
+        origin_y DOUBLE NULL COMMENT '原始Y坐标值',
+        origin_z DOUBLE NULL COMMENT '原始Z坐标值',
         PRIMARY KEY (nid, pid, fid)
     ) COMMENT='模态试验测点坐标表'
     """,
@@ -1157,6 +1160,30 @@ def ensure_tables_exist():
 
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
+        _ensure_column(
+            "t_mt_py_test_node",
+            "origin_x",
+            "origin_x DOUBLE NULL COMMENT '原始X坐标值'",
+        )
+        _ensure_column(
+            "t_mt_py_test_node",
+            "origin_y",
+            "origin_y DOUBLE NULL COMMENT '原始Y坐标值'",
+        )
+        _ensure_column(
+            "t_mt_py_test_node",
+            "origin_z",
+            "origin_z DOUBLE NULL COMMENT '原始Z坐标值'",
+        )
+        cursor.execute(
+            """
+            UPDATE t_mt_py_test_node
+            SET origin_x = COALESCE(origin_x, x),
+                origin_y = COALESCE(origin_y, y),
+                origin_z = COALESCE(origin_z, z)
+            WHERE origin_x IS NULL OR origin_y IS NULL OR origin_z IS NULL
+            """
+        )
         _ensure_column(
             "t_mt_py_background_task",
             "interface_code",

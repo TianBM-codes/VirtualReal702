@@ -483,20 +483,26 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
         project_config = None
         if has_dataset55:
             node_sql = """
-            INSERT INTO t_mt_py_test_node (nid, pid, fid, ics, ocs, x, y, z)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO t_mt_py_test_node (nid, pid, fid, ics, ocs, x, y, z, origin_x, origin_y, origin_z)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
 
             for node in test_nodes:
+                node_x = _safe_float(node["x"])
+                node_y = _safe_float(node["y"])
+                node_z = _safe_float(node["z"])
                 cursor.execute(node_sql, (
                     str(node['nid']),
                     project_id,
                     file_id,
                     _safe_int(node["ics"]),
                     _safe_int(node["ocs"]),
-                    _safe_float(node["x"]),
-                    _safe_float(node["y"]),
-                    _safe_float(node["z"])
+                    node_x,
+                    node_y,
+                    node_z,
+                    node_x,
+                    node_y,
+                    node_z,
                 ))
 
             measuring_point_count = _insert_measuring_points(cursor, project_id, test_nodes)

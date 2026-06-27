@@ -393,11 +393,35 @@ def get_pair_node_point_result(project_id):
 def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
     ensure_tables_exist()
     resolved_matrix4_fem = _normalize_matrix4(matrix4_fem)
-    resolved_matrix4_test = _normalize_matrix4(matrix4_test)
+    resolved_matrix4_test_delta = _normalize_matrix4(matrix4_test)
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        cursor.execute(
+            """
+            SELECT matrix4_json
+            FROM t_mt_py_fem_transform_operation
+            WHERE pid = %s AND transform_type = %s
+            LIMIT 1
+            """,
+            (int(project_id), "test"),
+        )
+        row = cursor.fetchone()
+        previous_matrix4_test = (
+            _normalize_matrix4(_json_loads(row["matrix4_json"]))
+            if row and row.get("matrix4_json") is not None
+            else np.eye(4, dtype=np.float64).tolist()
+        )
+        resolved_matrix4_test = (
+            np.matmul(
+                np.asarray(resolved_matrix4_test_delta, dtype=np.float64),
+                np.asarray(previous_matrix4_test, dtype=np.float64),
+            )
+            .astype(np.float64)
+            .tolist()
+        )
+
         for transform_type, matrix4 in (
             ("fem", resolved_matrix4_fem),
             ("test", resolved_matrix4_test),
@@ -411,6 +435,40 @@ def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (int(project_id), transform_type, _json_dumps(matrix4)),
+            )
+
+        cursor.execute(
+            """
+            SELECT nid, fid, x, y, z, origin_x, origin_y, origin_z
+            FROM t_mt_py_test_node
+            WHERE pid = %s
+            ORDER BY nid, fid
+            """,
+            (int(project_id),),
+        )
+        test_nodes = cursor.fetchall() or []
+        transform_matrix = np.asarray(resolved_matrix4_test, dtype=np.float64)
+        update_sql = """
+        UPDATE t_mt_py_test_node
+        SET x = %s, y = %s, z = %s
+        WHERE pid = %s AND nid = %s AND fid = %s
+        """
+        for row in test_nodes:
+            origin_x = float(row["origin_x"] if row.get("origin_x") is not None else row["x"])
+            origin_y = float(row["origin_y"] if row.get("origin_y") is not None else row["y"])
+            origin_z = float(row["origin_z"] if row.get("origin_z") is not None else row["z"])
+            point = np.asarray([origin_x, origin_y, origin_z, 1.0], dtype=np.float64)
+            transformed = np.matmul(point, transform_matrix)
+            cursor.execute(
+                update_sql,
+                (
+                    float(transformed[0]),
+                    float(transformed[1]),
+                    float(transformed[2]),
+                    int(project_id),
+                    str(row["nid"]),
+                    int(row["fid"]),
+                ),
             )
         conn.commit()
         return {

@@ -142,6 +142,14 @@ def test_import_unv_data_writes_static_results_to_static_table(monkeypatch):
     assert len(measuring_point_inserts) == 1
     assert measuring_point_inserts[0] == ("WY_PENDING_1001", 101, 21, 1.0, 2.0, 3.0, "LOCAL")
     assert measuring_point_updates == [("WY1", 1)]
+    node_inserts = [
+        params
+        for sql, params in fake_conn.cursor_obj.executed
+        if "INSERT INTO t_mt_py_test_node" in sql
+    ]
+    assert node_inserts == [
+        ("1001", 101, 202, 0, 0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0)
+    ]
     assert static_inserts[0][5:11] == (0.1, 0.2, 0.3, 0.01, 0.02, 0.03)
 
 
