@@ -48,6 +48,7 @@ def test_build_sol200_controls_uses_formatted_dsaprt_when_csv_enabled(tmp_path):
 def test_build_sol200_response_lines_allow_negative_lower_bound():
     lines = _build_response_lines(1, {"type": "FREQ", "name": "FREQ1", "mode_number": 1})
 
+    assert "DRESP1,1,FREQ1,FREQ,,,,,1" in lines
     assert "DCONSTR,1,1,-1.0E30,1.0E30" in lines
 
 

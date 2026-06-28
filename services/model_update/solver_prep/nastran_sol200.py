@@ -250,7 +250,7 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
     if rtype == "FREQ":
         name = str(response.get("name") or f"FREQ_MODE_{int(mode_number)}").strip()
         return [
-            f"DRESP1,{int(index)},{name},FREQ,STRUC,,{int(mode_number)}",
+            f"DRESP1,{int(index)},{name},FREQ,,,,,{int(mode_number)}",
             f"DCONSTR,1,{int(index)},-1.0E30,1.0E30",
         ]
 
