@@ -435,12 +435,11 @@ def build_sol200_design_lines(
 def _format_include_line(main_bdf_path: str, design_bdf_path: str) -> str:
     main_path = Path(main_bdf_path).resolve()
     design_path = Path(design_bdf_path).resolve()
-    rel_path = design_path.relative_to(main_path.parent) if design_path.parent == main_path.parent else Path(
-        design_path.as_posix()
-    )
+    if design_path.parent == main_path.parent:
+        rel_path = Path(design_path.name)
+    else:
+        rel_path = Path(design_path.as_posix())
     rel_text = str(rel_path).replace("\\", "/")
-    if not rel_text.startswith("."):
-        rel_text = f"./{rel_text}"
     return f"INCLUDE '{rel_text}'"
 
 

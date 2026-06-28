@@ -708,12 +708,12 @@ def _normalize_response_display_name(value: object) -> str:
 
 
 def _response_display_name(row_meta: dict) -> str:
-    row_key = str(row_meta.get("row_key") or "").strip()
-    if row_key:
-        return _normalize_response_display_name(row_key)
     response_name = str(row_meta.get("response_name") or "").strip()
     if response_name:
         return _normalize_response_display_name(response_name)
+    row_key = str(row_meta.get("row_key") or "").strip()
+    if row_key:
+        return _normalize_response_display_name(row_key)
     parts = [
         str(row_meta.get("instance") or "").strip(),
         str(row_meta.get("response_field") or "").strip(),
@@ -1852,7 +1852,8 @@ def _build_sensitivity_cloud_requests(
             },
         )
 
-    resolved_result_group = str(result_group or f"sensitivity_batch_{batch_no}").strip() or f"sensitivity_batch_{batch_no}"
+    default_result_group = f"sensitivity_{batch_no}"
+    resolved_result_group = str(result_group or default_result_group).strip() or default_result_group
     resolved_step_name = str(step_name or "Sensitivity").strip() or "Sensitivity"
     resolved_workspace = os.path.abspath(str(matrix_payload.get("workspace"))) if matrix_payload.get("workspace") else None
     instance_label_cache: Dict[str, List[int]] = {}

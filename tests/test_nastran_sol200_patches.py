@@ -95,6 +95,33 @@ def test_build_sol200_design_lines_add_single_dscreen_for_freq_responses(tmp_pat
     assert dscreen_lines == ["DSCREEN  FREQ    -1.0E30"]
 
 
+def test_build_sol200_lines_include_mode_uses_plain_design_model_name(tmp_path):
+    input_bdf = tmp_path / "input.bdf"
+    output_bdf = tmp_path / "input_sol200.bdf"
+    design_bdf = tmp_path / "design_model.bdf"
+    input_bdf.write_text("SOL 103\nCEND\nBEGIN BULK\nENDDATA\n", encoding="utf-8")
+
+    payload = build_sol200_lines(
+        input_bdf=str(input_bdf),
+        parameters=[
+            {
+                "name": "E1",
+                "type": "E",
+                "material_id": 1001,
+                "initial": 210000.0,
+                "lower": 2000.0,
+                "upper": 300000.0,
+            }
+        ],
+        responses=[{"type": "FREQ", "name": "FREQ1", "mode_number": 1}],
+        settings={"dynamic.norm": "MASS", "sol200.deck_mode": "include"},
+        output_bdf=str(output_bdf),
+        output_design_bdf=str(design_bdf),
+    )
+
+    assert "INCLUDE 'design_model.bdf'" in payload["output_lines"]
+
+
 def test_build_sol200_lines_preserves_existing_eigrl_frequency_range(tmp_path):
     input_bdf = tmp_path / "input.bdf"
     input_bdf.write_text(
