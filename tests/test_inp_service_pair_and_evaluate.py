@@ -61,11 +61,11 @@ class _QueryCursor:
             return [
                 {
                     "transform_type": "fem",
-                    "matrix4_json": "[[1,0,0,0],[0,1,0,0],[0,0,0,2],[0,0,0,1]]",
+                    "matrix4_json": "[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,2,1]]",
                 },
                 {
                     "transform_type": "test",
-                    "matrix4_json": "[[1,0,0,3],[0,1,0,0],[0,0,1,0],[0,0,0,1]]",
+                    "matrix4_json": "[[1,0,0,0],[0,1,0,0],[0,0,1,0],[3,0,0,1]]",
                 },
             ]
         if "SELECT id, measuring_point_name, x_position, y_position, z_position FROM t_mt_measuring_point_info" in sql:
@@ -85,7 +85,7 @@ class _QueryCursor:
         if "FROM t_mt_py_fem_transform_operation" in sql:
             return {
                 "transform_type": "fem",
-                "matrix4_json": "[[1,0,0,0],[0,1,0,0],[0,0,0,2],[0,0,0,1]]",
+                "matrix4_json": "[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,2,1]]",
             }
         return None
 
@@ -135,7 +135,7 @@ class _TransformWriteCursor(_WriteCursor):
     def fetchone(self):
         if "FROM t_mt_py_fem_transform_operation" in self.last_sql:
             return {
-                "matrix4_json": "[[1.0, 0.0, 0.0, 10.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]",
+                "matrix4_json": "[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 0.0, 0.0, 1.0]]",
             }
         return self.fetchone_result
 
@@ -151,6 +151,18 @@ class _TransformWriteCursor(_WriteCursor):
                     "origin_x": 1.0,
                     "origin_y": 2.0,
                     "origin_z": 3.0,
+                }
+            ]
+        if "FROM t_mt_measuring_point_info" in self.last_sql:
+            return [
+                {
+                    "id": 1,
+                    "x_position": 11.0,
+                    "y_position": 2.0,
+                    "z_position": 3.0,
+                    "x_position_ori": 1.0,
+                    "y_position_ori": 2.0,
+                    "z_position_ori": 3.0,
                 }
             ]
         return self.fetchall_result
@@ -686,14 +698,14 @@ def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
         matrix4_fem=[
             [1, 0, 0, 0],
             [0, 1, 0, 0],
-            [0, 0, 1, 2],
-            [0, 0, 0, 1],
+            [0, 0, 1, 0],
+            [0, 0, 2, 1],
         ],
         matrix4_test=[
-            [1, 0, 0, 3],
+            [1, 0, 0, 0],
             [0, 1, 0, 0],
             [0, 0, 1, 0],
-            [0, 0, 0, 1],
+            [3, 0, 0, 1],
         ],
     )
 
@@ -702,14 +714,14 @@ def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
         "matrix4_fem": [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 2.0],
-            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 2.0, 1.0],
         ],
         "matrix4_test": [
-            [1.0, 0.0, 0.0, 13.0],
+            [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
+            [13.0, 0.0, 0.0, 1.0],
         ],
     }
     assert fake_conn.committed is True
@@ -720,11 +732,11 @@ def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
         ),
         (
             "INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE matrix4_json = VALUES(matrix4_json), updated_at = CURRENT_TIMESTAMP",
-            (101, "fem", "[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 2.0], [0.0, 0.0, 0.0, 1.0]]"),
+            (101, "fem", "[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 2.0, 1.0]]"),
         ),
         (
             "INSERT INTO t_mt_py_fem_transform_operation (pid, transform_type, matrix4_json) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE matrix4_json = VALUES(matrix4_json), updated_at = CURRENT_TIMESTAMP",
-            (101, "test", "[[1.0, 0.0, 0.0, 13.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]"),
+            (101, "test", "[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [13.0, 0.0, 0.0, 1.0]]"),
         ),
         (
             "SELECT nid, fid, x, y, z, origin_x, origin_y, origin_z FROM t_mt_py_test_node WHERE pid = %s ORDER BY nid, fid",
@@ -733,6 +745,14 @@ def test_save_transform_operation_upserts_both_matrix4(monkeypatch):
         (
             "UPDATE t_mt_py_test_node SET x = %s, y = %s, z = %s WHERE pid = %s AND nid = %s AND fid = %s",
             (14.0, 2.0, 3.0, 101, "1001", 202),
+        ),
+        (
+            "SELECT id, x_position, y_position, z_position, x_position_ori, y_position_ori, z_position_ori FROM t_mt_measuring_point_info WHERE project_id = %s ORDER BY id",
+            (101,),
+        ),
+        (
+            "UPDATE t_mt_measuring_point_info SET x_position = %s, y_position = %s, z_position = %s WHERE project_id = %s AND id = %s",
+            (14.0, 2.0, 3.0, 101, 1),
         ),
     ]
 
@@ -747,13 +767,13 @@ def test_get_transform_auto_info_returns_both_matrix4(monkeypatch):
         "matrix4_fem": [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 2.0],
-            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 2.0, 1.0],
         ],
         "matrix4_test": [
-            [1.0, 0.0, 0.0, 3.0],
+            [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
+            [3.0, 0.0, 0.0, 1.0],
         ],
     }

@@ -970,6 +970,9 @@ CREATE_TABLE_SQL_LIST = [
         x_position DOUBLE NOT NULL COMMENT 'X坐标',
         y_position DOUBLE NOT NULL COMMENT 'Y坐标',
         z_position DOUBLE NOT NULL COMMENT 'Z坐标',
+        x_position_ori DOUBLE NULL COMMENT '原始X坐标',
+        y_position_ori DOUBLE NULL COMMENT '原始Y坐标',
+        z_position_ori DOUBLE NULL COMMENT '原始Z坐标',
         x_angle DOUBLE NOT NULL COMMENT '角度x',
         y_angle DOUBLE NOT NULL COMMENT '角度y',
         z_angle DOUBLE NOT NULL COMMENT '角度z',
@@ -1175,6 +1178,21 @@ def ensure_tables_exist():
             "origin_z",
             "origin_z DOUBLE NULL COMMENT '原始Z坐标值'",
         )
+        _ensure_column(
+            "t_mt_measuring_point_info",
+            "x_position_ori",
+            "x_position_ori DOUBLE NULL COMMENT '原始X坐标'",
+        )
+        _ensure_column(
+            "t_mt_measuring_point_info",
+            "y_position_ori",
+            "y_position_ori DOUBLE NULL COMMENT '原始Y坐标'",
+        )
+        _ensure_column(
+            "t_mt_measuring_point_info",
+            "z_position_ori",
+            "z_position_ori DOUBLE NULL COMMENT '原始Z坐标'",
+        )
         cursor.execute(
             """
             UPDATE t_mt_py_test_node
@@ -1182,6 +1200,15 @@ def ensure_tables_exist():
                 origin_y = COALESCE(origin_y, y),
                 origin_z = COALESCE(origin_z, z)
             WHERE origin_x IS NULL OR origin_y IS NULL OR origin_z IS NULL
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE t_mt_measuring_point_info
+            SET x_position_ori = COALESCE(x_position_ori, x_position),
+                y_position_ori = COALESCE(y_position_ori, y_position),
+                z_position_ori = COALESCE(z_position_ori, z_position)
+            WHERE x_position_ori IS NULL OR y_position_ori IS NULL OR z_position_ori IS NULL
             """
         )
         _ensure_column(

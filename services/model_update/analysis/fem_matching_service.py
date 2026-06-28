@@ -415,8 +415,8 @@ def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
         )
         resolved_matrix4_test = (
             np.matmul(
-                np.asarray(resolved_matrix4_test_delta, dtype=np.float64),
                 np.asarray(previous_matrix4_test, dtype=np.float64),
+                np.asarray(resolved_matrix4_test_delta, dtype=np.float64),
             )
             .astype(np.float64)
             .tolist()
@@ -445,10 +445,10 @@ def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
             ORDER BY nid, fid
             """,
             (int(project_id),),
-        )
+            )
         test_nodes = cursor.fetchall() or []
         transform_matrix = np.asarray(resolved_matrix4_test, dtype=np.float64)
-        update_sql = """
+        update_test_node_sql = """
         UPDATE t_mt_py_test_node
         SET x = %s, y = %s, z = %s
         WHERE pid = %s AND nid = %s AND fid = %s
@@ -460,7 +460,7 @@ def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
             point = np.asarray([origin_x, origin_y, origin_z, 1.0], dtype=np.float64)
             transformed = np.matmul(point, transform_matrix)
             cursor.execute(
-                update_sql,
+                update_test_node_sql,
                 (
                     float(transformed[0]),
                     float(transformed[1]),
@@ -468,6 +468,38 @@ def save_transform_operation(project_id: int, matrix4_fem, matrix4_test):
                     int(project_id),
                     str(row["nid"]),
                     int(row["fid"]),
+                ),
+            )
+
+        cursor.execute(
+            """
+            SELECT id, x_position, y_position, z_position, x_position_ori, y_position_ori, z_position_ori
+            FROM t_mt_measuring_point_info
+            WHERE project_id = %s
+            ORDER BY id
+            """,
+            (int(project_id),),
+        )
+        measuring_points = cursor.fetchall() or []
+        update_measuring_point_sql = """
+        UPDATE t_mt_measuring_point_info
+        SET x_position = %s, y_position = %s, z_position = %s
+        WHERE project_id = %s AND id = %s
+        """
+        for row in measuring_points:
+            origin_x = float(row["x_position_ori"] if row.get("x_position_ori") is not None else row["x_position"])
+            origin_y = float(row["y_position_ori"] if row.get("y_position_ori") is not None else row["y_position"])
+            origin_z = float(row["z_position_ori"] if row.get("z_position_ori") is not None else row["z_position"])
+            point = np.asarray([origin_x, origin_y, origin_z, 1.0], dtype=np.float64)
+            transformed = np.matmul(point, transform_matrix)
+            cursor.execute(
+                update_measuring_point_sql,
+                (
+                    float(transformed[0]),
+                    float(transformed[1]),
+                    float(transformed[2]),
+                    int(project_id),
+                    int(row["id"]),
                 ),
             )
         conn.commit()

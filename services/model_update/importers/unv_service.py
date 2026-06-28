@@ -225,8 +225,9 @@ def _clear_measuring_points(cursor, project_id):
 def _insert_measuring_points(cursor, project_id, test_nodes):
     insert_sql = """
     INSERT INTO t_mt_measuring_point_info
-    (measuring_point_name, project_id, sensor_type_id, x_position, y_position, z_position, data_source)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    (measuring_point_name, project_id, sensor_type_id, x_position, y_position, z_position,
+     x_position_ori, y_position_ori, z_position_ori, data_source)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     update_name_sql = """
     UPDATE t_mt_measuring_point_info
@@ -236,13 +237,19 @@ def _insert_measuring_points(cursor, project_id, test_nodes):
 
     row_count = 0
     for node in test_nodes:
+        node_x = _safe_float(node["x"])
+        node_y = _safe_float(node["y"])
+        node_z = _safe_float(node["z"])
         cursor.execute(insert_sql, (
             f"WY_PENDING_{_safe_int(node['nid'])}",
             project_id,
             21,
-            _safe_float(node["x"]),
-            _safe_float(node["y"]),
-            _safe_float(node["z"]),
+            node_x,
+            node_y,
+            node_z,
+            node_x,
+            node_y,
+            node_z,
             "LOCAL",
         ))
         inserted_id = getattr(cursor, "lastrowid", None)
