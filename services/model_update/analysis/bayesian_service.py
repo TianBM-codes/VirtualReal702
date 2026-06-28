@@ -4540,12 +4540,16 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
     )
     # update_source_bdf_path:
     # the actual writable/updateable model used by Bayesian iterations.
-    # For all_elements_e this should prefer the localized BDF produced during
-    # SOL200 sensitivity preparation so material/property IDs remain consistent.
+    # Prefer the original/source BDF recorded in SOL200 metadata so the
+    # initial SOL103 modal run starts from the user's real structural model
+    # instead of a generated SOL200 deck that may contain local INCLUDE files.
+    # Fall back to the localized source BDF only when the metadata does not
+    # preserve the original path.
     update_source_bdf_path = (
-        _normalize_optional_path(metadata_localized_bdf)
+        _normalize_optional_path(input_bdf)
+        or _normalize_optional_path(metadata_source_bdf)
+        or _normalize_optional_path(metadata_localized_bdf)
         or _normalize_optional_path(source.get("bdf_path"))
-        or _normalize_optional_path(input_bdf)
     )
     if not update_source_bdf_path:
         raise ValidationError(

@@ -1486,3 +1486,158 @@ def test_persist_bayesian_tracking_results_overwrites_same_batch_and_writes_expe
     assert inserts[10][1] == (12, 1, "P1", "default", "default", "SET1", 1.0, 1.5, 0.5)
     assert fake_conn.committed is True
     assert fake_conn.rolled_back is False
+
+
+def test_sol200_modal_bayesian_prefers_metadata_source_bdf_for_initial_sol103(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import nastran_sol200_service, project_path_service
+    from services.model_update.importers import op2_service
+
+    source_bdf = tmp_path / "source_model.bdf"
+    source_bdf.write_text("CEND\nBEGIN BULK\nENDDATA\n", encoding="utf-8")
+    localized_bdf = tmp_path / "source_model.localized_source.bdf"
+    localized_bdf.write_text("CEND\nBEGIN BULK\nENDDATA\n", encoding="utf-8")
+    generated_sol200_bdf = tmp_path / "source_model_sol200.bdf"
+    generated_sol200_bdf.write_text("INCLUDE 'design_model.bdf'\n", encoding="utf-8")
+    metadata_path = tmp_path / "source_model_sol200.bdf.sol200.json"
+    metadata_path.write_text(
+        bayesian_service.json.dumps(
+            {
+                "source_input_bdf": str(source_bdf),
+                "localized_input_bdf": str(localized_bdf),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stored_runs = [
+        {
+            "parameter_columns": [
+                {"parameter_name": "E1", "parameter_value": 100.0},
+            ],
+            "response_rows": [
+                {"response_label": "mode_1", "mode_number": 1},
+            ],
+            "matrix": [[0.1]],
+            "source": {
+                "bdf_path": str(generated_sol200_bdf),
+                "metadata_path": str(metadata_path),
+            },
+        },
+        {
+            "parameter_columns": [
+                {"parameter_name": "E1", "parameter_value": 101.0},
+            ],
+            "response_rows": [
+                {"response_label": "mode_1", "mode_number": 1},
+            ],
+            "matrix": [[0.1]],
+            "analysis_run_id": 99,
+        },
+    ]
+
+    sol103_inputs = []
+
+    monkeypatch.setattr(bayesian_service, "_clear_bayesian_run_outputs", lambda **kwargs: {})
+    monkeypatch.setattr(bayesian_service, "_set_project_fix_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bayesian_service, "safe_write_console_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_load_stored_sensitivity_run",
+        lambda **kwargs: stored_runs.pop(0),
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_build_modal_response_payload",
+        lambda **kwargs: {
+            "response_rows": [{"response_label": "mode_1", "mode_number": 1}],
+            "target_values": [9.0],
+            "matched_payload": {},
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_run_sol103_modal_response_values",
+        lambda **kwargs: sol103_inputs.append(kwargs["input_bdf"]) or {
+            "response_values": [10.0],
+            "solver_payload": {},
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_normalize_absolute_modal_sensitivity_matrix",
+        lambda **kwargs: np.asarray([[0.1]], dtype=np.float64),
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "bayesian_update_normalized",
+        lambda **kwargs: {
+            "p_new": [101.0],
+            "dp": [1.0],
+        },
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_update_bdf_parameter_values",
+        lambda **kwargs: {"output_bdf": kwargs["output_bdf"]},
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_build_sol200_parameter_rows",
+        lambda parameter_columns, values: [{"parameter_name": "E1", "parameter_value": float(values[0])}],
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_build_sol200_response_rows",
+        lambda response_rows: list(response_rows),
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_select_modal_frequency_matrix_rows",
+        lambda **kwargs: [[0.1]],
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_build_iteration_metrics",
+        lambda **kwargs: {"ccabs": 0.0, "ccmean": 0.0, "ccdisp": 0.0, "cctotal": 0.0, "ccdsf": 0.0},
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_evaluate_exit_condition",
+        lambda *args, **kwargs: {"converged": False},
+    )
+    monkeypatch.setattr(bayesian_service, "_write_bayesian_iteration_console_log", lambda **kwargs: None)
+    monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", lambda **kwargs: None)
+    monkeypatch.setattr(
+        bayesian_service,
+        "_persist_final_iteration_modal_outputs",
+        lambda **kwargs: {"batch_no": kwargs["batch_no"]},
+    )
+    monkeypatch.setattr(bayesian_service, "_clone_jsonable", lambda value: value)
+    monkeypatch.setattr(
+        nastran_sol200_service,
+        "run_sol200_and_store_workflow",
+        lambda **kwargs: {"generated_files": {}},
+    )
+    monkeypatch.setattr(
+        bayesian_service,
+        "_save_bayesian_history_artifacts",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        op2_service,
+        "_build_op2_parameter_columns_with_mappings",
+        lambda **kwargs: [{"parameter_name": "E1", "target_rows": []}],
+    )
+    monkeypatch.setattr(project_path_service, "resolve_project_workspace", lambda project_id: str(tmp_path))
+
+    result = bayesian_service.run_sol200_modal_frequency_bayesian_update_workflow(
+        project_id=1,
+        batch_no=1,
+        iterations=1,
+        save_results=False,
+        write_cloud_result=False,
+    )
+
+    assert sol103_inputs
+    assert Path(sol103_inputs[0]).resolve() == source_bdf.resolve()
+    assert result["input_bdf"] == str(source_bdf.resolve())
