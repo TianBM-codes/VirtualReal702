@@ -48,8 +48,15 @@ def test_build_sol200_controls_uses_formatted_dsaprt_when_csv_enabled(tmp_path):
 def test_build_sol200_response_lines_allow_negative_lower_bound():
     lines = _build_response_lines(1, {"type": "FREQ", "name": "FREQ1", "mode_number": 1})
 
-    assert "DRESP1,1,FREQ1,FREQ,,,,,1" in lines
+    assert "DRESP1,1,FREQ1,FREQ,,,1" in lines
     assert "DCONSTR,1,1,-1.0E30,1.0E30" in lines
+
+
+def test_build_sol200_response_lines_shorten_long_frequency_name():
+    lines = _build_response_lines(1, {"type": "FREQ", "name": "FREQ_MODE_1", "mode_number": 1})
+
+    assert "DRESP1,1,FREQ1,FREQ,,,1" in lines
+    assert "FREQ_MODE_1" not in lines[0]
 
 
 def test_build_sol200_response_lines_supports_modal_displacement_component():
@@ -64,7 +71,7 @@ def test_build_sol200_response_lines_supports_modal_displacement_component():
         },
     )
 
-    assert "DRESP1,2,MODE1_NODE3_U3,DISP,,,3,1,3" in lines
+    assert "DRESP1,2,DISP2,DISP,,,3,1,3" in lines
     assert "DCONSTR,1,2,-1.0E30,1.0E30" in lines
 
 

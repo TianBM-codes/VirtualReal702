@@ -182,6 +182,18 @@ def _format_relation_continuation_line(*, desvar_id: int, coefficient: float = 1
     return f"{'':<8}{int(desvar_id):>8}{format_float_like_bas(float(coefficient)):>8}".rstrip()
 
 
+def _normalize_sol200_response_label(name: object, *, fallback_prefix: str, index: int) -> str:
+    raw = str(name or "").strip().upper()
+    cleaned = "".join(ch for ch in raw if ch.isalnum() or ch == "_")
+    if cleaned and len(cleaned) <= 8:
+        return cleaned
+
+    fallback = f"{fallback_prefix}{int(index)}"
+    if len(fallback) <= 8:
+        return fallback
+    return f"R{int(index)}"[:8]
+
+
 def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> List[str]:
     ptype = str(parameter.get("type") or "").upper()
     if ptype == "H":
@@ -248,9 +260,13 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
         raise ValidationError(f"{rtype} response requires mode_number", {"response": response})
 
     if rtype == "FREQ":
-        name = str(response.get("name") or f"FREQ_MODE_{int(mode_number)}").strip()
+        name = _normalize_sol200_response_label(
+            response.get("name") or f"FREQ_MODE_{int(mode_number)}",
+            fallback_prefix="FREQ",
+            index=int(index),
+        )
         return [
-            f"DRESP1,{int(index)},{name},FREQ,,,,,{int(mode_number)}",
+            f"DRESP1,{int(index)},{name},FREQ,,,{int(mode_number)}",
             f"DCONSTR,1,{int(index)},-1.0E30,1.0E30",
         ]
 
@@ -289,7 +305,11 @@ def _build_response_lines(index: int, response: Dict[str, Any]) -> List[str]:
             "unsupported DISP response component",
             {"component": component, "allowed": sorted(component_map)},
         )
-    name = str(response.get("name") or f"DISP_MODE_{int(mode_number)}_N{int(node_id)}_{component_text}").strip()
+    name = _normalize_sol200_response_label(
+        response.get("name") or f"DISP_MODE_{int(mode_number)}_N{int(node_id)}_{component_text}",
+        fallback_prefix="DISP",
+        index=int(index),
+    )
     return [
         f"DRESP1,{int(index)},{name},DISP,,,{resolved_component},{int(mode_number)},{int(node_id)}",
         f"DCONSTR,1,{int(index)},-1.0E30,1.0E30",
