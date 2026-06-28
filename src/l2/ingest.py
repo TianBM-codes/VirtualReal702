@@ -22,6 +22,7 @@ import logging
 import math
 import os
 import sqlite3
+import sys
 import time
 
 import h5py
@@ -386,10 +387,14 @@ def build_indexed_geometry(coords_global, surf_fnc,
     Sf = len(surf_fnc)
     _empty = lambda d: np.zeros(0, dtype=d)
     if Sf == 0:
-        return (np.zeros((0, 3), np.float32), np.zeros((0, 3), np.float32),
-                np.zeros((0, 3), np.int32),
-                _empty(np.int32), _empty(np.int32),
-                _empty(np.int32), _empty(np.uint8), _empty(np.uint8), _empty("S8"))
+        return (np.zeros((0, 3), np.float32),    # positions
+                np.zeros((0, 3), np.int32),      # indices
+                _empty(np.int32),                # vtx_node_row
+                _empty(np.int32),                # vtx_tri_idx
+                _empty(np.int32),                # tri_elem_row
+                _empty(np.uint8),                # tri_face_seq
+                _empty(np.uint8),                # tri_etype_code
+                _empty("S8"))                    # tri_etype_str
 
     valid_mask   = surf_fnc != -1
     n_per_face   = valid_mask.sum(axis=1).astype(np.int32)   # [Sf]
@@ -1526,15 +1531,22 @@ def main():
 
     instances = conn.execute("SELECT instance_name FROM instances").fetchall()
 
+    failed = False
     try:
         with h5py.File(asm_path, "r") as asm_h5:
             for (inst_name,) in instances:
                 process_instance(workspace, conn, asm_h5, inst_name)
             process_orientations(workspace, asm_h5)
     except Exception as e:
+        failed = True
         logger.error("Layer 2 failed: {}".format(e), exc_info=True)
     finally:
         conn.close()
+
+    if failed:
+        # 非零退出码，让 job_runner 把任务判为失败而不是"解析成功"
+        logger.error("=== Layer 2 FAILED ===")
+        sys.exit(1)
 
     logger.info("=== Layer 2 Complete ===")
 
