@@ -522,6 +522,7 @@ def test_get_sensor_relative_error_matches_point_no_by_sensor_id(monkeypatch):
 
 def test_get_deform_sensor_positions_scales_static_displacement(monkeypatch):
     monkeypatch.setattr(unv_service, "get_connection", lambda: _QueryConnection())
+    monkeypatch.setattr(unv_service, "get_test_display_scale_factors", lambda project_id, cursor=None: {"dynamic": 1.0, "static": 1.0})
 
     result = unv_service.get_deform_sensor_positions(
         project_id=101,

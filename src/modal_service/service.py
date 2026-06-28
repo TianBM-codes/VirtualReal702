@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 from db import get_connection, ensure_tables_exist, clear_unv_tables
+from services.model_update.analysis.project_config_service import get_test_display_scale_factors
 
 
 # ── 计算工具函数 ──────────────────────────────────────────────────────────
@@ -143,6 +144,8 @@ def _db_node_shapes(project_id: str, node_ids: list, order: int) -> Optional[dic
     conn = get_connection()
     _cursor = conn.cursor()
     try:
+        display_scales = get_test_display_scale_factors(int(project_id), cursor=_cursor)
+        modal_scale = float(display_scales["dynamic"])
         freq_sql = """SELECT f.mode_no, f.frequency, s.modal_shape FROM t_mt_py_test_modal_frequency f LEFT JOIN t_mt_py_test_modal_shape s ON f.pid=s.pid AND f.mode_no=s.mode_no WHERE f.pid=%s AND f.mode_no=%s ORDER BY f.mode_no"""
         _cursor.execute(freq_sql, (f"{project_id}", order,))
         modal = _cursor.fetchone()
@@ -155,8 +158,8 @@ def _db_node_shapes(project_id: str, node_ids: list, order: int) -> Optional[dic
         for n_id in node_ids:
             node_data = shape.get(str(n_id))
             if node_data:
-                real_modal_shape.extend(node_data['real'])
-                imag_modal_shape.extend(node_data['imag'])
+                real_modal_shape.extend([float(value) * modal_scale for value in node_data['real']])
+                imag_modal_shape.extend([float(value) * modal_scale for value in node_data['imag']])
         return {
             "order": modal[0],
             "frequency": f"{modal[1]}",

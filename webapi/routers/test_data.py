@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
 
+from services.model_update.analysis.test_unit_service import convert_test_unit_system
 from services.model_update.importers.unv_service import (
     dump_unv_modal_shapes_to_vtk,
     dump_unv_modal_to_json,
@@ -26,6 +27,7 @@ from ..models import (
     ImportUnvRequest,
     PlotModalShapeRequest,
     SensorPositionRequest,
+    TestUnitConvertRequest,
 )
 from ..utils import log_request, model_to_dict
 
@@ -141,6 +143,23 @@ async def get_deform_sensor_position_api(request: Request, body: DeformSensorPos
             result_no=body.result_no,
         )
         return success_response(result, "变形后测点位置获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/test/unit/convert")
+async def convert_test_unit_api(request: Request, body: TestUnitConvertRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = convert_test_unit_system(
+            project_id=body.project_id,
+            from_unit=body.from_unit,
+            to_unit=body.to_unit,
+        )
+        return success_response(result, "试验单位校正成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

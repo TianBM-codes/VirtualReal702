@@ -6,6 +6,10 @@ import numpy as np
 from db import ensure_tables_exist, get_connection
 
 
+DYNAMIC_DISPLACEMENT_DISPLAY_SCALE_KEY = "dynamic_displacement_display_scale"
+STATIC_DISPLACEMENT_DISPLAY_SCALE_KEY = "static_displacement_display_scale"
+
+
 def _normalize_dims(dims: Optional[dict]) -> Optional[Dict[str, Optional[float]]]:
     if dims is None:
         return None
@@ -370,3 +374,15 @@ def save_test_data_mode(
         extra_json=extra,
         cursor=cursor,
     )
+
+
+def get_test_display_scale_factors(project_id: int, *, cursor=None) -> dict:
+    if cursor is not None:
+        config = _fetch_project_config(cursor, int(project_id))
+    else:
+        config = get_project_config(int(project_id))
+    coefficients = dict(config.get("coefficients") or {})
+    return {
+        "dynamic": float(coefficients.get(DYNAMIC_DISPLACEMENT_DISPLAY_SCALE_KEY, 1.0) or 1.0),
+        "static": float(coefficients.get(STATIC_DISPLACEMENT_DISPLAY_SCALE_KEY, 1.0) or 1.0),
+    }

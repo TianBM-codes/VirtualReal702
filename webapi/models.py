@@ -65,6 +65,12 @@ class DeformSensorPositionRequest(BaseModel):
     result_no: Optional[int] = None
 
 
+class TestUnitConvertRequest(BaseModel):
+    project_id: int
+    from_unit: str
+    to_unit: str
+
+
 class DumpVtkRequest(BaseModel):
     vtk_path: str
     project_id: int

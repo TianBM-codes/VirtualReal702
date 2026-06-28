@@ -14,6 +14,7 @@ from services.model_update.importers.unv_frf_service import (
 from src.l3.core.errors import NotFoundError, ValidationError
 from services.model_update.analysis.console_log_service import safe_write_console_event
 from services.model_update.analysis.project_config_service import (
+    get_test_display_scale_factors,
     get_test_data_mode,
     save_test_data_mode,
     save_test_model_dimensions,
@@ -619,6 +620,8 @@ def get_modal_shape(project_id):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        display_scales = get_test_display_scale_factors(int(project_id), cursor=cursor)
+        modal_scale = float(display_scales["dynamic"])
         node_sql = """
                     SELECT nid, x, y, z
                     FROM t_mt_py_test_node
@@ -673,8 +676,8 @@ def get_modal_shape(project_id):
             imag_modal_shape = []
             for n_id in node_ids:
                 iter_modal_shape.extend(shape[str(n_id)])
-                real_modal_shape.extend(shape[str(n_id)]['real'])
-                imag_modal_shape.extend(shape[str(n_id)]['imag'])
+                real_modal_shape.extend([float(value) * modal_scale for value in shape[str(n_id)]['real']])
+                imag_modal_shape.extend([float(value) * modal_scale for value in shape[str(n_id)]['imag']])
             modal_shape.append({"order": iter_modal[0], "frequency": f"{iter_modal[1]}", "unit": "Hz",
                                 "position": {"real": real_modal_shape, "imag": imag_modal_shape}})
 
@@ -787,6 +790,8 @@ def get_deform_sensor_positions(project_id, scale=1.0, static_result_id=None, lo
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        display_scales = get_test_display_scale_factors(int(project_id), cursor=cursor)
+        total_scale = float(scale) * float(display_scales["static"])
         deform_rows = _resolve_deform_rows(
             cursor,
             project_id,
@@ -850,9 +855,9 @@ def get_deform_sensor_positions(project_id, scale=1.0, static_result_id=None, lo
                     "sensor_label": str(measuring_row["measuring_point_name"]),
                     "sensor_type": "位移",
                     "sensor_pos": [
-                        _safe_float(node_row["x"]) + _safe_float(deform_row["ux"] or 0.0) * float(scale),
-                        _safe_float(node_row["y"]) + _safe_float(deform_row["uy"] or 0.0) * float(scale),
-                        _safe_float(node_row["z"]) + _safe_float(deform_row["uz"] or 0.0) * float(scale),
+                        _safe_float(node_row["x"]) + _safe_float(deform_row["ux"] or 0.0) * total_scale,
+                        _safe_float(node_row["y"]) + _safe_float(deform_row["uy"] or 0.0) * total_scale,
+                        _safe_float(node_row["z"]) + _safe_float(deform_row["uz"] or 0.0) * total_scale,
                     ],
                 }
             )
