@@ -469,6 +469,29 @@ def _cleanup_sol200_intermediate_artifacts(
     return deleted
 
 
+def _ensure_sol200_include_dependencies(*, workdir: Path, generated_files: Dict[str, str]) -> List[str]:
+    copied: List[str] = []
+    design_bdf = str(generated_files.get("design_model_bdf") or "").strip()
+    if not design_bdf:
+        return copied
+
+    source_path = Path(design_bdf).expanduser().resolve()
+    if not source_path.exists() or not source_path.is_file():
+        raise ValidationError(
+            "SOL200 include mode requires design_model.bdf, but the generated source file was not found",
+            {"design_model_bdf": design_bdf, "workdir": str(workdir)},
+        )
+
+    target_path = (workdir / "design_model.bdf").resolve()
+    if source_path != target_path:
+        shutil.copy2(str(source_path), str(target_path))
+        copied.append(str(target_path))
+    elif not target_path.exists():
+        shutil.copy2(str(source_path), str(target_path))
+        copied.append(str(target_path))
+    return copied
+
+
 def _summarize_nastran_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "has_f06": False,
@@ -817,6 +840,12 @@ def run_nastran_sol200_job(
         "warnings": [],
     }
     if run_solver:
+        copied_include_files = _ensure_sol200_include_dependencies(
+            workdir=output_path.parent,
+            generated_files=payload.get("generated_files") or {},
+        )
+        if copied_include_files:
+            payload["generated_files"]["copied_include_files"] = copied_include_files
         payload["solver"] = _run_local_solver(
             command=command,
             workdir=output_path.parent,

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from services.model_update.analysis.solver_service import (
     _build_abaqus_command,
     _copy_missing_relative_includes,
+    _ensure_sol200_include_dependencies,
     _build_project_result_parse_options,
     _build_nastran_command,
     _run_local_solver,
@@ -265,6 +266,68 @@ def test_build_abaqus_command_uses_configured_default(monkeypatch):
         "job=demo_job",
         "input=demo.inp",
     ]
+
+
+def test_ensure_sol200_include_dependencies_copies_design_model_to_workdir(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    workdir = tmp_path / "run"
+    source_dir.mkdir()
+    workdir.mkdir()
+    design_bdf = _write_text(source_dir / "design_model.bdf", "BEGIN BULK\nENDDATA\n")
+
+    copied = _ensure_sol200_include_dependencies(
+        workdir=workdir,
+        generated_files={"design_model_bdf": str(design_bdf)},
+    )
+
+    assert copied == [str((workdir / "design_model.bdf").resolve())]
+    assert (workdir / "design_model.bdf").read_text(encoding="utf-8") == "BEGIN BULK\nENDDATA\n"
+
+
+def test_run_nastran_sol200_job_copies_design_model_before_solver(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import solver_service
+
+    output_bdf = _write_text(tmp_path / "case_sol200.bdf", "SOL 200\nCEND\n")
+    design_bdf = _write_text(tmp_path / "source_design_model.bdf", "BEGIN BULK\nENDDATA\n")
+    captured = {}
+
+    monkeypatch.setattr(
+        solver_service,
+        "generate_nastran_sol200_job",
+        lambda **kwargs: {
+            "input_bdf": str(tmp_path / "input.bdf"),
+            "output_bdf": str(output_bdf),
+            "generated_files": {
+                "analysis_bdf": str(output_bdf),
+                "design_model_bdf": str(design_bdf),
+            },
+            "parameter_count": 1,
+            "response_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "_build_nastran_command",
+        lambda **kwargs: ["nastran", output_bdf.name],
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "_run_local_solver",
+        lambda **kwargs: captured.update(kwargs) or {"artifacts_summary": {"has_op2": True}},
+    )
+    monkeypatch.setattr(solver_service, "_materialize_requested_sensitivity_csv", lambda **kwargs: None)
+    monkeypatch.setattr(solver_service, "_cleanup_sol200_intermediate_artifacts", lambda **kwargs: [])
+
+    result = solver_service.run_nastran_sol200_job(
+        input_bdf=str(tmp_path / "input.bdf"),
+        output_bdf=str(output_bdf),
+        run_solver=True,
+    )
+
+    copied_files = result["generated_files"].get("copied_include_files") or []
+    assert copied_files == [str((tmp_path / "design_model.bdf").resolve())]
+    assert (tmp_path / "design_model.bdf").exists()
+    assert captured["workdir"] == tmp_path
 
 
 def test_build_nastran_command_keeps_relative_bdf_name():
