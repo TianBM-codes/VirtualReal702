@@ -17,6 +17,7 @@ src/utils/file_fetch.py — 内网 HTTP 文件下载工具
 import logging
 import os
 import shutil
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -74,6 +75,24 @@ def _encode_url_path(url: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(path=new_path))
 
 
+def _encode_url_path_brackets(url: str) -> str:
+    """在 _encode_url_path 的基础上，再把 path 段里字面的 '[' ']' 编码成 %5B/%5D。
+
+    用作下载兜底：有的严格网关/WAF 按 RFC 3986 拒绝路径里未编码的方括号，会直接
+    返回 400；这种情况下必须发编码形式。返回值与 _encode_url_path 相同（即无方括号）
+    时，调用方据此判断"没有备用候选、不必重试"。
+    """
+    encoded = _encode_url_path(url)
+    try:
+        parsed = urllib.parse.urlparse(encoded)
+    except Exception:
+        return encoded
+    if "[" not in parsed.path and "]" not in parsed.path:
+        return encoded
+    new_path = parsed.path.replace("[", "%5B").replace("]", "%5D")
+    return urllib.parse.urlunparse(parsed._replace(path=new_path))
+
+
 def _default_dest_dir() -> str:
     """读取 service_config.json 中的 APP_DATA_ROOT 作为默认下载目录。
     懒加载，避免在模块导入时就触发 settings 初始化。"""
@@ -107,13 +126,23 @@ def download_if_url(
         return url_or_path
 
     url_or_path = _apply_host_override(url_or_path)
-    url_or_path = _encode_url_path(url_or_path)
+
+    # 两种候选编码，按顺序尝试，应对相互冲突的两类服务器：
+    #   1. 字面方括号（_encode_url_path）—— 满足"按字面名匹配、不解码 %5B 的后端"
+    #   2. 编码方括号（_encode_url_path_brackets）—— 满足"按 RFC 拒绝字面方括号、
+    #      否则返回 400 的严格网关/WAF"
+    # 仅当文件名带方括号时第二个候选才与第一个不同；否则只试一次。
+    primary = _encode_url_path(url_or_path)
+    candidates = [primary]
+    alt = _encode_url_path_brackets(url_or_path)
+    if alt != primary:
+        candidates.append(alt)
 
     if dest_dir is None:
         dest_dir = _default_dest_dir()
 
     if dest_name is None:
-        parsed = urllib.parse.urlparse(url_or_path)
+        parsed = urllib.parse.urlparse(primary)
         # 去掉 query string 后取文件名；URL 没有路径时用 "download"
         raw_name = os.path.basename(parsed.path.split("?")[0]) or "download"
         # URL 里的文件名是百分号编码（中文 → %E6...），落盘前还原成可读的中文
@@ -121,18 +150,37 @@ def download_if_url(
 
     os.makedirs(dest_dir, exist_ok=True)
     dest_path = os.path.join(dest_dir, dest_name)
-    logger.info("file_fetch: downloading %s → %s", url_or_path, dest_path)
 
-    try:
-        urllib.request.urlretrieve(url_or_path, dest_path)
-    except Exception as exc:
-        raise RuntimeError(
-            "Failed to download '{}': {}".format(url_or_path, exc)
-        ) from exc
+    last_exc = None
+    for idx, cand in enumerate(candidates):
+        logger.info("file_fetch: downloading %s → %s", cand, dest_path)
+        try:
+            urllib.request.urlretrieve(cand, dest_path)
+            size = os.path.getsize(dest_path)
+            logger.info("file_fetch: done, %d bytes saved to %s", size, dest_path)
+            return dest_path
+        except urllib.error.HTTPError as exc:
+            # 4xx（含 400 拒绝字面方括号 / 404 找不到编码形式）才换另一种编码重试；
+            # 5xx 等服务端错误换编码也无意义，但有候选时一并兜底无害。
+            last_exc = exc
+            # 清掉可能写了一半的残留文件，避免下一次/上层误用
+            try:
+                if os.path.exists(dest_path):
+                    os.remove(dest_path)
+            except Exception:
+                pass
+            if idx + 1 < len(candidates):
+                logger.warning(
+                    "file_fetch: HTTP %s for %s — retrying with alternate "
+                    "bracket encoding", exc.code, cand)
+            continue
+        except Exception as exc:
+            last_exc = exc
+            break
 
-    size = os.path.getsize(dest_path)
-    logger.info("file_fetch: done, %d bytes saved to %s", size, dest_path)
-    return dest_path
+    raise RuntimeError(
+        "Failed to download '{}': {}".format(url_or_path, last_exc)
+    ) from last_exc
 
 
 def materialize_source_file(
