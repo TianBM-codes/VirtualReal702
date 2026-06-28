@@ -164,10 +164,10 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
                 },
             )
         requested_variables = [str(item or "").strip().upper() for item in (body.variables or []) if str(item or "").strip()]
-        invalid_variables = [item for item in requested_variables if item not in {"U1", "U2", "U3"}]
+        invalid_variables = [item for item in requested_variables if item not in {"U1", "U2", "U3", "UX", "UY", "UZ"}]
         if invalid_variables:
             raise ValidationError(
-                "sensor_name mode only supports U1/U2/U3 variables",
+                "sensor_name mode only supports U1/U2/U3 or UX/UY/UZ variables",
                 {"sensor_name": resolved_sensor_names, "invalid_variables": invalid_variables},
             )
 
