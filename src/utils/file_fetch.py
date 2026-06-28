@@ -45,12 +45,22 @@ def _apply_host_override(url: str) -> str:
     return new_url
 
 
+# RFC 3986 path 段里合法的 ASCII 字符（pchar + '/'），再加上 '%' 防止二次编码。
+# quote 会把这些之外的字符（非 ASCII 中文、空格、控制字符等）做百分号编码，
+# 而保留这些字符不动。特别注意 '[' ']'：很多文件服务器按字面名匹配带方括号的
+# 文件名、并不会把 %5B/%5D 解码回去，所以必须保留字面量，否则首字符是 '[' 的
+# 文件名会下载失败（404）。
+_URL_PATH_SAFE = "/%" + ":@-._~!$&'()*+,;=" + "[]"
+
+
 def _encode_url_path(url: str) -> str:
     """对 URL 的 path 段做百分号编码，兜底「发送端传了未编码中文/空格」的情况。
 
     urllib.request 发请求时按 ASCII 编码请求行，path 里有原始中文会直接抛
-    UnicodeEncodeError。这里对 path 逐段 quote（保留 '/'）；已经编码过的字符
-    （%xx）因为 safe 包含 '%' 不会被二次编码（double-encode）。query/host 不动。
+    UnicodeEncodeError。这里对 path 做 quote，但只编码真正不安全的字符
+    （非 ASCII、空格、控制字符）；RFC 3986 path 允许的 ASCII 标点（含 '[' ']'）
+    一律保留字面量。'%' 在 safe 集合里，避免对已编码串二次编码（double-encode）。
+    query/host 不动。
     """
     try:
         parsed = urllib.parse.urlparse(url)
@@ -58,8 +68,7 @@ def _encode_url_path(url: str) -> str:
         return url
     if not parsed.path:
         return url
-    # safe 保留 '/' 分隔符和 '%'（避免对已编码串二次编码）
-    new_path = urllib.parse.quote(parsed.path, safe="/%")
+    new_path = urllib.parse.quote(parsed.path, safe=_URL_PATH_SAFE)
     if new_path == parsed.path:
         return url
     return urllib.parse.urlunparse(parsed._replace(path=new_path))
