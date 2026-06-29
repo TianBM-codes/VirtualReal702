@@ -2083,6 +2083,100 @@ def run_sol200_modal_mac_and_store_workflow(
         raise
 
 
+def sync_run_sol200_modal_mac_and_store_workflow(
+    *,
+    project_id: int,
+    batch_no: str = "1",
+    case_name: str = "nastran_sol200_modal_mac",
+    input_bdf: str,
+    output_bdf: Optional[str] = None,
+    overwrite: bool = True,
+    response_source: str = "response_catalog",
+    mac_threshold: Optional[float] = None,
+    max_freq_error_ratio: Optional[float] = 0.2,
+    matching_method: str = "greedy",
+    settings: Optional[Dict[str, Any]] = None,
+    nastran: Optional[str] = None,
+    run_solver: bool = True,
+    timeout_sec: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+    write_cloud_result: bool = False,
+    cloud_result_group: Optional[str] = None,
+    cloud_step_name: str = "Sensitivity",
+    cloud_field_name: str = "SENSITIVITY_CLOUD",
+) -> dict:
+    try:
+        resolved_settings = dict(settings or {})
+        sync_payload = sync_sol200_config_from_catalog(
+            project_id=int(project_id),
+            overwrite=bool(overwrite),
+            parameter_source="selected_parameter",
+            response_source=str(response_source or "response_catalog"),
+            response_category="MODAL_MAC",
+            mac_threshold=mac_threshold,
+            max_freq_error_ratio=max_freq_error_ratio,
+            matching_method=str(matching_method or "greedy"),
+        )
+        run_payload = run_sol200_modal_mac_and_store_workflow(
+            project_id=int(project_id),
+            batch_no=str(batch_no),
+            case_name=str(case_name),
+            input_bdf=input_bdf,
+            output_bdf=output_bdf,
+            parameters=None,
+            parameter_preset=None,
+            responses=None,
+            settings=resolved_settings,
+            nastran=nastran,
+            run_solver=run_solver,
+            timeout_sec=timeout_sec,
+            extra_args=list(extra_args or []),
+            parameter_names=None,
+            response_names=None,
+            write_cloud_result=write_cloud_result,
+            cloud_result_group=cloud_result_group,
+            cloud_step_name=cloud_step_name,
+            cloud_field_name=cloud_field_name,
+        )
+        return {
+            "workflow": "nastran_sol200_modal_mac_sync_run_and_store",
+            "project_id": int(project_id),
+            "batch_no": str(batch_no),
+            "case_name": str(case_name),
+            "input_bdf": str(Path(input_bdf).expanduser().resolve()),
+            "output_bdf": str(
+                Path(
+                    str(
+                        output_bdf
+                        or run_payload.get("output_bdf")
+                        or ""
+                    )
+                ).expanduser().resolve()
+            ) if str(output_bdf or run_payload.get("output_bdf") or "").strip() else None,
+            "response_source": str(response_source or "response_catalog"),
+            "response_category": "MODAL_MAC",
+            "sync_config": sync_payload,
+            "run_and_store": run_payload,
+        }
+    except Exception as exc:
+        try:
+            _set_project_sensitivity_status(project_id, _WORKFLOW_STATUS_FAILED)
+        except Exception:
+            pass
+        _log_project_workflow_failure(
+            project_id,
+            "SOL200 modal-mac sync-run workflow failed",
+            exc,
+            [
+                f"batch_no: {str(batch_no)}",
+                f"case_name: {str(case_name)}",
+                f"input_bdf: {str(input_bdf)}",
+                f"response_source: {str(response_source or 'response_catalog')}",
+            ],
+        )
+        raise
+
+
 def preview_sol200_sensitivity(
     *,
     project_id: Optional[int] = None,

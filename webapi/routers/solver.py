@@ -27,6 +27,7 @@ from services.model_update.analysis.nastran_sol200_service import (
     run_sol200_modal_mac_and_store_workflow,
     run_sol200_and_store_workflow,
     run_sol200_workflow,
+    sync_run_sol200_modal_mac_and_store_workflow,
     sync_generate_run_and_store_sol200_workflow,
     store_sol200_sensitivity_cloud,
     store_sol200_sensitivity,
@@ -1020,8 +1021,8 @@ async def dispatch_modal_run_and_store_nastran_sol200_api(request: Request, body
         else:
             response_category = _MODAL_RESPONSE_CATEGORY_MAC
             task_type = "solver.nastran.sol200.modal.run_and_store.modal_mac"
-            fn = run_sol200_modal_mac_and_store_workflow
-            kwargs = _sol200_modal_mac_run_and_store_kwargs_from_sync_body(body)
+            fn = sync_run_sol200_modal_mac_and_store_workflow
+            kwargs = _sol200_sync_generate_run_and_store_kwargs(body)
 
         if body.async_submit:
             task = submit_background_task(
