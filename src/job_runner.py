@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-job_runner.py — Standalone process for L1+L2 pipeline (optional).
+job_runner.py - Standalone process for L1+L2 pipeline (optional).
 
 By default the L3 web service runs the job runner as an embedded daemon
 thread (APP_EMBEDDED_RUNNER=1), so you only need to start uvicorn.
@@ -68,7 +68,7 @@ def _load_service_config() -> dict:
 
 
 def _cfg(cfg: dict, key: str, default: str) -> str:
-    """env var wins → config file → default."""
+    """env var wins -> config file -> default."""
     if key in os.environ:
         return os.environ[key]
     return str(cfg.get(key, default))
@@ -113,7 +113,7 @@ DATA_ROOT        = _cfg(_svc_cfg, "APP_DATA_ROOT", _DEFAULT_MODEL)
 POLL_INTERVAL    = int(_cfg(_svc_cfg, "JOB_RUNNER_POLL_INTERVAL", "10"))    # seconds
 HEARTBEAT_INTERVAL = 60   # seconds between heartbeat updates
 ABAQUS_CMD       = _cfg(_svc_cfg, "APP_ABAQUS_CMD", "abaqus")  # override if not in PATH
-# "full" → pass --invariants full to abaqus_dump.py; "none" → skip (default)
+# "full" -> pass --invariants full to abaqus_dump.py; "none" -> skip (default)
 INVARIANTS_MODE  = _cfg(_svc_cfg, "APP_INVARIANTS", "none")
 
 logging.basicConfig(
@@ -157,7 +157,7 @@ def _ensure_job_logs_schema() -> None:
 
 def _log_job(odb_id: str, level: str, message: str,
              stage: str = None, percent: int = None) -> None:
-    """Persist one log line to job_logs. Never raises — logging must not break the pipeline."""
+    """Persist one log line to job_logs. Never raises - logging must not break the pipeline."""
     try:
         with _connect() as conn:
             conn.execute(
@@ -256,7 +256,7 @@ def _update_status(odb_id: str, status: str, **fields) -> None:
 
 def _claim_submitted() -> tuple:
     """
-    Atomically claim one submitted job → l1_running.
+    Atomically claim one submitted job -> l1_running.
     Returns (odb_id, odb_path, workspace) or (None, None, None).
     """
     with _connect() as conn:
@@ -279,7 +279,7 @@ def _claim_submitted() -> tuple:
     if row is None:
         return None, None, None
     stored_ws = row["workspace"]
-    # Resolve to absolute path using DATA_ROOT — the DB stores a bare
+    # Resolve to absolute path using DATA_ROOT - the DB stores a bare
     # odb_id (portable) which must be joined with DATA_ROOT before use.
     # Old-style absolute paths (pre-fix) are returned as-is.
     is_abs = os.path.isabs(stored_ws) or bool(
@@ -373,7 +373,7 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
 def _is_odb_version_error(rc: int, tail: str) -> bool:
     """
     Detect ODB version mismatch via the explicit marker printed by _open_odb()
-    in abaqus_dump.py.  Reliable and specific — no keyword heuristics that
+    in abaqus_dump.py.  Reliable and specific - no keyword heuristics that
     could match ODB filenames containing 'upgrade' or 'odb'.
     """
     return "ODB_VERSION_ERROR" in tail
@@ -406,8 +406,8 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
     Returns (success: bool, upgraded_path: str, tail: str).
 
     upgraded_path is the path callers should use for the retry:
-    - If the upgraded file could be renamed over the original → original path
-    - If rename fails (Windows file lock) → the temp file path
+    - If the upgraded file could be renamed over the original -> original path
+    - If rename fails (Windows file lock) -> the temp file path
     """
     odb_abs  = os.path.abspath(odb_path)
     odb_dir  = os.path.dirname(odb_abs)
@@ -424,14 +424,14 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
 
     # Run from odb_dir so Abaqus writes tmp_base.odb there
     cmd = [ABAQUS_CMD, "-upgrade", "-job", tmp_base, "-odb", odb_abs]
-    logger.info("[%s] ODB version mismatch — upgrading (cwd=%s): %s",
+    logger.info("[%s] ODB version mismatch - upgrading (cwd=%s): %s",
                 label, odb_dir, " ".join(cmd))
     rc, tail = _run_streaming(cmd, label, "odb_upgrade", cwd=odb_dir)
     if rc != 0:
         logger.error("[%s] ODB upgrade failed (rc=%d)", label, rc)
         return False, odb_abs, tail
 
-    # Abaqus -upgrade may exit 0 even on failure — check output for error markers
+    # Abaqus -upgrade may exit 0 even on failure - check output for error markers
     if "ODB FILE UPGRADE FAILED" in tail.upper():
         logger.error("[%s] ODB upgrade failed (rc=0 but error in output)", label)
         return False, odb_abs, tail
@@ -444,7 +444,7 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
     # Try to replace the original; if Windows locks it, use the temp file directly
     try:
         os.replace(tmp_odb, odb_abs)
-        logger.info("[%s] ODB upgraded successfully — replaced %s", label, odb_abs)
+        logger.info("[%s] ODB upgraded successfully - replaced %s", label, odb_abs)
         return True, odb_abs, tail
     except Exception as exc:
         logger.warning("[%s] Could not replace original ODB (%s); "
@@ -457,8 +457,8 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
 def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     """
     ODB pipeline:
-      Phase 1 — abaqus_dump.py  (Abaqus Python 2.7, requires Abaqus license)
-      Phase 2 — l1_pack.py      (standard Python 3)
+      Phase 1 - abaqus_dump.py  (Abaqus Python 2.7, requires Abaqus license)
+      Phase 2 - l1_pack.py      (standard Python 3)
     If Abaqus reports a version mismatch on first attempt, the ODB is upgraded
     in-place and abaqus_dump.py is retried once.
     """
@@ -556,8 +556,8 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
 def _run_l1(odb_id: str, source_path: str, workspace: str) -> bool:
     """
     Dispatch to the correct L1 pipeline based on file extension.
-      .inp → INP parser + exporter (no Abaqus needed)
-      *    → ODB pipeline (abaqus_dump + l1_pack)
+      .inp -> INP parser + exporter (no Abaqus needed)
+      *    -> ODB pipeline (abaqus_dump + l1_pack)
     Returns True on success; sets status='error' and returns False on failure.
     """
     if source_path.lower().endswith(".inp"):
@@ -591,7 +591,7 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     Returns True on success.
     """
     if not INGEST_SCRIPT.exists():
-        logger.info("[%s] L2 script not found, skipping L2 — marking ready", odb_id)
+        logger.info("[%s] L2 script not found, skipping L2 - marking ready", odb_id)
         _log_job(odb_id, "warn",
                  _ws("L2 脚本不存在，跳过 L2，直接标记就绪"),
                  stage="l2_ingest", percent=100)
@@ -625,7 +625,7 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
 # ── L2 rerun helpers ─────────────────────────────────────────────────────────
 
 def _claim_l2_pending_project() -> tuple:
-    """原子认领 geom_status='l2_pending' project → 'l2_running'。返回 (project_id, workspace) 或 (None, None)。"""
+    """原子认领 geom_status='l2_pending' project -> 'l2_running'。返回 (project_id, workspace) 或 (None, None)。"""
     with _connect() as conn:
         cur = conn.execute(
             "UPDATE projects SET geom_status='l2_running', updated_at=?"
@@ -675,13 +675,13 @@ def _run_l2_rerun(project_id: str, workspace: str) -> None:
     _log_job(project_id, "step",
              _good("L2 重新预处理完成，已就绪"),
              stage="l2_done", percent=100)
-    logger.info("[%s] L2 rerun done → ready", project_id)
+    logger.info("[%s] L2 rerun done -> ready", project_id)
 
 
 # ── Project / result_group helpers ───────────────────────────────────────────
 
 def _claim_pending_project() -> tuple:
-    """原子认领 geom_status='pending' project → 'running'。返回 (project_id, inp_path, workspace) 或全 None。"""
+    """原子认领 geom_status='pending' project -> 'running'。返回 (project_id, inp_path, workspace) 或全 None。"""
     with _connect() as conn:
         cur = conn.execute(
             "UPDATE projects SET geom_status='running', updated_at=?"
@@ -775,7 +775,7 @@ def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
                  f"{_good('INP catalog 导入完成')}",
                  stage="catalog", percent=40)
     except ImportError:
-        logger.info("[%s] Geom: inp_service not available — skipping catalog import", project_id)
+        logger.info("[%s] Geom: inp_service not available - skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] Catalog import failed (non-fatal): %s", project_id, exc)
         _log_job(project_id, "warn",
@@ -899,7 +899,7 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
                  _good("ODB catalog 导入完成"),
                  stage="catalog", percent=67)
     except ImportError:
-        logger.info("[%s] Project ODB: inp_service not available — skipping catalog import", project_id)
+        logger.info("[%s] Project ODB: inp_service not available - skipping catalog import", project_id)
     except Exception as exc:
         logger.warning("[%s] ODB catalog import failed (non-fatal): %s", project_id, exc)
         _log_job(project_id, "warn",
@@ -1062,7 +1062,7 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
 
 
 def _op2_has_geom_tables(op2_path: str) -> bool:
-    """Quick binary scan — true when OP2 contains GEOM1 or GEOM2 table headers."""
+    """Quick binary scan - true when OP2 contains GEOM1 or GEOM2 table headers."""
     try:
         chunk_size = 64 * 1024
         with open(op2_path, 'rb') as fh:
@@ -1074,7 +1074,7 @@ def _op2_has_geom_tables(op2_path: str) -> bool:
 
 
 def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
-    """Single-OP2 project: auto-detect geometry source → geometry → L2 → results."""
+    """Single-OP2 project: auto-detect geometry source -> geometry -> L2 -> results."""
     if not op2_path:
         msg = "No OP2 path stored for project {}".format(project_id)
         _update_project_geom_status(project_id, "error", msg)
@@ -1086,7 +1086,7 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
 
     # ── Detect geometry source ────────────────────────────────────────────────
     if _op2_has_geom_tables(op2_path):
-        logger.info("[%s] OP2 has embedded geometry — using op2_geom_pack", project_id)
+        logger.info("[%s] OP2 has embedded geometry - using op2_geom_pack", project_id)
         _log_job(project_id, "step",
                  f"{_kw('OP2 含嵌入几何')}（GEOM1/GEOM2），直接提取几何",
                  stage="l1_geom", percent=5)
@@ -1164,7 +1164,7 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
 
 
 def _run_cdb_project(project_id: str, cdb_path: str, workspace: str) -> bool:
-    """Ansys CDB（纯几何）：cdb_pack → L2 ingest → model_update 导入。"""
+    """Ansys CDB（纯几何）：cdb_pack -> L2 ingest -> model_update 导入。"""
     if not cdb_path:
         msg = "No CDB path stored for project {}".format(project_id)
         logger.error(msg)
@@ -1236,8 +1236,8 @@ def _run_cdb_project(project_id: str, cdb_path: str, workspace: str) -> bool:
 
 
 def _run_rst_project(project_id: str, rst_path: str, workspace: str) -> bool:
-    """Ansys RST（几何+结果，自包含）：rst_pack 一次性提几何与结果 →
-    L2 ingest → 注册 default_result（ready）→ model_update 导入。不走叠加流程。"""
+    """Ansys RST（几何+结果，自包含）：rst_pack 一次性提几何与结果 ->
+    L2 ingest -> 注册 default_result（ready）-> model_update 导入。不走叠加流程。"""
     if not rst_path:
         msg = "No RST path stored for project {}".format(project_id)
         logger.error(msg)
@@ -1639,7 +1639,7 @@ def _run_result_group(project_id: str, result_group: str,
         _log_job(project_id, "step",
                  f"[{_kw(result_group)}] 截面数据已补入几何，重跑 L2 重建平均域…",
                  stage="rg_rerun_l2")
-        logger.info("[%s] sections patched — re-running L2", label)
+        logger.info("[%s] sections patched - re-running L2", label)
         rc_l2r, tail_l2r = _run_streaming(
             [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
             project_id, "rg_rerun_l2",
@@ -1702,9 +1702,9 @@ def _recover_stuck_running_states() -> None:
                 (_now_iso(),),
             ).rowcount
         if n1 > 0:
-            logger.warning("Recovered %d stuck project(s) (running → pending)", n1)
+            logger.warning("Recovered %d stuck project(s) (running -> pending)", n1)
         if n2 > 0:
-            logger.warning("Recovered %d stuck result_group(s) (running → pending)", n2)
+            logger.warning("Recovered %d stuck result_group(s) (running -> pending)", n2)
     except Exception:
         logger.exception("Failed to recover stuck running states on startup")
 
@@ -1736,7 +1736,7 @@ def main() -> None:
                     try:
                         _update_project_geom_status(
                             project_id, "error",
-                            "Unhandled runner exception — check server logs")
+                            "Unhandled runner exception - check server logs")
                     except Exception:
                         pass
 
@@ -1761,7 +1761,7 @@ def main() -> None:
                     try:
                         _update_result_group_status(
                             project_id, rg, "error",
-                            "Unhandled runner exception — check server logs")
+                            "Unhandled runner exception - check server logs")
                     except Exception:
                         pass
 
@@ -1777,7 +1777,7 @@ def main() -> None:
                     logger.exception("Error in job %s", odb_id)
                     try:
                         _update_status(odb_id, "error",
-                                       error_msg="Unhandled runner exception — check server logs")
+                                       error_msg="Unhandled runner exception - check server logs")
                     except Exception:
                         pass
 
@@ -1793,12 +1793,12 @@ def main() -> None:
                     try:
                         _update_project_geom_status(
                             project_id, "error",
-                            "Unhandled runner exception — check server logs")
+                            "Unhandled runner exception - check server logs")
                     except Exception:
                         pass
 
         except Exception:
-            logger.exception("Unexpected error in runner main loop — continuing")
+            logger.exception("Unexpected error in runner main loop - continuing")
             did_work = False
 
         if not did_work:
