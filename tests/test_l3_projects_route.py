@@ -325,3 +325,57 @@ def test_delete_project_rejects_active_project(monkeypatch, tmp_path: Path):
     assert response.status_code == 409
     assert purge_calls == []
     assert workspace.exists()
+
+
+def test_purge_project_mysql_records_deletes_frf_tables(monkeypatch):
+    from src.l3.api.routes import projects
+
+    executed = []
+
+    class FakeCursor:
+        def __init__(self):
+            self.rowcount = 1
+
+        def execute(self, sql, params=None):
+            executed.append((" ".join(str(sql).split()), params))
+            self.rowcount = 1
+
+        def close(self):
+            return None
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_obj = FakeCursor()
+            self.committed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.cursor_obj
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
+
+    fake_conn = FakeConnection()
+
+    monkeypatch.setattr(projects, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(projects, "clear_unv_tables", lambda cursor, pid: executed.append(("clear_unv_tables", pid)))
+    monkeypatch.setattr(projects, "clear_fem_tables", lambda cursor, pid: executed.append(("clear_fem_tables", pid)))
+
+    result = projects._purge_project_mysql_records("254")
+
+    delete_statements = [sql for sql, _params in executed if isinstance(sql, str) and sql.startswith("DELETE FROM")]
+    assert any("DELETE FROM t_mt_py_test_frf_point WHERE pid = %s" == sql for sql in delete_statements)
+    assert any("DELETE FROM t_mt_py_test_frf_curve WHERE pid = %s" == sql for sql in delete_statements)
+    assert delete_statements.index("DELETE FROM t_mt_py_test_frf_point WHERE pid = %s") < delete_statements.index(
+        "DELETE FROM t_mt_py_test_frf_curve WHERE pid = %s"
+    )
+    assert result["attempted"] is True
+    assert result["numeric_project_id"] == 254
+    assert fake_conn.committed is True
+    assert fake_conn.rolled_back is False

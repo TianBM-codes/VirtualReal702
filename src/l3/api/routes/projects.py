@@ -63,6 +63,8 @@ def _resolve_workspace(stored: str, project_id: str) -> str:
 
 _PROJECT_PURGE_TABLES = (
     ("t_mt_py_test_coord", "pid"),
+    ("t_mt_py_test_frf_point", "pid"),
+    ("t_mt_py_test_frf_curve", "pid"),
     ("t_mt_py_project_config", "pid"),
     ("t_mt_measuring_point_info", "project_id"),
     ("t_mt_channel_info", "project_id"),
