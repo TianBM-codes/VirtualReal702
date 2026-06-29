@@ -10,7 +10,7 @@ from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["sensitivity"])
 
-_SENSITIVITY_PREFIX = "sensitivity_"
+_SENSITIVITY_PREFIXES = ("sensitivity_", "sen_")
 # 原始 result_group: sensitivity_batch_<batch_no>_<job_name>_<ts>
 _RAW_RE = re.compile(r"^sensitivity_batch_")
 # 合并 result_group: sensitivity_<batch_no>_<field_prefix>  (第二段是数字)
@@ -26,6 +26,11 @@ def _rg_kind(rg: str) -> str:
     if _MERGE_RE.match(rg):
         return "merge"
     return "other"
+
+
+def _is_sensitivity_prefix_group(result_group: str) -> bool:
+    text = str(result_group or "").strip()
+    return any(text.startswith(prefix) for prefix in _SENSITIVITY_PREFIXES)
 
 
 def _list_external_sensitivity_groups(manifest: ManifestRepo) -> set[str]:
@@ -56,7 +61,7 @@ def _list_external_sensitivity_groups(manifest: ManifestRepo) -> set[str]:
         step_name = str(row["step_name"] or "").strip()
         if not result_group:
             continue
-        if result_group.startswith(_SENSITIVITY_PREFIX):
+        if _is_sensitivity_prefix_group(result_group):
             groups.add(result_group)
             continue
         if step_name == "Sensitivity":
@@ -88,14 +93,14 @@ def _discover_sensitivity_step(manifest: ManifestRepo) -> Optional[str]:
         result_group = str(row["result_group"] or "").strip()
         step_name = str(row["step_name"] or "").strip()
         if step_name == "Sensitivity" and (
-            result_group.startswith(_SENSITIVITY_PREFIX) or result_group in sensitivity_groups
+            _is_sensitivity_prefix_group(result_group) or result_group in sensitivity_groups
         ):
             return step_name
     for row in rows:
         result_group = str(row["result_group"] or "").strip()
         step_name = str(row["step_name"] or "").strip()
         if step_name and (
-            result_group.startswith(_SENSITIVITY_PREFIX) or result_group in sensitivity_groups
+            _is_sensitivity_prefix_group(result_group) or result_group in sensitivity_groups
         ):
             return step_name
     return None
@@ -160,7 +165,7 @@ async def list_sensitivity_result_groups(
     groups = []
     for rg in all_groups:
         rg_text = str(rg or "")
-        is_legacy_sensitivity = rg_text.startswith(_SENSITIVITY_PREFIX)
+        is_legacy_sensitivity = _is_sensitivity_prefix_group(rg_text)
         is_external_sensitivity = rg_text in external_sensitivity_groups
         if not is_legacy_sensitivity and not is_external_sensitivity:
             continue

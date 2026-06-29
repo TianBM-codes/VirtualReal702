@@ -20,6 +20,7 @@ SKIP_SOL200_PARAM_NAMES = {
     "K6ROT",
     "GRDPNT",
     "COUPMASS",
+    "SPARSEDR",
 }
 
 
@@ -355,10 +356,10 @@ def _resolve_sol200_eigrl_fields(settings: Optional[Dict[str, Any]] = None, *, b
 def build_sol200_controls(
     settings: Optional[Dict[str, Any]] = None,
     *,
+    objective_response_id: Optional[int] = None,
     sensitivity_csv_path: Optional[str] = None,
     csv_assign_text: Optional[str] = None,
     bulk_lines: Optional[List[str]] = None,
-    objective_response_id: Optional[int] = None,
 ) -> List[str]:
     settings = _normalize_sol200_settings(settings)
     eigrl = _resolve_sol200_eigrl_fields(settings, bulk_lines=bulk_lines)
@@ -396,6 +397,7 @@ def build_sol200_controls(
         "PARAM,GRDPNT,0",
         f"PARAM,K6ROT,{k6rot_text}",
         f"PARAM,COUPMASS,{coupmass}",
+        "PARAM,SPARSEDR,NO",
         "PARAM,XYUNIT,52" if sensitivity_csv_path else "",
         "EIGRL,{sid},{v1},{v2},{nd},{blank},{maxset},{shfscl},{norm}".format(
             sid=eigrl["sid"],
@@ -407,6 +409,7 @@ def build_sol200_controls(
             shfscl=eigrl["shfscl"],
             norm=eigrl["normalization"],
         ),
+        "DOPTPRM,DESMAX,0",
     ])
     return [line for line in lines if line != ""]
 
@@ -424,35 +427,37 @@ def build_sol200_design_lines(
     desvar_lines: List[str] = []
     relation_lines: List[str] = []
     response_lines: List[str] = []
-    objective_response_id: Optional[int] = None
-
     for index, parameter in enumerate(parameters, start=1):
         desvar_lines.append(_format_desvar_line(index, parameter))
         relation_lines.extend(_build_parameter_relation_lines(index, parameter))
 
     has_frequency_response = False
+    has_displacement_response = False
     first_mode_number: Optional[int] = None
     for index, response in enumerate(responses, start=1):
         response_type = str(response.get("type") or "").strip().upper()
         mode_number = response.get("mode_number")
         if first_mode_number is None and mode_number is not None:
             first_mode_number = int(mode_number)
-        if response_type in {"FREQ", "MODAL_FREQUENCY"} and objective_response_id is None:
-            objective_response_id = int(index)
+        if response_type in {"FREQ", "MODAL_FREQUENCY"}:
             has_frequency_response = True
+        if response_type in {"DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"}:
+            has_displacement_response = True
         response_lines.extend(_build_response_lines(index, response))
 
-    # DSCREEN is a global screening control card; keep exactly one FREQ copy
-    # only when frequency responses are present. DISP modal-shape responses do
-    # not need a FREQ screening card.
+    # DSCREEN is a global screening control card. Frequency and displacement
+    # responses both need screening disabled here, otherwise non-objective
+    # modal responses can be dropped from the exported sensitivity blocks.
     if has_frequency_response:
         response_lines.append("DSCREEN  FREQ    -1.0E30")
-    elif first_mode_number is not None:
-        objective_response_id = len(responses) + 1
+    if has_displacement_response:
+        response_lines.append("DSCREEN  DISP    -1.0E30")
+    objective_response_id: Optional[int] = None
+    if first_mode_number is not None:
+        objective_response_id = int(len(responses)) + 1
         response_lines.append(
-            f"DRESP1,{int(objective_response_id)},OBJ_DUMMY,FREQ,,,{int(first_mode_number)}"
+            f"DRESP1,{int(objective_response_id)},OBJ_DUMM,FREQ,,,{int(first_mode_number)}"
         )
-
     design_lines = [
         "$ -----------------------------------------------------------------------------",
         "$ Phase-1 SOL200 design model include",
@@ -503,10 +508,10 @@ def build_sol200_lines(
     design_payload = build_sol200_design_lines(parameters=parameters, responses=responses)
     control_lines = build_sol200_controls(
         settings,
+        objective_response_id=design_payload.get("objective_response_id"),
         sensitivity_csv_path=sensitivity_csv_path,
         csv_assign_text=csv_assign_text,
         bulk_lines=bulk_lines,
-        objective_response_id=design_payload.get("objective_response_id"),
     )
     filtered_bulk_lines = filter_sol200_bulk_lines(bulk_lines)
     desvar_lines = design_payload["desvar_lines"]

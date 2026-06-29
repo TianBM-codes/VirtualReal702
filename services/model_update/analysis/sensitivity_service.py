@@ -1794,7 +1794,10 @@ def _sensitivity_parameter_field_name(column_meta: dict) -> str:
 
 def _sensitivity_response_result_group(base_result_group: str, row_meta: dict) -> str:
     response_name = _response_display_name(dict(row_meta)) or _response_frame_name(dict(row_meta))
-    return _normalize_result_group_name(f"{base_result_group}_{response_name}")
+    base = str(base_result_group or "").strip()
+    if not base:
+        base = "sen"
+    return _normalize_result_group_name(f"{base}_{response_name}")
 
 
 def _workspace_instance_element_labels(workspace: str, instance: str) -> List[int]:
@@ -1852,7 +1855,7 @@ def _build_sensitivity_cloud_requests(
             },
         )
 
-    default_result_group = f"sensitivity_{batch_no}"
+    default_result_group = "sen"
     resolved_result_group = str(result_group or default_result_group).strip() or default_result_group
     resolved_step_name = str(step_name or "Sensitivity").strip() or "Sensitivity"
     resolved_workspace = os.path.abspath(str(matrix_payload.get("workspace"))) if matrix_payload.get("workspace") else None

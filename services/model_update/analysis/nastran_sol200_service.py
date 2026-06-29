@@ -26,7 +26,6 @@ from .console_log_service import safe_write_console_event
 from .modal_mac_service import (
     build_modal_mac_matrix_from_displacement_sensitivity,
     compute_project_modal_mac,
-    compute_project_modal_mac_from_fem_mode_map,
     expand_modal_mac_responses_to_sol200_displacements,
 )
 from .project_status_service import update_work_condition_project_status
@@ -1771,8 +1770,7 @@ def run_sol200_modal_mac_and_store_workflow(
 ) -> dict:
     from . import sensitivity_service as _sens
     from .project_path_service import resolve_project_workspace
-    from ..importers.op2_service import build_modal_import_payload, preview_op2_sensitivity
-    from .solver_service import run_nastran_sol103_job
+    from ..importers.op2_service import preview_op2_sensitivity
     try:
         _set_project_sensitivity_status(project_id, _WORKFLOW_STATUS_RUNNING)
     except Exception:
@@ -1883,154 +1881,21 @@ def run_sol200_modal_mac_and_store_workflow(
         preview = preview_op2_sensitivity(
             project_id=None,
             batch_no=str(batch_no),
-            op2_path=op2_path,
+            op2_path=None if matrix_path else op2_path,
             matrix_path=matrix_path,
             bdf_path=bdf_path,
             metadata_json=metadata_json,
             parameter_names=parameter_names,
             response_names=expanded_response_names,
         )
-        finite_difference_payload = None
-        try:
-            mac_matrix_payload = build_modal_mac_matrix_from_displacement_sensitivity(
-                project_id=int(project_id),
-                mac_response_rows=modal_mac_rows,
-                parameter_columns=preview.get("parameter_columns") or [],
-                displacement_response_rows=preview.get("response_rows") or [],
-                displacement_matrix=preview.get("matrix_preview") or [],
-                mac_scale=100.0,
-            )
-        except ValidationError as exc:
-            current_mac_by_pair = {}
-            for row in modal_mac_rows:
-                extra = dict(row.get("extra_json") or {})
-                fem_mode_no = int(extra.get("fem_mode_no", row.get("mode_number")))
-                test_mode_no = int(extra["test_mode_no"])
-                current_mac_by_pair[(test_mode_no, fem_mode_no)] = float(
-                    compute_project_modal_mac(
-                        project_id=int(project_id),
-                        test_mode_no=test_mode_no,
-                        fem_mode_no=fem_mode_no,
-                        mac_scale=100.0,
-                    )["mac"]
-                )
-
-            parameter_columns_for_fd = [dict(item or {}) for item in (effective_parameter_columns or [])]
-            fd_rows = []
-            fd_matrix_rows = []
-            fd_details = []
-            from .bayesian_service import _update_bdf_parameter_values
-
-            for response_row in modal_mac_rows:
-                extra = dict(response_row.get("extra_json") or {})
-                fem_mode_no = int(extra.get("fem_mode_no", response_row.get("mode_number")))
-                test_mode_no = int(extra["test_mode_no"])
-                base_value = float(current_mac_by_pair[(test_mode_no, fem_mode_no)])
-                derivatives = []
-                for param_index, param_meta in enumerate(parameter_columns_for_fd):
-                    initial_value = float(param_meta.get("initial", param_meta.get("initial_value")))
-                    delta = max(abs(initial_value) * 5.0e-2, 1.0)
-                    perturbed_values = [float(item.get("initial", item.get("initial_value"))) for item in parameter_columns_for_fd]
-                    perturbed_values[param_index] = initial_value + delta
-                    perturbed_bdf = str(
-                        Path(base_input_bdf_for_fd).with_name(f"{Path(base_input_bdf_for_fd).stem}_fd_p{param_index + 1}.bdf")
-                    )
-                    _update_bdf_parameter_values(
-                        input_bdf=base_input_bdf_for_fd,
-                        parameter_columns=parameter_columns_for_fd,
-                        updated_parameter_values=perturbed_values,
-                        output_bdf=perturbed_bdf,
-                    )
-                    sol103_out_bdf = str(Path(perturbed_bdf).with_name(f"{Path(perturbed_bdf).stem}_sol103.bdf"))
-                    sol103_payload = run_nastran_sol103_job(
-                        input_bdf=perturbed_bdf,
-                        output_bdf=sol103_out_bdf,
-                        settings={
-                            "dynamic.vectors": max(int(fem_mode_no), 1),
-                            "dynamic.fmax": float((settings or {}).get("dynamic.fmax", 200.0)),
-                            "dynamic.norm": str((settings or {}).get("dynamic.norm", "MASS")),
-                            "result.target": "OP2",
-                            "post": -1,
-                        },
-                        nastran=nastran,
-                        run_solver=True,
-                        timeout_sec=timeout_sec,
-                        extra_args=list(extra_args or []),
-                    )
-                    summary = dict((sol103_payload.get("solver") or {}).get("artifacts_summary") or {})
-                    op2_files = [str(item) for item in list(summary.get("op2_files") or []) if str(item or "").strip()]
-                    perturbed_op2 = _pick_first_existing_path(op2_files)
-                    if not perturbed_op2:
-                        raise ValidationError(
-                            "finite-difference SOL103 rerun did not produce an op2 file",
-                            {"parameter_name": param_meta.get("name"), "artifacts_summary": summary},
-                        )
-                    modal_payload = build_modal_import_payload(
-                        op2_path=perturbed_op2,
-                        bdf_path=perturbed_bdf,
-                        subcase_id=None,
-                        mode_numbers=[int(fem_mode_no)],
-                        all_subcases=True,
-                    )
-                    modes = list(modal_payload.get("modes") or [])
-                    if not modes:
-                        raise ValidationError(
-                            "finite-difference SOL103 rerun did not return any modal payload",
-                            {"parameter_name": param_meta.get("name"), "op2_path": perturbed_op2},
-                        )
-                    fem_mode_map = {}
-                    for node_item in list(modes[0].get("nodes") or []):
-                        instance_name = str(node_item.get("instance_name") or "BDF_MODEL").strip() or "BDF_MODEL"
-                        fem_node_map_key = (instance_name, int(node_item["fem_node_label"]))
-                        fem_mode_map[fem_node_map_key] = np.asarray(
-                            [
-                                float(node_item.get("u1", (node_item.get("vector") or [0.0, 0.0, 0.0])[0])),
-                                float(node_item.get("u2", (node_item.get("vector") or [0.0, 0.0, 0.0])[1])),
-                                float(node_item.get("u3", (node_item.get("vector") or [0.0, 0.0, 0.0])[2])),
-                            ],
-                            dtype=np.float64,
-                        )
-                    perturbed_mac = float(
-                        compute_project_modal_mac_from_fem_mode_map(
-                            project_id=int(project_id),
-                            test_mode_no=int(test_mode_no),
-                            fem_mode_map=fem_mode_map,
-                            mac_scale=100.0,
-                        )["mac"]
-                    )
-                    derivatives.append((perturbed_mac - base_value) / delta)
-                    fd_details.append(
-                        {
-                            "response_name": response_row.get("response_name"),
-                            "parameter_name": param_meta.get("name"),
-                            "base_value": base_value,
-                            "perturbed_value": perturbed_mac,
-                            "delta": delta,
-                            "derivative": derivatives[-1],
-                            "perturbed_bdf": perturbed_bdf,
-                            "perturbed_op2": perturbed_op2,
-                        }
-                    )
-                fd_rows.append(
-                    {
-                        "response_name": str(response_row.get("response_name") or f"MAC_MODE_FE{fem_mode_no}_TEST{test_mode_no}"),
-                        "response_type": "MODAL_MAC",
-                        "mode_number": int(fem_mode_no),
-                        "unit": "percent",
-                    }
-                )
-                fd_matrix_rows.append([float(value) for value in derivatives])
-            mac_matrix_payload = {
-                "response_rows": fd_rows,
-                "parameter_columns": parameter_columns_for_fd,
-                "matrix": fd_matrix_rows,
-                "mac_scale": 100.0,
-            }
-            finite_difference_payload = {
-                "enabled": True,
-                "reason": str(exc),
-                "details": fd_details,
-            }
+        mac_matrix_payload = build_modal_mac_matrix_from_displacement_sensitivity(
+            project_id=int(project_id),
+            mac_response_rows=modal_mac_rows,
+            parameter_columns=preview.get("parameter_columns") or [],
+            displacement_response_rows=preview.get("response_rows") or [],
+            displacement_matrix=preview.get("matrix_preview") or [],
+            mac_scale=100.0,
+        )
         matrix_payload = {
             **mac_matrix_payload,
             "source": {
@@ -2092,7 +1957,6 @@ def run_sol200_modal_mac_and_store_workflow(
             "modal_mac_response_count": len(mac_matrix_payload.get("response_rows") or []),
             "run": run_payload,
             "preview": preview,
-            "finite_difference_fallback": finite_difference_payload,
             "store": stored,
             "warnings": list(run_payload.get("warnings") or []) + list(preview.get("warnings") or []),
         }
