@@ -1795,7 +1795,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         for si in _shell_invs:
                             if si not in invariants:
                                 invariants.append(si)
-                        print("    [inv] 混合模型: 探测到面内可算块, 补回面内/面外不变量")
+                        print("    [inv] mixed model: in-plane block detected, adding in/out-of-plane invariants")
                 except Exception:
                     pass
 
