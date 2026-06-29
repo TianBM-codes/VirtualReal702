@@ -682,16 +682,20 @@ def _parse_formatted_sensitivity_csv(
         ordered_blocks = []
         block_by_name = {str(item.get("label")): item for item in supported_blocks}
         requested_rows = list(response_rows or [])
+        type_order_counters: Dict[str, int] = {}
         for idx, name in enumerate(requested_response_names):
             block = block_by_name.get(str(name))
             response_row = dict(requested_rows[idx]) if idx < len(requested_rows) and isinstance(requested_rows[idx], dict) else {}
             requested_type = str(response_row.get("response_type") or response_row.get("type") or "").strip().upper()
             if requested_type in {"FREQ", "MODAL_FREQUENCY"}:
                 csv_types = {"EIGN", "FREQ"}
+                requested_type_key = "FREQ"
             elif requested_type in {"DISP", "MODAL_DISPLACEMENT", "NODAL_DISPLACEMENT"}:
                 csv_types = {"DISP"}
+                requested_type_key = "DISP"
             else:
                 csv_types = {"EIGN", "FREQ", "DISP"}
+                requested_type_key = "ANY"
             if block is not None and block.get("response_type") not in csv_types:
                 block = None
             if block is None and response_row.get("mode_number") is not None and csv_types & {"EIGN", "FREQ"}:
@@ -702,6 +706,14 @@ def _parse_formatted_sensitivity_csv(
                 ]
                 if len(mode_matches) == 1:
                     block = mode_matches[0]
+            if block is None:
+                matched_type_blocks = [
+                    item for item in supported_blocks
+                    if item.get("response_type") in csv_types
+                ]
+                ordinal = int(type_order_counters.get(requested_type_key, 0))
+                if ordinal < len(matched_type_blocks):
+                    block = matched_type_blocks[ordinal]
             if block is None:
                 raise NotFoundError(
                     "requested sensitivity response not found in formatted CSV",
@@ -714,6 +726,7 @@ def _parse_formatted_sensitivity_csv(
                     },
                 )
             ordered_blocks.append(block)
+            type_order_counters[requested_type_key] = int(type_order_counters.get(requested_type_key, 0)) + 1
     else:
         ordered_blocks = supported_blocks
 
