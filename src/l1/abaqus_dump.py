@@ -339,6 +339,31 @@ def safe(name):
     return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
 
 
+def _section_material_name(sec):
+    """从 ODB section 对象取材料名。
+
+    均质 section（实体/壳）直接有 ``.material``（材料名字符串）。
+    复合材料壳铺层 section（如碳纤维 T700）没有 ``.material``，材料藏在
+    ``.layup`` 里——每个铺层（SectionLayer）各自带 ``.material``。此时把铺层
+    里去重后的材料名拼成 'T700/EPOXY'（纯单材料铺层就是 'T700'），否则按
+    材料配色时这些单元会全部落到 '(none)'。
+    Python 2/3 兼容。
+    """
+    mat = getattr(sec, 'material', '') or ''
+    if mat:
+        return mat
+    layup = getattr(sec, 'layup', None)
+    if layup:
+        mats = []
+        for layer in layup:
+            m = getattr(layer, 'material', '') or ''
+            if m and m not in mats:
+                mats.append(m)
+        if mats:
+            return '/'.join(mats)
+    return ''
+
+
 def _canon_inst(name):
     """Instance 名规范化：统一大写。
 
@@ -984,8 +1009,7 @@ def dump_geometry(odb, raw_dir, meta):
                 try:
                     sec = odb.sections[sname]
                     entry['type'] = type(sec).__name__
-                    if hasattr(sec, 'material'):
-                        entry['material_name'] = sec.material
+                    entry['material_name'] = _section_material_name(sec)
                     if hasattr(sec, 'thickness'):
                         entry['thickness'] = float(sec.thickness)
                 except Exception:
@@ -1795,7 +1819,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         for si in _shell_invs:
                             if si not in invariants:
                                 invariants.append(si)
-                        print("    [inv] 混合模型: 探测到面内可算块, 补回面内/面外不变量")
+                        print("    [inv] mixed model: in-plane block detected, adding in/out-of-plane invariants")
                 except Exception:
                     pass
 
@@ -2288,8 +2312,7 @@ def _extract_sections_to_dir(odb, out_dir):
                 try:
                     sec = odb.sections[sname]
                     entry['type'] = type(sec).__name__
-                    if hasattr(sec, 'material'):
-                        entry['material_name'] = sec.material
+                    entry['material_name'] = _section_material_name(sec)
                     if hasattr(sec, 'thickness'):
                         entry['thickness'] = float(sec.thickness)
                 except Exception:
