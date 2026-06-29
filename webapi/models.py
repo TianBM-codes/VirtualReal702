@@ -272,7 +272,7 @@ class BayesianModelUpdateRequest(BaseModel):
 
 class ModalFrequencyBayesianModelUpdateRequest(BaseModel):
     project_id: int
-    batch_no: int = Field(default=1, ge=1)
+    batch_no: Optional[int] = Field(default=None, ge=1)
     sensitivity_batch_no: Optional[int] = Field(default=None, ge=1)
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
@@ -293,7 +293,7 @@ class ModalFrequencyBayesianModelUpdateRequest(BaseModel):
 
 class Sol200ModalFrequencyBayesianModelUpdateRequest(BaseModel):
     project_id: int
-    batch_no: int = Field(default=1, ge=1)
+    batch_no: Optional[int] = Field(default=None, ge=1)
     sensitivity_batch_no: Optional[int] = Field(default=None, ge=1)
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
@@ -960,7 +960,7 @@ class NastranSol200RunAndStoreRequest(BaseModel):
 
 class NastranSol200SyncGenerateRunAndStoreRequest(BaseModel):
     project_id: int
-    batch_no: str = "1"
+    batch_no: Optional[str] = None
     case_name: str = "nastran_sol200"
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None

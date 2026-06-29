@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -41,7 +42,10 @@ from services.model_update.importers.op2_service import (
     export_modal_to_vtu,
     preview_op2_modal,
 )
-from services.model_update.analysis.inp_service import import_fe_modal_results
+from services.model_update.analysis.inp_service import (
+    get_fe_response_catalog,
+    import_fe_modal_results,
+)
 from src.l3.core.config import settings
 from src.l3.core.errors import AppError, ValidationError
 
@@ -74,6 +78,112 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["solver"])
+
+_MODAL_RESPONSE_CATEGORY_FREQUENCY = "MODAL_FREQUENCY"
+_MODAL_RESPONSE_CATEGORY_MAC = "MODAL_MAC"
+
+
+def _scope_contains(scope_value, expected_scope: str) -> bool:
+    expected = str(expected_scope or "").strip().upper()
+    if not expected:
+        return True
+    if isinstance(scope_value, str):
+        values = [scope_value]
+    else:
+        values = list(scope_value or [])
+    return any(str(item or "").strip().upper() == expected for item in values)
+
+
+def _collect_project_modal_response_categories(
+    *,
+    project_id: int,
+    expected_scope: str,
+    response_names: Optional[list[str]] = None,
+) -> dict:
+    payload = get_fe_response_catalog(int(project_id))
+    selected_names = {
+        str(item or "").strip()
+        for item in list(response_names or [])
+        if str(item or "").strip()
+    }
+    category_counts = {
+        _MODAL_RESPONSE_CATEGORY_FREQUENCY: 0,
+        _MODAL_RESPONSE_CATEGORY_MAC: 0,
+    }
+    for row in list(payload.get("responses") or []):
+        if not bool(row.get("enabled", True)):
+            continue
+        if not _scope_contains(row.get("solver_scope"), expected_scope):
+            continue
+        response_name = str(row.get("response_name") or "").strip()
+        if selected_names and response_name not in selected_names:
+            continue
+        response_type = str(row.get("response_type") or "").strip().upper()
+        if response_type in {"FREQ", "MODAL_FREQUENCY"}:
+            category_counts[_MODAL_RESPONSE_CATEGORY_FREQUENCY] += 1
+        elif response_type == "MODAL_MAC":
+            category_counts[_MODAL_RESPONSE_CATEGORY_MAC] += 1
+
+    if not any(category_counts.values()):
+        raise ValidationError(
+            "no enabled modal responses were found for the requested scope",
+            {
+                "project_id": int(project_id),
+                "expected_scope": str(expected_scope),
+                "response_names": sorted(selected_names),
+            },
+        )
+    return category_counts
+
+
+def _auto_modal_batch_no(project_id: int) -> str:
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    return f"{int(project_id)}_{stamp}"
+
+
+def _sol200_modal_mac_run_and_store_kwargs_from_sync_body(
+    body: NastranSol200SyncGenerateRunAndStoreRequest,
+) -> dict:
+    input_bdf = _resolve_sol200_input_bdf(
+        project_id=body.project_id,
+        explicit_path=body.input_bdf,
+        file_name=body.input_bdf_name,
+    )
+    output_bdf = _resolve_project_local_output_file(
+        project_id=body.project_id,
+        explicit_path=body.output_bdf,
+        file_name=body.output_bdf_name,
+        category_parts=("solver", "nastran_sol200"),
+        field_name="output_bdf",
+        default_name=f"{Path(input_bdf).stem}_sol200.bdf",
+    )
+    settings = dict(body.settings or {})
+    settings.setdefault("sol200.deck_mode", "include")
+    settings.setdefault("sol200.sensitivity_csv", True)
+    settings.setdefault("result.target", "F06")
+    settings.setdefault("post", -1)
+    resolved_batch_no = str(body.batch_no or "").strip() or _auto_modal_batch_no(int(body.project_id))
+    return {
+        "project_id": body.project_id,
+        "batch_no": resolved_batch_no,
+        "case_name": body.case_name,
+        "input_bdf": input_bdf,
+        "output_bdf": output_bdf,
+        "parameters": [],
+        "parameter_preset": None,
+        "responses": [],
+        "settings": settings,
+        "nastran": body.nastran,
+        "run_solver": body.run_solver,
+        "timeout_sec": body.timeout_sec,
+        "extra_args": body.extra_args,
+        "parameter_names": None,
+        "response_names": None,
+        "write_cloud_result": body.write_cloud_result,
+        "cloud_result_group": body.cloud_result_group,
+        "cloud_step_name": body.cloud_step_name,
+        "cloud_field_name": body.cloud_field_name,
+    }
 
 
 def _resolve_project_local_input(
@@ -384,14 +494,16 @@ def _sol200_sync_generate_run_and_store_kwargs(body: NastranSol200SyncGenerateRu
     settings.setdefault("sol200.sensitivity_csv", True)
     settings.setdefault("result.target", "F06")
     settings.setdefault("post", -1)
+    resolved_batch_no = str(body.batch_no or "").strip() or _auto_modal_batch_no(int(body.project_id))
     return {
         "project_id": body.project_id,
-        "batch_no": body.batch_no,
+        "batch_no": resolved_batch_no,
         "case_name": body.case_name,
         "input_bdf": input_bdf,
         "output_bdf": output_bdf,
         "overwrite": body.overwrite,
         "response_source": body.response_source,
+        "response_category": None,
         "mac_threshold": body.mac_threshold,
         "max_freq_error_ratio": body.max_freq_error_ratio,
         "matching_method": body.matching_method,
@@ -873,6 +985,74 @@ async def sync_generate_run_and_store_nastran_sol200_api(request: Request, body:
             return success_response(data, "Nastran SOL200 一键工作流任务已提交")
         data = sync_generate_run_and_store_sol200_workflow(**kwargs)
         return success_response(data, "Nastran SOL200 一键工作流执行成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/solver/nastran/sol200/modal/run_and_store")
+async def dispatch_modal_run_and_store_nastran_sol200_api(request: Request, body: NastranSol200SyncGenerateRunAndStoreRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        category_counts = _collect_project_modal_response_categories(
+            project_id=int(body.project_id),
+            expected_scope="SOL200",
+        )
+        has_frequency = bool(category_counts.get(_MODAL_RESPONSE_CATEGORY_FREQUENCY))
+        has_mac = bool(category_counts.get(_MODAL_RESPONSE_CATEGORY_MAC))
+        if has_frequency and has_mac:
+            raise ValidationError(
+                "mixed modal response categories are not supported for a single project",
+                {
+                    "project_id": int(body.project_id),
+                    "category_counts": category_counts,
+                    "allowed_state": "single modal response category per project",
+                },
+            )
+        if has_frequency:
+            response_category = _MODAL_RESPONSE_CATEGORY_FREQUENCY
+            task_type = "solver.nastran.sol200.modal.run_and_store.frequency"
+            fn = sync_generate_run_and_store_sol200_workflow
+            kwargs = _sol200_sync_generate_run_and_store_kwargs(body)
+            kwargs["response_category"] = response_category
+        else:
+            response_category = _MODAL_RESPONSE_CATEGORY_MAC
+            task_type = "solver.nastran.sol200.modal.run_and_store.modal_mac"
+            fn = run_sol200_modal_mac_and_store_workflow
+            kwargs = _sol200_modal_mac_run_and_store_kwargs_from_sync_body(body)
+
+        if body.async_submit:
+            task = submit_background_task(
+                task_type=task_type,
+                fn=fn,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                task_kind="external_solver",
+            )
+            return success_response(
+                {
+                    "category_counts": category_counts,
+                    "response_category": response_category,
+                    "batch_no": kwargs.get("batch_no"),
+                    "case_name": kwargs.get("case_name"),
+                    "task": task,
+                },
+                "Nastran SOL200 按响应类别分发任务已提交",
+            )
+
+        data = fn(**kwargs)
+        return success_response(
+            {
+                "category_counts": category_counts,
+                "response_category": response_category,
+                "batch_no": kwargs.get("batch_no"),
+                "case_name": kwargs.get("case_name"),
+                "workflow": data,
+            },
+            "Nastran SOL200 按响应类别分发执行成功",
+        )
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

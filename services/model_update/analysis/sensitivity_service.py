@@ -2390,26 +2390,38 @@ def persist_sensitivity_metadata(
 
 def _load_stored_sensitivity_run(*, project_id: int, batch_no: Optional[str]) -> dict:
     ensure_tables_exist()
-    normalized_batch_no = _normalize_batch_no(batch_no)
+    normalized_batch_no = str(batch_no or "").strip() or None
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """
-            SELECT id, project_id, case_name, run_no, source_kind, op2_path, matrix_path, bdf_path, metadata_path, created_at
-            FROM t_mt_py_fem_analysis_run
-            WHERE project_id = %s AND run_no = %s
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (int(project_id), normalized_batch_no),
-        )
+        if normalized_batch_no is None:
+            cursor.execute(
+                """
+                SELECT id, project_id, case_name, run_no, source_kind, op2_path, matrix_path, bdf_path, metadata_path, created_at
+                FROM t_mt_py_fem_analysis_run
+                WHERE project_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (int(project_id),),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id, project_id, case_name, run_no, source_kind, op2_path, matrix_path, bdf_path, metadata_path, created_at
+                FROM t_mt_py_fem_analysis_run
+                WHERE project_id = %s AND run_no = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (int(project_id), normalized_batch_no),
+            )
         analysis_run = cursor.fetchone()
         if not analysis_run:
             raise NotFoundError(
                 "stored sensitivity result not found",
-                {"project_id": int(project_id), "batch_no": normalized_batch_no},
+                {"project_id": int(project_id), "batch_no": normalized_batch_no, "lookup_mode": "latest" if normalized_batch_no is None else "exact"},
             )
 
         analysis_run_id = int(analysis_run["id"])

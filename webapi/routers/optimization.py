@@ -1,4 +1,6 @@
 from typing import Optional
+from datetime import datetime
+
 from fastapi import APIRouter, Request
 
 from services.model_update.analysis.bayesian_service import (
@@ -73,6 +75,66 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
+
+_MODAL_RESPONSE_CATEGORY_FREQUENCY = "MODAL_FREQUENCY"
+_MODAL_RESPONSE_CATEGORY_MAC = "MODAL_MAC"
+
+
+def _response_scope_contains(scope_value, expected_scope: str) -> bool:
+    expected = str(expected_scope or "").strip().upper()
+    if not expected:
+        return True
+    if isinstance(scope_value, str):
+        values = [scope_value]
+    else:
+        values = list(scope_value or [])
+    return any(str(item or "").strip().upper() == expected for item in values)
+
+
+def _resolve_project_modal_response_categories(project_id: int, expected_scope: str) -> dict:
+    payload = get_fe_response_catalog(int(project_id))
+    counts = {
+        _MODAL_RESPONSE_CATEGORY_FREQUENCY: 0,
+        _MODAL_RESPONSE_CATEGORY_MAC: 0,
+    }
+    for row in list(payload.get("responses") or []):
+        if not bool(row.get("enabled", True)):
+            continue
+        if not _response_scope_contains(row.get("solver_scope"), expected_scope):
+            continue
+        response_type = str(row.get("response_type") or "").strip().upper()
+        if response_type in {"FREQ", "MODAL_FREQUENCY"}:
+            counts[_MODAL_RESPONSE_CATEGORY_FREQUENCY] += 1
+        elif response_type == "MODAL_MAC":
+            counts[_MODAL_RESPONSE_CATEGORY_MAC] += 1
+    if not any(counts.values()):
+        raise ValidationError(
+            "no enabled modal responses were found for the requested scope",
+            {"project_id": int(project_id), "expected_scope": str(expected_scope)},
+        )
+    return counts
+
+
+def _assert_single_modal_response_category(project_id: int, expected_scope: str) -> dict:
+    counts = _resolve_project_modal_response_categories(int(project_id), expected_scope)
+    has_frequency = bool(counts.get(_MODAL_RESPONSE_CATEGORY_FREQUENCY))
+    has_mac = bool(counts.get(_MODAL_RESPONSE_CATEGORY_MAC))
+    if has_frequency and has_mac:
+        raise ValidationError(
+            "mixed modal response categories are not supported for a single project",
+            {
+                "project_id": int(project_id),
+                "expected_scope": str(expected_scope),
+                "category_counts": counts,
+                "allowed_state": "single modal response category per project",
+            },
+        )
+    return counts
+
+
+def _auto_modal_bayesian_batch_no(project_id: int) -> int:
+    stamp = datetime.now().strftime("%m%d%H%M%S")
+    return int(f"{int(project_id) % 1000}{stamp}")
 
 
 def _normalize_set_names(raw_value) -> list[str]:
@@ -380,7 +442,7 @@ def _modal_bayesian_run_kwargs(body: ModalFrequencyBayesianModelUpdateRequest) -
         )
     return {
         "project_id": body.project_id,
-        "batch_no": body.batch_no,
+        "batch_no": body.batch_no or _auto_modal_bayesian_batch_no(int(body.project_id)),
         "sensitivity_batch_no": body.sensitivity_batch_no,
         "input_bdf": input_bdf,
         "parameter_scatter": body.parameter_scatter,
@@ -438,7 +500,7 @@ def _sol200_modal_bayesian_run_kwargs(body: Sol200ModalFrequencyBayesianModelUpd
     settings.setdefault("post", -1)
     return {
         "project_id": body.project_id,
-        "batch_no": body.batch_no,
+        "batch_no": body.batch_no or _auto_modal_bayesian_batch_no(int(body.project_id)),
         "sensitivity_batch_no": body.sensitivity_batch_no,
         "input_bdf": input_bdf,
         "parameter_scatter": body.parameter_scatter,
@@ -1116,6 +1178,43 @@ async def run_modal_bayesian_update_api(request: Request, body: ModalFrequencyBa
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
+@router.post("/optimization/bayesian/modal/run")
+async def run_modal_bayesian_update_dispatch_api(request: Request, body: ModalFrequencyBayesianModelUpdateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        category_counts = _assert_single_modal_response_category(int(body.project_id), "BAYESIAN")
+        kwargs = _modal_bayesian_run_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="optimization.bayesian.modal.run",
+                fn=_run_modal_bayesian_update_task,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                pass_task_id=True,
+                task_kind="internal",
+            )
+            return success_response(
+                {
+                    "category_counts": category_counts,
+                    "task": data,
+                },
+                "模态 Bayesian 统一分发任务已提交",
+            )
+        data = _run_modal_bayesian_update_workflow_compact(**kwargs)
+        return success_response(
+            {
+                "category_counts": category_counts,
+                "workflow": data,
+            },
+            "模态 Bayesian 统一分发执行成功",
+        )
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
 @router.post("/optimization/bayesian/sol200/modal_frequency/run")
 async def run_sol200_modal_bayesian_update_api(request: Request, body: Sol200ModalFrequencyBayesianModelUpdateRequest):
     await log_request(request, model_to_dict(body))
@@ -1133,6 +1232,43 @@ async def run_sol200_modal_bayesian_update_api(request: Request, body: Sol200Mod
             return success_response(data, "SOL200 模态频率 Bayesian 模型修正任务已提交")
         data = _run_sol200_modal_bayesian_update_workflow_compact(**kwargs)
         return success_response(data, "SOL200 模态频率 Bayesian 模型修正执行成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/optimization/bayesian/sol200/modal/run")
+async def run_sol200_modal_bayesian_update_dispatch_api(request: Request, body: Sol200ModalFrequencyBayesianModelUpdateRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        category_counts = _assert_single_modal_response_category(int(body.project_id), "BAYESIAN")
+        kwargs = _sol200_modal_bayesian_run_kwargs(body)
+        if body.async_submit:
+            data = submit_background_task(
+                task_type="optimization.bayesian.sol200.modal.run",
+                fn=_run_sol200_modal_bayesian_update_task,
+                kwargs=kwargs,
+                request_payload=model_to_dict(body),
+                pass_task_id=True,
+                task_kind="external_solver",
+            )
+            return success_response(
+                {
+                    "category_counts": category_counts,
+                    "task": data,
+                },
+                "SOL200 模态 Bayesian 统一分发任务已提交",
+            )
+        data = _run_sol200_modal_bayesian_update_workflow_compact(**kwargs)
+        return success_response(
+            {
+                "category_counts": category_counts,
+                "workflow": data,
+            },
+            "SOL200 模态 Bayesian 统一分发执行成功",
+        )
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

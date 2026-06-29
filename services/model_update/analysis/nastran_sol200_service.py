@@ -111,6 +111,30 @@ def _normalize_sol200_response_type(value: Any) -> str:
     return resolved
 
 
+def _normalize_modal_response_category(value: Any) -> Optional[str]:
+    token = str(value or "").strip().upper()
+    if not token:
+        return None
+    if token in {"FREQ", "MODAL_FREQUENCY"}:
+        return "MODAL_FREQUENCY"
+    if token == "MODAL_MAC":
+        return "MODAL_MAC"
+    raise ValidationError(
+        "unsupported modal response category",
+        {"response_category": value, "allowed": ["MODAL_FREQUENCY", "MODAL_MAC"]},
+    )
+
+
+def _response_matches_modal_category(response_row: Dict[str, Any], response_category: Optional[str]) -> bool:
+    normalized = _normalize_modal_response_category(response_category)
+    if normalized is None:
+        return True
+    response_type = str(response_row.get("response_type") or response_row.get("type") or "").strip().upper()
+    if normalized == "MODAL_FREQUENCY":
+        return response_type in {"FREQ", "MODAL_FREQUENCY"}
+    return response_type == "MODAL_MAC"
+
+
 def create_sol200_parameter_config_entry(
     *,
     project_id: int,
@@ -578,6 +602,7 @@ def sync_sol200_config_from_catalog(
     overwrite: bool = True,
     parameter_source: str = "selected_parameter",
     response_source: str = "response_catalog",
+    response_category: Optional[str] = None,
     mac_threshold: Optional[float] = None,
     max_freq_error_ratio: Optional[float] = 0.2,
     matching_method: str = "greedy",
@@ -615,7 +640,9 @@ def sync_sol200_config_from_catalog(
     response_payload = _inp.get_fe_response_catalog(int(project_id))
     response_rows = [
         row for row in list(response_payload.get("responses") or [])
-        if bool(row.get("enabled", True)) and _scope_contains(row.get("solver_scope"), "SOL200")
+        if bool(row.get("enabled", True))
+        and _scope_contains(row.get("solver_scope"), "SOL200")
+        and _response_matches_modal_category(row, response_category)
     ]
 
     mapped_parameters: List[Dict[str, Any]] = []
@@ -701,6 +728,7 @@ def sync_sol200_config_from_catalog(
         "overwrite": bool(overwrite),
         "parameter_source": resolved_parameter_source,
         "response_source": resolved_response_source,
+        "response_category": _normalize_modal_response_category(response_category),
         "mac_threshold": _normalize_sync_mac_threshold(mac_threshold),
         "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
         "matching_method": str(matching_method or "greedy"),
@@ -722,6 +750,7 @@ def sync_generate_run_and_store_sol200_workflow(
     output_bdf: Optional[str] = None,
     overwrite: bool = True,
     response_source: str = "response_catalog",
+    response_category: Optional[str] = None,
     mac_threshold: Optional[float] = None,
     max_freq_error_ratio: Optional[float] = 0.2,
     matching_method: str = "greedy",
@@ -742,6 +771,7 @@ def sync_generate_run_and_store_sol200_workflow(
             overwrite=bool(overwrite),
             parameter_source="selected_parameter",
             response_source=str(response_source or "response_catalog"),
+            response_category=response_category,
             mac_threshold=mac_threshold,
             max_freq_error_ratio=max_freq_error_ratio,
             matching_method=str(matching_method or "greedy"),
@@ -788,6 +818,7 @@ def sync_generate_run_and_store_sol200_workflow(
             "input_bdf": str(Path(input_bdf).expanduser().resolve()),
             "output_bdf": resolved_output_bdf,
             "response_source": str(response_source or "response_catalog"),
+            "response_category": _normalize_modal_response_category(response_category),
             "sync_config": sync_payload,
             "generate": generate_payload,
             "run_and_store": run_payload,
