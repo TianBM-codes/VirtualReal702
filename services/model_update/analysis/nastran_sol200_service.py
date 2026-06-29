@@ -2092,6 +2092,7 @@ def sync_run_sol200_modal_mac_and_store_workflow(
     output_bdf: Optional[str] = None,
     overwrite: bool = True,
     response_source: str = "response_catalog",
+    response_category: Optional[str] = None,
     mac_threshold: Optional[float] = None,
     max_freq_error_ratio: Optional[float] = 0.2,
     matching_method: str = "greedy",
@@ -2154,7 +2155,7 @@ def sync_run_sol200_modal_mac_and_store_workflow(
                 ).expanduser().resolve()
             ) if str(output_bdf or run_payload.get("output_bdf") or "").strip() else None,
             "response_source": str(response_source or "response_catalog"),
-            "response_category": "MODAL_MAC",
+            "response_category": str(response_category or "MODAL_MAC"),
             "sync_config": sync_payload,
             "run_and_store": run_payload,
         }

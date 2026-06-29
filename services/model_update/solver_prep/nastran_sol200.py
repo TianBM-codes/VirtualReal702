@@ -358,6 +358,7 @@ def build_sol200_controls(
     sensitivity_csv_path: Optional[str] = None,
     csv_assign_text: Optional[str] = None,
     bulk_lines: Optional[List[str]] = None,
+    objective_response_id: Optional[int] = None,
 ) -> List[str]:
     settings = _normalize_sol200_settings(settings)
     eigrl = _resolve_sol200_eigrl_fields(settings, bulk_lines=bulk_lines)
@@ -389,6 +390,7 @@ def build_sol200_controls(
         "SUBCASE 1",
         "  ANALYSIS = MODES",
         "  DESSUB = 1",
+        f"  DESOBJ(MIN) = {int(objective_response_id)}" if objective_response_id is not None else "",
         "BEGIN BULK",
         f"PARAM,POST,{post}",
         "PARAM,GRDPNT,0",
@@ -413,7 +415,7 @@ def build_sol200_design_lines(
     *,
     parameters: List[Dict[str, Any]],
     responses: List[Dict[str, Any]],
-) -> Dict[str, List[str]]:
+) -> Dict[str, Any]:
     if not parameters:
         raise ValidationError("SOL200 parameters are required", {"parameters": parameters})
     if not responses:
@@ -422,19 +424,34 @@ def build_sol200_design_lines(
     desvar_lines: List[str] = []
     relation_lines: List[str] = []
     response_lines: List[str] = []
+    objective_response_id: Optional[int] = None
 
     for index, parameter in enumerate(parameters, start=1):
         desvar_lines.append(_format_desvar_line(index, parameter))
         relation_lines.extend(_build_parameter_relation_lines(index, parameter))
 
+    has_frequency_response = False
+    first_mode_number: Optional[int] = None
     for index, response in enumerate(responses, start=1):
+        response_type = str(response.get("type") or "").strip().upper()
+        mode_number = response.get("mode_number")
+        if first_mode_number is None and mode_number is not None:
+            first_mode_number = int(mode_number)
+        if response_type in {"FREQ", "MODAL_FREQUENCY"} and objective_response_id is None:
+            objective_response_id = int(index)
+            has_frequency_response = True
         response_lines.extend(_build_response_lines(index, response))
 
     # DSCREEN is a global screening control card; keep exactly one FREQ copy
     # only when frequency responses are present. DISP modal-shape responses do
     # not need a FREQ screening card.
-    if any(str(item.get("type") or "").strip().upper() in {"FREQ", "MODAL_FREQUENCY"} for item in responses):
+    if has_frequency_response:
         response_lines.append("DSCREEN  FREQ    -1.0E30")
+    elif first_mode_number is not None:
+        objective_response_id = len(responses) + 1
+        response_lines.append(
+            f"DRESP1,{int(objective_response_id)},OBJ_DUMMY,FREQ,,,{int(first_mode_number)}"
+        )
 
     design_lines = [
         "$ -----------------------------------------------------------------------------",
@@ -449,6 +466,7 @@ def build_sol200_design_lines(
         "relation_lines": relation_lines,
         "response_lines": response_lines,
         "design_lines": design_lines,
+        "objective_response_id": objective_response_id,
     }
 
 
@@ -482,13 +500,14 @@ def build_sol200_lines(
     lines = read_lines(input_bdf)
     _, bulk_lines = split_bdf(lines)
 
+    design_payload = build_sol200_design_lines(parameters=parameters, responses=responses)
     control_lines = build_sol200_controls(
         settings,
         sensitivity_csv_path=sensitivity_csv_path,
         csv_assign_text=csv_assign_text,
         bulk_lines=bulk_lines,
+        objective_response_id=design_payload.get("objective_response_id"),
     )
-    design_payload = build_sol200_design_lines(parameters=parameters, responses=responses)
     filtered_bulk_lines = filter_sol200_bulk_lines(bulk_lines)
     desvar_lines = design_payload["desvar_lines"]
     relation_lines = design_payload["relation_lines"]
