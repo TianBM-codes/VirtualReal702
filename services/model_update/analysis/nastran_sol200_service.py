@@ -9,6 +9,9 @@ from db import ensure_tables_exist, get_connection
 from src.l3.core.errors import ValidationError
 
 from ..importers.op2_service import (
+    _build_op2_parameter_columns_with_mappings,
+    _register_external_sensitivity_result_group,
+    _write_element_cloud_result_to_workspace,
     export_sensitivity_to_vtu,
     preview_op2_sensitivity,
     store_op2_sensitivity_cloud,
@@ -1767,6 +1770,7 @@ def run_sol200_modal_mac_and_store_workflow(
     cloud_field_name: str = "SENSITIVITY_CLOUD",
 ) -> dict:
     from . import sensitivity_service as _sens
+    from .project_path_service import resolve_project_workspace
     from ..importers.op2_service import build_modal_import_payload, preview_op2_sensitivity
     from .solver_service import run_nastran_sol103_job
     try:
@@ -2027,21 +2031,48 @@ def run_sol200_modal_mac_and_store_workflow(
                 "reason": str(exc),
                 "details": fd_details,
             }
+        matrix_payload = {
+            **mac_matrix_payload,
+            "source": {
+                "source_kind": "sol200_modal_mac",
+                "op2_path": op2_path,
+                "matrix_path": matrix_path,
+                "bdf_path": bdf_path,
+                "metadata_path": metadata_json,
+            },
+        }
         stored = _sens._persist_sensitivity_matrix(
             project_id=int(project_id),
             batch_no=str(batch_no),
             case_name=str(case_name),
-            matrix_payload={
-                **mac_matrix_payload,
-                "source": {
-                    "source_kind": "sol200_modal_mac",
-                    "op2_path": op2_path,
-                    "matrix_path": matrix_path,
-                    "bdf_path": bdf_path,
-                    "metadata_path": metadata_json,
-                },
-            },
+            matrix_payload=matrix_payload,
         )
+        if write_cloud_result:
+            workspace = _sens._workspace_path(resolve_project_workspace(int(project_id)))
+            matrix_payload["workspace"] = workspace
+            matrix_payload["parameter_columns"] = _build_op2_parameter_columns_with_mappings(
+                workspace=workspace,
+                bdf_path=bdf_path,
+                parameter_columns=matrix_payload.get("parameter_columns") or [],
+            )
+            cloud_result = _write_element_cloud_result_to_workspace(
+                workspace=workspace,
+                batch_no=str(batch_no),
+                matrix_payload=matrix_payload,
+                result_group=cloud_result_group,
+                step_name=cloud_step_name,
+                field_name=cloud_field_name,
+            )
+            _register_external_sensitivity_result_group(
+                project_id=int(project_id),
+                preview_source=dict(matrix_payload.get("source") or {}),
+                cloud_result=cloud_result,
+            )
+            stored = {
+                **stored,
+                "workspace": workspace,
+                "cloud_result": cloud_result,
+            }
         update_work_condition_project_status(
             int(project_id),
             sensitivity_status=_WORKFLOW_STATUS_DONE,
