@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.l3.core.errors import ValidationError
+from src.l3.core.errors import NotFoundError, ValidationError
 from services.model_update.analysis.nastran_sol200_service import (
     DEFAULT_PARAMETER_LOWER_SCALE,
     DEFAULT_PARAMETER_UPPER_SCALE,
@@ -9,6 +9,7 @@ from services.model_update.analysis.nastran_sol200_service import (
     _localize_elements_e_parameters,
     _material_copy_with_new_id,
     run_sol200_and_store_workflow,
+    run_sol200_modal_mac_and_store_workflow,
     sync_generate_run_and_store_sol200_workflow,
 )
 from webapi.models import NastranSol200SyncGenerateRunAndStoreRequest
@@ -18,6 +19,132 @@ from services.model_update.solver_prep.nastran_sol200 import (
     build_sol200_controls,
     build_sol200_lines,
 )
+
+
+def test_run_sol200_modal_mac_and_store_workflow_falls_back_when_csv_only_has_dummy_objective(monkeypatch):
+    from services.model_update.analysis import nastran_sol200_service
+    from services.model_update.analysis import sensitivity_service
+    from services.model_update.importers import op2_service
+
+    preview_calls = []
+    persisted = {}
+
+    monkeypatch.setattr(nastran_sol200_service, "_set_project_sensitivity_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(nastran_sol200_service, "_log_project_workflow_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(nastran_sol200_service, "update_work_condition_project_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        nastran_sol200_service,
+        "_resolve_sol200_config_sources",
+        lambda **kwargs: (
+            [],
+            [
+                {
+                    "name": "MAC_MODE_FE1_TEST1",
+                    "type": "MODAL_MAC",
+                    "mode_number": 1,
+                    "extra_json": {"fem_mode_no": 1, "test_mode_no": 1},
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        nastran_sol200_service,
+        "expand_modal_mac_responses_to_sol200_displacements",
+        lambda **kwargs: {
+            "expanded_rows": [
+                {
+                    "name": "M1T1N67U1",
+                    "type": "DISP",
+                    "mode_number": 1,
+                    "node_id": 67,
+                    "component": "U1",
+                    "extra_json": {
+                        "source_response_name": "MAC_MODE_FE1_TEST1",
+                        "fem_mode_no": 1,
+                        "test_mode_no": 1,
+                        "fem_node_label": 67,
+                        "component": "U1",
+                    },
+                }
+            ],
+            "mapping_rows": [],
+        },
+    )
+    monkeypatch.setattr(
+        nastran_sol200_service,
+        "run_sol200_workflow",
+        lambda **kwargs: {
+            "input_bdf": kwargs["input_bdf"],
+            "output_bdf": kwargs.get("output_bdf") or "D:/demo/out.bdf",
+            "generated_files": {"metadata_json": "D:/demo/meta.json"},
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(nastran_sol200_service, "_resolve_generated_sol200_op2_path", lambda payload: None)
+    monkeypatch.setattr(nastran_sol200_service, "_resolve_generated_sol200_matrix_path", lambda payload: "D:/demo/sens.csv")
+    monkeypatch.setattr(nastran_sol200_service, "_pick_first_existing_path", lambda candidates: None)
+    monkeypatch.setattr(
+        nastran_sol200_service.Path,
+        "exists",
+        lambda self: str(self).lower().endswith(".csv"),
+    )
+    monkeypatch.setattr(
+        nastran_sol200_service.Path,
+        "is_file",
+        lambda self: str(self).lower().endswith(".csv"),
+    )
+    monkeypatch.setattr(
+        nastran_sol200_service.Path,
+        "stat",
+        lambda self: SimpleNamespace(st_size=128),
+    )
+
+    def fake_preview(**kwargs):
+        preview_calls.append(kwargs.get("response_names"))
+        if kwargs.get("response_names"):
+            raise NotFoundError(
+                "requested sensitivity response not found in formatted CSV",
+                {
+                    "response_name": "M1T1N67U1",
+                    "available_response_names": ["OBJ_DUMM"],
+                    "available_response_types": ["FREQ"],
+                },
+            )
+        return {
+            "response_rows": [{"response_name": "OBJ_DUMM", "response_type": "FREQ", "mode_number": 1}],
+            "parameter_columns": [],
+            "matrix_preview": [[1.0]],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(op2_service, "preview_op2_sensitivity", fake_preview)
+    monkeypatch.setattr(
+        nastran_sol200_service,
+        "build_modal_mac_matrix_from_displacement_sensitivity",
+        lambda **kwargs: (_ for _ in ()).throw(ValidationError("displacement rows missing")),
+    )
+    monkeypatch.setattr(nastran_sol200_service, "compute_project_modal_mac", lambda **kwargs: {"mac": 91.5})
+
+    def fake_persist(**kwargs):
+        persisted["matrix_payload"] = kwargs["matrix_payload"]
+        return {"stored": True}
+
+    monkeypatch.setattr(sensitivity_service, "_persist_sensitivity_matrix", fake_persist)
+
+    payload = run_sol200_modal_mac_and_store_workflow(
+        project_id=7,
+        batch_no="3",
+        case_name="mac_case",
+        input_bdf="D:/demo/in.bdf",
+        output_bdf="D:/demo/out.bdf",
+        responses=[{"name": "MAC_MODE_FE1_TEST1", "type": "MODAL_MAC", "mode_number": 1, "extra_json": {"fem_mode_no": 1, "test_mode_no": 1}}],
+        run_solver=False,
+    )
+
+    assert preview_calls == [["M1T1N67U1"], None]
+    assert payload["finite_difference_fallback"]["enabled"] is True
+    assert payload["warnings"][-1]["code"] == "SOL200_MODAL_MAC_RESPONSE_MATCH_FALLBACK"
+    assert persisted["matrix_payload"]["response_rows"][0]["response_name"] == "MAC_MODE_FE1_TEST1"
 
 
 def test_build_sol200_controls_uses_plot_displacement_and_subcase_dessub_for_op2():

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from pyNastran.bdf.bdf import BDF
 from db import ensure_tables_exist, get_connection
-from src.l3.core.errors import ValidationError
+from src.l3.core.errors import NotFoundError, ValidationError
 
 from ..importers.op2_service import (
     _build_op2_parameter_columns_with_mappings,
@@ -1880,16 +1880,60 @@ def run_sol200_modal_mac_and_store_workflow(
             if (not matrix_file.exists()) or matrix_file.stat().st_size <= 0:
                 matrix_path = None
         expanded_response_names = [str(item.get("name") or "").strip() for item in expanded_responses]
-        preview = preview_op2_sensitivity(
-            project_id=None,
-            batch_no=str(batch_no),
-            op2_path=op2_path,
-            matrix_path=matrix_path,
-            bdf_path=bdf_path,
-            metadata_json=metadata_json,
-            parameter_names=parameter_names,
-            response_names=expanded_response_names,
-        )
+        preview_match_fallback = None
+        try:
+            preview = preview_op2_sensitivity(
+                project_id=None,
+                batch_no=str(batch_no),
+                op2_path=op2_path,
+                matrix_path=matrix_path,
+                bdf_path=bdf_path,
+                metadata_json=metadata_json,
+                parameter_names=parameter_names,
+                response_names=expanded_response_names,
+            )
+        except NotFoundError as exc:
+            available_names = [
+                str(item or "").strip()
+                for item in list((exc.details or {}).get("available_response_names") or [])
+                if str(item or "").strip()
+            ]
+            available_types = {
+                str(item or "").strip().upper()
+                for item in list((exc.details or {}).get("available_response_types") or [])
+                if str(item or "").strip()
+            }
+            can_retry_without_response_filter = (
+                matrix_path is not None
+                and "requested sensitivity response not found in formatted CSV" in str(exc.message)
+                and bool(available_names)
+                and (available_names == ["OBJ_DUMM"] or available_names == ["OBJ_DUMMY"])
+            )
+            if not can_retry_without_response_filter:
+                raise
+            preview = preview_op2_sensitivity(
+                project_id=None,
+                batch_no=str(batch_no),
+                op2_path=op2_path,
+                matrix_path=matrix_path,
+                bdf_path=bdf_path,
+                metadata_json=metadata_json,
+                parameter_names=parameter_names,
+                response_names=None,
+            )
+            preview_match_fallback = {
+                "code": "SOL200_MODAL_MAC_RESPONSE_MATCH_FALLBACK",
+                "message": "formatted CSV only exposed the dummy objective response, so modal MAC extraction fell back to the finite-difference path",
+                "details": {
+                    "requested_response_names": expanded_response_names,
+                    "available_response_names": available_names,
+                    "available_response_types": sorted(available_types),
+                },
+            }
+            preview = {
+                **preview,
+                "warnings": list(preview.get("warnings") or []) + [preview_match_fallback],
+            }
         finite_difference_payload = None
         try:
             mac_matrix_payload = build_modal_mac_matrix_from_displacement_sensitivity(
