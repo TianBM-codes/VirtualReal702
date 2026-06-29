@@ -167,7 +167,12 @@ async def modal_match_frequency_scatter_api(request: Request, body: ModalMatchSc
 async def modal_correlation_all_scatter_api(request: Request, body: ModalCorrelationScatterRequest):
     await log_request(request, model_to_dict(body))
     try:
-        result = get_modal_correlation_all_scatter_payload(project_id=body.project_id)
+        result = get_modal_correlation_all_scatter_payload(
+            project_id=body.project_id,
+            mac_threshold=body.mac_threshold,
+            max_freq_error_ratio=body.max_freq_error_ratio,
+            method=body.method,
+        )
         return success_response(result, "频率相关性散点图计算成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)

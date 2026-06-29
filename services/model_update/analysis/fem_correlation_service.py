@@ -1464,6 +1464,23 @@ def get_modal_match_frequency_scatter_payload(
     }
 
 
+def _normalize_modal_match_mac_threshold(mac_threshold: float) -> float:
+    resolved = float(mac_threshold)
+    if resolved < 0.0:
+        raise ValidationError(
+            "mac_threshold must be >= 0",
+            {"mac_threshold": mac_threshold},
+        )
+    if resolved <= 1.0:
+        return float(resolved * 100.0)
+    if resolved <= 100.0:
+        return resolved
+    raise ValidationError(
+        "mac_threshold must be between 0 and 1 or between 0 and 100",
+        {"mac_threshold": mac_threshold},
+    )
+
+
 def _load_modal_correlation_rows(project_id: int) -> List[dict]:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1626,9 +1643,22 @@ def get_modal_frequency_consistency_payload(project_id: int) -> dict:
     return result
 
 
-def get_modal_correlation_all_scatter_payload(project_id: int) -> dict:
-    paired = _build_modal_frequency_order_rows(int(project_id))
-    rows = list(paired["rows"])
+def get_modal_correlation_all_scatter_payload(
+        project_id: int,
+        *,
+        mac_threshold: float = 0.7,
+        max_freq_error_ratio: Optional[float] = 0.2,
+        method: str = "greedy",
+        subcase_name="SUBCASE_1",
+) -> dict:
+    matched = match_modal_modes(
+        int(project_id),
+        mac_threshold=mac_threshold,
+        max_freq_error_ratio=max_freq_error_ratio,
+        method=method,
+        subcase_name=subcase_name,
+    )
+    rows = list(matched.get("rows") or [])
 
     scatter_points = []
     tooltip_points = []
@@ -1665,12 +1695,15 @@ def get_modal_correlation_all_scatter_payload(project_id: int) -> dict:
     return {
         "project_id": int(project_id),
         "chart_type": "scatter",
+        "method": matched.get("method"),
+        "mac_threshold": matched.get("mac_threshold"),
+        "max_freq_error_ratio": matched.get("max_freq_error_ratio"),
         "x_label": "calculated_modal_frequency",
         "y_label": "test_modal_frequency",
         "value_label": "mac",
         "data": [
             {
-                "label": "frequency_order_pairs",
+                "label": "matched_modes",
                 "xaxis": xaxis,
                 "data": scatter_points,
                 "points": tooltip_points,
@@ -1678,11 +1711,13 @@ def get_modal_correlation_all_scatter_payload(project_id: int) -> dict:
         ],
         "summary": {
             "point_count": len(scatter_points),
-            **dict(paired["summary"]),
+            **dict(matched.get("summary") or {}),
             "max_mac": float(max(mac_values)) if mac_values else None,
             "min_mac": float(min(mac_values)) if mac_values else None,
         },
         "rows": rows,
+        "unmatched_fem_modes": list(matched.get("unmatched_fem_modes") or []),
+        "unmatched_test_modes": list(matched.get("unmatched_test_modes") or []),
     }
 
 
@@ -1692,8 +1727,9 @@ def _passes_modal_match_filters(
         mac_threshold: float,
         max_freq_error_ratio: Optional[float],
 ) -> bool:
+    resolved_mac_threshold = _normalize_modal_match_mac_threshold(mac_threshold)
     mac = row.get("mac")
-    if mac is None or float(mac) < float(mac_threshold):
+    if mac is None or float(mac) < float(resolved_mac_threshold):
         return False
     if max_freq_error_ratio is None:
         return True
@@ -1791,7 +1827,7 @@ def preview_modal_match(project_id: int, *, mac_threshold: float = 0.7,
     return {
         "project_id": int(project_id),
         "method": "candidate_preview",
-        "mac_threshold": float(mac_threshold),
+        "mac_threshold": float(_normalize_modal_match_mac_threshold(mac_threshold)),
         "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
         "max_candidates_per_mode": max(int(max_candidates_per_mode), 1),
         "rows": preview_rows,
@@ -1877,7 +1913,7 @@ def match_modal_modes(project_id: int, *, mac_threshold: float = 0.7,
     return {
         "project_id": int(project_id),
         "method": resolved_method,
-        "mac_threshold": float(mac_threshold),
+        "mac_threshold": float(_normalize_modal_match_mac_threshold(mac_threshold)),
         "max_freq_error_ratio": None if max_freq_error_ratio is None else float(max_freq_error_ratio),
         "rows": matched_rows,
         "rejected_candidates": rejected_rows,

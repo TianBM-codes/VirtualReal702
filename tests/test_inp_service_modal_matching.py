@@ -154,6 +154,43 @@ def test_modal_match_frequency_scatter_payload_contains_points_and_tooltips(monk
     assert payload["unmatched_fem_modes"] == [5]
 
 
+def test_match_modal_modes_treats_fractional_mac_threshold_as_percent(monkeypatch):
+    monkeypatch.setattr(
+        "services.model_update.analysis.inp_service._load_modal_correlation_rows",
+        lambda project_id: [
+            {
+                "fem_mode_no": 1,
+                "test_mode_no": 1,
+                "mac": 69.0,
+                "freq_fem": 31.8,
+                "freq_test": 32.5,
+                "freq_error_ratio": -0.0215,
+                "flip": False,
+            },
+            {
+                "fem_mode_no": 2,
+                "test_mode_no": 2,
+                "mac": 97.5,
+                "freq_fem": 64.2,
+                "freq_test": 63.9,
+                "freq_error_ratio": 0.0047,
+                "flip": True,
+            },
+        ],
+    )
+
+    payload = get_modal_match_frequency_scatter_payload(
+        18,
+        mac_threshold=0.7,
+        max_freq_error_ratio=0.2,
+        method="greedy",
+    )
+
+    assert payload["mac_threshold"] == 70.0
+    assert payload["summary"]["matched_pair_count"] == 1
+    assert payload["data"][0]["data"] == [["64.200", 63.9]]
+
+
 def test_modal_frequency_consistency_payload_auto_computes_when_rows_missing(monkeypatch):
     rows_by_call = [
         [],
@@ -230,61 +267,55 @@ def test_modal_frequency_consistency_payload_auto_computes_when_rows_missing(mon
     assert payload["rows"][1]["fem_mode_no"] == 2
 
 
-def test_modal_correlation_all_scatter_payload_returns_frequency_pairs(monkeypatch):
+def test_modal_correlation_all_scatter_payload_returns_only_matched_pairs(monkeypatch):
     monkeypatch.setattr(
-        "services.model_update.analysis.inp_service._load_modal_correlation_rows",
-        lambda project_id: [
-            {
-                "fem_mode_no": 1,
-                "test_mode_no": 1,
-                "dof_pair_count": 8,
-                "mac": 97.5,
-                "freq_fem": 31.8,
-                "freq_test": 32.5,
-                "freq_error_ratio": -0.0215,
-                "flip": False,
-            },
-            {
-                "fem_mode_no": 1,
-                "test_mode_no": 2,
-                "dof_pair_count": 8,
-                "mac": 10.0,
-                "freq_fem": 31.8,
-                "freq_test": 63.9,
-                "freq_error_ratio": -0.50,
-                "flip": False,
-            },
-            {
-                "fem_mode_no": 2,
-                "test_mode_no": 1,
-                "dof_pair_count": 8,
-                "mac": 12.0,
-                "freq_fem": 64.2,
-                "freq_test": 32.5,
-                "freq_error_ratio": 0.97,
-                "flip": False,
-            },
-            {
-                "fem_mode_no": 2,
-                "test_mode_no": 2,
-                "dof_pair_count": 8,
-                "mac": 95.0,
-                "freq_fem": 64.2,
-                "freq_test": 63.9,
-                "freq_error_ratio": 0.0047,
-                "flip": True,
-            },
-        ],
+        "services.model_update.analysis.inp_service.match_modal_modes",
+        lambda project_id, **kwargs: {
+            "project_id": int(project_id),
+            "method": kwargs["method"],
+            "mac_threshold": 70.0,
+            "max_freq_error_ratio": kwargs["max_freq_error_ratio"],
+            "rows": [
+                {
+                    "status": "matched",
+                    "recommended": True,
+                    "fem_mode_no": 1,
+                    "test_mode_no": 1,
+                    "dof_pair_count": 8,
+                    "mac": 97.5,
+                    "freq_fem": 31.8,
+                    "freq_test": 32.5,
+                    "freq_error_ratio": -0.0215,
+                    "flip": False,
+                },
+                {
+                    "status": "matched",
+                    "recommended": True,
+                    "fem_mode_no": 2,
+                    "test_mode_no": 2,
+                    "dof_pair_count": 8,
+                    "mac": 95.0,
+                    "freq_fem": 64.2,
+                    "freq_test": 63.9,
+                    "freq_error_ratio": 0.0047,
+                    "flip": True,
+                },
+            ],
+            "summary": {"matched_pair_count": 2},
+            "unmatched_fem_modes": [3],
+            "unmatched_test_modes": [4],
+        },
     )
 
-    payload = get_modal_correlation_all_scatter_payload(18)
+    payload = get_modal_correlation_all_scatter_payload(18, mac_threshold=0.7, max_freq_error_ratio=0.2, method="greedy")
 
     assert payload["project_id"] == 18
     assert payload["chart_type"] == "scatter"
     assert payload["value_label"] == "mac"
-    assert payload["data"][0]["label"] == "frequency_order_pairs"
+    assert payload["data"][0]["label"] == "matched_modes"
     assert payload["data"][0]["data"] == [["31.800", 32.5], ["64.200", 63.9]]
     assert payload["data"][0]["points"][0]["tooltip"]["mac"] == 97.5
     assert payload["data"][0]["points"][1]["tooltip"]["flip"] is True
     assert payload["summary"]["point_count"] == 2
-    assert payload["summary"]["compared_mode_count"] == 2
+    assert payload["summary"]["matched_pair_count"] == 2
+    assert payload["unmatched_fem_modes"] == [3]

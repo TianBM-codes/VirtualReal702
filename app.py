@@ -360,7 +360,7 @@ async def modal_match_frequency_scatter_api(request: Request):
         subcase_name = await _get_step_names_from_src(int(body["project_id"]))
         result = get_modal_match_frequency_scatter_payload(
             int(body["project_id"]),
-            mac_threshold=float(body.get("mac_threshold", 60)),
+            mac_threshold=float(body.get("mac_threshold", 0.7)),
             max_freq_error_ratio=(
                 None if body.get("max_freq_error_ratio") is None
                 else float(body.get("max_freq_error_ratio"))

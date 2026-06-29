@@ -102,7 +102,12 @@ def test_modal_correlation_all_scatter_route(monkeypatch):
 
     response = client.post(
         "/correlation/modal/all_scatter",
-        json={"project_id": 18},
+        json={
+            "project_id": 18,
+            "mac_threshold": 0.75,
+            "max_freq_error_ratio": 0.15,
+            "method": "greedy",
+        },
     )
 
     assert response.status_code == 200
@@ -110,7 +115,12 @@ def test_modal_correlation_all_scatter_route(monkeypatch):
     assert payload["ok"] is True
     assert payload["data"]["value_label"] == "mac"
     assert payload["data"]["data"][0]["points"][0]["tooltip"]["mac"] == 97.5
-    assert captured == {"project_id": 18}
+    assert captured == {
+        "project_id": 18,
+        "mac_threshold": 0.75,
+        "max_freq_error_ratio": 0.15,
+        "method": "greedy",
+    }
 
 
 def test_modal_frequency_consistency_route(monkeypatch):
