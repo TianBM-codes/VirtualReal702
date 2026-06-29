@@ -4,12 +4,15 @@ from src.l3.core.errors import ValidationError
 from .project_config_service import (
     DYNAMIC_DISPLACEMENT_DISPLAY_SCALE_KEY,
     STATIC_DISPLACEMENT_DISPLAY_SCALE_KEY,
+    _fetch_project_config,
     get_test_display_scale_factors,
     save_test_model_dimensions,
     upsert_project_config,
 )
 
 _SUPPORTED_UNIT_SYSTEMS = {"MKS", "MMKS"}
+_DEFAULT_TEST_UNIT_SYSTEM = "MKS"
+_DEFAULT_FEM_UNIT_SYSTEM = "MMKS"
 
 
 def _normalize_unit_system(value: str) -> str:
@@ -33,6 +36,31 @@ def _resolve_unit_scale(from_unit: str, to_unit: str) -> float:
         "unsupported unit conversion",
         {"from_unit": from_unit, "to_unit": to_unit, "allowed": ["MKS<->MMKS"]},
     )
+
+
+def get_test_unit_status(*, project_id: int) -> dict:
+    ensure_tables_exist()
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        config = _fetch_project_config(cursor, int(project_id))
+        extra = dict(config.get("extra_json") or {})
+        test_unit_system = _normalize_unit_system(
+            str(extra.get("test_unit_system") or _DEFAULT_TEST_UNIT_SYSTEM)
+        )
+        fem_unit_system = _normalize_unit_system(
+            str(extra.get("fem_unit_system") or _DEFAULT_FEM_UNIT_SYSTEM)
+        )
+        return {
+            "project_id": int(project_id),
+            "test_unit_system": test_unit_system,
+            "fem_unit_system": fem_unit_system,
+            "allowed_unit_systems": sorted(_SUPPORTED_UNIT_SYSTEMS),
+            "needs_conversion": bool(test_unit_system != fem_unit_system),
+        }
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def _load_test_points_for_dims(cursor, project_id: int) -> list[tuple[float, float, float]]:
@@ -74,11 +102,31 @@ def convert_test_unit_system(*, project_id: int, from_unit: str, to_unit: str) -
     ensure_tables_exist()
     resolved_from_unit = _normalize_unit_system(from_unit)
     resolved_to_unit = _normalize_unit_system(to_unit)
-    scale = _resolve_unit_scale(resolved_from_unit, resolved_to_unit)
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        project_config_before = _fetch_project_config(cursor, int(project_id))
+        extra_json_before = dict(project_config_before.get("extra_json") or {})
+        recorded_unit = _normalize_unit_system(
+            str(extra_json_before.get("test_unit_system") or _DEFAULT_TEST_UNIT_SYSTEM)
+        )
+        fem_unit_system = _normalize_unit_system(
+            str(extra_json_before.get("fem_unit_system") or _DEFAULT_FEM_UNIT_SYSTEM)
+        )
+
+        if recorded_unit != resolved_from_unit:
+            raise ValidationError(
+                "test unit conversion request does not match current recorded unit",
+                {
+                    "project_id": int(project_id),
+                    "recorded_unit": recorded_unit,
+                    "from_unit": resolved_from_unit,
+                    "to_unit": resolved_to_unit,
+                },
+            )
+
+        scale = _resolve_unit_scale(resolved_from_unit, resolved_to_unit)
         test_node_rows_updated = 0
         measuring_point_rows_updated = 0
         if scale != 1.0:
@@ -119,7 +167,10 @@ def convert_test_unit_system(*, project_id: int, from_unit: str, to_unit: str) -
                 DYNAMIC_DISPLACEMENT_DISPLAY_SCALE_KEY: float(scales["dynamic"]) * scale,
                 STATIC_DISPLACEMENT_DISPLAY_SCALE_KEY: float(scales["static"]) * scale,
             },
-            extra_json={"test_unit_system": resolved_to_unit},
+            extra_json={
+                "test_unit_system": resolved_to_unit,
+                "fem_unit_system": fem_unit_system,
+            },
             cursor=cursor,
         )
 
@@ -142,6 +193,9 @@ def convert_test_unit_system(*, project_id: int, from_unit: str, to_unit: str) -
             "from_unit": resolved_from_unit,
             "to_unit": resolved_to_unit,
             "scale": float(scale),
+            "test_unit_system": resolved_to_unit,
+            "fem_unit_system": fem_unit_system,
+            "needs_conversion": bool(resolved_to_unit != fem_unit_system),
             "test_node_rows_updated": test_node_rows_updated,
             "measuring_point_rows_updated": measuring_point_rows_updated,
             "display_scales": get_test_display_scale_factors(int(project_id), cursor=cursor),

@@ -71,6 +71,10 @@ class TestUnitConvertRequest(BaseModel):
     to_unit: str
 
 
+class TestUnitStatusRequest(BaseModel):
+    project_id: int
+
+
 class DumpVtkRequest(BaseModel):
     vtk_path: str
     project_id: int

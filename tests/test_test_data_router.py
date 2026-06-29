@@ -116,3 +116,38 @@ def test_frf_query_routes_proxy_service_payloads(monkeypatch):
     assert multi_curve_response.json()["data"]["line_names"] == ["FRF 1", "FRF 2"]
     assert len(multi_curve_response.json()["data"]["lines"]) == 2
     assert multi_curve_response.json()["data"]["lines"][1]["line_name"] == "FRF 2"
+
+
+def test_test_unit_status_route_returns_service_payload(monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import test_data
+
+    monkeypatch.setattr(
+        test_data,
+        "get_test_unit_status",
+        lambda project_id: {
+            "project_id": project_id,
+            "test_unit_system": "MKS",
+            "fem_unit_system": "MMKS",
+            "allowed_unit_systems": ["MKS", "MMKS"],
+            "needs_conversion": True,
+        },
+    )
+
+    app = FastAPI()
+    app.include_router(test_data.router)
+    client = TestClient(app)
+
+    response = client.post("/test/unit/status", json={"project_id": 18})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["project_id"] == 18
+    assert payload["data"]["test_unit_system"] == "MKS"
+    assert payload["data"]["fem_unit_system"] == "MMKS"
+    assert payload["data"]["needs_conversion"] is True

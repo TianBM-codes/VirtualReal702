@@ -88,6 +88,22 @@ def test_get_test_display_scale_factors_returns_defaults(monkeypatch):
     assert result == {"dynamic": 1.0, "static": 1.0}
 
 
+def test_get_test_unit_status_returns_recorded_and_default_units(monkeypatch):
+    fake_conn = _UnitConnection()
+    monkeypatch.setattr(test_unit_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(test_unit_service, "get_connection", lambda: fake_conn)
+
+    result = test_unit_service.get_test_unit_status(project_id=101)
+
+    assert result == {
+        "project_id": 101,
+        "test_unit_system": "MKS",
+        "fem_unit_system": "MMKS",
+        "allowed_unit_systems": ["MKS", "MMKS"],
+        "needs_conversion": True,
+    }
+
+
 def test_convert_test_unit_system_updates_coordinates_and_display_scales(monkeypatch):
     fake_conn = _UnitConnection()
     monkeypatch.setattr(test_unit_service, "ensure_tables_exist", lambda: None)
@@ -101,9 +117,37 @@ def test_convert_test_unit_system_updates_coordinates_and_display_scales(monkeyp
 
     assert fake_conn.committed is True
     assert result["scale"] == 1000.0
+    assert result["test_unit_system"] == "MMKS"
+    assert result["fem_unit_system"] == "MMKS"
+    assert result["needs_conversion"] is False
     assert result["test_node_rows_updated"] == 3
     assert result["measuring_point_rows_updated"] == 2
     assert result["display_scales"] == {"dynamic": 1000.0, "static": 1000.0}
+    executed_sql = "\n".join(sql for sql, _ in fake_conn.cursor_obj.executed)
+    assert "UPDATE t_mt_py_test_node" in executed_sql
+    assert "UPDATE t_mt_measuring_point_info" in executed_sql
+
+
+def test_convert_test_unit_system_allows_switching_back_when_from_unit_matches_current_state(monkeypatch):
+    fake_conn = _UnitConnection()
+    fake_conn.cursor_obj.config_row["coefficients_json"] = (
+        "{\"dynamic_displacement_display_scale\": 1000.0, \"static_displacement_display_scale\": 1000.0}"
+    )
+    fake_conn.cursor_obj.config_row["extra_json"] = "{\"test_unit_system\": \"MMKS\", \"fem_unit_system\": \"MMKS\"}"
+    monkeypatch.setattr(test_unit_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(test_unit_service, "get_connection", lambda: fake_conn)
+
+    result = test_unit_service.convert_test_unit_system(
+        project_id=101,
+        from_unit="MMKS",
+        to_unit="MKS",
+    )
+
+    assert result["scale"] == 0.001
+    assert result["test_unit_system"] == "MKS"
+    assert result["fem_unit_system"] == "MMKS"
+    assert result["needs_conversion"] is True
+    assert result["display_scales"] == {"dynamic": 1.0, "static": 1.0}
     executed_sql = "\n".join(sql for sql, _ in fake_conn.cursor_obj.executed)
     assert "UPDATE t_mt_py_test_node" in executed_sql
     assert "UPDATE t_mt_measuring_point_info" in executed_sql

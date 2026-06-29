@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Request
 
-from services.model_update.analysis.test_unit_service import convert_test_unit_system
+from services.model_update.analysis.test_unit_service import (
+    convert_test_unit_system,
+    get_test_unit_status,
+)
 from services.model_update.importers.unv_service import (
     dump_unv_modal_shapes_to_vtk,
     dump_unv_modal_to_json,
@@ -28,6 +31,7 @@ from ..models import (
     PlotModalShapeRequest,
     SensorPositionRequest,
     TestUnitConvertRequest,
+    TestUnitStatusRequest,
 )
 from ..utils import log_request, model_to_dict
 
@@ -160,6 +164,19 @@ async def convert_test_unit_api(request: Request, body: TestUnitConvertRequest):
             to_unit=body.to_unit,
         )
         return success_response(result, "试验单位校正成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/test/unit/status")
+async def get_test_unit_status_api(request: Request, body: TestUnitStatusRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = get_test_unit_status(project_id=body.project_id)
+        return success_response(result, "试验单位状态获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
