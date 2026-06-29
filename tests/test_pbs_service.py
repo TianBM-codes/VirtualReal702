@@ -182,6 +182,146 @@ def test_run_pbs_solver_job_merges_project_pbs_settings(monkeypatch, tmp_path):
     assert result["job_id"] == "pbs-001"
 
 
+def test_run_pbs_solver_job_sanitizes_default_job_name_for_non_ascii_file(monkeypatch, tmp_path):
+    input_file = tmp_path / "车门模型.inp"
+    input_file.write_text("*Heading\n", encoding="utf-8")
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, config, *, timeout):
+            captured["config"] = config
+
+        def get_application_config(self, application):
+            return {
+                "application_id": "Abaqus",
+                "application_name": "Abaqus",
+                "version": "2022",
+                "platform": "queue-a",
+                "primary_file_exts": [".inp"],
+                "result_exts": [".odb"],
+            }
+
+        def run_job(self, **kwargs):
+            captured["run_job_kwargs"] = kwargs
+            return {"job_id": "pbs-001", "resolved_job_state": "Q"}
+
+    monkeypatch.setattr(
+        pbs_service,
+        "_load_project_pbs_settings",
+        lambda project_id: {
+            "env": "prod",
+            "ApplicationId": "Abaqus",
+            "ApplicationName": "Abaqus",
+            "VERSION": "2022",
+            "CORES": 48,
+            "HOSTS": 1,
+            "PLATFORM": "queue-a",
+            "PRECISION": "off",
+        },
+    )
+    monkeypatch.setattr(
+        pbs_service,
+        "load_pbs_environment_config",
+        lambda env: pbs_service.PBSEnvironmentConfig(
+            name=str(env),
+            base_url="https://pbs.example.com",
+            server_name="a4mgt1",
+            stage_path_template="/stage/${USER}",
+            username="user",
+            password="pass",
+            verify_ssl=False,
+            api_paths={
+                "login": "/api/login",
+                "expand_vars": "/api/expandvars",
+                "create_dir": "/api/dir/create",
+                "upload_file": "/api/files/upload",
+                "file_exists": "/api/files/exists",
+                "submit_job": "/api/jobs",
+                "job_status": "/api/jobs/{job_id}",
+                "list_files": "/api/files/list",
+                "download_file": "/api/files/download",
+            },
+            applications={
+                "Abaqus": {
+                    "cores": 8,
+                    "hosts": 1,
+                    "precision": "off",
+                    "primary_file_exts": [".inp"],
+                    "result_exts": [".odb"],
+                }
+            },
+        ),
+    )
+    monkeypatch.setattr(pbs_service, "PBSClient", _FakeClient)
+
+    result = pbs_service.run_pbs_solver_job(
+        project_id=32,
+        application="Abaqus",
+        input_file=str(input_file),
+        wait=False,
+    )
+
+    assert result["job_id"] == "pbs-001"
+    assert captured["run_job_kwargs"]["job_name"].startswith("job_")
+    assert captured["run_job_kwargs"]["job_name"] != input_file.stem
+
+
+def test_pbs_upload_file_sanitizes_remote_filename(monkeypatch, tmp_path):
+    input_file = tmp_path / "模型A.inp"
+    input_file.write_text("*Heading\n", encoding="utf-8")
+
+    client = pbs_service.PBSClient(
+        pbs_service.PBSEnvironmentConfig(
+            name="dev",
+            base_url="https://pbs.example.com",
+            server_name="hpccluster",
+            stage_path_template="/stage/${USER}",
+            username="user",
+            password="pass",
+            verify_ssl=False,
+            api_paths={
+                "login": "/api/login",
+                "expand_vars": "/api/expandvars",
+                "create_dir": "/api/dir/create",
+                "upload_file": "/api/files/upload",
+                "file_exists": "/api/files/exists",
+                "submit_job": "/api/jobs",
+                "job_status": "/api/jobs/{job_id}",
+                "list_files": "/api/files/list",
+                "download_file": "/api/files/download",
+            },
+            applications={},
+        )
+    )
+    client.access_token = "token-demo"
+
+    captured = {}
+
+    class _FakeResponse:
+        headers = {"content-type": "application/json"}
+
+        @staticmethod
+        def json():
+            return {"success": True}
+
+    def fake_request(method, path_key, **kwargs):
+        captured["method"] = method
+        captured["path_key"] = path_key
+        captured["params"] = kwargs.get("params") or {}
+        captured["files"] = kwargs.get("files") or {}
+        return _FakeResponse()
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    remote_path = client.upload_file(local_path=str(input_file), remote_dir="/stage/demo")
+
+    assert captured["path_key"] == "upload_file"
+    assert captured["params"]["serversidefilepath"].endswith("/A.inp")
+    assert captured["files"]["attfile"][0] == "A.inp"
+    assert remote_path == "/stage/demo/A.inp"
+
+
 def test_run_pbs_solver_job_requires_project_pbs_config(monkeypatch, tmp_path):
     input_file = tmp_path / "model.inp"
     input_file.write_text("*Heading\n", encoding="utf-8")

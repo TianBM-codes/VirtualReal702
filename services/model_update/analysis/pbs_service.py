@@ -3,6 +3,8 @@ import uuid
 import os
 import posixpath
 import time
+import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -139,6 +141,23 @@ def _normalize_result_group_name(value: str) -> str:
     if not text:
         raise ValidationError("result_group name cannot be empty", {"value": value})
     return text[:96]
+
+
+def _sanitize_pbs_ascii_name(value: str, *, fallback: str) -> str:
+    raw = str(value or "").strip()
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw)
+    text = text.strip("._-")
+    if text:
+        return text[:96]
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    safe_fallback = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(fallback or "").strip()).strip("._-") or "item"
+    return f"{safe_fallback}_{digest}"[:96]
+
+
+def _sanitize_pbs_remote_file_name(path: Path) -> str:
+    suffix = str(path.suffix or "")
+    safe_stem = _sanitize_pbs_ascii_name(path.stem, fallback="input")
+    return f"{safe_stem}{suffix}"
 
 
 def _update_simulation_result_status(project_id: Optional[int], status: int) -> None:
@@ -647,25 +666,26 @@ class PBSClient:
             raise NotFoundError("未找到 PBS 本地输入文件", {"local_path": str(source_path)})
         if not self.access_token:
             raise ValidationError("PBS 尚未登录，缺少 access_token", {"env": self.config.name})
+        remote_file_name = _sanitize_pbs_remote_file_name(source_path)
         with source_path.open("rb") as handle:
             response = self.request(
                 "POST",
                 "upload_file",
                 expected_statuses=(200,),
                 params={
-                    "serversidefilepath": remote_dir + "/" + source_path.name,
+                    "serversidefilepath": remote_dir + "/" + remote_file_name,
                     "access_token": self.access_token,
                     "uid": uuid.uuid4(),
                 },
                 headers={"access_token": f"{self.access_token}"},
-                files={"attfile": (source_path.name, handle)},
+                files={"attfile": (remote_file_name, handle)},
             )
         result = self._parse_json_or_text(response)
         if not result['success']:
             raise ValidationError("pbs upload file failed", result)
         else:
             print("Upload Success _t")
-        return _safe_posix_join(remote_dir, source_path.name)
+        return _safe_posix_join(remote_dir, remote_file_name)
 
     def file_exists(self, remote_path: List[str]) -> bool:
         response = self.request(
@@ -1038,7 +1058,10 @@ def run_pbs_solver_job(
             )
 
         client = PBSClient(config, timeout=timeout_sec)
-        resolved_job_name = str(job_name or source_path.stem).strip() or source_path.stem
+        resolved_job_name = _sanitize_pbs_ascii_name(
+            str(job_name or source_path.stem).strip() or source_path.stem,
+            fallback="job",
+        )
         resolved_output_dir = str(output_dir or "").strip() or str(output_dir_name or "").strip()
         if project_id is not None:
             target_dir = resolve_project_output_dir(

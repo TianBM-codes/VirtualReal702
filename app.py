@@ -3,6 +3,8 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+from pyNastran.converters.format_converter import process_ugrid
+
 from config import APP_CONFIG
 from db import initialize_database_runtime
 from fastapi import Request
@@ -39,7 +41,6 @@ app.include_router(model_update_router)
 app.include_router(modal_router)
 add_test_mesh_route_rewrite_middleware(app)
 
-
 _base_lifespan = app.router.lifespan_context
 
 
@@ -67,8 +68,10 @@ async def log_request_timing(request: Request, call_next):
 
     # 读取 body 并回填，让下游路由仍能正常读取
     raw_body = await request.body()
+
     async def _receive():
         return {"type": "http.request", "body": raw_body, "more_body": False}
+
     request._receive = _receive
 
     try:
@@ -131,7 +134,7 @@ def _legacy_error_response(exc: Exception):
     return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-async def _get_step_names_from_src(project_id: int) -> list[str]:
+async def _get_step_names_from_src(project_id: int, procedure=None) -> list[str]:
     try:
         payload = await list_src_steps(str(project_id))
     except Exception:
@@ -139,11 +142,18 @@ async def _get_step_names_from_src(project_id: int) -> list[str]:
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         return []
-    return [
-        str(item.get("step_name"))
-        for item in rows
-        if isinstance(item, dict) and item.get("step_name") is not None
-    ]
+    if procedure is None:
+        return [
+            str(item.get("step_name"))
+            for item in rows
+            if isinstance(item, dict) and item.get("step_name") is not None
+        ]
+    else:
+        return [
+            str(item.get("step_name"))
+            for item in rows
+            if isinstance(item, dict) and item.get("step_name") is not None and item.get("procedure") == procedure
+        ]
 
 
 @app.post("/match/dofs")
@@ -327,7 +337,7 @@ async def preview_modal_match_api(request: Request):
 async def match_modal_api(request: Request):
     try:
         body = await request.json()
-        subcase_name = await _get_step_names_from_src(int(body["project_id"]))
+        subcase_name = await _get_step_names_from_src(int(body["project_id"]), "FREQUENCY")
         result = match_modal_modes(
             int(body["project_id"]),
             mac_threshold=float(body.get("mac_threshold", 70)),
