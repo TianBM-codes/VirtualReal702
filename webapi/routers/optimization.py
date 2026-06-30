@@ -133,8 +133,9 @@ def _assert_single_modal_response_category(project_id: int, expected_scope: str)
 
 
 def _auto_modal_bayesian_batch_no(project_id: int) -> int:
+    _ = int(project_id)
     stamp = datetime.now().strftime("%m%d%H%M%S")
-    return int(f"{int(project_id) % 1000}{stamp}")
+    return int(stamp)
 
 
 def _normalize_set_names(raw_value) -> list[str]:

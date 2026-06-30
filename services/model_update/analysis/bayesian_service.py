@@ -3313,6 +3313,85 @@ def _select_modal_frequency_matrix_rows(
     return np.asarray(matrix_arr[selected_indexes, :], dtype=np.float64)
 
 
+def _select_modal_sensitivity_matrix_rows(
+        *,
+        stored_response_rows: Sequence[dict],
+        matrix: Sequence[Sequence[float]],
+        response_rows: Sequence[dict],
+) -> np.ndarray:
+    expected_rows = [dict(item or {}) for item in (response_rows or [])]
+    stored_rows = [dict(item or {}) for item in (stored_response_rows or [])]
+
+    if len(expected_rows) == len(stored_rows):
+        expected_names = [str(item.get("response_name") or "").strip() for item in expected_rows]
+        stored_names = [str(item.get("response_name") or "").strip() for item in stored_rows]
+        if expected_names and expected_names == stored_names:
+            return np.asarray(matrix, dtype=np.float64)
+
+    has_modal_mac = any(
+        str(item.get("response_type") or item.get("type") or "").strip().upper() == "MODAL_MAC"
+        for item in expected_rows
+    )
+    if not has_modal_mac:
+        return _select_modal_frequency_matrix_rows(
+            stored_response_rows=stored_response_rows,
+            matrix=matrix,
+            response_rows=response_rows,
+        )
+
+    selected_indexes: List[int] = []
+    used_indexes: set[int] = set()
+    stored_keys = [
+        (
+            str(item.get("response_name") or "").strip(),
+            str(item.get("response_type") or item.get("type") or "").strip().upper(),
+            item.get("mode_number"),
+        )
+        for item in stored_rows
+    ]
+
+    for expected in expected_rows:
+        expected_name = str(expected.get("response_name") or "").strip()
+        expected_type = str(expected.get("response_type") or expected.get("type") or "").strip().upper()
+        expected_mode = expected.get("mode_number")
+        match_index = None
+        for index, (stored_name, stored_type, stored_mode) in enumerate(stored_keys):
+            if index in used_indexes:
+                continue
+            if expected_name and stored_name == expected_name and stored_type == expected_type:
+                match_index = index
+                break
+            if (
+                expected_type == "MODAL_MAC"
+                and stored_type == expected_type
+                and expected_mode is not None
+                and stored_mode is not None
+                and int(stored_mode) == int(expected_mode)
+            ):
+                match_index = index
+                break
+        if match_index is None:
+            raise ValidationError(
+                "failed to align modal sensitivity rows with the selected response rows",
+                {
+                    "expected_response_name": expected_name,
+                    "expected_response_type": expected_type,
+                    "expected_mode_number": expected_mode,
+                    "available_response_rows": stored_rows[:20],
+                },
+            )
+        used_indexes.add(match_index)
+        selected_indexes.append(match_index)
+
+    matrix_arr = np.asarray(matrix, dtype=np.float64)
+    if matrix_arr.ndim != 2:
+        raise ValidationError(
+            "stored modal sensitivity matrix must be two-dimensional",
+            {"matrix_shape": list(matrix_arr.shape)},
+        )
+    return np.asarray(matrix_arr[selected_indexes, :], dtype=np.float64)
+
+
 def _metadata_bound_vector(
         parameter_columns: Sequence[dict],
         *,
@@ -4131,13 +4210,21 @@ def run_modal_frequency_bayesian_update_workflow(
         progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     resolved_batch_no = _normalize_batch_no(batch_no)
-    resolved_sensitivity_batch_no = _normalize_batch_no(sensitivity_batch_no or batch_no)
+    requested_sensitivity_batch_no = (
+        _normalize_batch_no(sensitivity_batch_no)
+        if sensitivity_batch_no is not None
+        else None
+    )
     if int(iterations) <= 0:
         raise ValidationError("iterations must be > 0", {"iterations": iterations})
 
     stored_payload = _sens._load_stored_sensitivity_run(
         project_id=int(project_id),
-        batch_no=resolved_sensitivity_batch_no,
+        batch_no=str(requested_sensitivity_batch_no) if requested_sensitivity_batch_no is not None else None,
+    )
+    resolved_sensitivity_batch_no = str(
+        stored_payload.get("batch_no")
+        or (str(requested_sensitivity_batch_no) if requested_sensitivity_batch_no is not None else "")
     )
     parameter_columns = _normalize_modal_parameter_columns(stored_payload.get("parameter_columns") or [])
     if not parameter_columns:
@@ -4478,7 +4565,11 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
     from services.model_update.solver_prep.nastran_sol103 import extract_sol103_settings_from_bdf
 
     resolved_batch_no = _normalize_batch_no(batch_no)
-    resolved_sensitivity_batch_no = _normalize_batch_no(sensitivity_batch_no or batch_no)
+    requested_sensitivity_batch_no = (
+        _normalize_batch_no(sensitivity_batch_no)
+        if sensitivity_batch_no is not None
+        else None
+    )
     if int(iterations) <= 0:
         raise ValidationError("iterations must be > 0", {"iterations": iterations})
     if exit_diff_percent is not None and float(exit_diff_percent) < 0:
@@ -4491,7 +4582,11 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
 
     stored_payload = _sens._load_stored_sensitivity_run(
         project_id=int(project_id),
-        batch_no=str(resolved_sensitivity_batch_no),
+        batch_no=str(requested_sensitivity_batch_no) if requested_sensitivity_batch_no is not None else None,
+    )
+    resolved_sensitivity_batch_no = str(
+        stored_payload.get("batch_no")
+        or (str(requested_sensitivity_batch_no) if requested_sensitivity_batch_no is not None else "")
     )
     current_parameter_columns = _normalize_modal_parameter_columns(stored_payload.get("parameter_columns") or [])
     if not current_parameter_columns:
@@ -4709,21 +4804,58 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             )
             sol200_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol200_iter{iteration_index + 1}.bdf"
             sensitivity_run_no = f"{resolved_batch_no}_iter_{iteration_index + 1}"
-            rerun_payload = run_sol200_and_store_workflow(
-                project_id=int(project_id),
-                batch_no=str(sensitivity_run_no),
-                case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
-                input_bdf=str(updated_bdf_path),
-                output_bdf=str(sol200_output_bdf),
-                parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
-                responses=_build_sol200_response_rows(response_rows),
-                settings=settings_payload,
-                nastran=nastran,
-                run_solver=True,
-                timeout_sec=timeout_sec,
-                extra_args=list(extra_args or []),
-                write_cloud_result=False,
+            has_modal_mac = any(
+                str(item.get("response_type") or item.get("type") or "").strip().upper() == "MODAL_MAC"
+                for item in (response_rows or [])
             )
+            if has_modal_mac:
+                from services.model_update.analysis.nastran_sol200_service import run_sol200_modal_mac_and_store_workflow
+
+                rerun_payload = run_sol200_modal_mac_and_store_workflow(
+                    project_id=int(project_id),
+                    batch_no=str(sensitivity_run_no),
+                    case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
+                    input_bdf=str(updated_bdf_path),
+                    output_bdf=str(sol200_output_bdf),
+                    parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
+                    responses=[
+                        {
+                            "name": str(item.get("response_name") or "").strip(),
+                            "type": str(item.get("response_type") or item.get("type") or "").strip().upper(),
+                            "mode_number": item.get("mode_number"),
+                            "extra_json": {
+                                **dict(item.get("extra_json") or {}),
+                                "fem_mode_no": item.get("fem_mode_no"),
+                                "test_mode_no": item.get("test_mode_no"),
+                                "target_value": item.get("target_value"),
+                                "freq_error_ratio": item.get("freq_error_ratio"),
+                            },
+                        }
+                        for item in (response_rows or [])
+                    ],
+                    settings=settings_payload,
+                    nastran=nastran,
+                    run_solver=True,
+                    timeout_sec=timeout_sec,
+                    extra_args=list(extra_args or []),
+                    write_cloud_result=False,
+                )
+            else:
+                rerun_payload = run_sol200_and_store_workflow(
+                    project_id=int(project_id),
+                    batch_no=str(sensitivity_run_no),
+                    case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
+                    input_bdf=str(updated_bdf_path),
+                    output_bdf=str(sol200_output_bdf),
+                    parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
+                    responses=_build_sol200_response_rows(response_rows),
+                    settings=settings_payload,
+                    nastran=nastran,
+                    run_solver=True,
+                    timeout_sec=timeout_sec,
+                    extra_args=list(extra_args or []),
+                    write_cloud_result=False,
+                )
 
             rerun_stored_payload = _sens._load_stored_sensitivity_run(
                 project_id=int(project_id),
@@ -4734,7 +4866,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             if rerun_matrix is None:
                 normalized_matrix = np.asarray([], dtype=np.float64)
             else:
-                absolute_matrix = _select_modal_frequency_matrix_rows(
+                absolute_matrix = _select_modal_sensitivity_matrix_rows(
                     stored_response_rows=rerun_stored_payload.get("response_rows") or [],
                     matrix=rerun_matrix,
                     response_rows=response_rows,
@@ -4842,31 +4974,35 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             updated_response_values=current_response_values.tolist(),
         )
         cloud_result = None
+        cloud_result_warning = None
         if write_cloud_result:
             workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
             resolved_cloud_odb_id = _resolve_loaded_odb_id_for_workspace(workspace_path)
             if not resolved_cloud_odb_id:
-                raise ValidationError(
-                    "cloud export via external-field api requires the project workspace to be loaded in the L3 registry",
-                    {"project_id": int(project_id), "workspace": workspace_path},
+                cloud_result_warning = {
+                    "code": "BAYESIAN_CLOUD_EXPORT_SKIPPED",
+                    "message": "project workspace is not loaded in the L3 registry; skipped final cloud export",
+                    "project_id": int(project_id),
+                    "workspace": workspace_path,
+                }
+            else:
+                parameter_mappings = _build_op2_parameter_columns_with_mappings(
+                    workspace=workspace_path,
+                    bdf_path=str(current_bdf_path),
+                    parameter_columns=current_parameter_columns,
                 )
-            parameter_mappings = _build_op2_parameter_columns_with_mappings(
-                workspace=workspace_path,
-                bdf_path=str(current_bdf_path),
-                parameter_columns=current_parameter_columns,
-            )
-            cloud_result = _write_sol200_final_parameter_cloud_result(
-                odb_id=resolved_cloud_odb_id,
-                base_url=cloud_export_base_url,
-                batch_no=resolved_batch_no,
-                parameter_columns=current_parameter_columns,
-                parameter_mappings=parameter_mappings,
-                initial_parameter_values=initial_parameter_values.tolist(),
-                final_parameter_values=current_parameter_values.tolist(),
-                result_group=cloud_result_group,
-                step_name=cloud_step_name,
-                field_name=cloud_field_name,
-            )
+                cloud_result = _write_sol200_final_parameter_cloud_result(
+                    odb_id=resolved_cloud_odb_id,
+                    base_url=cloud_export_base_url,
+                    batch_no=resolved_batch_no,
+                    parameter_columns=current_parameter_columns,
+                    parameter_mappings=parameter_mappings,
+                    initial_parameter_values=initial_parameter_values.tolist(),
+                    final_parameter_values=current_parameter_values.tolist(),
+                    result_group=cloud_result_group,
+                    step_name=cloud_step_name,
+                    field_name=cloud_field_name,
+                )
 
         matched_payload = modal_payload.get("matched_payload") or {}
         try:
@@ -4912,6 +5048,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             "saved_artifacts": saved_artifacts,
             "final_modal_output": final_modal_output,
             "cloud_result": cloud_result,
+            "cloud_result_warning": cloud_result_warning,
             "skipped_response_rows_preview": modal_payload.get("skipped_rows", [])[:20],
             "final_sensitivity_analysis_run_id": final_sensitivity_payload.get("analysis_run_id"),
         }

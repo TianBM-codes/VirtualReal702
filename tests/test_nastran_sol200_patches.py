@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.l3.core.errors import NotFoundError, ValidationError
+from src.l3.core.errors import ValidationError
 from services.model_update.analysis.nastran_sol200_service import (
     DEFAULT_PARAMETER_LOWER_SCALE,
     DEFAULT_PARAMETER_UPPER_SCALE,
@@ -21,7 +21,7 @@ from services.model_update.solver_prep.nastran_sol200 import (
 )
 
 
-def test_run_sol200_modal_mac_and_store_workflow_falls_back_when_csv_only_has_dummy_objective(monkeypatch):
+def test_run_sol200_modal_mac_and_store_workflow_prefers_formatted_csv_preview(monkeypatch):
     from services.model_update.analysis import nastran_sol200_service
     from services.model_update.analysis import sensitivity_service
     from services.model_update.importers import op2_service
@@ -100,19 +100,16 @@ def test_run_sol200_modal_mac_and_store_workflow_falls_back_when_csv_only_has_du
     )
 
     def fake_preview(**kwargs):
-        preview_calls.append(kwargs.get("response_names"))
-        if kwargs.get("response_names"):
-            raise NotFoundError(
-                "requested sensitivity response not found in formatted CSV",
-                {
-                    "response_name": "M1T1N67U1",
-                    "available_response_names": ["OBJ_DUMM"],
-                    "available_response_types": ["FREQ"],
-                },
-            )
+        preview_calls.append(
+            {
+                "response_names": kwargs.get("response_names"),
+                "matrix_path": kwargs.get("matrix_path"),
+                "op2_path": kwargs.get("op2_path"),
+            }
+        )
         return {
-            "response_rows": [{"response_name": "OBJ_DUMM", "response_type": "FREQ", "mode_number": 1}],
-            "parameter_columns": [],
+            "response_rows": [{"response_name": "M1T1N67U1", "response_type": "DISP", "mode_number": 1, "node_id": 67, "component": "U1"}],
+            "parameter_columns": [{"parameter_name": "E1"}],
             "matrix_preview": [[1.0]],
             "warnings": [],
         }
@@ -121,9 +118,12 @@ def test_run_sol200_modal_mac_and_store_workflow_falls_back_when_csv_only_has_du
     monkeypatch.setattr(
         nastran_sol200_service,
         "build_modal_mac_matrix_from_displacement_sensitivity",
-        lambda **kwargs: (_ for _ in ()).throw(ValidationError("displacement rows missing")),
+        lambda **kwargs: {
+            "response_rows": [{"response_name": "MAC_MODE_FE1_TEST1", "response_type": "MODAL_MAC", "mode_number": 1}],
+            "parameter_columns": [{"parameter_name": "E1"}],
+            "matrix": [[91.5]],
+        },
     )
-    monkeypatch.setattr(nastran_sol200_service, "compute_project_modal_mac", lambda **kwargs: {"mac": 91.5})
 
     def fake_persist(**kwargs):
         persisted["matrix_payload"] = kwargs["matrix_payload"]
@@ -141,9 +141,14 @@ def test_run_sol200_modal_mac_and_store_workflow_falls_back_when_csv_only_has_du
         run_solver=False,
     )
 
-    assert preview_calls == [["M1T1N67U1"], None]
-    assert payload["finite_difference_fallback"]["enabled"] is True
-    assert payload["warnings"][-1]["code"] == "SOL200_MODAL_MAC_RESPONSE_MATCH_FALLBACK"
+    assert preview_calls == [
+        {
+            "response_names": ["M1T1N67U1"],
+            "matrix_path": "D:/demo/sens.csv",
+            "op2_path": None,
+        }
+    ]
+    assert payload["matrix_path"] == "D:/demo/sens.csv"
     assert persisted["matrix_payload"]["response_rows"][0]["response_name"] == "MAC_MODE_FE1_TEST1"
 
 
