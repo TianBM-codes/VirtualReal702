@@ -162,6 +162,21 @@ def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(mon
     assert {item["code"] for item in result["warnings"]} == {"RESPONSE_VARIABLES_MAPPED_TO_ABAQUS_BASE"}
 
 
+def test_normalize_abaqus_dsa_response_variables_maps_sensor_style_translations():
+    normalized, mappings = sensitivity_service._normalize_abaqus_dsa_response_variables(
+        region_type="NODE",
+        variables=["UY", "RX", "U2", "UR3"],
+    )
+
+    assert normalized == ["U", "UR"]
+    assert mappings == [
+        {"original": "UY", "mapped": "U"},
+        {"original": "RX", "mapped": "UR"},
+        {"original": "U2", "mapped": "U"},
+        {"original": "UR3", "mapped": "UR"},
+    ]
+
+
 def test_build_project_dsa_config_preview_inherit_omits_value_and_warns(monkeypatch):
     monkeypatch.setattr(
         sensitivity_service,

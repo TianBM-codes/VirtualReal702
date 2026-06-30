@@ -154,6 +154,60 @@ def _manifest_conn(workspace: str) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_workspace_result_group_meta(
+        workspace: str,
+        result_group: str,
+        *,
+        display_name: Optional[str] = None,
+) -> None:
+    group_name = str(result_group or "").strip()
+    if not group_name:
+        return
+
+    workspace_abs = _workspace_path(workspace)
+    conn = _manifest_conn(workspace_abs)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS result_group_meta (
+                result_group TEXT PRIMARY KEY,
+                display_name TEXT,
+                source_file TEXT,
+                consistency_check TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO result_group_meta
+                (result_group, display_name, source_file, consistency_check, created_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            """,
+            (group_name, str(display_name or group_name), None, "count-only"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _ensure_workspace_result_group_meta_many(
+        workspace: Optional[str],
+        result_groups: Iterable[object],
+) -> None:
+    workspace_text = str(workspace or "").strip()
+    if not workspace_text:
+        return
+
+    seen: Set[str] = set()
+    for raw_group in result_groups:
+        group_name = str(raw_group or "").strip()
+        if not group_name or group_name in seen:
+            continue
+        seen.add(group_name)
+        _ensure_workspace_result_group_meta(workspace_text, group_name)
+
+
 def _load_json_list(value: Optional[str]) -> list:
     if not value:
         return []
@@ -999,10 +1053,16 @@ def _normalize_abaqus_dsa_response_variables(
 
     node_variable_map = {
         "U": "U",
+        "UX": "U",
+        "UY": "U",
+        "UZ": "U",
         "U1": "U",
         "U2": "U",
         "U3": "U",
         "UR": "UR",
+        "RX": "UR",
+        "RY": "UR",
+        "RZ": "UR",
         "UR1": "UR",
         "UR2": "UR",
         "UR3": "UR",
@@ -1728,6 +1788,15 @@ def _finalize_sensitivity_store_result(
     }
     if extra_payload:
         result.update(extra_payload)
+    workspace_result_groups: List[str] = []
+    if cloud_result:
+        workspace_result_groups.extend(
+            [str(item) for item in list(cloud_result.get("result_groups") or []) if str(item).strip()]
+        )
+        cloud_primary_group = str(cloud_result.get("result_group") or "").strip()
+        if cloud_primary_group:
+            workspace_result_groups.append(cloud_primary_group)
+    _ensure_workspace_result_group_meta_many(result.get("workspace"), workspace_result_groups)
     safe_write_console_event(
         int(project_id),
         "灵敏度计算完成",
@@ -2828,6 +2897,10 @@ def run_sensitivity_inp_and_store(
                 result["merge_result_groups"] = sorted(
                     {str(item.get("result_group")) for item in merge_result if str(item.get("result_group") or "").strip()}
                 )
+                _ensure_workspace_result_group_meta_many(
+                    result.get("workspace"),
+                    result["merge_result_groups"],
+                )
             except Exception as exc:
                 result["merge_result"] = {"error": str(exc)}
                 result["merge_result_group"] = None
@@ -3636,6 +3709,104 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
     for offset, field_name in enumerate(ordered_fields):
         field_map[field_name] = parameter_rows[offset]
     return field_map
+
+
+def _load_workspace_result_group_field_names(
+        *,
+        workspace: str,
+        step: str,
+        source_result_group: Optional[str] = None,
+) -> List[str]:
+    workspace_abs = _workspace_path(workspace)
+    conn = _manifest_conn(workspace_abs)
+    try:
+        if source_result_group is None:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT field_name
+                FROM result_files
+                WHERE step_name = ?
+                  AND result_group IS NULL
+                ORDER BY field_name
+                """,
+                (str(step),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT field_name
+                FROM result_files
+                WHERE step_name = ?
+                  AND result_group = ?
+                ORDER BY field_name
+                """,
+                (str(step), str(source_result_group)),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    return [str(row["field_name"]) for row in (rows or []) if str(row["field_name"] or "").strip()]
+
+
+def _placeholder_merge_parameter_row(index: int) -> dict:
+    return {
+        "parameter_name": f"__UNUSED_{int(index)}__",
+        "quantity_code": "__UNUSED__",
+        "set_name": f"__UNUSED_SET_{int(index)}__",
+        "set_type": "ELSET",
+        "set_scope": "PART",
+        "instance_name": None,
+        "part_name": None,
+        "element_label": None,
+        "extra_json": {},
+    }
+
+
+def _build_src_merge_parameter_rows(
+        *,
+        parameter_rows: List[dict],
+        field_prefix: str,
+        source_field_names: List[str],
+) -> List[dict]:
+    matching_field_names = [
+        str(name)
+        for name in list(source_field_names or [])
+        if str(name).startswith(str(field_prefix))
+    ]
+    if not parameter_rows or not matching_field_names:
+        return list(parameter_rows or [])
+
+    field_map = _build_dsa_parameter_row_map(parameter_rows, field_prefix, matching_field_names)
+    field_indices = {
+        str(field_name): _extract_dsa_field_index(field_prefix, str(field_name))
+        for field_name in matching_field_names
+    }
+    max_index = max(field_indices.values(), default=0)
+    if max_index <= 0:
+        return list(parameter_rows)
+
+    expanded_rows = [_placeholder_merge_parameter_row(index + 1) for index in range(max_index)]
+    for field_name, mapped_row in field_map.items():
+        field_index = field_indices.get(str(field_name))
+        if field_index is None or field_index <= 0:
+            continue
+        target_index = int(field_index) - 1
+        existing_row = expanded_rows[target_index]
+        if str(existing_row.get("parameter_name") or "").startswith("__UNUSED_"):
+            expanded_rows[target_index] = dict(mapped_row)
+            continue
+        if dict(existing_row) != dict(mapped_row):
+            raise ValidationError(
+                "conflicting optimization parameters resolved for the same DSA field index",
+                {
+                    "field_name": str(field_name),
+                    "field_index": int(field_index),
+                    "existing_parameter": existing_row,
+                    "incoming_parameter": mapped_row,
+                },
+            )
+
+    return expanded_rows
 
 
 def _build_dsa_design_parameter_name_map(model) -> Dict[int, str]:
@@ -5271,6 +5442,16 @@ def merge_dsa_sensitivity_fields(
             "no optimization parameters found for project",
             {"project_id": int(project_id)},
         )
+    source_field_names = _load_workspace_result_group_field_names(
+        workspace=workspace,
+        step=step,
+        source_result_group=source_result_group,
+    )
+    merge_parameter_rows = _build_src_merge_parameter_rows(
+        parameter_rows=parameter_rows,
+        field_prefix=field_prefix,
+        source_field_names=source_field_names,
+    )
 
     return merge_dsa_fields(
         workspace=workspace,
@@ -5278,7 +5459,7 @@ def merge_dsa_sensitivity_fields(
         frame=frame,
         field_prefix=field_prefix,
         instances=list(instances) if instances else [],
-        parameter_rows=parameter_rows,
+        parameter_rows=merge_parameter_rows,
         result_group=result_group,
         source_result_group=source_result_group,
     )
