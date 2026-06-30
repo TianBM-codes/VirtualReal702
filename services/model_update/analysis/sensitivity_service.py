@@ -2697,6 +2697,7 @@ def run_sensitivity_inp_and_store(
             output_dir=output_dir_abs,
             abaqus=abaqus,
             job_name=job_name,
+            project_id=int(project_id),
             cpus=cpus,
             interactive=interactive,
             run_solver=True,

@@ -22,6 +22,7 @@ from .project_log_service import (
     log_project_info,
     log_project_step,
 )
+from .project_status_service import update_work_condition_project_status
 from .project_file_service import resolve_project_output_dir, resolve_project_output_file
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import (
@@ -234,6 +235,15 @@ def _abs_file(path: str, field_name: str) -> Path:
 
 def _project_workspace(project_id: int) -> Path:
     return Path(_local_project_workspace_path(int(project_id))).expanduser().resolve()
+
+
+def _update_simulation_result_status(project_id: Optional[int], status: int) -> None:
+    if project_id is None:
+        return
+    update_work_condition_project_status(
+        int(project_id),
+        simulation_result_status=int(status),
+    )
 
 
 def _detect_project_source_type(input_path: Path) -> str:
@@ -951,6 +961,7 @@ def run_abaqus_job(
     output_dir: Optional[str] = None,
     abaqus: Optional[str] = None,
     job_name: Optional[str] = None,
+    project_id: Optional[int] = None,
     cpus: Optional[int] = None,
     interactive: bool = True,
     run_solver: bool = True,
@@ -996,6 +1007,8 @@ def run_abaqus_job(
             artifact_suffixes=_ABAQUS_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
+        if not bool((payload.get("solver") or {}).get("ok")):
+            _update_simulation_result_status(project_id, 2)
     return payload
 
 
@@ -1217,6 +1230,7 @@ def run_solver_and_parse_project_result(
     poll_interval_sec: float = 2.0,
 ) -> dict:
     log_project_step(int(project_id), "统一计算并解析开始", stage="solver_run_and_parse", percent=0)
+    source_type: Optional[str] = None
     try:
         resolved_input = str(input_file or "").strip() or str(input_file_name or "").strip()
         resolved_field_name = "input_file" if str(input_file or "").strip() else "input_file_name"
@@ -1289,6 +1303,7 @@ def run_solver_and_parse_project_result(
                 output_dir=output_dir,
                 abaqus=abaqus,
                 job_name=job_name,
+                project_id=int(project_id),
                 cpus=cpus,
                 interactive=interactive,
                 run_solver=True,
@@ -1430,5 +1445,10 @@ def run_solver_and_parse_project_result(
             {"input_file": str(input_path)},
         )
     except Exception as exc:
+        if source_type == "inp":
+            try:
+                _update_simulation_result_status(project_id, 2)
+            except Exception:
+                pass
         log_project_error(int(project_id), f"统一计算并解析失败: {exc}", stage="failed")
         raise

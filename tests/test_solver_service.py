@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from services.model_update.analysis.solver_service import (
     _build_abaqus_command,
     _copy_missing_relative_includes,
@@ -9,6 +11,7 @@ from services.model_update.analysis.solver_service import (
     _build_nastran_command,
     _run_local_solver,
     run_abaqus_adjoint_job,
+    run_abaqus_job,
     run_abaqus_sensitivity_job,
     run_nastran_sol103_and_store_modal_results,
     run_nastran_sol103_job,
@@ -406,6 +409,38 @@ def test_run_nastran_sol103_and_store_modal_results_uses_generated_bdf_for_op2_i
     assert Path(result["op2_path"]) == Path("D:/demo/model_sol103.op2")
 
 
+def test_run_abaqus_job_sets_simulation_result_status_to_2_on_solver_failure(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import solver_service
+
+    input_inp = _write_text(tmp_path / "failed_case.inp", "*Heading\n")
+    captured = {}
+
+    monkeypatch.setattr(
+        solver_service,
+        "_run_local_solver",
+        lambda **kwargs: {
+            "ok": False,
+            "returncode": 1,
+            "artifacts": {},
+        },
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "update_work_condition_project_status",
+        lambda project_id, **fields: captured.setdefault("status_updates", []).append((project_id, fields)),
+    )
+
+    result = run_abaqus_job(
+        input_inp=str(input_inp),
+        output_dir=str(tmp_path / "out"),
+        project_id=1001,
+        run_solver=True,
+    )
+
+    assert result["solver"]["ok"] is False
+    assert captured["status_updates"][-1] == (1001, {"simulation_result_status": 2})
+
+
 def test_run_solver_and_parse_project_result_for_inp_skips_project_creation(monkeypatch, tmp_path: Path):
     from services.model_update.analysis import solver_service
 
@@ -529,3 +564,46 @@ def test_run_solver_and_parse_project_result_accepts_absolute_path(monkeypatch, 
 
     assert result["source_type"] == "inp"
     assert Path(result["artifacts"]["input_file"]) == input_inp.resolve()
+
+
+def test_run_solver_and_parse_project_result_sets_simulation_result_status_to_2_on_abaqus_parse_failure(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from services.model_update.analysis import solver_service
+
+    project_dir = tmp_path / "1004"
+    project_dir.mkdir()
+    _write_text(project_dir / "parse_fail.inp", "*Heading\n")
+    captured = {}
+
+    monkeypatch.setattr(
+        solver_service,
+        "run_abaqus_job",
+        lambda **kwargs: {
+            "job_name": kwargs.get("job_name") or "parse_fail",
+            "solver": {
+                "ok": True,
+                "artifacts": {"odb": "D:/demo/parse_fail.odb"},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "_submit_project_result_group_and_wait",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("odb parse failed")),
+    )
+    monkeypatch.setattr(
+        solver_service,
+        "update_work_condition_project_status",
+        lambda project_id, **fields: captured.setdefault("status_updates", []).append((project_id, fields)),
+    )
+    monkeypatch.setattr(solver_service, "_project_workspace", lambda project_id: project_dir.resolve())
+
+    with pytest.raises(RuntimeError, match="odb parse failed"):
+        run_solver_and_parse_project_result(
+            project_id=1004,
+            input_file="parse_fail.inp",
+        )
+
+    assert captured["status_updates"][-1] == (1004, {"simulation_result_status": 2})
