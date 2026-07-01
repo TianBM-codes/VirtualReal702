@@ -1461,13 +1461,30 @@ def _run_op2_result_group(project_id: str, result_group: str,
     label = "{}/{}".format(project_id, result_group)
     _log_job(project_id, "step",
              f"[{_kw(result_group)}] OP2 结果打包启动", stage="rg_op2")
-    rc, tail = _run_streaming(
-        [sys.executable, str(OP2_PACK_SCRIPT),
-         "--op2", op2_path,
-         "--workspace", workspace,
-         "--result-group", result_group],
-        project_id, "rg_op2",
-    )
+
+    # Locate the companion BDF (geometry source) so op2_pack can rotate nodal
+    # displacements from their CD output frames back to global. Nastran writes
+    # DISPLACEMENT/eigenvector components in each node's CD frame; without this,
+    # nodes with a local CD tear the deformed mesh. Missing BDF → op2_pack falls
+    # back to leaving displacements in the CD frame (its default).
+    op2_pack_cmd = [sys.executable, str(OP2_PACK_SCRIPT),
+                    "--op2", op2_path,
+                    "--workspace", workspace,
+                    "--result-group", result_group]
+    try:
+        with _connect() as _c:
+            _row = _c.execute(
+                "SELECT inp_path FROM projects WHERE project_id=?", (project_id,)
+            ).fetchone()
+        _bdf_geom = _resolve_model_update_bdf_path(
+            _row["inp_path"] if _row else None, workspace)
+        if _bdf_geom:
+            op2_pack_cmd += ["--bdf", _bdf_geom]
+    except Exception as exc:
+        logger.warning("[%s] resolve companion BDF for CD transform failed: %s",
+                       project_id, exc)
+
+    rc, tail = _run_streaming(op2_pack_cmd, project_id, "rg_op2")
     if rc != 0:
         msg = "op2_pack failed: " + tail
         _update_result_group_status(project_id, result_group, "error", msg)
