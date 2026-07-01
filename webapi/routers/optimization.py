@@ -403,7 +403,7 @@ def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
         "extra_args": body.extra_args,
         "write_cloud_result": body.write_cloud_result,
         "cloud_result_group": body.cloud_result_group,
-        "cloud_step_name": body.cloud_step_name,
+        "cloud_step_name": "BayesianUpdate",
         "cloud_field_name": body.cloud_field_name,
         "cloud_value_mode": body.cloud_value_mode,
     }

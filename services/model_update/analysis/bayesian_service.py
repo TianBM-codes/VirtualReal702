@@ -21,11 +21,13 @@ from src.inp.parameter_mapping import build_parameter_target_map
 from src.l3.core.errors import NotFoundError, ValidationError
 
 from . import inp_service as _inp
+from . import fem_correlation_service as _correlation
 from .ccmetrics import build_ccdis as _build_ccdis
 from .ccmetrics import build_ccmean as _build_ccmean
 from .ccmetrics import build_cctot as _build_cctot
 from .console_log_service import safe_write_console_event
 from .l3_local_bridge_service import write_external_field_local
+from .project_path_service import resolve_project_cal_subdir, resolve_project_workspace
 from .project_status_service import update_work_condition_project_status
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
@@ -37,6 +39,7 @@ _DEFAULT_SOL200_BAYESIAN_RESULT_GROUP = "bayesian_sol200"
 _WORKFLOW_STATUS_RUNNING = 0
 _WORKFLOW_STATUS_DONE = 1
 _WORKFLOW_STATUS_FAILED = 2
+_BAYESIAN_CLOUD_STEP_NAME = "BayesianUpdate"
 
 
 def _set_project_fix_status(
@@ -64,6 +67,173 @@ def _format_scalar(value: float) -> str:
 
 def _normalize_optional_path(path: Optional[str]) -> Optional[str]:
     return os.path.abspath(path) if path else None
+
+
+def _workspace_has_manifest(workspace: Optional[str]) -> bool:
+    if not workspace:
+        return False
+    workspace_abs = os.path.abspath(str(workspace))
+    return os.path.isfile(os.path.join(workspace_abs, "manifest.db"))
+
+
+def _resolve_project_bayesian_workspace(project_id: int, explicit_workspace: Optional[str]) -> Optional[str]:
+    if str(explicit_workspace or "").strip():
+        return _normalize_optional_path(explicit_workspace)
+
+    candidates = [
+        resolve_project_workspace(int(project_id)),
+        resolve_project_cal_subdir(int(project_id), "bayesian"),
+    ]
+    seen = set()
+    normalized_candidates = []
+    for candidate in candidates:
+        normalized = os.path.abspath(str(candidate))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_candidates.append(normalized)
+
+    for candidate in normalized_candidates:
+        if _workspace_has_manifest(candidate):
+            return candidate
+    return normalized_candidates[0] if normalized_candidates else None
+
+
+def _resolve_bayesian_default_step(
+        *,
+        workspace: Optional[str],
+        design_response_rows: Sequence[dict],
+) -> Optional[str]:
+    step_names = [
+        str(row.get("step_name") or "").strip()
+        for row in list(design_response_rows or [])
+        if str(row.get("step_name") or "").strip()
+    ]
+    if step_names:
+        return step_names[-1]
+
+    if workspace and _workspace_has_manifest(workspace):
+        conn = _sens._manifest_conn(_sens._workspace_path(workspace))
+        try:
+            step_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT step_name, step_number FROM steps ORDER BY step_number, step_name"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        chosen_step = _sens._default_step_from_rows(step_rows)
+        if chosen_step:
+            return str(chosen_step)
+    return None
+
+
+def _resolve_bayesian_default_instances(
+        *,
+        workspace: Optional[str],
+        step: Optional[str],
+        field_prefix: Optional[str],
+        position: Optional[str],
+        design_response_rows: Sequence[dict],
+) -> Optional[List[str]]:
+    candidate_rows = []
+    for row in list(design_response_rows or []):
+        row_step_name = str(row.get("step_name") or "").strip()
+        if step and row_step_name and row_step_name != str(step):
+            continue
+        candidate_rows.append(row)
+
+    instance_names = []
+    seen = set()
+    for row in candidate_rows:
+        instance_name = str(row.get("instance_name") or "").strip()
+        if not instance_name or instance_name in seen:
+            continue
+        seen.add(instance_name)
+        instance_names.append(instance_name)
+    if instance_names:
+        return instance_names
+
+    if workspace and field_prefix and _workspace_has_manifest(workspace):
+        try:
+            discovery = _sens._discover_sensitivity_fields_from_workspace(
+                workspace,
+                step=step,
+                instances=None,
+                selector=_sens._build_field_selector(field_prefix=field_prefix),
+                position=position,
+            )
+            resolved_instances = [str(item) for item in list(discovery.get("instances") or []) if str(item).strip()]
+            if resolved_instances:
+                return resolved_instances
+        except Exception:
+            return None
+
+    return None
+
+
+def _resolve_bayesian_static_run_defaults(
+        *,
+        project_id: int,
+        workspace: Optional[str],
+        step: Optional[str],
+        instances: Optional[List[str]],
+        field_prefix: Optional[str],
+        response_component: Optional[str],
+        position: Optional[str],
+) -> dict:
+    design_response_rows = _sens._load_project_design_responses(int(project_id))
+    resolved_workspace = _resolve_project_bayesian_workspace(int(project_id), workspace)
+    resolved_step = str(step or "").strip() or _resolve_bayesian_default_step(
+        workspace=resolved_workspace,
+        design_response_rows=design_response_rows,
+    )
+
+    resolved_field_prefix = str(field_prefix or "").strip()
+    if not resolved_field_prefix:
+        resolved_field_prefix = _sens._infer_field_prefix_from_design_response_rows(design_response_rows)
+
+    resolved_response_component = str(response_component or "").strip()
+    if not resolved_response_component:
+        resolved_response_component = (
+            _sens._infer_response_component_from_design_response_rows(
+                design_response_rows,
+                field_prefix=resolved_field_prefix,
+            )
+            or ""
+        )
+
+    resolved_position = str(position or "").strip()
+    if not resolved_position:
+        resolved_position = (
+            _sens._infer_position_from_design_response_rows(
+                design_response_rows,
+                field_prefix=resolved_field_prefix,
+                response_component=resolved_response_component or None,
+            )
+            or ""
+        )
+
+    resolved_instances = [str(item) for item in list(instances or []) if str(item).strip()]
+    if not resolved_instances:
+        resolved_instances = _resolve_bayesian_default_instances(
+            workspace=resolved_workspace,
+            step=resolved_step or None,
+            field_prefix=resolved_field_prefix,
+            position=resolved_position or None,
+            design_response_rows=design_response_rows,
+        ) or []
+
+    return {
+        "workspace": resolved_workspace,
+        "step": resolved_step or None,
+        "instances": resolved_instances or None,
+        "field_prefix": resolved_field_prefix,
+        "response_component": resolved_response_component or None,
+        "position": resolved_position or None,
+        "cloud_step_name": _BAYESIAN_CLOUD_STEP_NAME,
+    }
 
 
 def _clone_jsonable(value: Any) -> Any:
@@ -155,6 +325,95 @@ def _response_row_key(
 ) -> str:
     component = str(response_component or "")
     return f"{instance}|{response_field}|{component}|{response_position}|{response_label}"
+
+
+def _response_component_to_static_column(response_component: Optional[str]) -> Optional[str]:
+    token = str(response_component or "").strip().upper()
+    mapping = {
+        "U1": "ux",
+        "U2": "uy",
+        "U3": "uz",
+        "UX": "ux",
+        "UY": "uy",
+        "UZ": "uz",
+        "UR1": "rx",
+        "UR2": "ry",
+        "UR3": "rz",
+        "RX": "rx",
+        "RY": "ry",
+        "RZ": "rz",
+    }
+    return mapping.get(token)
+
+
+def _load_project_static_target_response_values(
+        *,
+        project_id: int,
+        response_rows: Sequence[dict],
+) -> Dict[str, float]:
+    if not response_rows:
+        return {}
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT load_case_no, result_no, MAX(created_at) AS latest_created_at
+            FROM t_mt_py_test_static_result
+            WHERE pid = %s
+            GROUP BY load_case_no, result_no
+            ORDER BY latest_created_at DESC, load_case_no, result_no
+            """,
+            (int(project_id),),
+        )
+        case_rows = cursor.fetchall() or []
+        if case_rows:
+            chosen_case = dict(case_rows[0])
+            test_rows_raw = _correlation._load_test_static_rows(
+                cursor,
+                int(project_id),
+                int(chosen_case["load_case_no"]),
+                int(chosen_case["result_no"]),
+            )
+        else:
+            test_rows_raw = _correlation._load_static_test_rows_from_data_table(cursor, int(project_id))
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not test_rows_raw:
+        raise ValidationError(
+            "target_responses is required because no static test response rows were found in the database",
+            {"project_id": int(project_id)},
+        )
+
+    test_rows_by_point = {str(row.get("point")): dict(row) for row in list(test_rows_raw or []) if row.get("point") is not None}
+    resolved_targets: Dict[str, float] = {}
+    missing = []
+    for row in list(response_rows or []):
+        response_label = str(row.get("response_label") or "").strip()
+        point_key = response_label.split("::")[-1] if "::" in response_label else response_label
+        test_row = test_rows_by_point.get(point_key)
+        if not test_row:
+            missing.append({"response_label": response_label, "point": point_key})
+            continue
+        target_column = _response_component_to_static_column(row.get("response_component"))
+        if not target_column:
+            missing.append({"response_label": response_label, "component": row.get("response_component")})
+            continue
+        target_value = test_row.get(target_column)
+        if target_value is None:
+            missing.append({"response_label": response_label, "component": row.get("response_component"), "point": point_key})
+            continue
+        resolved_targets[str(row.get("row_key"))] = float(target_value)
+
+    if missing:
+        raise ValidationError(
+            "failed to resolve some target_responses from static test data",
+            {"project_id": int(project_id), "missing": missing[:20]},
+        )
+    return resolved_targets
 
 
 def _scoped_target_node_labels_for_instance(
@@ -3867,6 +4126,22 @@ def run_bayesian_update_workflow(
     if exit_diff_percent is not None and float(exit_diff_percent) < 0:
         raise ValidationError("exit_diff_percent must be >= 0", {"exit_diff_percent": exit_diff_percent})
     resolved_batch_no = _normalize_batch_no(batch_no)
+    resolved_defaults = _resolve_bayesian_static_run_defaults(
+        project_id=int(project_id),
+        workspace=workspace,
+        step=step,
+        instances=instances,
+        field_prefix=field_prefix,
+        response_component=response_component,
+        position=position,
+    )
+    workspace = resolved_defaults["workspace"]
+    step = resolved_defaults["step"]
+    instances = resolved_defaults["instances"]
+    field_prefix = resolved_defaults["field_prefix"]
+    response_component = resolved_defaults["response_component"]
+    position = resolved_defaults["position"]
+    cloud_step_name = resolved_defaults["cloud_step_name"]
     cleanup_result = _clear_bayesian_run_outputs(
         project_id=int(project_id),
         batch_no=resolved_batch_no,
@@ -3992,9 +4267,15 @@ def run_bayesian_update_workflow(
             S_norm = np.asarray(matrix_payload["matrix"], dtype=np.float64)
             p_current = np.asarray(matrix_payload["parameter_values"], dtype=np.float64)
             r_model = np.asarray(matrix_payload["response_values"], dtype=np.float64)
+            resolved_target_input = target_responses
+            if resolved_target_input is None:
+                resolved_target_input = _load_project_static_target_response_values(
+                    project_id=int(project_id),
+                    response_rows=response_rows,
+                )
             r_target = np.asarray(
                 _vector_from_input(
-                    target_responses,
+                    resolved_target_input,
                     response_rows,
                     label="target_responses",
                     key_candidates=("row_key", "response_label"),

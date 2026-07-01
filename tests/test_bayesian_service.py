@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -146,6 +147,107 @@ def test_update_parameter_section_values_updates_relative_include_parameter_file
 
     assert result["output_inp"] == str(model_path.resolve())
     assert include_path.read_text(encoding="utf-8") == "*PARAMETER\nT_SET_149=0.0025\n"
+
+
+def test_resolve_bayesian_static_run_defaults_infers_from_design_response_rows(monkeypatch):
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_load_project_design_responses",
+        lambda project_id: [
+            {
+                "step_name": "Step-1",
+                "region_type": "NODE",
+                "set_name": "MANUAL_RESP_NODE_RESP_1_1",
+                "set_scope": "ASSEMBLY",
+                "instance_name": "PART-1-1",
+                "part_name": "PART-1",
+                "variables": ["UY"],
+                "extra_json": {"node_labels": [4]},
+            }
+        ],
+    )
+    monkeypatch.setattr(bayesian_service, "resolve_project_workspace", lambda project_id: "D:/demo/project")
+    monkeypatch.setattr(bayesian_service, "resolve_project_cal_subdir", lambda project_id, name: f"D:/demo/{name}")
+    monkeypatch.setattr(bayesian_service, "_workspace_has_manifest", lambda workspace: workspace == "D:/demo/project")
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_infer_field_prefix_from_design_response_rows",
+        lambda rows: "d_U_",
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_infer_response_component_from_design_response_rows",
+        lambda rows, *, field_prefix: "U2",
+    )
+    monkeypatch.setattr(
+        bayesian_service._sens,
+        "_infer_position_from_design_response_rows",
+        lambda rows, *, field_prefix, response_component=None: "NODAL",
+    )
+
+    resolved = bayesian_service._resolve_bayesian_static_run_defaults(
+        project_id=25,
+        workspace=None,
+        step=None,
+        instances=None,
+        field_prefix=None,
+        response_component=None,
+        position=None,
+    )
+
+    assert resolved["workspace"] == os.path.abspath("D:/demo/project")
+    assert resolved["step"] == "Step-1"
+    assert resolved["instances"] == ["PART-1-1"]
+    assert resolved["field_prefix"] == "d_U_"
+    assert resolved["response_component"] == "U2"
+    assert resolved["position"] == "NODAL"
+    assert resolved["cloud_step_name"] == "BayesianUpdate"
+
+
+def test_load_project_static_target_response_values_reads_test_static_rows(monkeypatch):
+    class _FakeCursor:
+        def __init__(self):
+            self.last_sql = ""
+
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+
+        def fetchall(self):
+            if "FROM t_mt_py_test_static_result" in self.last_sql and "GROUP BY load_case_no, result_no" in self.last_sql:
+                return [{"load_case_no": 1, "result_no": 1, "latest_created_at": "2026-07-01"}]
+            return []
+
+        def close(self):
+            return None
+
+    class _FakeConn:
+        def cursor(self, dictionary=True):
+            return _FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(bayesian_service, "get_connection", lambda: _FakeConn())
+    monkeypatch.setattr(
+        bayesian_service._correlation,
+        "_load_test_static_rows",
+        lambda cursor, project_id, load_case_no, result_no: [
+            {"point": "4", "ux": 0.0, "uy": -0.35, "uz": 0.0, "rx": 0.0, "ry": 0.0, "rz": 0.0}
+        ],
+    )
+
+    resolved = bayesian_service._load_project_static_target_response_values(
+        project_id=25,
+        response_rows=[
+            {
+                "row_key": "PART-1-1|U|U2|NODAL|PART-1-1::4",
+                "response_label": "PART-1-1::4",
+                "response_component": "U2",
+            }
+        ],
+    )
+
+    assert resolved == {"PART-1-1|U|U2|NODAL|PART-1-1::4": -0.35}
 
 
 def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_values(monkeypatch, tmp_path: Path):

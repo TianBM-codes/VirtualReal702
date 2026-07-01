@@ -74,8 +74,42 @@ def resolve_project_input_file(
     file_name: Optional[str],
     field_name: str,
 ) -> Path:
-    raw = str(explicit_path or "").strip() or str(file_name or "").strip()
-    return resolve_project_existing_file(int(project_id), raw, field_name)
+    explicit_raw = str(explicit_path or "").strip()
+    if explicit_raw:
+        return resolve_project_existing_file(int(project_id), explicit_raw, field_name)
+
+    file_name_raw = str(file_name or "").strip()
+    if not file_name_raw:
+        raise ValidationError(
+            f"{field_name} cannot be empty",
+            {"project_id": int(project_id), field_name: file_name},
+        )
+
+    candidate = Path(file_name_raw).expanduser()
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        return resolve_project_existing_file(int(project_id), file_name_raw, field_name)
+
+    search_roots = [
+        resolve_project_workspace_root(int(project_id)),
+        resolve_project_cal_root(int(project_id)),
+        resolve_project_cal_root(int(project_id), "sensitivity"),
+        resolve_project_cal_root(int(project_id), "bayesian"),
+    ]
+    seen = set()
+    for root in search_roots:
+        normalized_root = str(root.resolve())
+        if normalized_root in seen:
+            continue
+        seen.add(normalized_root)
+        resolved = (root / candidate.name).resolve()
+        try:
+            resolved = _ensure_within_root(resolve_project_workspace_root(int(project_id)), resolved, field_name, int(project_id))
+        except ValidationError:
+            continue
+        if resolved.exists() and resolved.is_file():
+            return resolved
+
+    return resolve_project_existing_file(int(project_id), file_name_raw, field_name)
 
 
 def resolve_project_output_dir(

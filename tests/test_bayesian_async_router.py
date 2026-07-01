@@ -26,11 +26,14 @@ def test_bayesian_run_kwargs_uses_service_config_defaults(monkeypatch):
     )
     monkeypatch.setattr(optimization, "resolve_project_cal_subdir", lambda project_id, name: "D:/temp/bayesian")
     monkeypatch.setattr(optimization, "resolve_abaqus_command", lambda value: "C:/SIMULIA/Commands/abaqus.bat")
+    monkeypatch.setattr(optimization, "resolve_project_input_file", lambda project_id, explicit_path, file_name, field_name: "D:/demo/model.inp")
 
     kwargs = optimization._bayesian_run_kwargs(body)
 
     assert kwargs["output_dir"] == "D:/temp/bayesian"
     assert kwargs["abaqus"] == "C:/SIMULIA/Commands/abaqus.bat"
+    assert kwargs["write_cloud_result"] is True
+    assert kwargs["cloud_step_name"] == "BayesianUpdate"
     assert "python3" not in kwargs
 
 

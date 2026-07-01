@@ -233,7 +233,7 @@ class BayesianModelUpdateRequest(BaseModel):
     batch_no: int = Field(default=1, ge=1)
     input_inp: Optional[str] = None
     input_inp_name: Optional[str] = None
-    target_responses: Any
+    target_responses: Any = None
     parameter_scatter: Any = None
     response_scatter: Any = None
     save_results: bool = True
@@ -243,7 +243,7 @@ class BayesianModelUpdateRequest(BaseModel):
     odb_path: Optional[str] = None
     step: Optional[str] = None
     instances: Optional[List[str]] = None
-    field_prefix: str = "d_U_"
+    field_prefix: Optional[str] = None
     response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
@@ -262,7 +262,7 @@ class BayesianModelUpdateRequest(BaseModel):
     run_solver: bool = False
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
-    write_cloud_result: bool = False
+    write_cloud_result: bool = True
     cloud_result_group: Optional[str] = None
     cloud_step_name: str = "BayesianUpdate"
     cloud_field_name: str = "PARAMETER_CLOUD"
