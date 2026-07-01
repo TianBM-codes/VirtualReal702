@@ -58,6 +58,10 @@ def parse_args():
     p.add_argument('--workspace',    required=True,  help='Workspace directory')
     p.add_argument('--result-group', default='default_result',
                    help='Result group name (default: default_result)')
+    p.add_argument('--bdf',          default=None,
+                   help='Companion BDF (for CD→global displacement transform). '
+                        'Optional; if omitted, displacements are written in their '
+                        'nodal output (CD) coordinate system as-is.')
     return p.parse_args()
 
 
@@ -173,6 +177,96 @@ def _get_frame_values(result_obj, procedure):
     return fvals, descs, [None] * n_frames
 
 
+# ─── Nodal output coordinate-system (CD) → global transform ────────────────────
+
+# Result tables already stored in the basic (cid=0) frame — must NOT be re-rotated.
+_BASIC_FRAME_TABLES = {'BOUGV1', 'BOPHIG', 'TOUGV1'}
+
+
+def _build_coord_context(bdf_path):
+    """
+    Build the data needed to rotate nodal results from each node's output (CD)
+    coordinate system back to the global frame.
+
+    Nastran writes DISPLACEMENT / eigenvector components in each node's CD frame
+    (GRID field 7, or a GRDSET default). When any node has CD≠0, applying the raw
+    components as if they were global tears the deformed mesh. We read the companion
+    BDF to learn every node's CD and each coordinate system's definition.
+
+    Returns (coords, cd_of, xyz_of) or None if no BDF / no local CD is present.
+      coords : dict{cid: pyNastran Coord}   — passed straight to pyNastran's rotator
+      cd_of  : dict{nid: cd}
+      xyz_of : dict{nid: (x, y, z)} in global — only needed for cylindrical CD
+    """
+    if not bdf_path or not os.path.exists(bdf_path):
+        return None
+
+    from pyNastran.bdf.bdf import BDF
+    model = BDF(debug=False)
+    model.read_bdf(bdf_path, xref=True)
+
+    # nid_cp_cd: [N, 3] = (node id, CP, CD), sorted by node id
+    icd_t, icp_t, xyz_cp, nid_cp_cd = model.get_displacement_index_xyz_cp_cd(sort_ids=True)
+    nids = nid_cp_cd[:, 0]
+    cds  = nid_cp_cd[:, 2]
+
+    if not np.any(cds != 0):
+        # All nodes output in the basic frame already — nothing to rotate.
+        print('    CD transform: all nodes CD=0 (global), skip.')
+        return None
+
+    # Global coordinates — derived from the SAME (nids, xyz_cp, icp) so the row
+    # order is guaranteed aligned with nid_cp_cd above (used only for cylindrical
+    # CD systems, which need per-node position to build the local basis).
+    xyz_cid0 = model.transform_xyzcp_to_xyz_cid(xyz_cp, nids, icp_t, cid=0)
+
+    cd_of  = {int(n): int(c) for n, c in zip(nids.tolist(), cds.tolist())}
+    xyz_of = {int(n): (float(x), float(y), float(z))
+              for n, (x, y, z) in zip(nids.tolist(), xyz_cid0.tolist())}
+
+    n_local = int(np.count_nonzero(cds != 0))
+    n_frames_cd = len(set(int(c) for c in cds.tolist()) - {0})
+    print('    CD transform: {} node(s) in {} local coord frame(s) → global'.format(
+        n_local, n_frames_cd))
+    return model.coords, cd_of, xyz_of
+
+
+def _transform_result_to_global(result_obj, sc_id, coord_ctx, log):
+    """
+    Rotate one displacement/eigenvector result's translations (and rotations)
+    from each node's CD frame into global, in place on result_obj.data.
+
+    Indices are matched by NODE ID against this result's own node ordering, so it
+    stays correct even if the result covers a subset of nodes or a different order
+    than BDF.point_ids (pyNastran's built-in transform indexes positionally and
+    only works when *all* nodes are present in the same order).
+    """
+    from pyNastran.op2.op2 import transform_displacement_to_global
+
+    coords, cd_of, xyz_of = coord_ctx
+
+    tname = getattr(result_obj, 'table_name', None)
+    if isinstance(tname, bytes):
+        tname = tname.decode('ascii', 'ignore')
+    if tname in _BASIC_FRAME_TABLES:
+        return 0  # already in basic/global frame
+
+    nids = result_obj.node_gridtype[:, 0]
+    cds  = np.array([cd_of.get(int(n), 0) for n in nids], dtype=np.int64)
+
+    uniq = [int(c) for c in np.unique(cds) if int(c) not in (0, -1)]
+    if not uniq:
+        return 0
+
+    icd_transform = {c: np.where(cds == c)[0].astype(np.int64) for c in uniq}
+    xyz_cid0 = np.array([xyz_of.get(int(n), (0.0, 0.0, 0.0)) for n in nids],
+                        dtype=np.float64)
+
+    transform_displacement_to_global(sc_id, result_obj, icd_transform,
+                                     coords, xyz_cid0, log)
+    return int(np.count_nonzero(cds != 0))
+
+
 def _align_data(raw_data, op2_node_ids, bdf_node_labels):
     """
     Align OP2 result data to the BDF node ordering.
@@ -247,7 +341,7 @@ def _write_subcase_u(h5_abs, inst_name, step_name, bdf_node_labels, aligned_data
 
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
-def pack(op2_path, workspace, result_group):
+def pack(op2_path, workspace, result_group, bdf_path=None):
     from pyNastran.op2.op2 import OP2
 
     t_total = time.time()
@@ -297,6 +391,27 @@ def pack(op2_path, workspace, result_group):
         return
 
     print('  {} subcase(s) found.'.format(len(subcases_to_process)))
+
+    # ── 4b. Rotate displacements from nodal CD frames back to global ──────────
+    # Must run BEFORE _align_data / column slicing, while results still hold the
+    # full 6-DOF data pyNastran's rotator expects.
+    coord_ctx = None
+    try:
+        coord_ctx = _build_coord_context(bdf_path)
+    except Exception as exc:
+        print('    WARNING: CD transform setup failed ({}); '
+              'displacements left in nodal (CD) frame.'.format(exc))
+    if coord_ctx is not None:
+        n_rot_total = 0
+        for sc_id, (result_obj, _is_modal) in subcases_to_process.items():
+            try:
+                n_rot_total += _transform_result_to_global(
+                    result_obj, sc_id, coord_ctx, op2.log)
+            except Exception as exc:
+                print('    WARNING: CD transform failed for SUBCASE {} ({}); '
+                      'left in CD frame.'.format(sc_id, exc))
+        print('    CD transform applied to {} node-row(s) across subcases.'.format(
+            n_rot_total))
 
     written_steps = []  # [(step_name, procedure, n_frames, frame_vals, frame_descs, h5_rel)]
 
@@ -422,6 +537,7 @@ def main():
     op2_path     = os.path.abspath(args.op2)
     workspace    = os.path.abspath(args.workspace)
     result_group = args.result_group
+    bdf_path     = os.path.abspath(args.bdf) if args.bdf else None
 
     if not os.path.exists(op2_path):
         print('ERROR: OP2 file not found: {}'.format(op2_path), file=sys.stderr)
@@ -433,7 +549,12 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    pack(op2_path, workspace, result_group)
+    if bdf_path and not os.path.exists(bdf_path):
+        print('WARNING: --bdf not found ({}); '
+              'displacements left in nodal (CD) frame.'.format(bdf_path), file=sys.stderr)
+        bdf_path = None
+
+    pack(op2_path, workspace, result_group, bdf_path=bdf_path)
 
 
 if __name__ == '__main__':
