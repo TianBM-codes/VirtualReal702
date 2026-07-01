@@ -31,6 +31,7 @@ from . import sensitivity_service as _sens
 from . import solver_service as _solver
 
 _PARAMETER_ASSIGNMENT_RE = re.compile(r"^\s*([^=\s,]+)\s*=\s*(.+?)\s*$")
+_INCLUDE_INPUT_RE = re.compile(r"^\s*\*INCLUDE\s*,\s*INPUT\s*=\s*(.+?)\s*$", re.IGNORECASE)
 _ITERATION_CLEANUP_SUFFIXES = (".com", ".prt", ".pmg", ".pes", ".par", ".msg", ".sta", ".dat")
 _DEFAULT_SOL200_BAYESIAN_RESULT_GROUP = "bayesian_sol200"
 _WORKFLOW_STATUS_RUNNING = 0
@@ -220,6 +221,21 @@ def _vector_from_input(
         return values
 
     if isinstance(raw_value, dict):
+        def _candidate_lookup_keys(candidate: object) -> List[str]:
+            text = str(candidate)
+            keys = [text]
+            if "::" in text:
+                keys.append(text.split("::")[-1])
+            if "|" in text:
+                tail = text.split("|")[-1]
+                if tail not in keys:
+                    keys.append(tail)
+                if "::" in tail:
+                    suffix = tail.split("::")[-1]
+                    if suffix not in keys:
+                        keys.append(suffix)
+            return keys
+
         resolved = []
         missing = []
         for item in items:
@@ -228,9 +244,11 @@ def _vector_from_input(
                 candidate = item.get(key_name)
                 if candidate is None:
                     continue
-                candidate_key = str(candidate)
-                if candidate_key in raw_value:
-                    chosen = raw_value[candidate_key]
+                for candidate_key in _candidate_lookup_keys(candidate):
+                    if candidate_key in raw_value:
+                        chosen = raw_value[candidate_key]
+                        break
+                if chosen is not None:
                     break
             if chosen is None:
                 missing.append({key: item.get(key) for key in key_candidates if item.get(key) is not None})
@@ -2101,54 +2119,72 @@ def update_parameter_section_values(
         *,
         output_inp: Optional[str] = None,
 ) -> dict:
+    def _update_parameter_file(file_path: Path, visited: set[Path], seen: set[str]) -> None:
+        resolved_path = file_path.expanduser().resolve()
+        if resolved_path in visited or not resolved_path.exists():
+            return
+        visited.add(resolved_path)
+
+        lines = resolved_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        updated_lines: List[str] = []
+        inside_parameter_block = False
+
+        for line in lines:
+            stripped = line.strip()
+            upper = stripped.upper()
+            if upper.startswith("*PARAMETER"):
+                inside_parameter_block = True
+                updated_lines.append(line)
+                continue
+            if inside_parameter_block and stripped.startswith("*"):
+                inside_parameter_block = False
+
+            if inside_parameter_block and stripped and not stripped.startswith("**"):
+                parts = [part.strip() for part in line.split(",") if part.strip()]
+                replaced_parts = []
+                changed = False
+                for part in parts:
+                    match = _PARAMETER_ASSIGNMENT_RE.match(part)
+                    if not match:
+                        replaced_parts.append(part)
+                        continue
+                    name = str(match.group(1)).strip()
+                    if name in parameter_values:
+                        replaced_parts.append(f"{name}={_format_scalar(parameter_values[name])}")
+                        seen.add(name)
+                        changed = True
+                    else:
+                        replaced_parts.append(f"{name}={match.group(2).strip()}")
+                updated_lines.append(",".join(replaced_parts) if changed else line)
+                continue
+
+            updated_lines.append(line)
+
+            include_match = _INCLUDE_INPUT_RE.match(stripped)
+            if include_match:
+                include_ref = str(include_match.group(1) or "").strip().strip('"').strip("'")
+                if include_ref:
+                    include_path = Path(include_ref)
+                    if not include_path.is_absolute():
+                        include_path = (resolved_path.parent / include_path).resolve()
+                    _update_parameter_file(include_path, visited, seen)
+
+        resolved_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+
     input_path = _solver._abs_file(input_inp, "input_inp")
     output_path = Path(output_inp).expanduser().resolve() if output_inp else input_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if input_path != output_path:
+        shutil.copyfile(str(input_path), str(output_path))
 
-    lines = input_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    updated_lines: List[str] = []
-    inside_parameter_block = False
     seen = set()
-
-    for line in lines:
-        stripped = line.strip()
-        upper = stripped.upper()
-        if upper.startswith("*PARAMETER"):
-            inside_parameter_block = True
-            updated_lines.append(line)
-            continue
-        if inside_parameter_block and stripped.startswith("*"):
-            inside_parameter_block = False
-
-        if inside_parameter_block and stripped and not stripped.startswith("**"):
-            parts = [part.strip() for part in line.split(",") if part.strip()]
-            replaced_parts = []
-            changed = False
-            for part in parts:
-                match = _PARAMETER_ASSIGNMENT_RE.match(part)
-                if not match:
-                    replaced_parts.append(part)
-                    continue
-                name = str(match.group(1)).strip()
-                if name in parameter_values:
-                    replaced_parts.append(f"{name}={_format_scalar(parameter_values[name])}")
-                    seen.add(name)
-                    changed = True
-                else:
-                    replaced_parts.append(f"{name}={match.group(2).strip()}")
-            updated_lines.append(",".join(replaced_parts) if changed else line)
-            continue
-
-        updated_lines.append(line)
-
+    _update_parameter_file(output_path, set(), seen)
     missing = sorted(str(name) for name in parameter_values.keys() if str(name) not in seen)
     if missing:
         raise ValidationError(
             "some parameters were not found under any *PARAMETER block",
-            {"missing_parameters": missing[:20], "input_inp": str(input_path)},
+            {"missing_parameters": missing[:20], "input_inp": str(output_path)},
         )
-
-    output_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
     return {
         "input_inp": str(input_path),
         "output_inp": str(output_path),
@@ -2275,6 +2311,11 @@ def build_dsa_normalized_sensitivity_matrix(
     dsa_direct_target_map = build_parameter_target_map(dsa_model)
     dsa_design_parameter_name_map = _sens._build_dsa_design_parameter_name_map(dsa_model)
     dsa_response_specs = _sens._resolve_dsa_response_spec(dsa_model, step_name=discovery["step"]) or []
+    dsa_response_specs = _sens._enrich_dsa_response_specs_from_project(
+        int(project_id),
+        list(dsa_response_specs),
+        step_name=discovery["step"],
+    )
     if not dsa_response_specs:
         raise ValidationError(
             "no usable design response definition was found in the inp file",
@@ -2297,6 +2338,11 @@ def build_dsa_normalized_sensitivity_matrix(
         for field_meta in discovery["per_instance"][instance_name]:
             source_field_name = str(field_meta["field"])
             selected_position = str(field_meta["position"])
+            source_result_group = (
+                str(field_meta.get("result_group")).strip()
+                if field_meta.get("result_group") not in (None, "")
+                else result_group
+            )
             parameter_token = _sens._extract_dsa_field_token(field_prefix, source_field_name)
 
             direct_target_rows = list(dsa_direct_target_map.get(parameter_token, []))
@@ -2377,7 +2423,7 @@ def build_dsa_normalized_sensitivity_matrix(
                         node_labels=response_target_node_labels,
                         component=source_component,
                         component_index=candidate_component_index,
-                        result_group=result_group,
+                        result_group=source_result_group,
                     )
                 else:
                     if source_mode in {"workspace", "registry"}:
@@ -2391,7 +2437,7 @@ def build_dsa_normalized_sensitivity_matrix(
                             aggregation=aggregation,
                             component=source_component,
                             component_index=candidate_component_index,
-                            result_group=result_group,
+                            result_group=source_result_group,
                         )
                     else:
                         candidate_dsa_map = client.get_result_label_map(
@@ -2437,6 +2483,7 @@ def build_dsa_normalized_sensitivity_matrix(
                     candidate_component_index,
                     int(resolved_frame),
                     str(aggregation),
+                    source_result_group,
                 )
                 if cache_key not in response_value_cache:
                     if spec.get("region_type") == "NODE" and str(candidate_position).upper() == "ELEMENT_NODAL":
@@ -2456,12 +2503,12 @@ def build_dsa_normalized_sensitivity_matrix(
                             field=candidate_field_name,
                             instance=instance_name,
                             frame=resolved_frame,
-                            aggregation=aggregation,
-                            node_labels=response_target_node_labels,
-                            component=candidate_component,
-                            component_index=candidate_component_index,
-                            result_group=result_group,
-                        )
+                                aggregation=aggregation,
+                                node_labels=response_target_node_labels,
+                                component=candidate_component,
+                                component_index=candidate_component_index,
+                                result_group=source_result_group,
+                            )
                     else:
                         if source_mode in {"workspace", "registry"}:
                             cached_response_map = _sens._workspace_result_label_map(
@@ -2474,7 +2521,7 @@ def build_dsa_normalized_sensitivity_matrix(
                                 aggregation=aggregation,
                                 component=candidate_component,
                                 component_index=candidate_component_index,
-                                result_group=result_group,
+                                result_group=source_result_group,
                             )
                         else:
                             cached_response_map = client.get_result_label_map(
@@ -2699,11 +2746,47 @@ def build_dsa_normalized_sensitivity_matrix(
 
 
 def _copy_iteration_input(input_inp: str, output_dir: Path, iteration: int, *, base_stem: Optional[str] = None) -> Path:
+    def _copy_relative_includes(source_file: Path, source_root: Path, target_root: Path, visited: set[Path]) -> None:
+        resolved_source = source_file.resolve()
+        if resolved_source in visited or not resolved_source.exists():
+            return
+        visited.add(resolved_source)
+        try:
+            lines = resolved_source.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            return
+
+        for line in lines:
+            match = _INCLUDE_INPUT_RE.match(str(line or "").strip())
+            if not match:
+                continue
+            include_ref = str(match.group(1) or "").strip().strip('"').strip("'")
+            if not include_ref:
+                continue
+            include_path = Path(include_ref)
+            if include_path.is_absolute():
+                continue
+            include_source = (resolved_source.parent / include_path).resolve()
+            if not include_source.exists() or not include_source.is_file():
+                continue
+            try:
+                relative_include = include_source.relative_to(source_root)
+            except ValueError:
+                relative_include = Path(include_source.name)
+            include_target = (target_root / relative_include).resolve()
+            if include_target == include_source:
+                _copy_relative_includes(include_source, source_root, target_root, visited)
+                continue
+            include_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(str(include_source), str(include_target))
+            _copy_relative_includes(include_source, source_root, target_root, visited)
+
     source_path = Path(input_inp).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     resolved_base_stem = str(base_stem or source_path.stem)
     copied_path = (output_dir / f"{resolved_base_stem}_iter{iteration}.inp").resolve()
     shutil.copyfile(str(source_path), str(copied_path))
+    _copy_relative_includes(source_path, source_path.parent, output_dir, set())
     return copied_path
 
 

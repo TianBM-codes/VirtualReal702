@@ -99,6 +99,68 @@ def test_load_project_design_responses_keeps_scope_and_instance_metadata(monkeyp
     ]
 
 
+def test_enrich_dsa_response_specs_from_project_backfills_virtual_node_response(monkeypatch):
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_design_responses",
+        lambda project_id: [
+            {
+                "response_no": 1,
+                "request_no": 1,
+                "step_name": "Step-1",
+                "region_type": "NODE",
+                "set_name": "MANUAL_RESP_NODE_RESP_1_1",
+                "set_scope": "ASSEMBLY",
+                "instance_name": "PART-1-1",
+                "part_name": "PART-1",
+                "variables": ["UY"],
+                "extra_json": {"node_labels": [4], "virtual_set_name": "MANUAL_RESP_NODE_RESP_1_1"},
+            }
+        ],
+    )
+
+    enriched = sensitivity_service._enrich_dsa_response_specs_from_project(
+        24,
+        [
+            {
+                "step_name": "Step-1",
+                "region_type": "NODE",
+                "set_name": "MANUAL_RESP_NODE_RESP_1_1",
+                "field_name": "U",
+                "component": "U2",
+                "component_index": 1,
+                "set_scope": "",
+                "instance_name": "",
+                "part_name": "",
+            }
+        ],
+        step_name="Step-1",
+    )
+
+    assert enriched[0]["set_scope"] == "ASSEMBLY"
+    assert enriched[0]["instance_name"] == "PART-1-1"
+    assert enriched[0]["part_name"] == "PART-1"
+    assert enriched[0]["node_labels"] == [4]
+
+
+def test_design_response_target_labels_uses_catalog_node_labels_when_inp_set_is_virtual():
+    model = type("Model", (), {"assembly": None, "parts": {}})()
+
+    target_kind, labels = sensitivity_service._design_response_target_labels(
+        model,
+        {
+            "region_type": "NODE",
+            "set_name": "MANUAL_RESP_NODE_RESP_1_1",
+            "set_scope": "ASSEMBLY",
+            "instance_name": "PART-1-1",
+            "extra_json": {"node_labels": [4]},
+        },
+    )
+
+    assert target_kind == "point"
+    assert labels == ["PART-1-1::4"]
+
+
 def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(monkeypatch):
     monkeypatch.setattr(
         sensitivity_service,

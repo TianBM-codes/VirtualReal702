@@ -68,6 +68,7 @@ _SENSITIVITY_STATUS_RUNNING = 0
 _SENSITIVITY_STATUS_DONE = 1
 _SENSITIVITY_STATUS_FAILED = 2
 _SENSITIVITY_STATUS_LOCAL = threading.local()
+_RAW_SENSITIVITY_GROUP_RE = re.compile(r"^sensitivity_batch_", re.IGNORECASE)
 
 
 def _repo_root() -> str:
@@ -1833,14 +1834,21 @@ def _resolve_workspace_step_frame(
         *,
         step: str,
         requested_frame: Optional[int],
+        result_group: Optional[str] = None,
 ) -> int:
     workspace_abs = _workspace_path(workspace)
     conn = _manifest_conn(workspace_abs)
     try:
-        frame_rows = conn.execute(
-            "SELECT frame_idx FROM frames WHERE step_name = ? ORDER BY frame_idx",
-            (step,),
-        ).fetchall()
+        if result_group is None:
+            frame_rows = conn.execute(
+                "SELECT frame_idx FROM frames WHERE step_name = ? ORDER BY frame_idx",
+                (step,),
+            ).fetchall()
+        else:
+            frame_rows = conn.execute(
+                "SELECT frame_idx FROM frames WHERE step_name = ? AND result_group = ? ORDER BY frame_idx",
+                (step, str(result_group)),
+            ).fetchall()
     finally:
         conn.close()
 
@@ -1852,6 +1860,13 @@ def _resolve_workspace_step_frame(
         return max(frame_indices)
 
     resolved_frame = int(requested_frame)
+    if (
+            resolved_frame == 0
+            and result_group is not None
+            and _RAW_SENSITIVITY_GROUP_RE.match(str(result_group))
+            and max(frame_indices) > 0
+    ):
+        return max(frame_indices)
     if resolved_frame not in frame_indices:
         raise ValidationError(
             f"frame {resolved_frame} not found under step '{step}'",
@@ -3632,33 +3647,39 @@ def _discover_sensitivity_fields_from_workspace(
         for instance_name in chosen_instances:
             rows = conn.execute(
                 """
-                SELECT rf.field_name, rb.position
+                SELECT rf.field_name, rf.result_group, rb.position
                 FROM result_files rf
                 JOIN result_blocks rb
                   ON rb.step_name = rf.step_name
                  AND rb.field_name = rf.field_name
+                 AND (
+                      rb.result_group = rf.result_group
+                      OR (rb.result_group IS NULL AND rf.result_group IS NULL)
+                 )
                 WHERE rf.step_name = ?
                   AND rb.instance_name = ?
-                ORDER BY rf.field_name, rb.position
+                ORDER BY rf.field_name, rf.result_group, rb.position
                 """,
                 (chosen_step, instance_name),
             ).fetchall()
 
-            fields_map: Dict[str, List[str]] = {}
+            fields_map: Dict[Tuple[str, Optional[str]], List[str]] = {}
             for row in rows:
                 field_name = str(row["field_name"])
                 if not selector["match"](field_name):
                     continue
-                fields_map.setdefault(field_name, []).append(str(row["position"]))
+                result_group = str(row["result_group"]).strip() if row["result_group"] not in (None, "") else None
+                fields_map.setdefault((field_name, result_group), []).append(str(row["position"]))
 
             selected = []
-            for field_name, positions in fields_map.items():
+            for (field_name, result_group), positions in fields_map.items():
                 field_meta = {"field": field_name, "positions": sorted(set(positions))}
                 selected.append(
                     {
                         "field": field_name,
                         "position": _pick_export_position(field_meta, position),
                         "components": [],
+                        "result_group": result_group,
                     }
                 )
                 matched_field_names.add(field_name)
@@ -4140,6 +4161,60 @@ def _resolve_dsa_response_spec(model, *, step_name: Optional[str]) -> Optional[d
     return specs
 
 
+def _enrich_dsa_response_specs_from_project(
+        project_id: Optional[int],
+        specs: List[dict],
+        *,
+        step_name: Optional[str] = None,
+) -> List[dict]:
+    if project_id is None or not specs:
+        return list(specs or [])
+
+    try:
+        catalog_rows = _load_project_design_responses(int(project_id))
+    except Exception:
+        return list(specs or [])
+
+    normalized_step_name = str(step_name or "").strip()
+    filtered_catalog_rows = []
+    for row in catalog_rows or []:
+        row_step_name = str(row.get("step_name") or "").strip()
+        if normalized_step_name and row_step_name and row_step_name != normalized_step_name:
+            continue
+        filtered_catalog_rows.append(dict(row))
+
+    enriched_specs: List[dict] = []
+    for spec in specs or []:
+        spec_set_name = str(spec.get("set_name") or "").strip()
+        spec_region_type = str(spec.get("region_type") or "").strip().upper()
+        matched_rows = [
+            row for row in filtered_catalog_rows
+            if str(row.get("set_name") or "").strip() == spec_set_name
+            and str(row.get("region_type") or "").strip().upper() == spec_region_type
+        ]
+        if len(matched_rows) != 1:
+            enriched_specs.append(dict(spec))
+            continue
+
+        matched_row = dict(matched_rows[0])
+        merged_extra_json = _parse_optional_json_object(spec.get("extra_json"))
+        merged_extra_json.update(_parse_optional_json_object(matched_row.get("extra_json")))
+        enriched_spec = dict(spec)
+        for key in ("set_scope", "instance_name", "part_name"):
+            if not str(enriched_spec.get(key) or "").strip() and str(matched_row.get(key) or "").strip():
+                enriched_spec[key] = matched_row.get(key)
+        if merged_extra_json:
+            enriched_spec["extra_json"] = merged_extra_json
+        manual_node_labels = _parse_id_list(merged_extra_json.get("node_labels"))
+        if manual_node_labels:
+            enriched_spec["node_labels"] = manual_node_labels
+        manual_element_labels = _parse_id_list(merged_extra_json.get("element_labels"))
+        if manual_element_labels:
+            enriched_spec["element_labels"] = manual_element_labels
+        enriched_specs.append(enriched_spec)
+    return enriched_specs
+
+
 def _select_dsa_response_specs(
         specs: List[dict],
         *,
@@ -4311,6 +4386,16 @@ def _design_response_target_labels(model, response_spec: dict) -> tuple[str, Lis
     set_scope = str(response_spec.get("set_scope") or "").upper()
     instance_name = str(response_spec.get("instance_name") or "").strip()
     part_name = str(response_spec.get("part_name") or "").strip()
+    extra_json = _parse_optional_json_object(response_spec.get("extra_json"))
+
+    if region_type == "NODE":
+        manual_node_labels = _parse_id_list(response_spec.get("node_labels") or extra_json.get("node_labels"))
+        if manual_node_labels:
+            return "point", _scoped_labels(instance_name or None, manual_node_labels)
+    elif region_type == "ELEMENT":
+        manual_element_labels = _parse_id_list(response_spec.get("element_labels") or extra_json.get("element_labels"))
+        if manual_element_labels:
+            return "cell", _scoped_labels(instance_name or None, manual_element_labels)
 
     if region_type == "NODE":
         target_kind = "point"
@@ -4710,6 +4795,12 @@ def _workspace_result_label_map(
         result_group: Optional[str] = None,
 ) -> Dict[str, object]:
     workspace_abs = _workspace_path(workspace)
+    resolved_frame = _resolve_workspace_step_frame(
+        workspace_abs,
+        step=str(step),
+        requested_frame=int(frame),
+        result_group=result_group,
+    )
     conn = _manifest_conn(workspace_abs)
     try:
         if result_group is None:
@@ -4760,12 +4851,12 @@ def _workspace_result_label_map(
 
         frame_exists = conn.execute(
             f"SELECT 1 FROM frames WHERE step_name = ? AND frame_idx = ? AND {rg_frame_clause}",
-            [step, int(frame)] + rg_frame_params,
+            [step, int(resolved_frame)] + rg_frame_params,
         ).fetchone()
         if not frame_exists:
             raise ValidationError(
-                f"frame {frame} not found under step '{step}'",
-                {"step": step, "frame": frame, "result_group": result_group},
+                f"frame {resolved_frame} not found under step '{step}'",
+                {"step": step, "frame": resolved_frame, "result_group": result_group},
             )
 
         h5_path = os.path.join(workspace_abs, str(result_file["file_path"]))
@@ -4778,7 +4869,7 @@ def _workspace_result_label_map(
             for row in block_rows:
                 group = h5[str(row["h5_path"])]
                 labels = np.asarray(group["labels"][:], dtype=np.int64)
-                data = _reduce_frame_values(group["data"][int(frame)], aggregation=aggregation)
+                data = _reduce_frame_values(group["data"][int(resolved_frame)], aggregation=aggregation)
                 selected, _ = _select_component_values(
                     np.asarray(data),
                     components,
@@ -4887,6 +4978,12 @@ def _workspace_element_nodal_node_label_map(
     requested_node_labels = sorted({int(item) for item in (node_labels or [])})
     if not requested_node_labels:
         return {}
+    resolved_frame = _resolve_workspace_step_frame(
+        workspace_abs,
+        step=str(step),
+        requested_frame=int(frame),
+        result_group=result_group,
+    )
 
     conn = _manifest_conn(workspace_abs)
     try:
@@ -4938,7 +5035,7 @@ def _workspace_element_nodal_node_label_map(
             for row in block_rows:
                 group = h5[str(row["h5_path"])]
                 labels = np.asarray(group["labels"][:], dtype=np.int64)
-                raw_frame = np.asarray(group["data"][int(frame)], dtype=np.float64)
+                raw_frame = np.asarray(group["data"][int(resolved_frame)], dtype=np.float64)
                 invariant_values = _compute_workspace_scalar_invariant(
                     raw_frame,
                     field=field,
@@ -5099,6 +5196,11 @@ def _export_sensitivity_vtu(
     dsa_direct_target_map = build_parameter_target_map(dsa_model) if dsa_model is not None else {}
     dsa_design_parameter_name_map = _build_dsa_design_parameter_name_map(dsa_model) if dsa_model is not None else {}
     dsa_response_specs = _resolve_dsa_response_spec(dsa_model, step_name=discovery["step"]) if dsa_model is not None else []
+    dsa_response_specs = _enrich_dsa_response_specs_from_project(
+        int(project_id),
+        list(dsa_response_specs or []),
+        step_name=discovery["step"],
+    )
     selected_response_specs = []
     explicit_response = None
     if selector["kind"] == "prefix":

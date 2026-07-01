@@ -99,6 +99,55 @@ def test_build_iteration_metrics_uses_ccabs_style_summary():
     assert np.isclose(result["max_abs_response_diff"], 25.0)
 
 
+def test_vector_from_input_accepts_unscoped_response_label_keys():
+    values = bayesian_service._vector_from_input(
+        {"4": -0.35},
+        [
+            {
+                "row_key": "PART-1-1|U|U2|NODAL|PART-1-1::4",
+                "response_label": "PART-1-1::4",
+            }
+        ],
+        label="target_responses",
+        key_candidates=("row_key", "response_label"),
+    )
+
+    assert values == [-0.35]
+
+
+def test_copy_iteration_input_copies_relative_include_files(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "include.inp").write_text("*PARAMETER\nT_SET_149=0.001\n", encoding="utf-8")
+    (source_dir / "model.inp").write_text("*Include, input=include.inp\n*Step\n*End Step\n", encoding="utf-8")
+
+    copied = bayesian_service._copy_iteration_input(
+        str(source_dir / "model.inp"),
+        tmp_path / "out",
+        0,
+    )
+
+    assert copied.exists()
+    assert (tmp_path / "out" / "include.inp").read_text(encoding="utf-8") == "*PARAMETER\nT_SET_149=0.001\n"
+
+
+def test_update_parameter_section_values_updates_relative_include_parameter_file(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    include_path = source_dir / "include.inp"
+    include_path.write_text("*PARAMETER\nT_SET_149=0.001\n", encoding="utf-8")
+    model_path = source_dir / "model.inp"
+    model_path.write_text("*Include, input=include.inp\n*Step\n*End Step\n", encoding="utf-8")
+
+    result = bayesian_service.update_parameter_section_values(
+        str(model_path),
+        {"T_SET_149": 0.0025},
+    )
+
+    assert result["output_inp"] == str(model_path.resolve())
+    assert include_path.read_text(encoding="utf-8") == "*PARAMETER\nT_SET_149=0.0025\n"
+
+
 def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_values(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "fake.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
