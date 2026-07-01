@@ -2,7 +2,7 @@ from webapi.models import BayesianModelUpdateRequest
 from webapi.routers import optimization
 
 
-def test_bayesian_run_kwargs_excludes_async_submit():
+def test_bayesian_run_kwargs_excludes_async_submit(monkeypatch):
     body = BayesianModelUpdateRequest(
         project_id=1001,
         input_inp="D:/demo/model.inp",
@@ -10,6 +10,11 @@ def test_bayesian_run_kwargs_excludes_async_submit():
         async_submit=True,
     )
 
+    monkeypatch.setattr(
+        optimization,
+        "resolve_project_input_file",
+        lambda project_id, explicit_path, file_name, field_name: "D:/demo/model.inp",
+    )
     kwargs = optimization._bayesian_run_kwargs(body)
 
     assert kwargs["project_id"] == 1001
@@ -34,6 +39,8 @@ def test_bayesian_run_kwargs_uses_service_config_defaults(monkeypatch):
     assert kwargs["abaqus"] == "C:/SIMULIA/Commands/abaqus.bat"
     assert kwargs["write_cloud_result"] is True
     assert kwargs["cloud_step_name"] == "BayesianUpdate"
+    assert kwargs["cloud_field_name"] == "PARAMETER_RELATIVE_DELTA_PERCENT"
+    assert kwargs["cloud_value_mode"] == "relative_delta_percent"
     assert "python3" not in kwargs
 
 

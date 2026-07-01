@@ -265,8 +265,8 @@ class BayesianModelUpdateRequest(BaseModel):
     write_cloud_result: bool = True
     cloud_result_group: Optional[str] = None
     cloud_step_name: str = "BayesianUpdate"
-    cloud_field_name: str = "PARAMETER_CLOUD"
-    cloud_value_mode: str = "updated_value"
+    cloud_field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT"
+    cloud_value_mode: str = "relative_delta_percent"
     async_submit: bool = False
 
 

@@ -1043,8 +1043,8 @@ P1=1.0
         return {
             "result_group": "viz_rg",
             "step": "Bayesian Step",
-            "field": "PARAMETER_CLOUD",
-            "value_mode": "delta_value",
+            "field": "PARAMETER_RELATIVE_DELTA_PERCENT",
+            "value_mode": "relative_delta_percent",
             "components": ["P1"],
             "frame_count": 1,
         }
@@ -1064,17 +1064,17 @@ P1=1.0
         write_cloud_result=True,
         cloud_result_group="viz_rg",
         cloud_step_name="Bayesian Step",
-        cloud_field_name="PARAMETER_CLOUD",
-        cloud_value_mode="delta_value",
+        cloud_field_name="PARAMETER_RELATIVE_DELTA_PERCENT",
+        cloud_value_mode="relative_delta_percent",
     )
 
     assert cloud_calls["odb_id"] == "odb-demo"
     assert cloud_calls["base_url"] is None
     assert cloud_calls["batch_no"] == 2
     assert cloud_calls["result_group"] == "viz_rg"
-    assert cloud_calls["step_name"] == "Bayesian Step"
-    assert cloud_calls["field_name"] == "PARAMETER_CLOUD"
-    assert cloud_calls["value_mode"] == "delta_value"
+    assert cloud_calls["step_name"] == "BayesianUpdate"
+    assert cloud_calls["field_name"] == "PARAMETER_RELATIVE_DELTA_PERCENT"
+    assert cloud_calls["value_mode"] == "relative_delta_percent"
     assert result["cloud_result"]["result_group"] == "viz_rg"
     assert result["cloud_result"]["components"] == ["P1"]
 
@@ -1082,23 +1082,18 @@ P1=1.0
 def test_write_bayesian_cloud_result_posts_external_field_payload(monkeypatch):
     captured = {}
 
-    class FakeClient:
-        def __init__(self, base_url: str, timeout: int):
-            captured["base_url"] = base_url
-            captured["timeout"] = timeout
+    def fake_write_external_field_local(odb_id: str, body: dict):
+        captured["odb_id"] = odb_id
+        captured["body"] = body
+        return {
+            "field_name": body["field_name"],
+            "step_name": body["step_name"],
+            "instances_written": len(body["instances"]),
+            "frames_written": len(body["instances"][0]["frames"]),
+            "source": "external_local",
+        }
 
-        def post_external_field(self, odb_id: str, body: dict):
-            captured["odb_id"] = odb_id
-            captured["body"] = body
-            return {
-                "field_name": body["field_name"],
-                "step_name": body["step_name"],
-                "instances_written": len(body["instances"]),
-                "frames_written": len(body["instances"][0]["frames"]),
-                "source": "external",
-            }
-
-    monkeypatch.setattr(bayesian_service._sens, "ODBClient", FakeClient)
+    monkeypatch.setattr(bayesian_service, "write_external_field_local", fake_write_external_field_local)
 
     result = bayesian_service._write_bayesian_cloud_result(
         odb_id="odb-demo",
@@ -1130,14 +1125,12 @@ def test_write_bayesian_cloud_result_posts_external_field_payload(monkeypatch):
         ],
         result_group="viz_rg",
         step_name="Bayesian Step",
-        field_name="PARAMETER_CLOUD",
-        value_mode="delta_value",
+        field_name="PARAMETER_RELATIVE_DELTA_PERCENT",
+        value_mode="relative_delta_percent",
         timeout=33,
     )
 
     assert captured["odb_id"] == "odb-demo"
-    assert captured["base_url"] == "http://127.0.0.1:18765"
-    assert captured["timeout"] == 33
     assert captured["body"]["type"] == "element"
     assert captured["body"]["components"] == ["P1", "P2"]
     assert captured["body"]["result_group"] == "viz_rg"
@@ -1147,11 +1140,11 @@ def test_write_bayesian_cloud_result_posts_external_field_payload(monkeypatch):
     assert captured["body"]["instances"][0]["frames"][0]["frame_value"] == 1.0
     first_entry, second_entry = captured["body"]["instances"][0]["frames"][0]["data"]
     assert first_entry["label"] == 101
-    assert np.isclose(first_entry["values"][0], 0.1)
+    assert np.isclose(first_entry["values"][0], 10.0)
     assert np.isnan(first_entry["values"][1])
     assert second_entry["label"] == 102
-    assert np.isclose(second_entry["values"][0], 0.1)
-    assert np.isclose(second_entry["values"][1], 0.4)
+    assert np.isclose(second_entry["values"][0], 10.0)
+    assert np.isclose(second_entry["values"][1], 20.0)
     assert result["odb_id"] == "odb-demo"
     assert result["query_hint"]["odb_id"] == "odb-demo"
     assert result["write_response"]["instances_written"] == 1
@@ -1165,6 +1158,17 @@ def test_resolve_cloud_scalar_value_supports_relative_change():
             baseline_value=1.0,
         ),
         0.2,
+    )
+
+
+def test_resolve_cloud_scalar_value_supports_relative_delta_percent():
+    assert np.isclose(
+        bayesian_service._resolve_cloud_scalar_value(
+            mode="relative_delta_percent",
+            updated_value=1.2,
+            baseline_value=1.0,
+        ),
+        20.0,
     )
 
 

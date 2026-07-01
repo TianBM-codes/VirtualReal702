@@ -1551,9 +1551,17 @@ def _resolve_cloud_scalar_value(
                 {"baseline_value": baseline_value, "updated_value": updated_value},
             )
         return (float(updated_value) - baseline) / baseline
+    if mode == "relative_delta_percent":
+        return _resolve_cloud_scalar_percent_value(
+            updated_value=float(updated_value),
+            baseline_value=float(baseline_value),
+        )
     raise ValidationError(
         "unsupported cloud_value_mode",
-        {"cloud_value_mode": mode, "allowed": ["updated_value", "delta_value", "relative_change"]},
+        {
+            "cloud_value_mode": mode,
+            "allowed": ["updated_value", "delta_value", "relative_change", "relative_delta_percent"],
+        },
     )
 
 
@@ -1967,15 +1975,17 @@ def _build_bayesian_cloud_request(
         iteration_results: Sequence[dict],
         result_group: Optional[str] = None,
         step_name: str = "BayesianUpdate",
-        field_name: str = "PARAMETER_CLOUD",
-        value_mode: str = "updated_value",
+        field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+        value_mode: str = "relative_delta_percent",
 ) -> tuple[dict, dict]:
     if not iteration_results:
         raise ValidationError("iteration_results must not be empty for cloud export")
 
     resolved_result_group = str(result_group or f"bayesian_batch_{int(batch_no)}")
     resolved_step_name = str(step_name or "BayesianUpdate").strip() or "BayesianUpdate"
-    resolved_field_name = str(field_name or "PARAMETER_CLOUD").strip() or "PARAMETER_CLOUD"
+    resolved_field_name = (
+        str(field_name or "PARAMETER_RELATIVE_DELTA_PERCENT").strip() or "PARAMETER_RELATIVE_DELTA_PERCENT"
+    )
 
     first_iteration = dict(iteration_results[0])
     parameter_columns = list(first_iteration.get("parameter_columns") or [])
@@ -2105,8 +2115,8 @@ def _write_bayesian_cloud_result(
         iteration_results: Sequence[dict],
         result_group: Optional[str] = None,
         step_name: str = "BayesianUpdate",
-        field_name: str = "PARAMETER_CLOUD",
-        value_mode: str = "updated_value",
+        field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+        value_mode: str = "relative_delta_percent",
         timeout: int = 60,
 ) -> dict:
     resolved_odb_id = str(odb_id or "").strip()
@@ -4117,8 +4127,8 @@ def run_bayesian_update_workflow(
         write_cloud_result: bool = False,
         cloud_result_group: Optional[str] = None,
         cloud_step_name: str = "BayesianUpdate",
-        cloud_field_name: str = "PARAMETER_CLOUD",
-        cloud_value_mode: str = "updated_value",
+        cloud_field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+        cloud_value_mode: str = "relative_delta_percent",
         progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     if int(iterations) <= 0:
