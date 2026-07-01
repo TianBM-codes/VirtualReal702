@@ -103,7 +103,7 @@ def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(mon
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "id": 1,
                 "parameter_name": "T1",
@@ -127,7 +127,7 @@ def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(mon
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_design_responses",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "response_no": 1,
                 "request_no": 1,
@@ -181,7 +181,7 @@ def test_build_project_dsa_config_preview_inherit_omits_value_and_warns(monkeypa
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "id": 1,
                 "parameter_name": "T 1",
@@ -196,7 +196,7 @@ def test_build_project_dsa_config_preview_inherit_omits_value_and_warns(monkeypa
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_design_responses",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "response_no": 1,
                 "request_no": 1,
@@ -223,7 +223,7 @@ def test_build_project_dsa_config_preview_falls_back_to_capability_element_label
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "id": 1,
                 "parameter_name": "T1",
@@ -271,6 +271,52 @@ def test_build_project_dsa_config_preview_falls_back_to_capability_element_label
     assert "PARAMETER_ELEMENTS_FROM_CAPABILITY" in {item["code"] for item in result["warnings"]}
 
 
+def test_load_project_thickness_parameters_builds_surrogate_rows_from_t_capability(monkeypatch):
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id, **kwargs: [
+            {
+                "id": 1,
+                "parameter_group_name": "E@Set-149",
+                "parameter_name": "E@Set-149",
+                "quantity_code": "E",
+                "set_name": "Set-149",
+                "set_type": "ELSET",
+                "set_scope": "PART",
+                "instance_name": None,
+                "part_name": "PART-1",
+                "scalar_value": 210000000000.0,
+                "extra_json": '{"element_labels": [100]}',
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_thickness_capability_rows",
+        lambda project_id: [
+            {
+                "quantity_code": "T",
+                "set_name": "Set-149",
+                "set_type": "ELSET",
+                "set_scope": "PART",
+                "instance_name": None,
+                "part_name": "PART-1",
+                "extra_json": '{"element_labels": [100], "element_values": {"100": 0.001}}',
+            }
+        ],
+    )
+
+    rows = sensitivity_service._load_project_thickness_parameters(1001)
+
+    assert len(rows) == 1
+    assert rows[0]["parameter_name"] == "T@Set-149"
+    assert rows[0]["parameter_group_name"] == "T@Set-149"
+    assert rows[0]["quantity_code"] == "T"
+    assert rows[0]["scalar_value"] == 0.001
+    assert rows[0]["set_name"] == "Set-149"
+
+
 def test_generate_project_dsa_inp_from_db_writes_include_and_main(monkeypatch, tmp_path: Path):
     source_inp = tmp_path / "model.inp"
     source_inp.write_text(
@@ -311,7 +357,7 @@ def test_generate_project_dsa_inp_from_db_writes_include_and_main(monkeypatch, t
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "id": 1,
                 "parameter_name": "T1",
@@ -419,7 +465,7 @@ def test_generate_project_dsa_inp_from_db_places_assembly_include_after_sets_and
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "id": 1,
                 "parameter_name": "T1",
@@ -439,7 +485,7 @@ def test_generate_project_dsa_inp_from_db_places_assembly_include_after_sets_and
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_design_responses",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "response_no": 1,
                 "request_no": 1,
@@ -560,7 +606,7 @@ def test_generate_project_dsa_inp_from_db_keeps_flat_inp_in_single_global_includ
     monkeypatch.setattr(
         sensitivity_service,
         "_load_project_optimization_parameters",
-        lambda project_id: [
+        lambda project_id, **kwargs: [
             {
                 "id": 1,
                 "parameter_name": "T1",
@@ -592,6 +638,69 @@ def test_generate_project_dsa_inp_from_db_keeps_flat_inp_in_single_global_includ
     assert "include_part_" not in analysis_text
     assert "*SHELL SECTION, ELSET=DSA_T1, MATERIAL=MAT1" in include_text
     assert len(result["include_files"]) == 1
+
+
+def test_generate_project_dsa_inp_from_db_writes_assembly_response_include_without_parameters(monkeypatch, tmp_path: Path):
+    source_inp = tmp_path / "assembly_only.inp"
+    source_inp.write_text(
+        "\n".join(
+            [
+                "*Heading",
+                "*Part, name=P1",
+                "*Node",
+                "1, 0, 0, 0",
+                "*End Part",
+                "*Assembly, name=Assembly",
+                "*Instance, name=P1-1, part=P1",
+                "*End Instance",
+                "*Nset, nset=_M7, internal, instance=P1-1",
+                "4",
+                "*End Assembly",
+                "*Step, name=Step-1",
+                "*Static",
+                "1., 1.",
+                "*End Step",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setattr(sensitivity_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(sensitivity_service, "_load_project_optimization_parameters", lambda project_id, **kwargs: [])
+    monkeypatch.setattr(sensitivity_service, "_load_project_thickness_capabilities", lambda project_id: {})
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_design_responses",
+        lambda project_id, **kwargs: [
+            {
+                "response_no": 1,
+                "request_no": 1,
+                "region_type": "NODE",
+                "set_name": "MANUAL_RESP_NODE_RESP_1_1",
+                "variables": ["UY"],
+                "set_scope": "ASSEMBLY",
+                "instance_name": "P1-1",
+                "part_name": "P1",
+                "extra_json": '{"node_labels": [4]}',
+            }
+        ],
+    )
+
+    result = sensitivity_service.generate_project_dsa_inp_from_db(
+        project_id=1001,
+        input_inp=str(source_inp),
+        output_dir=str(out_dir),
+        value_mode="inherit",
+    )
+
+    analysis_text = Path(result["analysis_inp"]).read_text(encoding="utf-8")
+    assembly_text = (out_dir / "include_assembly.inp").read_text(encoding="utf-8")
+
+    assert "** DSA_AUTO_ASSEMBLY_INCLUDE\n*Include, input=include_assembly.inp\n*End Assembly" in analysis_text
+    assert "*NSET, NSET=MANUAL_RESP_NODE_RESP_1_1, INSTANCE=P1-1" in assembly_text
+    assert "*NODE RESPONSE, NSET=MANUAL_RESP_NODE_RESP_1_1" in analysis_text
 
 
 def test_generate_project_dsa_inp_from_db_serializes_mother_set_remainders(monkeypatch, tmp_path: Path):

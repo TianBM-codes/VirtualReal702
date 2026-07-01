@@ -1431,7 +1431,11 @@ def build_dsa_include_layout(
         )
         if root_lines:
             files[include_name] = files[include_name] + "\n".join(root_lines) + "\n"
+        assembly_lines = _build_assembly_lines(config)
         assembly_include_name = None
+        if assembly_lines:
+            assembly_include_name = f"{include_stem}_assembly{include_suffix}"
+            files[assembly_include_name] = "\n".join(assembly_lines) + "\n"
 
     return {
         "global_include_name": include_name,

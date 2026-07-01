@@ -102,6 +102,7 @@ def _make_sensitivity_app(monkeypatch, tmp_path: Path):
 
 def test_sensitivity_result_groups_include_external_cloud_groups(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app = _make_sensitivity_app(monkeypatch, tmp_path)
@@ -119,6 +120,7 @@ def test_sensitivity_result_groups_include_external_cloud_groups(monkeypatch, tm
 
 def test_sensitivity_result_groups_merge_only_false_keeps_raw_groups(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app = _make_sensitivity_app(monkeypatch, tmp_path)
@@ -135,8 +137,30 @@ def test_sensitivity_result_groups_merge_only_false_keeps_raw_groups(monkeypatch
     ]
 
 
+def test_sensitivity_result_groups_fallback_to_raw_groups_when_merge_missing(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app = _make_sensitivity_app(monkeypatch, tmp_path)
+    workspace = tmp_path / "workspace"
+    with sqlite3.connect(workspace / "manifest.db") as conn:
+        conn.execute("DELETE FROM result_group_meta WHERE result_group = ?", ("sensitivity_5_U",))
+
+    client = TestClient(app)
+    response = client.get("/api/odb/demo/sensitivity/result_groups")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["result_groups"] == [
+        "sensitivity_batch_5_demo_123",
+        "sol200_all_elements_e",
+        "viz_rg_PART-1-1_U1_10",
+    ]
+
+
 def test_sensitivity_fields_expand_external_cloud_frames(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app = _make_sensitivity_app(monkeypatch, tmp_path)

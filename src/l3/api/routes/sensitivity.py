@@ -74,6 +74,50 @@ def _list_external_sensitivity_groups(manifest: ManifestRepo) -> set[str]:
     return groups
 
 
+def _collect_visible_sensitivity_groups(
+    *,
+    all_groups: list[str],
+    external_sensitivity_groups: set[str],
+    merge_only: bool,
+) -> list[str]:
+    ordered_candidates: list[str] = []
+    seen_candidates: set[str] = set()
+    for raw_group in list(all_groups) + sorted(external_sensitivity_groups):
+        rg_text = str(raw_group or "").strip()
+        if not rg_text or rg_text in seen_candidates:
+            continue
+        seen_candidates.add(rg_text)
+        ordered_candidates.append(rg_text)
+
+    groups = []
+    for rg_text in ordered_candidates:
+        is_legacy_sensitivity = _is_sensitivity_prefix_group(rg_text)
+        is_external_sensitivity = rg_text in external_sensitivity_groups
+        if not is_legacy_sensitivity and not is_external_sensitivity:
+            continue
+        if (
+            merge_only
+            and is_legacy_sensitivity
+            and _rg_kind(rg_text) != "merge"
+            and not is_external_sensitivity
+        ):
+            continue
+        groups.append(rg_text)
+
+    # If a workspace only has raw DSA groups such as sensitivity_batch_* and
+    # the merge output is absent, returning an empty list blocks follow-up field
+    # inspection entirely. Fall back to the raw sensitivity groups so callers
+    # can still inspect what was actually stored.
+    if groups or not merge_only:
+        return groups
+
+    fallback_groups = []
+    for rg_text in ordered_candidates:
+        if _is_sensitivity_prefix_group(rg_text):
+            fallback_groups.append(rg_text)
+    return fallback_groups
+
+
 def _discover_sensitivity_step(manifest: ManifestRepo) -> Optional[str]:
     sensitivity_groups = _list_external_sensitivity_groups(manifest)
     try:
@@ -161,24 +205,11 @@ async def list_sensitivity_result_groups(
     manifest = ManifestRepo(idx.workspace)
     all_groups = manifest.list_result_groups()
     external_sensitivity_groups = _list_external_sensitivity_groups(manifest)
-
-    groups = []
-    for rg in all_groups:
-        rg_text = str(rg or "")
-        is_legacy_sensitivity = _is_sensitivity_prefix_group(rg_text)
-        is_external_sensitivity = rg_text in external_sensitivity_groups
-        if not is_legacy_sensitivity and not is_external_sensitivity:
-            continue
-        # Keep hiding legacy raw DSA groups by default, but still surface
-        # externally written sensitivity clouds such as sensitivity_batch_*.
-        if (
-            merge_only
-            and is_legacy_sensitivity
-            and _rg_kind(rg_text) != "merge"
-            and not is_external_sensitivity
-        ):
-            continue
-        groups.append(rg_text)
+    groups = _collect_visible_sensitivity_groups(
+        all_groups=all_groups,
+        external_sensitivity_groups=external_sensitivity_groups,
+        merge_only=merge_only,
+    )
 
     return ok({"result_groups": groups})
 

@@ -963,11 +963,122 @@ def _infer_response_component_from_design_response_rows(
 
 
 def _load_project_thickness_parameters(project_id: int) -> List[dict]:
-    return [
+    selected_rows = list(_load_project_optimization_parameters(project_id, required_scope="SENSITIVITY"))
+    explicit_rows = [
         row
-        for row in _load_project_optimization_parameters(project_id, required_scope="SENSITIVITY")
+        for row in selected_rows
         if str(row.get("quantity_code") or "").upper() in {"T", "H"}
     ]
+    if explicit_rows:
+        return explicit_rows
+
+    fallback_rows = _build_surrogate_thickness_parameters_from_capabilities(project_id, selected_rows)
+    if fallback_rows:
+        return fallback_rows
+    return []
+
+
+def _capability_key_with_quantity(row: dict) -> tuple:
+    return (
+        str(row.get("quantity_code") or "").strip().upper(),
+        str(row.get("set_name") or "").strip(),
+        str(row.get("set_type") or "").strip(),
+        str(row.get("set_scope") or "").strip(),
+        str(row.get("instance_name") or "").strip(),
+        str(row.get("part_name") or "").strip(),
+    )
+
+
+def _load_project_thickness_capability_rows(project_id: int) -> List[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name, extra_json
+            FROM t_mt_py_fem_quantity_set_capability
+            WHERE pid = %s AND quantity_code IN ('T', 'H')
+            ORDER BY CASE WHEN quantity_code = 'T' THEN 0 ELSE 1 END, set_name, set_scope, instance_name, part_name
+            """,
+            (int(project_id),),
+        )
+        return [dict(row) for row in (cursor.fetchall() or [])]
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _capability_scalar_value(capability_row: Optional[dict]) -> Optional[float]:
+    extra_json = _parse_optional_json_object((capability_row or {}).get("extra_json"))
+    element_values = extra_json.get("element_values")
+    if isinstance(element_values, dict):
+        for value in element_values.values():
+            try:
+                return float(value)
+            except Exception:
+                continue
+    return None
+
+
+def _build_surrogate_thickness_parameter_rows_from_capabilities(
+        selected_rows: List[dict],
+        capability_rows: List[dict],
+) -> List[dict]:
+    capability_map = {
+        _capability_key_with_quantity(row): row
+        for row in (capability_rows or [])
+    }
+    surrogate_rows: List[dict] = []
+    used_parameter_names: Set[str] = set()
+
+    for row in selected_rows or []:
+        base_key = (
+            str(row.get("set_name") or "").strip(),
+            str(row.get("set_type") or "").strip(),
+            str(row.get("set_scope") or "").strip(),
+            str(row.get("instance_name") or "").strip(),
+            str(row.get("part_name") or "").strip(),
+        )
+        capability_row = None
+        capability_quantity = None
+        for quantity_code in ("T", "H"):
+            candidate = capability_map.get((quantity_code, *base_key))
+            if candidate is not None:
+                capability_row = candidate
+                capability_quantity = quantity_code
+                break
+        if capability_row is None or capability_quantity is None:
+            continue
+
+        base_parameter_name = f"{capability_quantity}@{base_key[0] or row.get('set_name') or row.get('parameter_name') or 'AUTO'}"
+        parameter_name = base_parameter_name
+        suffix = 2
+        while parameter_name in used_parameter_names:
+            parameter_name = f"{base_parameter_name}_{suffix}"
+            suffix += 1
+        used_parameter_names.add(parameter_name)
+
+        scalar_value = _capability_scalar_value(capability_row)
+        surrogate_row = dict(row)
+        surrogate_row["parameter_name"] = parameter_name
+        surrogate_row["parameter_group_name"] = parameter_name
+        surrogate_row["quantity_code"] = capability_quantity
+        surrogate_row["set_name"] = capability_row.get("set_name")
+        surrogate_row["set_type"] = capability_row.get("set_type")
+        surrogate_row["set_scope"] = capability_row.get("set_scope")
+        surrogate_row["instance_name"] = capability_row.get("instance_name")
+        surrogate_row["part_name"] = capability_row.get("part_name")
+        surrogate_row["extra_json"] = capability_row.get("extra_json")
+        if scalar_value is not None:
+            surrogate_row["scalar_value"] = scalar_value
+        surrogate_rows.append(surrogate_row)
+
+    return surrogate_rows
+
+
+def _build_surrogate_thickness_parameters_from_capabilities(project_id: int, selected_rows: List[dict]) -> List[dict]:
+    capability_rows = _load_project_thickness_capability_rows(project_id)
+    return _build_surrogate_thickness_parameter_rows_from_capabilities(selected_rows, capability_rows)
 
 
 def _capability_key(row: dict) -> tuple:
@@ -981,22 +1092,8 @@ def _capability_key(row: dict) -> tuple:
 
 
 def _load_project_thickness_capabilities(project_id: int) -> Dict[tuple, dict]:
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    try:
-        cursor.execute(
-            """
-            SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name, extra_json
-            FROM t_mt_py_fem_quantity_set_capability
-            WHERE pid = %s AND quantity_code IN ('T', 'H')
-            """,
-            (int(project_id),),
-        )
-        rows = [dict(row) for row in (cursor.fetchall() or [])]
-        return {_capability_key(row): row for row in rows}
-    finally:
-        cursor.close()
-        conn.close()
+    rows = _load_project_thickness_capability_rows(project_id)
+    return {_capability_key(row): row for row in rows}
 
 
 def _parse_optional_json_object(raw_value) -> dict:

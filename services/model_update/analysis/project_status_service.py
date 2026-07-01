@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 from db import get_connection
+
+
+@lru_cache(maxsize=1)
+def _work_condition_project_columns() -> frozenset[str]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SHOW COLUMNS FROM t_mt_work_condition_project")
+        return frozenset(str(row[0]) for row in cursor.fetchall() if row and row[0])
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def update_work_condition_project_status(
@@ -11,10 +24,11 @@ def update_work_condition_project_status(
     cursor=None,
     **fields: Any,
 ) -> None:
+    available_columns = _work_condition_project_columns()
     updates = {
         str(key): value
         for key, value in (fields or {}).items()
-        if value is not None
+        if value is not None and str(key) in available_columns
     }
     if not updates:
         return

@@ -34,6 +34,7 @@ router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 
 Component = Literal["U1", "U2", "U3"]
 _FRAME_ALIAS_RE = re.compile(r"^(?P<field>.+)__FRAME_(?P<frame>\d+)$")
+_RAW_SENSITIVITY_GROUP_RE = re.compile(r"^sensitivity_batch_", re.IGNORECASE)
 
 
 def _normalize_step_token(value: Optional[str]) -> str:
@@ -124,6 +125,35 @@ def _resolve_single_result_target(
     )[0]
 
 
+def _resolve_display_frame(
+    *,
+    odb_id: str,
+    requested_step: str,
+    resolved_step: str,
+    requested_frame: int,
+    result_group: Optional[str],
+) -> int:
+    if int(requested_frame) != 0:
+        return int(requested_frame)
+    if not result_group or not _RAW_SENSITIVITY_GROUP_RE.match(str(result_group)):
+        return int(requested_frame)
+    if _normalize_step_token(requested_step) != "sensitivity":
+        return int(requested_frame)
+
+    idx = registry.get(odb_id)
+    if idx is None:
+        return int(requested_frame)
+    manifest = ManifestRepo(idx.workspace)
+    frames = manifest.get_frames(str(resolved_step), result_group=str(result_group)) or []
+    if len(frames) <= 1:
+        return int(requested_frame)
+
+    frame_indices = [int(row["frame_idx"]) for row in frames if row["frame_idx"] is not None]
+    if not frame_indices:
+        return int(requested_frame)
+    return max(frame_indices)
+
+
 @router.get("/results/frame-colors")
 async def get_frame_colors(
     odb_id: str,
@@ -142,13 +172,20 @@ async def get_frame_colors(
         field=field,
         result_group=result_group,
     )
+    resolved_frame = _resolve_display_frame(
+        odb_id=odb_id,
+        requested_step=step,
+        resolved_step=resolved_step,
+        requested_frame=frame,
+        result_group=resolved_result_group,
+    )
     colors, legend = frame_colors(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
         step=resolved_step,
         field=field,
-        frame_idx=frame,
+        frame_idx=resolved_frame,
         component=component,
         render_mode=mode,
         result_group=resolved_result_group,
@@ -169,7 +206,7 @@ async def get_frame_colors(
             "X-Val-Min":         str(float(legend[0])),
             "X-Val-Max":         str(float(legend[1])),
             "X-Component":       component,
-            "X-Frame":           str(frame),
+            "X-Frame":           str(resolved_frame),
         },
     )
 
@@ -232,13 +269,20 @@ async def get_frame_scalars(
         field=field,
         result_group=result_group,
     )
+    resolved_frame = _resolve_display_frame(
+        odb_id=odb_id,
+        requested_step=step,
+        resolved_step=resolved_step,
+        requested_frame=frame,
+        result_group=resolved_result_group,
+    )
     u, legend, result_position = frame_scalars(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
         step=resolved_step,
         field=field,
-        frame_idx=frame,
+        frame_idx=resolved_frame,
         component_idx=component_idx,
         render_mode=mode,
         result_group=resolved_result_group,
@@ -268,7 +312,7 @@ async def get_frame_scalars(
             "X-Val-Min":              str(float(legend[0])),
             "X-Val-Max":              str(float(legend[1])),
             "X-Component-Idx":        str(component_idx) if component_idx is not None else "mag",
-            "X-Frame":                str(frame),
+            "X-Frame":                str(resolved_frame),
             "X-Feature-Angle":        str(feature_angle) if feature_angle is not None else "none",
             "X-Average-Threshold":    str(average_threshold),
             "X-Use-Geometry-Split":   str(use_geometry_split).lower(),
@@ -320,6 +364,13 @@ async def get_frame_scalar_range(
             requested_result_groups=result_group,
         )
         for rg, resolved_step in targets:
+            resolved_frame = _resolve_display_frame(
+                odb_id=odb_id,
+                requested_step=step,
+                resolved_step=resolved_step,
+                requested_frame=frame,
+                result_group=rg,
+            )
             try:
                 rng = compute_scalar_range(
                     registry=registry,
@@ -327,7 +378,7 @@ async def get_frame_scalar_range(
                     instance=inst,
                     step=resolved_step,
                     field=field,
-                    frame_idx=frame,
+                    frame_idx=resolved_frame,
                     component_idx=component_idx,
                     render_mode=mode,
                     result_group=rg,
