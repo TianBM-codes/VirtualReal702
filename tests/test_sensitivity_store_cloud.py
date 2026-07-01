@@ -820,6 +820,70 @@ def test_generate_sensitivity_inp_and_store_uses_project_defaults_when_paths_omi
     assert result["analysis_inp"] == str(generated_inp.resolve())
 
 
+def test_generate_sensitivity_inp_and_store_infers_displacement_defaults(monkeypatch, tmp_path: Path):
+    original_inp = tmp_path / "model.inp"
+    original_inp.write_text("*Heading\n", encoding="utf-8")
+    generated_inp = tmp_path / "out" / "generated_sensitivity.inp"
+    generated_inp.parent.mkdir()
+    generated_inp.write_text("*Heading\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_optimization_parameters",
+        lambda project_id, required_scope=None: [{"parameter_name": "T1"}],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_load_project_design_responses",
+        lambda project_id: [
+            {
+                "response_no": 1,
+                "request_no": 1,
+                "step_name": "Step-1",
+                "region_type": "NODE",
+                "set_name": "RESP_SET",
+                "variables": ["UY"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        sensitivity_service,
+        "_generate_sensitivity_inp_from_project_db",
+        lambda **kwargs: {"analysis_inp": str(generated_inp), "generated_files": {}},
+    )
+
+    run_calls = {}
+
+    def fake_run(**kwargs):
+        run_calls.update(kwargs)
+        return {
+            "analysis_run_id": 51,
+            "project_id": kwargs["project_id"],
+            "batch_no": kwargs["batch_no"],
+            "input_inp": kwargs["input_inp"],
+            "analysis_inp": kwargs["input_inp"],
+            "generated_files": {"analysis_inp": kwargs["input_inp"]},
+            "deleted_process_files": [],
+        }
+
+    monkeypatch.setattr(sensitivity_service, "run_sensitivity_inp_and_store", fake_run)
+
+    result = sensitivity_service.generate_sensitivity_inp_and_store(
+        project_id=9,
+        batch_no="4",
+        input_inp=str(original_inp),
+        output_dir=str(tmp_path / "out"),
+        instances=["PART-1-1"],
+    )
+
+    assert run_calls["field_prefix"] == "d_U_"
+    assert run_calls["response_component"] == "U2"
+    assert run_calls["position"] == "NODAL"
+    assert result["generation_summary"]["resolved_field_prefix"] == "d_U_"
+    assert result["generation_summary"]["resolved_response_component"] == "U2"
+    assert result["generation_summary"]["resolved_position"] == "NODAL"
+
+
 def test_write_sensitivity_cloud_result_rejects_non_finite_matrix_values(monkeypatch):
     monkeypatch.setattr(
         sensitivity_service,

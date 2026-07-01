@@ -962,6 +962,102 @@ def _infer_response_component_from_design_response_rows(
     )
 
 
+def _infer_field_prefix_from_design_response_rows(rows: List[dict]) -> str:
+    parsed_matches: List[dict] = []
+    seen_prefixes: Set[str] = set()
+    for row in rows or []:
+        for raw_variable in list(row.get("variables") or []):
+            token = str(raw_variable or "").strip()
+            if not token:
+                continue
+            parsed = _parse_design_response_variable(token)
+            field_name = str(parsed.get("field_name") or "").strip().upper()
+            if not field_name:
+                continue
+            prefix = f"d_{field_name}_"
+            if prefix in seen_prefixes:
+                continue
+            seen_prefixes.add(prefix)
+            parsed_matches.append(
+                {
+                    "field_prefix": prefix,
+                    "variable": str(parsed.get("variable") or "").upper(),
+                    "field_name": field_name,
+                    "component": str(parsed.get("component") or "").upper() or None,
+                    "region_type": str(row.get("region_type") or "").strip().upper(),
+                    "step_name": str(row.get("step_name") or "").strip(),
+                    "set_name": str(row.get("set_name") or "").strip(),
+                }
+            )
+
+    if not parsed_matches:
+        raise ValidationError(
+            "field_prefix is required because design responses do not expose any usable variables",
+            {"available_rows": len(rows or [])},
+        )
+    if len(parsed_matches) == 1:
+        return parsed_matches[0]["field_prefix"]
+
+    raise ValidationError(
+        "field_prefix is required because design responses span multiple response types",
+        {"available_field_prefixes": parsed_matches},
+    )
+
+
+def _infer_position_from_design_response_rows(
+        rows: List[dict],
+        *,
+        field_prefix: str,
+        response_component: Optional[str] = None,
+) -> Optional[str]:
+    response_token = _field_prefix_response_token(field_prefix)
+    explicit_response = _parse_explicit_response_component(response_component)
+    positions: List[dict] = []
+    seen_positions: Set[str] = set()
+    for row in rows or []:
+        region_type = str(row.get("region_type") or "").strip().upper()
+        for raw_variable in list(row.get("variables") or []):
+            token = str(raw_variable or "").strip()
+            if not token:
+                continue
+            parsed = _parse_design_response_variable(token)
+            if not _design_response_matches_token(parsed, response_token):
+                continue
+            if explicit_response is not None:
+                parsed_field_name = str(parsed.get("field_name") or "").strip().upper()
+                parsed_component = str(parsed.get("component") or "").strip().upper() or None
+                if parsed_field_name != str(explicit_response["field_name"]).upper():
+                    continue
+                if parsed_component is not None and parsed_component != str(explicit_response["component"]).upper():
+                    continue
+            preferred_position = (
+                "ELEMENT_NODAL"
+                if region_type == "NODE" and str(parsed.get("component") or "").upper() == "MISES"
+                else ("NODAL" if region_type == "NODE" else None)
+            )
+            if not preferred_position or preferred_position in seen_positions:
+                continue
+            seen_positions.add(preferred_position)
+            positions.append(
+                {
+                    "position": preferred_position,
+                    "variable": str(parsed.get("variable") or "").upper(),
+                    "region_type": region_type,
+                    "step_name": str(row.get("step_name") or "").strip(),
+                    "set_name": str(row.get("set_name") or "").strip(),
+                }
+            )
+
+    if not positions:
+        return None
+    if len(positions) == 1:
+        return positions[0]["position"]
+    raise ValidationError(
+        "position is required because matching design responses imply multiple result positions",
+        {"available_positions": positions, "field_prefix": field_prefix, "response_component": response_component},
+    )
+
+
 def _load_project_thickness_parameters(project_id: int) -> List[dict]:
     selected_rows = list(_load_project_optimization_parameters(project_id, required_scope="SENSITIVITY"))
     explicit_rows = [
@@ -3016,7 +3112,7 @@ def generate_sensitivity_inp_and_store(
         output_dir: Optional[str] = None,
         step: Optional[str] = None,
         instances: Optional[List[str]] = None,
-        field_prefix: str,
+        field_prefix: Optional[str] = None,
         response_component: Optional[str] = None,
         position: Optional[str] = None,
         aggregation: str = "max_abs",
@@ -3061,12 +3157,24 @@ def generate_sensitivity_inp_and_store(
                 "no design responses found for project-driven sensitivity generation",
                 {"project_id": int(project_id)},
             )
+        resolved_field_prefix = (
+            str(field_prefix or "").strip()
+            or _infer_field_prefix_from_design_response_rows(design_response_rows)
+        )
         resolved_step = str(step or "").strip() or _infer_step_from_design_response_rows(design_response_rows)
         resolved_response_component = (
             str(response_component or "").strip()
             or _infer_response_component_from_design_response_rows(
                 design_response_rows,
-                field_prefix=field_prefix,
+                field_prefix=resolved_field_prefix,
+            )
+        )
+        resolved_position = (
+            str(position or "").strip()
+            or _infer_position_from_design_response_rows(
+                design_response_rows,
+                field_prefix=resolved_field_prefix,
+                response_component=resolved_response_component,
             )
         )
 
@@ -3091,9 +3199,9 @@ def generate_sensitivity_inp_and_store(
             output_dir=output_dir_abs,
             step=resolved_step,
             instances=instances,
-            field_prefix=field_prefix,
+            field_prefix=resolved_field_prefix,
             response_component=resolved_response_component,
-            position=position,
+            position=resolved_position,
             aggregation=aggregation,
             frame=frame,
             abaqus=abaqus,
@@ -3120,8 +3228,10 @@ def generate_sensitivity_inp_and_store(
         result["generation_summary"] = {
             "optimization_parameter_count": len(parameter_rows),
             "design_response_count": len(design_response_rows),
+            "resolved_field_prefix": resolved_field_prefix,
             "resolved_step": resolved_step,
             "resolved_response_component": resolved_response_component,
+            "resolved_position": resolved_position,
         }
         generated_files = dict(result.get("generated_files") or {})
         generation_files = dict(generation_payload.get("generated_files") or {})

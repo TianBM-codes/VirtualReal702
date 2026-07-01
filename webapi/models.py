@@ -680,7 +680,7 @@ class SensitivityGenerateRunAndStoreRequest(BaseModel):
     output_dir: Optional[str] = None
     step: Optional[str] = None
     instances: List[str] = Field(default_factory=list)
-    field_prefix: str
+    field_prefix: Optional[str] = None
     response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"

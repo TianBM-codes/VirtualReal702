@@ -71,8 +71,11 @@ def _make_sensitivity_app(monkeypatch, tmp_path: Path):
             VALUES (?, ?, ?, '', '[]', '[]', '[]', 0, NULL, NULL, ?)
             """,
             [
+                ("sensitivity_batch_5_demo_123", "Step-1", "U", "odb"),
+                ("sensitivity_batch_5_demo_123", "Step-1", "S", "odb"),
                 ("sensitivity_batch_5_demo_123", "Step-1", "d_4_U1_T", "external"),
                 ("sensitivity_5_U", "Step-1", "d_4_U1_T", "external"),
+                ("sensitivity_5_U_10_U1", "Step-1", "E", "external"),
                 ("sol200_all_elements_e", "Sensitivity", "SENSITIVITY_CLOUD", "external"),
                 ("viz_rg_PART-1-1_U1_10", "Sensitivity", "E", "external"),
                 ("plain_result", "Step-1", "U", "odb"),
@@ -193,4 +196,60 @@ def test_sensitivity_fields_expand_external_cloud_frames(monkeypatch, tmp_path: 
             "response_node_label": 2,
             "component": "FREQ2",
         },
+    ]
+
+
+def test_sensitivity_fields_filter_raw_groups_to_derivative_fields(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app = _make_sensitivity_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/odb/demo/sensitivity/fields",
+        params={"result_group": "sensitivity_batch_5_demo_123", "step": "Step-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["fields"] == [
+        {
+            "field_name": "d_4_U1_T",
+            "source_field_name": "d_4_U1_T",
+            "step": "Step-1",
+            "frame_idx": None,
+            "frame_value": None,
+            "frame_description": None,
+            "response_node_label": 4,
+            "component": "U1",
+        }
+    ]
+
+
+def test_sensitivity_fields_keep_external_fields_for_merge_groups(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app = _make_sensitivity_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/odb/demo/sensitivity/fields",
+        params={"result_group": "sensitivity_5_U_10_U1", "step": "Step-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["fields"] == [
+        {
+            "field_name": "E",
+            "source_field_name": "E",
+            "step": "Step-1",
+            "frame_idx": None,
+            "frame_value": None,
+            "frame_description": None,
+            "response_node_label": None,
+            "component": None,
+        }
     ]

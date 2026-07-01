@@ -33,6 +33,28 @@ def _is_sensitivity_prefix_group(result_group: str) -> bool:
     return any(text.startswith(prefix) for prefix in _SENSITIVITY_PREFIXES)
 
 
+def _is_visible_sensitivity_field(*, result_group: str, field_name: str, source: str) -> bool:
+    field_text = str(field_name or "").strip()
+    source_text = str(source or "").strip().lower()
+    if not field_text:
+        return False
+    group_kind = _rg_kind(str(result_group or "").strip())
+
+    # Raw Abaqus DSA result groups often contain both the original analysis
+    # fields (U/S/E/...) and the actual sensitivity derivatives (d_*). The
+    # sensitivity picker should only expose the derivative fields.
+    if group_kind == "raw":
+        return field_text.startswith("d_")
+    if group_kind == "merge" and source_text == "external":
+        return True
+
+    if field_text.startswith("d_"):
+        return True
+    if source_text == "external" and _EXTERNAL_SENSITIVITY_FIELD_RE.search(field_text):
+        return True
+    return False
+
+
 def _list_external_sensitivity_groups(manifest: ManifestRepo) -> set[str]:
     """
     Return external result groups that look like sensitivity outputs.
@@ -266,6 +288,12 @@ async def list_sensitivity_fields(
         field_name = str(row["field_name"] or "")
         source = str(row["source"] or "").strip().lower()
         step_name = str(row["step_name"] or "")
+        if not _is_visible_sensitivity_field(
+            result_group=result_group,
+            field_name=field_name,
+            source=source,
+        ):
+            continue
         parsed = _parse_merged_field_name(field_name)
         if source == "external" and parsed["response_node_label"] is None and parsed["component"] is None:
             fields.extend(

@@ -441,6 +441,34 @@ def test_run_abaqus_job_sets_simulation_result_status_to_2_on_solver_failure(mon
     assert captured["status_updates"][-1] == (1001, {"simulation_result_status": 2})
 
 
+def test_run_abaqus_job_cleans_stale_lock_file_before_solver_launch(monkeypatch, tmp_path: Path):
+    from services.model_update.analysis import solver_service
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    input_inp = _write_text(tmp_path / "case_a.inp", "*Heading\n")
+    stale_lock = output_dir / "case_a.lck"
+    stale_lock.write_text("stale", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run_local_solver(**kwargs):
+        captured["lock_exists_before_run"] = stale_lock.exists()
+        return {"ok": True, "returncode": 0, "artifacts": {}}
+
+    monkeypatch.setattr(solver_service, "_run_local_solver", fake_run_local_solver)
+
+    result = run_abaqus_job(
+        input_inp=str(input_inp),
+        output_dir=str(output_dir),
+        run_solver=True,
+    )
+
+    assert captured["lock_exists_before_run"] is False
+    assert stale_lock.exists() is False
+    assert str(stale_lock.resolve()) in (result.get("stale_process_files_deleted") or [])
+
+
 def test_run_solver_and_parse_project_result_for_inp_skips_project_creation(monkeypatch, tmp_path: Path):
     from services.model_update.analysis import solver_service
 

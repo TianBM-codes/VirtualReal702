@@ -829,9 +829,9 @@ class ManifestRepo:
         try:
             with self._get_conn() as conn:
                 row = conn.execute(
-                    "SELECT h5_path FROM element_sets"
-                    " WHERE set_name=? AND instance_name=?",
-                    (set_name, instance_name),
+                    "SELECT set_name, h5_path FROM element_sets"
+                    " WHERE instance_name=? AND set_name = ? COLLATE NOCASE",
+                    (instance_name, set_name),
                 ).fetchone()
         except Exception:
             return None
@@ -843,7 +843,8 @@ class ManifestRepo:
             file_rel, ds_path = h5_path_raw.split(":", 1)
         else:
             file_rel = h5_path_raw
-            ds_path = "element_sets/{}/{}".format(instance_name, set_name)
+            stored_set_name = str(row["set_name"] or set_name)
+            ds_path = "element_sets/{}/{}".format(instance_name, stored_set_name)
 
         abs_path = os.path.join(os.path.dirname(self.db_path), file_rel)
         if not os.path.exists(abs_path):

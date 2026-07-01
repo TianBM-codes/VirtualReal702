@@ -6,7 +6,6 @@ def test_generate_run_and_store_request_accepts_minimal_payload():
         project_id=5,
         batch_no="1",
         input_inp_name="static_fem_with_part.inp",
-        field_prefix="d_U_",
         interactive=True,
         async_submit=False,
     )
@@ -15,5 +14,6 @@ def test_generate_run_and_store_request_accepts_minimal_payload():
     assert body.input_inp_name == "static_fem_with_part.inp"
     assert body.step is None
     assert body.instances == []
+    assert body.field_prefix is None
     assert body.response_component is None
     assert body.position is None

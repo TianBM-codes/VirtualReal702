@@ -80,6 +80,67 @@ def _scalar_nodal_by_idx(f, instance: str, frame_idx: int,
     return _extract_component(frame_data, component_idx), num_frames
 
 
+def _expand_sparse_nodal_to_geometry_rows(
+    *,
+    f,
+    instance: str,
+    scalar_node: np.ndarray,
+    workspace: str,
+) -> np.ndarray:
+    """
+    Expand sparse NODAL datasets that store explicit node labels instead of a
+    dense geometry-row-aligned array.
+
+    Sensitivity files may only contain values for a handful of response nodes
+    and accompany `/NODAL/<instance>/data` with `/NODAL/<instance>/labels`.
+    Rendering code indexes by geometry node row, so remap those labels back
+    onto the full geometry node label array and fill all other rows with NaN.
+    """
+    labels_path = f"/NODAL/{instance}/labels"
+    if labels_path not in f:
+        return scalar_node
+
+    result_labels = np.asarray(f[labels_path][:], dtype=np.int32).reshape(-1)
+    scalar_arr = np.asarray(scalar_node, dtype=np.float32).reshape(-1)
+    if result_labels.size == 0 or scalar_arr.size == 0:
+        return scalar_arr
+
+    try:
+        manifest = ManifestRepo(workspace)
+        geom_h5_path = manifest.get_geom_path(instance)
+    except Exception:
+        geom_h5_path = None
+    if not geom_h5_path:
+        geom_h5_path = os.path.join(workspace, "l1", "geometry", f"{canon_instance(instance)}.h5")
+    if not geom_h5_path or not os.path.exists(geom_h5_path):
+        return scalar_arr
+
+    try:
+        with h5py.File(geom_h5_path, "r") as geom_f:
+            if "nodes/labels" not in geom_f:
+                return scalar_arr
+            geom_labels = np.asarray(geom_f["nodes/labels"][:], dtype=np.int32).reshape(-1)
+    except Exception:
+        logger.exception(
+            "failed to read geometry labels for sparse nodal remap: workspace=%s instance=%s",
+            workspace,
+            instance,
+        )
+        return scalar_arr
+
+    expanded = np.full(len(geom_labels), np.nan, dtype=np.float32)
+    rows = np.searchsorted(geom_labels, result_labels)
+    valid = (
+        (rows >= 0)
+        & (rows < len(geom_labels))
+        & (geom_labels[rows] == result_labels)
+    )
+    if not np.any(valid):
+        return scalar_arr
+    expanded[rows[valid]] = scalar_arr[valid]
+    return expanded
+
+
 def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
                              component_idx: Optional[int],
                              src_etype: np.ndarray,
@@ -796,6 +857,12 @@ def frame_scalars(
         result = _scalar_nodal_by_idx(f, instance, frame_idx, component_idx)
         if result is not None:
             scalar_node, num_frames = result
+            scalar_node = _expand_sparse_nodal_to_geometry_rows(
+                f=f,
+                instance=instance,
+                scalar_node=scalar_node,
+                workspace=idx.workspace,
+            )
             result_position = "NODAL"
 
             # Extend sparse NODAL fields so indexing always succeeds

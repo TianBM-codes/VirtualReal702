@@ -59,6 +59,7 @@ _ABAQUS_PROCESS_FILE_SUFFIXES = (
     ".msg",
     ".sta",
     ".dat",
+    ".lck",
 )
 
 _NASTRAN_ARTIFACT_SUFFIXES = (
@@ -540,6 +541,17 @@ def delete_abaqus_process_files(workdir: Path, job_name: str) -> List[str]:
     return deleted
 
 
+def _cleanup_stale_abaqus_job_files(workdir: Path, job_name: str) -> List[str]:
+    """
+    Remove stale Abaqus process-side artifacts before launching a fresh job.
+
+    In repeated local debugging runs, Abaqus may leave behind a `.lck` after a
+    forced stop, which blocks the next submission even though no solver process
+    is still writing to the ODB.
+    """
+    return delete_abaqus_process_files(workdir, job_name)
+
+
 def _run_local_solver(
     command: List[str],
     workdir: Path,
@@ -944,6 +956,10 @@ def run_abaqus_sensitivity_job(
     if copied_include_files:
         payload["generated_files"]["copied_include_files"] = copied_include_files
     if run_solver:
+        payload["stale_process_files_deleted"] = _cleanup_stale_abaqus_job_files(
+            target_dir,
+            resolved_job_name,
+        )
         # Returning both the command preview and the execution result makes it
         # easier to debug solver startup issues separately from deck generation.
         payload["solver"] = _run_local_solver(
@@ -1000,6 +1016,10 @@ def run_abaqus_job(
         "solver": None,
     }
     if run_solver:
+        payload["stale_process_files_deleted"] = _cleanup_stale_abaqus_job_files(
+            target_dir,
+            resolved_job_name,
+        )
         payload["solver"] = _run_local_solver(
             command=command,
             workdir=target_dir,
