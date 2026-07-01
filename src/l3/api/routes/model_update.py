@@ -90,9 +90,7 @@ async def step(odb_id: str):
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    manifest = ManifestRepo(idx.workspace)
-    resolved_step = _discover_model_update_step(manifest) or "BayesianUpdate"
-    return ok([{"label": "Bayesian-Update", "value": resolved_step, "frame": 0}])
+    return ok([{"label": "Bayesian-Update", "value": "BayesianUpdate", "frame": 0}])
 
 
 @router.get("/model-update/fields")

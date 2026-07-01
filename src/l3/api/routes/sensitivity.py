@@ -240,9 +240,7 @@ async def step(odb_id: str):
     idx = registry.get(odb_id)
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    manifest = ManifestRepo(idx.workspace)
-    resolved_step = _discover_sensitivity_step(manifest) or "Sensitivity"
-    return ok([{"label": "Sensitivity", "value": resolved_step, "frame": 0}])
+    return ok([{"label": "Sensitivity", "value": "Sensitivity", "frame": 0}])
 
 @router.get("/sensitivity/fields")
 async def list_sensitivity_fields(
