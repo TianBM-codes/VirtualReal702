@@ -336,30 +336,6 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
         #   }, ...
         # ]
         # =========================================================
-        coord_sql = """
-                INSERT INTO t_mt_py_fem_coord
-                (pid, fid, coord_no, ref_coord_no, coord_type,
-                 x1, x2, x3, x4, x5, x6, x7, x8, x9)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """
-        for row in bdf_info.get("coordinate_systems", []):
-            cursor.execute(coord_sql, (
-                project_id,
-                file_id,
-                _safe_int(row.get("ID")),
-                _safe_int(row.get("RID")),
-                row.get("Type"),
-                _safe_float(row.get("X1")),
-                _safe_float(row.get("X2")),
-                _safe_float(row.get("X3")),
-                _safe_float(row.get("X4")),
-                _safe_float(row.get("X5")),
-                _safe_float(row.get("X6")),
-                _safe_float(row.get("X7")),
-                _safe_float(row.get("X8")),
-                _safe_float(row.get("X9")),
-            ))
-
         quantity_sql = """
         INSERT INTO t_mt_py_fem_supported_quantity
         (quantity_code, quantity_name, unit, enabled, sort_no)

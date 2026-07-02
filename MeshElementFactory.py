@@ -167,7 +167,7 @@ class MeshElementFactory:
                 raise NoImplSuchElement(e_type, e_id)
 
         elif fem_software == "NASTRAN":
-            if "CBAR" in e_type or "CBEAM" in e_type:
+            if e_type in ["CBAR", "CBEAM", "CROD"]:
                 return MeshTruss(e_id), True
             elif "CQUAD4" in e_type:
                 return MeshCQUAD4(e_id), True
