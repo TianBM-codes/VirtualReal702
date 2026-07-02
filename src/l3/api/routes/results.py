@@ -24,7 +24,7 @@ from ...services.result_service import (
     frame_colors,
     frame_scalars,
     frame_deformed_positions,
-    frame_deformed_aux_geometry,
+    frame_deformed_with_aux,
     frame_vertex_displacements,
     suggest_deform_scale,
     modal_shape_displacement,
@@ -426,7 +426,10 @@ async def get_deformed_positions(
     Computes: original_positions + scale * U_displacement_per_vertex.
     Requires U NODAL field in the given step.  Only supports indexed geometry.
     """
-    positions, normals = frame_deformed_positions(
+    # Surface + line/point/coupling overlay in one call → single U read (matters
+    # for large models / animation).  aux_sections is empty when the instance has
+    # no line/point/coupling geometry or the surface H5 predates the node_rows change.
+    positions, normals, aux_sections = frame_deformed_with_aux(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
@@ -440,18 +443,7 @@ async def get_deformed_positions(
         ("positions", positions),   # [Nv, 3] float32
         ("normals",   normals),     # [Nv, 3] float32  — pre-computed, skip JS computeVertexNormals
     ]
-
-    # Deformed line/point/coupling overlay geometry (best-effort; empty when the
-    # instance has none or the surface H5 predates the node_rows change).
-    sections.extend(frame_deformed_aux_geometry(
-        registry=registry,
-        odb_id=odb_id,
-        instance=instance,
-        step=step,
-        frame_idx=frame,
-        scale=scale,
-        result_group=result_group,
-    ))
+    sections.extend(aux_sections)
 
     payload = l3be_build(sections)
     return Response(

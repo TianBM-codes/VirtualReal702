@@ -1617,6 +1617,78 @@ def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.nd
     return (normals / lengths).astype(np.float32)
 
 
+def _deform_surface_from_disp(idx, instance, disp_node, scale):
+    """
+    Surface deformed positions + normals from a preloaded raw node displacement
+    array (see _load_raw_node_displacements).  Factored out so callers that also
+    need aux geometry can share a single U read.
+    Returns (deformed [Nv, 3], normals [Nv, 3]) float32.
+    """
+    vtx_nr = idx.vtx_node_row.get(instance)
+    if vtx_nr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
+            {"instance": instance},
+        )
+    disp_vertex = _disp_at_rows(disp_node, vtx_nr)
+
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        raise NotFoundError(
+            f"Render H5 not found for instance '{instance}'",
+            {"instance": instance},
+        )
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
+        indices   = np.ascontiguousarray(f["render/indices"][:],   dtype=np.int32) \
+                    if "render/indices" in f else None
+
+    deformed = (positions + np.float32(scale) * disp_vertex).astype(np.float32)
+    normals  = _compute_vertex_normals(deformed, indices) if indices is not None \
+               else np.zeros_like(deformed)
+    return deformed, normals
+
+
+def _deform_aux_from_disp(idx, instance, disp_node, scale):
+    """
+    Aux (line/point/coupling) deformed L3BE sections from a preloaded raw node
+    displacement array.  Best-effort: returns [] when the surface H5 is missing
+    or carries no node_rows.  See frame_deformed_aux_geometry for section layout.
+    """
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        return []
+
+    # (group, positions-dataset, node_rows-dataset, section_name, reshape-to-[K,3])
+    specs = [
+        ("lines",     "lines/positions",     "lines/node_rows",     "line_positions",     True),
+        ("points",    "points/positions",    "points/node_rows",    "point_positions",    False),
+        ("couplings", "couplings/positions", "couplings/node_rows", "coupling_positions", False),
+    ]
+
+    collected = []   # (section_name, orig_pos [K,3] float32, rows [K] int)
+    with h5py.File(surface_h5, "r") as f:
+        for _grp, pos_path, rows_path, section, needs_reshape in specs:
+            if pos_path not in f or rows_path not in f:
+                continue
+            pos  = np.ascontiguousarray(f[pos_path][:], dtype=np.float32)
+            rows = np.ascontiguousarray(f[rows_path][:], dtype=np.int64).reshape(-1)
+            if needs_reshape:
+                pos = pos.reshape(-1, 3)   # [N,2,3] -> [N*2,3]
+            if pos.shape[0] != rows.shape[0]:
+                # Defensive: shapes must align 1:1 (endpoint order preserved)
+                continue
+            collected.append((section, pos, rows))
+
+    sections = []
+    for section, pos, rows in collected:
+        disp = _disp_at_rows(disp_node, rows)                  # [K, 3]
+        deformed = (pos + np.float32(scale) * disp).astype(np.float32)
+        sections.append((section, np.ascontiguousarray(deformed)))
+    return sections
+
+
 def frame_deformed_positions(
     registry: OdbRegistry,
     odb_id: str,
@@ -1635,27 +1707,34 @@ def frame_deformed_positions(
 
     Requires indexed geometry (vtx_node_row present in ModelIndex).
     """
-    disp_vertex, idx = _load_vertex_displacements(
+    disp_node, idx = _load_raw_node_displacements(
         registry, odb_id, instance, step, frame_idx, result_group
     )
+    return _deform_surface_from_disp(idx, instance, disp_node, scale)
 
-    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
-    if not os.path.exists(render_h5):
-        raise NotFoundError(
-            f"Render H5 not found for instance '{instance}'",
-            {"instance": instance},
-        )
 
-    with h5py.File(render_h5, "r") as f:
-        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
-        indices   = np.ascontiguousarray(f["render/indices"][:],   dtype=np.int32) \
-                    if "render/indices" in f else None
+def frame_deformed_with_aux(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    scale: float = 1.0,
+    result_group: str = None,
+) -> Tuple[np.ndarray, np.ndarray, list]:
+    """
+    Combined surface + aux deform sharing a SINGLE U read — the hot path for the
+    deformed-positions endpoint (matters for large models / animation).
 
-    deformed = (positions + np.float32(scale) * disp_vertex).astype(np.float32)
-    normals  = _compute_vertex_normals(deformed, indices) if indices is not None \
-               else np.zeros_like(deformed)
-
-    return deformed, normals
+    Returns (positions [Nv,3], normals [Nv,3], aux_sections) where aux_sections is
+    the list from _deform_aux_from_disp (line/point/coupling; possibly empty).
+    """
+    disp_node, idx = _load_raw_node_displacements(
+        registry, odb_id, instance, step, frame_idx, result_group
+    )
+    positions, normals = _deform_surface_from_disp(idx, instance, disp_node, scale)
+    aux = _deform_aux_from_disp(idx, instance, disp_node, scale)
+    return positions, normals, aux
 
 
 def frame_vertex_displacements(
@@ -1701,6 +1780,9 @@ def frame_deformed_aux_geometry(
       line_positions     [Nl*2, 3] float32
       point_positions    [Np,   3] float32
       coupling_positions [Nc*2, 3] float32
+
+    Standalone entry (own U read).  The deformed-positions endpoint instead uses
+    frame_deformed_with_aux to share one U read with the surface deform.
     """
     idx = registry.get(odb_id)
     if idx is None:
@@ -1710,40 +1792,10 @@ def frame_deformed_aux_geometry(
     if not os.path.exists(surface_h5):
         return []
 
-    # (group, positions-dataset, node_rows-dataset, section_name, reshape-to-[K,3])
-    specs = [
-        ("lines",     "lines/positions",     "lines/node_rows",     "line_positions",     True),
-        ("points",    "points/positions",    "points/node_rows",    "point_positions",    False),
-        ("couplings", "couplings/positions", "couplings/node_rows", "coupling_positions", False),
-    ]
-
-    collected = []   # (section_name, orig_pos [K,3] float32, rows [K] int32)
-    with h5py.File(surface_h5, "r") as f:
-        for _grp, pos_path, rows_path, section, needs_reshape in specs:
-            if pos_path not in f or rows_path not in f:
-                continue
-            pos  = np.ascontiguousarray(f[pos_path][:], dtype=np.float32)
-            rows = np.ascontiguousarray(f[rows_path][:], dtype=np.int64).reshape(-1)
-            if needs_reshape:
-                pos = pos.reshape(-1, 3)   # [N,2,3] -> [N*2,3]
-            if pos.shape[0] != rows.shape[0]:
-                # Defensive: shapes must align 1:1 (endpoint order preserved)
-                continue
-            collected.append((section, pos, rows))
-
-    if not collected:
-        return []
-
     disp_node, _ = _load_raw_node_displacements(
         registry, odb_id, instance, step, frame_idx, result_group
     )
-
-    sections = []
-    for section, pos, rows in collected:
-        disp = _disp_at_rows(disp_node, rows)                  # [K, 3]
-        deformed = (pos + np.float32(scale) * disp).astype(np.float32)
-        sections.append((section, np.ascontiguousarray(deformed)))
-    return sections
+    return _deform_aux_from_disp(idx, instance, disp_node, scale)
 
 
 def suggest_deform_scale(
