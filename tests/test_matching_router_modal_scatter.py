@@ -123,6 +123,49 @@ def test_modal_correlation_all_scatter_route(monkeypatch):
     }
 
 
+def test_modal_frequencies_route(monkeypatch):
+    _require_route_test_deps()
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapi.routers import matching
+
+    captured = {}
+
+    monkeypatch.setattr(
+        matching,
+        "get_project_modal_frequencies_payload",
+        lambda project_id: captured.update({"project_id": project_id}) or {
+            "project_id": int(project_id),
+            "frequencies": [{
+                "fem_mode_no": 2,
+                "freq_fem": 32.5,
+                "label": "Mode: 2 Freq: 32.5 Hz",
+                "value": 2,
+            }],
+            "summary": {"fem_mode_count": 1},
+        },
+    )
+
+    app = FastAPI()
+    app.include_router(matching.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/fem/modal/frequencies",
+        json={"project_id": 18},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["frequencies"][0]["freq_fem"] == 32.5
+    assert payload["data"]["frequencies"][0]["fem_mode_no"] == 2
+    assert payload["data"]["frequencies"][0]["label"] == "Mode: 2 Freq: 32.5 Hz"
+    assert payload["data"]["frequencies"][0]["value"] == 2
+    assert captured == {"project_id": 18}
+
+
 def test_modal_frequency_consistency_route(monkeypatch):
     _require_route_test_deps()
     from fastapi import FastAPI

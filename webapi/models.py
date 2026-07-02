@@ -491,6 +491,10 @@ class ModalCorrelationScatterRequest(BaseModel):
     method: str = "greedy"
 
 
+class ModalFrequenciesRequest(BaseModel):
+    project_id: int
+
+
 class TransformOperationRequest(BaseModel):
     project_id: int
     matrix4_fem: List[List[float]]

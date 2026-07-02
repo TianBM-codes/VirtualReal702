@@ -1389,6 +1389,48 @@ def get_modal_scale_factor_table_payload(project_id):
     }
 
 
+def get_project_modal_frequencies_payload(project_id: int) -> dict:
+    ensure_tables_exist()
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT fem_mode_no, freq_fem
+                FROM t_mt_py_fem_modal_correlation
+                WHERE pid = %s
+                  AND fem_mode_no IS NOT NULL
+                  AND freq_fem IS NOT NULL
+                ORDER BY fem_mode_no
+                """,
+                (int(project_id),),
+            )
+            rows = cursor.fetchall()
+
+    fem_freqs = {}
+    for row in rows:
+        mode_no = int(row[0])
+        freq = _safe_float(row[1])
+        if freq is None or mode_no in fem_freqs:
+            continue
+        fem_freqs[mode_no] = float(freq)
+
+    frequency_rows = []
+    for mode_no, freq in sorted(fem_freqs.items()):
+        freq_text = f"{float(freq):g}"
+        frequency_rows.append({
+            "label": int(mode_no),
+            "value": f"Mode: {int(mode_no)} Freq: {freq_text} Hz",
+        })
+
+    return {
+        "project_id": int(project_id),
+        "frequencies": frequency_rows,
+        "summary": {
+            "fem_mode_count": len(frequency_rows),
+        },
+    }
+
+
 def get_modal_match_frequency_scatter_payload(
         project_id: int,
         *,
