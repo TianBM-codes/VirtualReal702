@@ -635,6 +635,7 @@ def _append_coupling_lines(h5_path: str, model, part) -> None:
     label_to_row = {int(lbl): i for i, lbl in enumerate(node_labels)}
 
     seg_list: List[np.ndarray] = []
+    row_list: List[np.ndarray] = []   # [2] geometry node rows per segment (ref, slave)
 
     for coup in asm.couplings:
         # Both KINEMATIC and DISTRIBUTING couplings carry a ref node + surface and
@@ -669,15 +670,19 @@ def _append_coupling_lines(h5_path: str, model, part) -> None:
                 continue
             seg = np.array([ref_pos, node_coords[slave_row]], dtype=np.float32)
             seg_list.append(seg)
+            row_list.append(np.array([ref_row, slave_row], dtype=np.int32))
 
     if not seg_list:
         return
 
     # Stack into [N*2, 3] — interleaved (ref, slave) pairs ready for LineSegments
     positions = np.concatenate(seg_list, axis=0)  # [N*2, 3] float32
+    # Parallel [N*2] geometry node rows — lets L3 look up per-node U for deform.
+    node_rows = np.concatenate(row_list, axis=0)  # [N*2] int32
 
     with h5py.File(h5_path, "a") as f:
         f.create_dataset("couplings/positions", data=positions)
+        f.create_dataset("couplings/node_rows", data=node_rows)
 
 
 # ---------------------------------------------------------------------------

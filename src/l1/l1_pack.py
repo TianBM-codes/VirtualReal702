@@ -375,6 +375,11 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
             cpl_path = os.path.join(d, 'couplings_positions.npy')
             if os.path.exists(cpl_path):
                 f.create_dataset('couplings/positions', data=nload(cpl_path))
+            # Parallel [N*2] node rows for deform (per-node U lookup); L2
+            # collect_couplings passes it through to surface.h5 unchanged.
+            cpl_rows_path = os.path.join(d, 'couplings_node_rows.npy')
+            if os.path.exists(cpl_rows_path):
+                f.create_dataset('couplings/node_rows', data=nload(cpl_rows_path))
 
             # Special (non-surface) elements: raw connectivity kept for the future
             # (picking / results on couplings, connectors, masses, ...). Not read

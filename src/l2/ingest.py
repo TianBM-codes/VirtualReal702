@@ -295,14 +295,23 @@ def collect_points(geom_h5, coords_global):
 
 def collect_couplings(geom_h5):
     """
-    Pass through coupling (RBE2/KINEMATIC) line segments written by the INP exporter.
+    Pass through coupling (RBE2/KINEMATIC) line segments written by the INP
+    exporter (INP path) or l1_pack (ODB path).
 
     Returns:
         positions [N*2, 3] float32 — interleaved (ref, slave) pairs
+        node_rows [N*2]    int32   — geometry node row per endpoint (for deform),
+            or empty when the source predates the node_rows change
     """
     if "couplings/positions" not in geom_h5:
-        return np.zeros((0, 3), dtype=np.float32)
-    return geom_h5["couplings/positions"][:]  # already [N*2, 3] float32
+        return (np.zeros((0, 3), dtype=np.float32),
+                np.zeros(0, dtype=np.int32))
+    positions = geom_h5["couplings/positions"][:]  # already [N*2, 3] float32
+    if "couplings/node_rows" in geom_h5:
+        node_rows = geom_h5["couplings/node_rows"][:].astype(np.int32)
+    else:
+        node_rows = np.zeros(0, dtype=np.int32)
+    return positions, node_rows
 
 
 # ─── Triangulation (vectorized for tri + quad, loop for higher) ───────────────
@@ -1258,8 +1267,8 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         # 2c. Point element collection (MASS / ROTARYI)
         point_positions, point_elem_labels, point_node_rows = collect_points(f_in, coords_global)
 
-        # 2d. Coupling lines (RBE2 / KINEMATIC) — written by INP exporter
-        coupling_positions = collect_couplings(f_in)
+        # 2d. Coupling lines (RBE2 / KINEMATIC) — written by INP exporter / l1_pack
+        coupling_positions, coupling_node_rows = collect_couplings(f_in)
 
         # Load conn arrays for source_local_node_idx computation (task #6)
         conn_by_etype = {}
@@ -1451,6 +1460,11 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             cg.create_dataset("positions", data=np.ascontiguousarray(coupling_positions),
                               chunks=(min(len(coupling_positions), 4096), 3),
                               compression="lzf")
+            # [N*2] geometry node rows per endpoint — for deform (U lookup).
+            # Only written when the upstream source supplied them (INP exporter
+            # or l1_pack ODB path); empty for legacy geometry → no deform overlay.
+            if coupling_node_rows.shape[0] == coupling_positions.shape[0]:
+                cg.create_dataset("node_rows", data=coupling_node_rows)
 
     # ── Write l2/render/<inst>_render.h5 ──
     with h5py.File(render_h5_path, "w") as f:

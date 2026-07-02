@@ -806,6 +806,7 @@ def dump_geometry(odb, raw_dir, meta):
         # point types and flow through the normal elements/ path above.)
         special_elems = {}    # etype -> {'labels': ndarray, 'conn': [list-of-labels, ...]}
         coupling_segs = []    # flat list of [3]-coord points; every 2 = one segment
+        coupling_rows = []    # flat list of node rows, parallel to coupling_segs
 
         for etype, edata in elem_by_type.items():
             etype_code = _resolve_elem_code(etype)
@@ -826,11 +827,14 @@ def dump_geometry(odb, raw_dir, meta):
                     if not _exact[0]:
                         continue                                  # ref node not local
                     _ref_xyz = node_coords[_rows_c[0]]
+                    _ref_row = _rows_c[0]
                     for _k in range(1, len(_carr)):
                         if not _exact[_k]:
                             continue
                         coupling_segs.append(_ref_xyz)
                         coupling_segs.append(node_coords[_rows_c[_k]])
+                        coupling_rows.append(_ref_row)
+                        coupling_rows.append(_rows_c[_k])
                 print("    special type {} ({} elems): parsed (non-surface)".format(
                     etype, len(_sp_lbls)))
                 continue
@@ -904,6 +908,9 @@ def dump_geometry(odb, raw_dir, meta):
         if coupling_segs:
             npsave(os.path.join(d, 'couplings_positions.npy'),
                    np.array(coupling_segs, dtype=np.float32))
+            # Parallel [N*2] geometry node rows — for deform (per-node U lookup)
+            npsave(os.path.join(d, 'couplings_node_rows.npy'),
+                   np.array(coupling_rows, dtype=np.int32))
 
         # Instance sets
         isets_node = {}
