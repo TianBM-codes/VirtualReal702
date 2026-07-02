@@ -122,6 +122,10 @@ CREATE TABLE IF NOT EXISTS result_group_meta (
     consistency_check  TEXT NOT NULL DEFAULT 'count-only',
     created_at         TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS l1_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 CREATE TABLE IF NOT EXISTS display_names (
     instance     TEXT NOT NULL,
     scheme       TEXT NOT NULL,

@@ -370,8 +370,14 @@ def _first_val(v, default=0.0):
 
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
-def _pack_model(model, inst_name, workspace):
-    """Write L1 HDF5 + manifest.db for a pre-loaded pyNastran model (BDF or OP2Geom)."""
+def _pack_model(model, inst_name, workspace, source_bdf_path=None):
+    """Write L1 HDF5 + manifest.db for a pre-loaded pyNastran model (BDF or OP2Geom).
+
+    source_bdf_path: absolute path to the originating .bdf/.dat/.nas file, recorded
+    into manifest.db (l1_meta) so op2_pack can later re-read it to rotate nodal
+    displacements from their CD output frames back to global — without depending on
+    the caller (job_runner) to re-resolve and pass the path. None for OP2Geom.
+    """
     part_name = inst_name
     inst_safe = safe(inst_name)
 
@@ -785,6 +791,14 @@ def _pack_model(model, inst_name, workspace):
              h5_rel + ':instance_sets/element_sets/' + sname, cnt),
         )
 
+    # Record the source BDF path so op2_pack can re-read coordinate systems / CD
+    # assignments for the nodal-displacement → global transform.
+    if source_bdf_path:
+        db_conn.execute(
+            "INSERT OR REPLACE INTO l1_meta (key, value) VALUES ('source_bdf_path', ?)",
+            (os.path.abspath(source_bdf_path),),
+        )
+
     db_conn.commit()
     db_conn.close()
 
@@ -801,7 +815,7 @@ def pack(bdf_path, workspace):
     model = BDF(debug=False)
     model.read_bdf(bdf_path, xref=True)
     print('  Read done. ({})'.format(_fmt_t(time.time() - t0)))
-    _pack_model(model, inst_name, workspace)
+    _pack_model(model, inst_name, workspace, source_bdf_path=bdf_path)
     print('BDF pack complete. ({} total)'.format(_fmt_t(time.time() - t_total)))
 
 

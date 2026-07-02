@@ -183,6 +183,28 @@ def _get_frame_values(result_obj, procedure):
 _BASIC_FRAME_TABLES = {'BOUGV1', 'BOPHIG', 'TOUGV1'}
 
 
+def _lookup_source_bdf(db_conn):
+    """Return the BDF path recorded by bdf_pack in manifest.db (l1_meta), or None.
+
+    This lets op2_pack rotate nodal displacements back to global even when the
+    caller did not pass --bdf, as long as the geometry was packed from a BDF that
+    still exists on disk.
+    """
+    try:
+        row = db_conn.execute(
+            "SELECT value FROM l1_meta WHERE key='source_bdf_path'").fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    path = row[0] if not hasattr(row, 'keys') else row['value']
+    if path and os.path.exists(path):
+        return path
+    if path:
+        print('    NOTE: manifest source_bdf_path no longer exists ({}).'.format(path))
+    return None
+
+
 def _build_coord_context(bdf_path):
     """
     Build the data needed to rotate nodal results from each node's output (CD)
@@ -395,6 +417,23 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
     # ── 4b. Rotate displacements from nodal CD frames back to global ──────────
     # Must run BEFORE _align_data / column slicing, while results still hold the
     # full 6-DOF data pyNastran's rotator expects.
+    #
+    # BDF source priority: explicit --bdf first, then the path bdf_pack recorded
+    # in manifest.db. The manifest fallback makes the transform self-sufficient —
+    # it no longer depends on the caller (job_runner) re-resolving and passing the
+    # BDF path, which was the silent failure mode behind "displacements not rotated".
+    if bdf_path and os.path.exists(bdf_path):
+        print('  CD transform: using BDF from --bdf ({}).'.format(bdf_path))
+    else:
+        manifest_bdf = _lookup_source_bdf(db_conn)
+        if manifest_bdf:
+            bdf_path = manifest_bdf
+            print('  CD transform: using BDF from manifest ({}).'.format(bdf_path))
+        else:
+            print('  CD transform: no BDF available (neither --bdf nor manifest); '
+                  'displacements left in nodal (CD) frame — deformed mesh may tear '
+                  'if any node has CD != 0.')
+
     coord_ctx = None
     try:
         coord_ctx = _build_coord_context(bdf_path)

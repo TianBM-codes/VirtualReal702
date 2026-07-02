@@ -1480,6 +1480,17 @@ def _run_op2_result_group(project_id: str, result_group: str,
             _row["inp_path"] if _row else None, workspace)
         if _bdf_geom:
             op2_pack_cmd += ["--bdf", _bdf_geom]
+            _log_job(project_id, "step",
+                     f"[{_kw(result_group)}] 已定位配套 BDF，位移将按节点 CD 坐标系转回全局："
+                     f"{_esc(os.path.basename(_bdf_geom))}",
+                     stage="rg_op2")
+        else:
+            # Not fatal: op2_pack still falls back to the BDF path bdf_pack recorded
+            # in manifest.db. Only if that is also gone are displacements left in CD.
+            _log_job(project_id, "step",
+                     f"[{_kw(result_group)}] 未从项目源解析到配套 BDF，"
+                     f"op2_pack 将回退用 manifest 记录的 BDF 做 CD→全局转换",
+                     stage="rg_op2")
     except Exception as exc:
         logger.warning("[%s] resolve companion BDF for CD transform failed: %s",
                        project_id, exc)
