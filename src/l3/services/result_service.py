@@ -1493,7 +1493,7 @@ def _compute_en_global_range(
 
 # ─── frame_deformed_positions ─────────────────────────────────────────────────
 
-def _load_vertex_displacements(
+def _load_raw_node_displacements(
     registry: OdbRegistry,
     odb_id: str,
     instance: str,
@@ -1502,8 +1502,10 @@ def _load_vertex_displacements(
     result_group: str = None,
 ) -> Tuple[np.ndarray, object]:
     """
-    Load U NODAL displacement for frame_idx and map from nodes to render vertices.
-    Returns (disp_vertex [Nv, 3] float32, idx).
+    Load U NODAL displacement for frame_idx as [n_result_nodes, 3] float32,
+    indexed by geometry node row (same convention as vtx_node_row and the
+    geometry element `conn` arrays).  No scatter to vertices, no padding —
+    callers pad/index as needed.  Returns (disp_node, idx).
     """
     if frame_idx < 0:
         raise ValidationError(
@@ -1516,13 +1518,6 @@ def _load_vertex_displacements(
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
-
-    vtx_nr = idx.vtx_node_row.get(instance)
-    if vtx_nr is None:
-        raise NotFoundError(
-            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
-            {"instance": instance},
-        )
 
     h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
     if not os.path.exists(h5_path):
@@ -1553,14 +1548,50 @@ def _load_vertex_displacements(
             {"instance": instance},
         )
 
+    return disp_node, idx
+
+
+def _disp_at_rows(disp_node: np.ndarray, rows: np.ndarray) -> np.ndarray:
+    """
+    Index disp_node [n_nodes, 3] by node rows [K], padding with zeros for any
+    row beyond the result array (node has no U output → stays put).
+    Returns [K, 3] float32.
+    """
     n_nodes = disp_node.shape[0]
-    max_nr  = int(vtx_nr.max())
+    if rows.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    max_nr = int(rows.max())
     if max_nr >= n_nodes:
         padded = np.zeros((max_nr + 1, disp_node.shape[1]), dtype=np.float32)
         padded[:n_nodes] = disp_node
         disp_node = padded
+    return disp_node[rows]
 
-    return disp_node[vtx_nr], idx   # disp_vertex [Nv, 3], idx
+
+def _load_vertex_displacements(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+) -> Tuple[np.ndarray, object]:
+    """
+    Load U NODAL displacement for frame_idx and map from nodes to render vertices.
+    Returns (disp_vertex [Nv, 3] float32, idx).
+    """
+    disp_node, idx = _load_raw_node_displacements(
+        registry, odb_id, instance, step, frame_idx, result_group
+    )
+
+    vtx_nr = idx.vtx_node_row.get(instance)
+    if vtx_nr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
+            {"instance": instance},
+        )
+
+    return _disp_at_rows(disp_node, vtx_nr), idx   # disp_vertex [Nv, 3], idx
 
 
 def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
@@ -1644,6 +1675,75 @@ def frame_vertex_displacements(
         registry, odb_id, instance, step, frame_idx, result_group
     )
     return disp_vertex
+
+
+def frame_deformed_aux_geometry(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    scale: float = 1.0,
+    result_group: str = None,
+) -> list:
+    """
+    Compute deformed positions for the auxiliary (non-surface) geometries that
+    live in l2/geometry/<inst>_surface.h5: beam/truss lines, MASS/ROTARYI points,
+    and RBE2/coupling spider lines.  Each carries a per-endpoint node_rows dataset
+    written by L2 ingest; deformed = original + scale * U[node_row].
+
+    Returns a list of (section_name, ndarray) L3BE sections for whichever aux
+    geometries exist AND have node_rows.  Empty list if none apply (e.g. surface
+    predates the node_rows change, or instance has no line/point/coupling data).
+    Never raises for a missing surface file — aux geometry is best-effort overlay.
+
+    Section names mirror the /geometry endpoints so the frontend reuses them:
+      line_positions     [Nl*2, 3] float32
+      point_positions    [Np,   3] float32
+      coupling_positions [Nc*2, 3] float32
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
+    if not os.path.exists(surface_h5):
+        return []
+
+    # (group, positions-dataset, node_rows-dataset, section_name, reshape-to-[K,3])
+    specs = [
+        ("lines",     "lines/positions",     "lines/node_rows",     "line_positions",     True),
+        ("points",    "points/positions",    "points/node_rows",    "point_positions",    False),
+        ("couplings", "couplings/positions", "couplings/node_rows", "coupling_positions", False),
+    ]
+
+    collected = []   # (section_name, orig_pos [K,3] float32, rows [K] int32)
+    with h5py.File(surface_h5, "r") as f:
+        for _grp, pos_path, rows_path, section, needs_reshape in specs:
+            if pos_path not in f or rows_path not in f:
+                continue
+            pos  = np.ascontiguousarray(f[pos_path][:], dtype=np.float32)
+            rows = np.ascontiguousarray(f[rows_path][:], dtype=np.int64).reshape(-1)
+            if needs_reshape:
+                pos = pos.reshape(-1, 3)   # [N,2,3] -> [N*2,3]
+            if pos.shape[0] != rows.shape[0]:
+                # Defensive: shapes must align 1:1 (endpoint order preserved)
+                continue
+            collected.append((section, pos, rows))
+
+    if not collected:
+        return []
+
+    disp_node, _ = _load_raw_node_displacements(
+        registry, odb_id, instance, step, frame_idx, result_group
+    )
+
+    sections = []
+    for section, pos, rows in collected:
+        disp = _disp_at_rows(disp_node, rows)                  # [K, 3]
+        deformed = (pos + np.float32(scale) * disp).astype(np.float32)
+        sections.append((section, np.ascontiguousarray(deformed)))
+    return sections
 
 
 def suggest_deform_scale(

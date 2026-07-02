@@ -219,9 +219,13 @@ def collect_lines(geom_h5, coords_global):
     Returns:
         positions   [N, 2, 3] float32  — N segments, 2 endpoints, xyz
         elem_labels [N]       int32    — Abaqus element label per segment
+        node_rows   [N, 2]    int32    — geometry node row per endpoint
+            (row into nodes/labels / coords_global; lets L3 look up per-node
+            displacement so the beams follow the deformed shape)
     """
     pos_list   = []
     label_list = []
+    row_list   = []
 
     for etype_str in geom_h5.get("elements", {}):
         etype_code = _resolve_elem_code(etype_str)
@@ -235,15 +239,20 @@ def collect_lines(geom_h5, coords_global):
         labels = grp["labels"][:]  # [N] int32
 
         # Only the 2 corner endpoint nodes regardless of element order
-        pts = coords_global[conn[:, :2]]   # [N, 2, 3]
+        endpoint_rows = conn[:, :2]                 # [N, 2] node rows
+        pts = coords_global[endpoint_rows]          # [N, 2, 3]
         pos_list.append(pts)
         label_list.append(labels)
+        row_list.append(endpoint_rows)
 
     if not pos_list:
-        return np.zeros((0, 2, 3), dtype=np.float32), np.zeros(0, dtype=np.int32)
+        return (np.zeros((0, 2, 3), dtype=np.float32),
+                np.zeros(0, dtype=np.int32),
+                np.zeros((0, 2), dtype=np.int32))
 
     return (np.vstack(pos_list).astype(np.float32),
-            np.concatenate(label_list).astype(np.int32))
+            np.concatenate(label_list).astype(np.int32),
+            np.vstack(row_list).astype(np.int32))
 
 
 def collect_points(geom_h5, coords_global):
@@ -253,9 +262,11 @@ def collect_points(geom_h5, coords_global):
     Returns:
         positions   [N, 3] float32  — node position per point element
         elem_labels [N]    int32    — Abaqus element label
+        node_rows   [N]    int32    — geometry node row per point (for deform)
     """
     pos_list   = []
     label_list = []
+    row_list   = []
 
     for etype_str in geom_h5.get("elements", {}):
         etype_code = _resolve_elem_code(etype_str)
@@ -266,15 +277,20 @@ def collect_points(geom_h5, coords_global):
             continue
         conn   = grp["conn"][:]    # [N, 1] int32 — node row
         labels = grp["labels"][:]  # [N] int32
-        pts = coords_global[conn[:, 0]]  # [N, 3]
+        rows   = conn[:, 0]        # [N] node rows
+        pts = coords_global[rows]  # [N, 3]
         pos_list.append(pts)
         label_list.append(labels)
+        row_list.append(rows)
 
     if not pos_list:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int32)
+        return (np.zeros((0, 3), dtype=np.float32),
+                np.zeros(0, dtype=np.int32),
+                np.zeros(0, dtype=np.int32))
 
     return (np.vstack(pos_list).astype(np.float32),
-            np.concatenate(label_list).astype(np.int32))
+            np.concatenate(label_list).astype(np.int32),
+            np.concatenate(row_list).astype(np.int32))
 
 
 def collect_couplings(geom_h5):
@@ -1237,10 +1253,10 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             collect_faces(f_in)
 
         # 2b. Line element collection (beam / truss)
-        line_positions, line_elem_labels = collect_lines(f_in, coords_global)
+        line_positions, line_elem_labels, line_node_rows = collect_lines(f_in, coords_global)
 
         # 2c. Point element collection (MASS / ROTARYI)
-        point_positions, point_elem_labels = collect_points(f_in, coords_global)
+        point_positions, point_elem_labels, point_node_rows = collect_points(f_in, coords_global)
 
         # 2d. Coupling lines (RBE2 / KINEMATIC) — written by INP exporter
         coupling_positions = collect_couplings(f_in)
@@ -1420,11 +1436,15 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
             lg.create_dataset("positions",   data=line_positions,
                               chunks=(min(N_lines, 4096), 2, 3), compression="lzf")
             lg.create_dataset("elem_labels", data=line_elem_labels)
+            # [N, 2] geometry node rows per endpoint — for deform (U lookup)
+            lg.create_dataset("node_rows",   data=line_node_rows)
 
         pg = f.create_group("points")
         if N_points > 0:
             pg.create_dataset("positions",   data=point_positions)
             pg.create_dataset("elem_labels", data=point_elem_labels)
+            # [N] geometry node row per point — for deform (U lookup)
+            pg.create_dataset("node_rows",   data=point_node_rows)
 
         cg = f.create_group("couplings")
         if N_couplings > 0:

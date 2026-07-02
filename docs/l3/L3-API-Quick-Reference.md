@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
+更新时间：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
 
 历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
@@ -1163,15 +1163,24 @@ X-Scale: <scale>
 
 L3BE sections：
 
-| 名称 | 形状 | 类型 |
-|---|---|---|
-| `positions` | `[Nv, 3]` | `float32` |
-| `normals` | `[Nv, 3]` | `float32` |
+| 名称 | 形状 | 类型 | 是否始终返回 |
+|---|---|---|---|
+| `positions` | `[Nv, 3]` | `float32` | 是（表面网格顶点） |
+| `normals` | `[Nv, 3]` | `float32` | 是 |
+| `line_positions` | `[Nl*2, 3]` | `float32` | 否，见下 |
+| `point_positions` | `[Np, 3]` | `float32` | 否，见下 |
+| `coupling_positions` | `[Nc*2, 3]` | `float32` | 否，见下 |
 
 说明：
 
 - `positions = original_positions + scale * U_per_vertex`
 - 需要 indexed geometry，即后端 `ModelIndex` 中存在 `vtx_node_row`。
+- **变形叠加几何（梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线）**：当该 instance 存在对应几何、
+  且其 `l2/geometry/<inst>_surface.h5` 携带 `node_rows` 数据集时，一并返回变形后端点坐标，
+  格式与 `geometry/{instance}/lines|points|couplings` 完全一致（前端复用同一份 buffer 直接覆盖）。
+  某几何缺失、或 surface.h5 是加入 `node_rows` 之前生成的旧数据时，对应 section 不出现，
+  前端应保持该叠加几何在未变形位置（best-effort，不报错）。每个端点按其节点行查 `U`：
+  `deformed = original + scale * U[node_row]`；节点无 U 输出时该端点位移取 0（保持不动）。
 
 ### `GET /api/odb/{odb_id}/results/vertex-displacements`
 

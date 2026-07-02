@@ -24,6 +24,7 @@ from ...services.result_service import (
     frame_colors,
     frame_scalars,
     frame_deformed_positions,
+    frame_deformed_aux_geometry,
     frame_vertex_displacements,
     suggest_deform_scale,
     modal_shape_displacement,
@@ -435,10 +436,24 @@ async def get_deformed_positions(
         result_group=result_group,
     )
 
-    payload = l3be_build([
+    sections = [
         ("positions", positions),   # [Nv, 3] float32
         ("normals",   normals),     # [Nv, 3] float32  — pre-computed, skip JS computeVertexNormals
-    ])
+    ]
+
+    # Deformed line/point/coupling overlay geometry (best-effort; empty when the
+    # instance has none or the surface H5 predates the node_rows change).
+    sections.extend(frame_deformed_aux_geometry(
+        registry=registry,
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame_idx=frame,
+        scale=scale,
+        result_group=result_group,
+    ))
+
+    payload = l3be_build(sections)
     return Response(
         content=payload,
         media_type="application/octet-stream",

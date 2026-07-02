@@ -949,6 +949,7 @@ async function loadLineElements(instances) {
       const mat = new THREE.LineBasicMaterial({ color: 0x4488ff, linewidth: 1 })
       if (clipPlane) mat.clippingPlanes = [clipPlane]
       const line = new THREE.LineSegments(geo, mat)
+      line.userData.origPositions = positions.slice()  // for deform reset
       modelGroup.add(line)
       lineMeshes[instName] = line
     } catch { /* instance has no line element data */ }
@@ -971,6 +972,7 @@ async function loadPointElements(instances) {
       const mat = new THREE.PointsMaterial({ color: 0xff8800, size: 6, sizeAttenuation: false })
       if (clipPlane) mat.clippingPlanes = [clipPlane]
       const pts = new THREE.Points(geo, mat)
+      pts.userData.origPositions = positions.slice()  // for deform reset
       modelGroup.add(pts)
       pointMeshes[instName] = pts
     } catch { /* instance has no point element data */ }
@@ -993,6 +995,7 @@ async function loadCouplingLines(instances) {
       const mat = new THREE.LineBasicMaterial({ color: 0xff6600, linewidth: 1 })
       if (clipPlane) mat.clippingPlanes = [clipPlane]
       const line = new THREE.LineSegments(geo, mat)
+      line.userData.origPositions = positions.slice()  // for deform reset
       modelGroup.add(line)
       couplingMeshes[instName] = line
     } catch { /* instance has no coupling data */ }
@@ -1101,6 +1104,27 @@ function _syncRegionEdgesForInst(instName, edgeLines, edgeVtxIdxs) {
     }
     line.geometry.attributes.position.needsUpdate = true
   }
+}
+
+// Update a line/point/coupling overlay mesh from a deformed-positions aux section.
+// section is a parseL3BE entry ({ data }) or null; mesh may be undefined.
+function _updateAuxMeshPositions(mesh, section) {
+  if (!mesh || !section) return
+  const src     = new Float32Array(section.data)
+  const posAttr = mesh.geometry.attributes.position
+  const dst     = posAttr.array
+  const n       = Math.min(src.length, dst.length)
+  for (let i = 0; i < n; i++) dst[i] = src[i]
+  posAttr.needsUpdate = true
+}
+
+// Restore a line/point/coupling overlay mesh to its saved undeformed positions.
+function _resetAuxMesh(mesh) {
+  if (!mesh) return
+  const orig = mesh.userData.origPositions
+  if (!orig) return
+  mesh.geometry.attributes.position.array.set(orig)
+  mesh.geometry.attributes.position.needsUpdate = true
 }
 
 // ── Load Edges ────────────────────────────────────────────────────────────
@@ -1807,6 +1831,13 @@ async function _applyDeformPositions(step, frameIdx, scale) {
     _syncEdgesForInst(instName, featureEdgesLines, featureEdgeVtxIdxs)
     _syncRegionEdgesForInst(instName, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
     _syncRegionEdgesForInst(instName, regionOutlineLines, regionOutlineVtxIdxs)
+
+    // Deformed overlay geometry (beam/truss lines, MASS points, coupling spiders).
+    // Sections present only when the instance has them AND the surface H5 carries
+    // node_rows; otherwise these overlays stay at their undeformed positions.
+    _updateAuxMeshPositions(lineMeshes[instName],     sections.line_positions)
+    _updateAuxMeshPositions(pointMeshes[instName],    sections.point_positions)
+    _updateAuxMeshPositions(couplingMeshes[instName], sections.coupling_positions)
   }))
   requestRender()
 }
@@ -1859,6 +1890,9 @@ function resetDeform() {
     _syncEdgesForInst(instName, featureEdgesLines, featureEdgeVtxIdxs)
     _syncRegionEdgesForInst(instName, regionMeshEdgesLines, regionMeshEdgeVtxIdxs)
     _syncRegionEdgesForInst(instName, regionOutlineLines, regionOutlineVtxIdxs)
+    _resetAuxMesh(lineMeshes[instName])
+    _resetAuxMesh(pointMeshes[instName])
+    _resetAuxMesh(couplingMeshes[instName])
   }
   _rebuildBvhAll()
   store.deformScale = 1.0
