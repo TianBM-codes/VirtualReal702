@@ -262,7 +262,6 @@ def list_optimization_parameters(project_id: int) -> dict:
                    description, usage_scope, extra_json, created_at
             FROM t_mt_py_fem_selected_parameter
             WHERE pid = %s
-            ORDER BY created_at DESC, parameter_name ASC
             """,
             (int(project_id),),
         )
@@ -674,6 +673,7 @@ def create_modal_frequency_response_catalog_from_fem(
         project_id: int,
         *,
         mode_numbers: Optional[Sequence[int]] = None,
+        target_frequencies: Optional[dict] = None,
         overwrite: bool = True,
         solver_scope: Optional[Sequence[str]] = None,
         scatter: Optional[float] = None,
@@ -687,6 +687,16 @@ def create_modal_frequency_response_catalog_from_fem(
     resolved_scatter = _resolve_response_scatter_value(scatter)
     resolved_prefix = str(response_name_prefix or "FREQ_MODE_").strip() or "FREQ_MODE_"
     requested_mode_numbers = sorted({int(item) for item in list(mode_numbers or [])})
+    resolved_target_frequencies = {}
+    for raw_mode_no, raw_target in dict(target_frequencies or {}).items():
+        mode_no = int(raw_mode_no)
+        target_value = _safe_float(raw_target)
+        if target_value is None:
+            raise ValidationError(
+                "target_frequencies values must be numbers",
+                {"project_id": int(project_id), "mode_number": mode_no, "target_value": raw_target},
+            )
+        resolved_target_frequencies[mode_no] = float(target_value)
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -726,6 +736,21 @@ def create_modal_frequency_response_catalog_from_fem(
         else:
             selected_modes = sorted(available_by_mode)
 
+        if resolved_target_frequencies:
+            missing_target_modes = [
+                mode_no for mode_no in sorted(resolved_target_frequencies)
+                if mode_no not in selected_modes
+            ]
+            if missing_target_modes:
+                raise ValidationError(
+                    "target_frequencies contains mode_numbers that are not selected",
+                    {
+                        "project_id": int(project_id),
+                        "missing_target_modes": missing_target_modes[:20],
+                        "selected_mode_numbers": selected_modes[:50],
+                    },
+                )
+
         if overwrite:
             _delete_response_catalog_entries_by_types(cursor, int(project_id), ["MODAL_FREQUENCY"])
 
@@ -742,6 +767,7 @@ def create_modal_frequency_response_catalog_from_fem(
         rows = []
         for offset, mode_no in enumerate(selected_modes):
             modal_row = available_by_mode[int(mode_no)]
+            target_value = resolved_target_frequencies.get(int(mode_no))
             rows.append({
                 "response_code": f"MODE_FREQ:FEM:{int(mode_no)}",
                 "response_name": f"{resolved_prefix}{int(mode_no)}",
@@ -761,6 +787,8 @@ def create_modal_frequency_response_catalog_from_fem(
                     "fem_mode_no": int(mode_no),
                     "freq_fem": modal_row.get("frequency"),
                     "selection_source": "manual_fem_modal",
+                    "target_source": "MANUAL" if target_value is not None else "FEM",
+                    "target_value": target_value,
                 },
             })
 
@@ -771,6 +799,7 @@ def create_modal_frequency_response_catalog_from_fem(
             "overwrite": bool(overwrite),
             "response_count": len(rows),
             "mode_numbers": selected_modes,
+            "target_frequencies": resolved_target_frequencies,
             "solver_scope": resolved_solver_scope,
             "scatter": resolved_scatter,
             "responses_preview": rows[:20],

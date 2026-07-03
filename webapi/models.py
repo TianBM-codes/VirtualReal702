@@ -222,6 +222,7 @@ class CreateSol200ResponseConfigRequest(BaseModel):
 class CreateModalFrequencyResponseCatalogRequest(BaseModel):
     project_id: int
     mode_numbers: Optional[List[int]] = None
+    target_frequencies: Optional[Dict[int, float]] = None
     overwrite: bool = True
     solver_scope: Optional[List[str]] = None
     scatter: Optional[float] = None

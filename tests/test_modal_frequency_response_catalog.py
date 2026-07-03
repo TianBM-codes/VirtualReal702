@@ -35,11 +35,11 @@ class _FakeConnection:
 
 def test_create_modal_frequency_response_catalog_from_match_writes_modal_frequency_rows(monkeypatch):
     fake_conn = _FakeConnection()
-    monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(inp_service._response, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service._response, "get_connection", lambda: fake_conn)
     monkeypatch.setattr(
-        inp_service,
-        "match_modal_modes",
+        inp_service._response,
+        "_match_modal_modes_for_response",
         lambda project_id, **kwargs: {
             "rows": [
                 {
@@ -78,4 +78,57 @@ def test_create_modal_frequency_response_catalog_from_match_writes_modal_frequen
     assert result["response_count"] == 1
     assert result["mac_threshold"] == 80.0
     assert result["scatter"] == 0.05
+    assert fake_conn.committed is True
+
+
+def test_create_modal_frequency_response_catalog_from_fem_writes_manual_target_values(monkeypatch):
+    class _DictCursor(_FakeCursor):
+        def __init__(self):
+            super().__init__()
+            self.fetchone_result = {"max_seq_no": 0}
+            self.fetchall_result = []
+
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if "SELECT mode_no, frequency" in sql:
+                self.fetchall_result = [
+                    {"mode_no": 1, "frequency": 10.5},
+                    {"mode_no": 3, "frequency": 30.5},
+                ]
+            if "SELECT COALESCE(MAX(seq_no), 0) AS max_seq_no" in sql:
+                self.fetchall_result = []
+
+        def fetchall(self):
+            return list(self.fetchall_result)
+
+        def fetchone(self):
+            return dict(self.fetchone_result)
+
+    class _DictConnection(_FakeConnection):
+        def __init__(self):
+            super().__init__()
+            self.cursor_obj = _DictCursor()
+
+    fake_conn = _DictConnection()
+    monkeypatch.setattr(inp_service._response, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(inp_service._response, "get_connection", lambda: fake_conn)
+
+    result = inp_service.create_modal_frequency_response_catalog_from_fem(
+        18,
+        mode_numbers=[1, 3],
+        target_frequencies={1: 11.0, 3: 33.0},
+        overwrite=True,
+    )
+
+    insert_rows = [
+        params for sql, params in fake_conn.cursor_obj.executed
+        if "INSERT INTO t_mt_py_fem_dynamic_response_catalog" in sql
+    ]
+    assert len(insert_rows) == 2
+    first_extra = json.loads(insert_rows[0][18])
+    second_extra = json.loads(insert_rows[1][18])
+    assert first_extra["target_source"] == "MANUAL"
+    assert first_extra["target_value"] == 11.0
+    assert second_extra["target_value"] == 33.0
+    assert result["target_frequencies"] == {1: 11.0, 3: 33.0}
     assert fake_conn.committed is True

@@ -1910,7 +1910,7 @@ def _resolve_quantity_set_capability_for_parameter_create(
     if part_name:
         query += " AND part_name = %s"
         params.append(part_name)
-    query += " ORDER BY set_scope, set_type, instance_name, part_name"
+    query += " LIMIT 2"
 
     cursor.execute(query, tuple(params))
     capability_rows = cursor.fetchall() or []

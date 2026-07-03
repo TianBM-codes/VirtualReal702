@@ -3483,6 +3483,44 @@ def _build_modal_response_payload(
                     }
                 )
                 continue
+            catalog_row = dict(catalog_by_name.get(response_name) or {})
+            catalog_target_value = _resolve_modal_frequency_target_from_catalog(catalog_row)
+            catalog_extra = dict(catalog_row.get("extra_json") or {})
+            fem_mode_no = catalog_extra.get("fem_mode_no", mode_number)
+            current_freq_fem = catalog_extra.get("freq_fem")
+
+            if catalog_target_value is not None:
+                if current_freq_fem is None:
+                    skipped_rows.append(
+                        {
+                            "seq_no": row.get("seq_no"),
+                            "response_name": row.get("response_name"),
+                            "response_type": response_type,
+                            "mode_number": int(mode_number),
+                            "reason": "manual_target_missing_current_fem_frequency",
+                        }
+                    )
+                    continue
+                selected_indexes.append(index)
+                response_name = response_name or f"FREQ_MODE_{int(mode_number)}"
+                tracking_name = f"{response_name}@FE{int(fem_mode_no)}_MANUAL"
+                response_rows.append(
+                    {
+                        **row,
+                        "response_name": response_name,
+                        "response_type": "FREQ",
+                        "mode_number": int(mode_number),
+                        "tracking_name": tracking_name,
+                        "fem_mode_no": int(fem_mode_no),
+                        "test_mode_no": None,
+                        "mac": None,
+                        "freq_error_ratio": None,
+                    }
+                )
+                model_values.append(float(current_freq_fem))
+                target_values.append(float(catalog_target_value))
+                continue
+
             matched = matched_by_fem.get(int(mode_number))
             if not matched:
                 skipped_rows.append(
@@ -3492,6 +3530,7 @@ def _build_modal_response_payload(
                         "response_type": response_type,
                         "mode_number": int(mode_number),
                         "reason": "mode_not_in_modal_match_result",
+                        "has_manual_target": False,
                     }
                 )
                 continue
@@ -3663,6 +3702,14 @@ def _select_modal_frequency_matrix_rows(
             {"matrix_shape": list(matrix_arr.shape)},
         )
     return np.asarray(matrix_arr[selected_indexes, :], dtype=np.float64)
+
+
+def _resolve_modal_frequency_target_from_catalog(catalog_row: dict) -> Optional[float]:
+    extra_json = dict((catalog_row or {}).get("extra_json") or {})
+    target_value = extra_json.get("target_value")
+    if target_value is None:
+        return None
+    return float(target_value)
 
 
 def _select_modal_sensitivity_matrix_rows(

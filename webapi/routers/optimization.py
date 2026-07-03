@@ -294,6 +294,7 @@ def _create_modal_frequency_response_catalog(body: CreateModalFrequencyResponseC
     return create_modal_frequency_response_catalog_from_fem(
         project_id=body.project_id,
         mode_numbers=body.mode_numbers,
+        target_frequencies=body.target_frequencies,
         overwrite=body.overwrite,
         solver_scope=body.solver_scope,
         scatter=body.scatter,

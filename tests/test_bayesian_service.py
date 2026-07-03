@@ -149,6 +149,49 @@ def test_update_parameter_section_values_updates_relative_include_parameter_file
     assert include_path.read_text(encoding="utf-8") == "*PARAMETER\nT_SET_149=0.0025\n"
 
 
+def test_build_modal_response_payload_prefers_manual_frequency_target_without_unv_match(monkeypatch):
+    monkeypatch.setattr(
+        bayesian_service._inp,
+        "match_modal_modes",
+        lambda *args, **kwargs: {"rows": []},
+    )
+    monkeypatch.setattr(
+        bayesian_service._inp,
+        "get_fe_response_catalog",
+        lambda project_id: {
+            "responses": [
+                {
+                    "response_name": "FREQ_MODE_1",
+                    "response_type": "MODAL_FREQUENCY",
+                    "extra_json": {
+                        "fem_mode_no": 1,
+                        "freq_fem": 10.0,
+                        "target_value": 12.5,
+                        "target_source": "MANUAL",
+                    },
+                }
+            ]
+        },
+    )
+
+    payload = bayesian_service._build_modal_response_payload(
+        project_id=18,
+        stored_response_rows=[
+            {"response_name": "FREQ_MODE_1", "response_type": "FREQ", "mode_number": 1},
+        ],
+        matrix=[[0.2]],
+        mac_threshold=70.0,
+        max_freq_error_ratio=0.2,
+        matching_method="greedy",
+    )
+
+    assert payload["model_values"] == [10.0]
+    assert payload["target_values"] == [12.5]
+    assert payload["response_rows"][0]["tracking_name"] == "FREQ_MODE_1@FE1_MANUAL"
+    assert payload["response_rows"][0]["test_mode_no"] is None
+    assert payload["matched_rows"] == []
+
+
 def test_resolve_bayesian_static_run_defaults_infers_from_design_response_rows(monkeypatch):
     monkeypatch.setattr(
         bayesian_service._sens,

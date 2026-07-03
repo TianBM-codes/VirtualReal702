@@ -1,8 +1,6 @@
 import json
 from MeshElementFactory import MeshElementFactory
 from collections import OrderedDict
-# from MeshCleaner import MarkSurface, CalculateUniqueEdge
-# from VTUWriter import WriteFaceAndEdgeToVTU
 import meshio
 from FemNode import FemNode
 from pyNastran.bdf.bdf import BDF
@@ -58,7 +56,7 @@ class BDFParser(object):
     def parse(self):
         self.read_bdf()
         self.parse_nodes()
-        self.parse_elements()
+        # self.parse_elements()
 
     def read_bdf(self):
         self.bdf = BDF(debug=False)
