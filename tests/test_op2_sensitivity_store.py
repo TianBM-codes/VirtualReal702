@@ -161,3 +161,38 @@ def test_parse_formatted_sensitivity_csv_can_match_modal_displacement_response(t
     assert result["response_types"] == ["DISP"]
     assert result["matrix"].shape == (1, 1)
     assert result["matrix"][0, 0] == 2.5e-4
+
+
+def test_parse_formatted_sensitivity_csv_can_fallback_to_parameter_order_when_labels_are_truncated(tmp_path):
+    csv_path = tmp_path / "sol200_sens.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "Local Sensitivity Results File",
+                "",
+                "DV ID,Label,Current Value,Lower Limit,Upper Limit",
+                "1,T@PROPER,3.0000E-03,2.4000E-03,3.6000E-03",
+                "2,T@PROPER,6.0000E-03,4.8000E-03,7.2000E-03",
+                "",
+                "Design Response ID,   Label,Response Type,Elem/Grid ID,Component ID,Superelement ID,Subcase ID,Response value,Freq/Time",
+                "1,FREQ1,EIGN,1,,0,1,1.4382E-04,0.0",
+                "T@PROPER,T@PROPER",
+                "5.7322E+00,3.2450E-01",
+                "",
+            ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = op2_service._parse_formatted_sensitivity_csv(
+        str(csv_path),
+        parameter_names=["T@PROPERTY_181362", "T@PROPERTY_181363"],
+        response_names=["FREQ_MODE_1"],
+        response_rows=[{"response_name": "FREQ_MODE_1", "mode_number": 1}],
+    )
+
+    assert result is not None
+    assert result["column_labels"] == ["T@PROPERTY_181362", "T@PROPERTY_181363"]
+    assert result["matrix"].shape == (1, 2)
+    assert result["matrix"][0, 0] == 5.7322
+    assert result["matrix"][0, 1] == 0.3245

@@ -506,7 +506,10 @@ def _infer_property_id(parameter_row: Dict[str, Any]) -> Optional[int]:
         value = extra.get(key)
         if value is not None:
             return int(value)
-    return _extract_numeric_suffix(parameter_row.get("set_name"), ("PROP_", "PID_", "PSHELL_"))
+    return _extract_numeric_suffix(
+        parameter_row.get("set_name"),
+        ("PROPERTY_", "PROP_", "PID_", "PSHELL_"),
+    )
 
 
 def _map_selected_parameter_to_sol200(parameter_row: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -1678,8 +1681,15 @@ def run_sol200_and_store_workflow(
         metadata_json = _pick_first_existing_path([
             (run_payload.get("generated_files") or {}).get("metadata_json"),
         ])
-        bdf_path = _pick_first_existing_path([run_payload.get("output_bdf")]) or str(
-            Path(str(run_payload.get("output_bdf") or "")).expanduser().resolve()
+        # Cloud export only needs the original mesh/property topology to map a
+        # sensitivity column back to its target elements. Prefer the source BDF
+        # instead of the generated SOL200 deck because the deck may contain
+        # DESVAR labels that are valid for Nastran but rejected by pyNastran's
+        # stricter 8-character parser during post-processing.
+        bdf_path = (
+            _pick_first_existing_path([run_payload.get("input_bdf")])
+            or _pick_first_existing_path([run_payload.get("output_bdf")])
+            or str(Path(str(run_payload.get("input_bdf") or input_bdf)).expanduser().resolve())
         )
 
         if write_cloud_result:

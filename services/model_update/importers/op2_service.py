@@ -758,15 +758,35 @@ def _parse_formatted_sensitivity_csv(
                     "matrix_path": resolved,
                 },
             )
-        value_map = {str(label): float(value) for label, value in zip(labels, values)}
-        row = []
-        for param_name in available_parameter_names:
-            if str(param_name) not in value_map:
-                raise NotFoundError(
-                    "requested parameter not found in formatted sensitivity csv",
-                    {"parameter_name": str(param_name), "available_parameter_names": labels},
-                )
-            row.append(float(value_map[str(param_name)]))
+        label_tokens = [str(label) for label in labels]
+        label_has_duplicates = len(set(label_tokens)) != len(label_tokens)
+        value_map = {label: float(value) for label, value in zip(label_tokens, values)}
+        can_match_by_name = (
+            not label_has_duplicates
+            and all(str(param_name) in value_map for param_name in available_parameter_names)
+        )
+        if can_match_by_name:
+            row = [float(value_map[str(param_name)]) for param_name in available_parameter_names]
+        elif len(values) == len(available_parameter_names):
+            # MSC Nastran commonly truncates DESVAR labels to 8 chars in the
+            # formatted sensitivity CSV. When that happens, multiple design
+            # variables can collapse to the same visible token (for example
+            # `T@PROPERTY_181362` -> `T@PROPER`). In that case name-based lookup
+            # becomes impossible, so preserve the original DESVAR order instead.
+            row = [float(value) for value in values]
+        else:
+            missing_name = next(
+                (str(param_name) for param_name in available_parameter_names if str(param_name) not in value_map),
+                str(available_parameter_names[0]) if available_parameter_names else None,
+            )
+            raise NotFoundError(
+                "requested parameter not found in formatted sensitivity csv",
+                {
+                    "parameter_name": missing_name,
+                    "available_parameter_names": labels,
+                    "requested_parameter_names": [str(item) for item in available_parameter_names],
+                },
+            )
         matrix_rows.append(row)
 
     return {
