@@ -410,13 +410,13 @@ def _section_meta(prop):
     return ptype, None, ''
 
 
-def _combo_label(sec_type, thk_key, running_x):
+def _combo_label(sec_type, thk_key, pid):
     """section_assignment legend label for a (type, thickness) group, e.g.
-    'SHELL_1 (h=3.5)' / 'SOLID_1'. Used as the HDF5 'sections/<key>' group name,
-    which L3 surfaces verbatim (via _clean_section_name). Must not contain '/'
-    and must not look like '<digits>__...' — the leading type name guarantees
-    both. running_x is a per-type 1-based index."""
-    label = '{}_{}'.format(sec_type, running_x)
+    'SHELL_799 (h=3.5)' / 'SOLID_1'. Used as the HDF5 'sections/<key>' group
+    name, which L3 surfaces verbatim (via _clean_section_name). Must not contain
+    '/' and must not look like '<digits>__...' — the leading type name
+    guarantees both. `pid` is the group's representative (smallest) property id."""
+    label = '{}_{}'.format(sec_type, pid)
     if thk_key is not None:
         label += ' (h={:g})'.format(thk_key)
     return label
@@ -554,19 +554,18 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                    if sec_thk is not None and np.isfinite(sec_thk) else None)
         combo_key = (sec_type, thk_key)
         pid_to_combo[pid] = combo_key
-        combo_info.setdefault(combo_key, {'type': sec_type, 'thk': thk_key})
+        # all_pids is sorted ascending, so setdefault records the SMALLEST pid
+        # of the combo as its representative (used in the SHELL_{pid} label).
+        combo_info.setdefault(combo_key,
+                              {'type': sec_type, 'thk': thk_key, 'pid': pid})
 
-    # Assign stable, human-readable labels + one merged element-set name per
-    # combo. Ordered by (type, thickness) so the per-type running index (X in
-    # e.g. SHELL_X) is deterministic across runs.
-    type_x = {}
+    # Assign human-readable labels + one merged element-set name per combo.
+    # Ordered by (type, thickness) so the SEC{n} eset indices are deterministic.
     for i, ck in enumerate(sorted(
             combo_info, key=lambda c: (c[0], c[1] if c[1] is not None else -1.0))):
-        sec_type, thk_key = ck
-        x = type_x.get(sec_type, 0) + 1
-        type_x[sec_type] = x
-        combo_info[ck]['label'] = _combo_label(sec_type, thk_key, x)
-        combo_info[ck]['eset']  = 'SEC{}_ELEMS'.format(i)
+        info = combo_info[ck]
+        info['label'] = _combo_label(info['type'], info['thk'], info['pid'])
+        info['eset']  = 'SEC{}_ELEMS'.format(i)
 
     # ── 5. Setup output directories ───────────────────────────────────────────
     l1_dir   = os.path.join(workspace, 'l1')
