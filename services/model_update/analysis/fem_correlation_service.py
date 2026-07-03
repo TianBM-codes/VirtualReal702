@@ -1395,12 +1395,13 @@ def get_project_modal_frequencies_payload(project_id: int) -> dict:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT fem_mode_no, freq_fem
-                FROM t_mt_py_fem_modal_correlation
+                SELECT mode_no, MIN(frequency) AS frequency
+                FROM t_mt_py_fem_modal_result
                 WHERE pid = %s
-                  AND fem_mode_no IS NOT NULL
-                  AND freq_fem IS NOT NULL
-                ORDER BY fem_mode_no
+                  AND mode_no IS NOT NULL
+                  AND frequency IS NOT NULL
+                GROUP BY mode_no
+                ORDER BY mode_no
                 """,
                 (int(project_id),),
             )
