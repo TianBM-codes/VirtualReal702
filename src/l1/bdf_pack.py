@@ -368,6 +368,25 @@ def _first_val(v, default=0.0):
         return default
 
 
+def _section_label(pid, sec_type, thickness):
+    """Human-readable label for the section_assignment legend, e.g.
+    'P5 (SHELL t=2.0)' / 'P7 (SOLID)'. This string is used as the HDF5
+    'sections/<key>' group name, which L3 surfaces verbatim as the legend
+    entry (via _clean_section_name). Constraints:
+      - no '/' (HDF5 link separator);
+      - must NOT look like '<digits>__...', or L3's _clean_section_name would
+        strip the prefix — the leading 'P' guarantees this.
+    Uniqueness is guaranteed by the pid."""
+    label = 'P{} ({}'.format(pid, sec_type)
+    try:
+        t = float(thickness)
+        if np.isfinite(t) and t > 0:
+            label += ' t={:g}'.format(t)
+    except (TypeError, ValueError):
+        pass
+    return label + ')'
+
+
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
 def _pack_model(model, inst_name, workspace, source_bdf_path=None):
@@ -623,20 +642,24 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
             etd_rows.append((inst_name, abaqus_name, len(labels_arr), 0, n_corner, n_faces_et))
             print('    {}: {} elem(s)'.format(abaqus_name, len(labels_arr)))
 
-        # Sections
+        # Sections — determine type/thickness/material first, then use a
+        # human-readable group key (e.g. "P5 (SHELL t=2.0)") which L3 surfaces
+        # as the section_assignment legend label. The element_set attr
+        # (P{pid}_ELEMS) is what actually resolves the elements, independent of
+        # the group key.
         for pid in all_pids:
             prop = model.properties.get(pid)
             if prop is None:
                 continue
-            ptype = prop.type
-            sg = f.require_group('sections/{}'.format(pid))
-            sg.attrs['element_set'] = 'P{}_ELEMS'.format(pid)
+            ptype   = prop.type
+            sec_thk = float('nan')
+            sec_mat = ''
             if ptype == 'PSHELL':
                 # pyNastran uses mid1 for PSHELL, not mid
-                mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
-                sg.attrs['type']          = 'SHELL'
-                sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
-                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
+                mid_raw  = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
+                sec_type = 'SHELL'
+                sec_thk  = _first_val(getattr(prop, 't', None))
+                sec_mat  = _unwrap_mid(mid_raw)
             elif ptype in ('PCOMP', 'PCOMPG'):
                 # Layered composite — report total thickness and first ply material
                 total_t = 0.0
@@ -650,43 +673,39 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                         total_t = float(sum(prop.thicknesses))
                     except Exception:
                         pass
-                mids = getattr(prop, 'mids', None)
-                first_mid = _unwrap_mid(mids[0] if mids and len(mids) > 0 else None)
-                sg.attrs['type']          = 'SHELL'
-                sg.attrs['thickness']     = total_t
-                sg.attrs['material_name'] = first_mid
+                mids     = getattr(prop, 'mids', None)
+                sec_type = 'SHELL'
+                sec_thk  = total_t
+                sec_mat  = _unwrap_mid(mids[0] if mids and len(mids) > 0 else None)
             elif ptype == 'PSOLID':
                 mid_raw = getattr(prop, 'mid', None)
                 if hasattr(mid_raw, 'mid'):
                     mid_raw = mid_raw.mid
-                sg.attrs['type']          = 'SOLID'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
+                sec_type = 'SOLID'
+                sec_mat  = _unwrap_mid(mid_raw)
             elif ptype == 'PSHEAR':
-                mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
-                sg.attrs['type']          = 'SHEAR'
-                sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
-                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
+                mid_raw  = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
+                sec_type = 'SHEAR'
+                sec_thk  = _first_val(getattr(prop, 't', None))
+                sec_mat  = _unwrap_mid(mid_raw)
             elif ptype in ('PBAR', 'PBEAM', 'PBEND', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
-                sg.attrs['type']          = 'BEAM'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
+                sec_type = 'BEAM'
+                sec_mat  = _unwrap_mid(getattr(prop, 'mid', None))
             elif ptype in ('PBUSH', 'PBUSH1D', 'PELAS'):
-                sg.attrs['type']          = 'SPRING'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
+                sec_type = 'SPRING'
             elif ptype == 'PDAMP':
-                sg.attrs['type']          = 'DAMPER'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
+                sec_type = 'DAMPER'
             elif ptype == 'PMASS':
-                sg.attrs['type']          = 'MASS'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
+                sec_type = 'MASS'
             else:
-                sg.attrs['type']          = ptype
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
+                sec_type = ptype
+
+            grp_key = _section_label(pid, sec_type, sec_thk)
+            sg = f.require_group('sections/{}'.format(grp_key))
+            sg.attrs['element_set']   = 'P{}_ELEMS'.format(pid)
+            sg.attrs['type']          = sec_type
+            sg.attrs['thickness']     = sec_thk
+            sg.attrs['material_name'] = sec_mat
 
         # Materials
         for mid, mat in model.materials.items():
