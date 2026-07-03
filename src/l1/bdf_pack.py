@@ -368,6 +368,60 @@ def _first_val(v, default=0.0):
         return default
 
 
+def _section_meta(prop):
+    """(section_type, thickness_or_None, material_name) for a pyNastran property.
+    Thickness is only meaningful for shells/shear panels; None otherwise."""
+    ptype = prop.type
+    if ptype == 'PSHELL':
+        # pyNastran uses mid1 for PSHELL, not mid
+        mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
+        return 'SHELL', _first_val(getattr(prop, 't', None)), _unwrap_mid(mid_raw)
+    if ptype in ('PCOMP', 'PCOMPG'):
+        # Layered composite — total thickness + first-ply material
+        total_t = 0.0
+        if hasattr(prop, 'TotalThickness'):
+            try:
+                total_t = float(prop.TotalThickness())
+            except Exception:
+                pass
+        elif hasattr(prop, 'thicknesses'):
+            try:
+                total_t = float(sum(prop.thicknesses))
+            except Exception:
+                pass
+        mids = getattr(prop, 'mids', None)
+        return 'SHELL', total_t, _unwrap_mid(mids[0] if mids and len(mids) > 0 else None)
+    if ptype == 'PSHEAR':
+        mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
+        return 'SHEAR', _first_val(getattr(prop, 't', None)), _unwrap_mid(mid_raw)
+    if ptype == 'PSOLID':
+        mid_raw = getattr(prop, 'mid', None)
+        if hasattr(mid_raw, 'mid'):
+            mid_raw = mid_raw.mid
+        return 'SOLID', None, _unwrap_mid(mid_raw)
+    if ptype in ('PBAR', 'PBEAM', 'PBEND', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
+        return 'BEAM', None, _unwrap_mid(getattr(prop, 'mid', None))
+    if ptype in ('PBUSH', 'PBUSH1D', 'PELAS'):
+        return 'SPRING', None, ''
+    if ptype == 'PDAMP':
+        return 'DAMPER', None, ''
+    if ptype == 'PMASS':
+        return 'MASS', None, ''
+    return ptype, None, ''
+
+
+def _combo_label(sec_type, thk_key, running_x):
+    """section_assignment legend label for a (type, thickness) group, e.g.
+    'SHELL_1 (h=3.5)' / 'SOLID_1'. Used as the HDF5 'sections/<key>' group name,
+    which L3 surfaces verbatim (via _clean_section_name). Must not contain '/'
+    and must not look like '<digits>__...' — the leading type name guarantees
+    both. running_x is a per-type 1-based index."""
+    label = '{}_{}'.format(sec_type, running_x)
+    if thk_key is not None:
+        label += ' (h={:g})'.format(thk_key)
+    return label
+
+
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
 def _pack_model(model, inst_name, workspace, source_bdf_path=None):
@@ -482,45 +536,37 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
     # Precompute per-sid material name and section type (used by each etype group)
     sid_to_mat = {}
     sid_to_sty = {}
+    # section_assignment grouping: collapse all PIDs sharing the same
+    # (section_type, thickness) into ONE legend group. Real Nastran decks may
+    # define 1000+ PSHELLs that differ only by material — grouping per-PID would
+    # explode the legend, so we group by the engineering section instead.
+    pid_to_combo = {}          # pid -> (section_type, thickness_key)
+    combo_info   = {}          # combo_key -> {type, thk, label, eset}
     for pid in all_pids:
         sid  = pid_to_sid[pid]
         prop = model.properties.get(pid)
         if prop is None:
             continue
-        ptype = prop.type
-        if ptype == 'PSHELL':
-            # pyNastran uses mid1 for PSHELL, not mid
-            mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
-            sid_to_mat[sid] = _unwrap_mid(mid_raw)
-            sid_to_sty[sid] = 'SHELL'
-        elif ptype in ('PCOMP', 'PCOMPG'):
-            # Layered composite shell — use first ply material as representative
-            mids = getattr(prop, 'mids', None)
-            first_mid = (mids[0] if mids and len(mids) > 0 else None)
-            sid_to_mat[sid] = _unwrap_mid(first_mid)
-            sid_to_sty[sid] = 'SHELL'
-        elif ptype == 'PSHEAR':
-            mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
-            sid_to_mat[sid] = _unwrap_mid(mid_raw)
-            sid_to_sty[sid] = 'SHEAR'
-        elif ptype == 'PSOLID':
-            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
-            sid_to_sty[sid] = 'SOLID'
-        elif ptype in ('PBAR', 'PBEAM', 'PBEND', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
-            sid_to_mat[sid] = _unwrap_mid(getattr(prop, 'mid', None))
-            sid_to_sty[sid] = 'BEAM'
-        elif ptype in ('PBUSH', 'PBUSH1D', 'PELAS'):
-            sid_to_mat[sid] = ''
-            sid_to_sty[sid] = 'SPRING'
-        elif ptype == 'PDAMP':
-            sid_to_mat[sid] = ''
-            sid_to_sty[sid] = 'DAMPER'
-        elif ptype == 'PMASS':
-            sid_to_mat[sid] = ''
-            sid_to_sty[sid] = 'MASS'
-        else:
-            sid_to_mat[sid] = ''
-            sid_to_sty[sid] = ptype
+        sec_type, sec_thk, sec_mat = _section_meta(prop)
+        sid_to_mat[sid] = sec_mat
+        sid_to_sty[sid] = sec_type
+        thk_key = (round(float(sec_thk), 6)
+                   if sec_thk is not None and np.isfinite(sec_thk) else None)
+        combo_key = (sec_type, thk_key)
+        pid_to_combo[pid] = combo_key
+        combo_info.setdefault(combo_key, {'type': sec_type, 'thk': thk_key})
+
+    # Assign stable, human-readable labels + one merged element-set name per
+    # combo. Ordered by (type, thickness) so the per-type running index (X in
+    # e.g. SHELL_X) is deterministic across runs.
+    type_x = {}
+    for i, ck in enumerate(sorted(
+            combo_info, key=lambda c: (c[0], c[1] if c[1] is not None else -1.0))):
+        sec_type, thk_key = ck
+        x = type_x.get(sec_type, 0) + 1
+        type_x[sec_type] = x
+        combo_info[ck]['label'] = _combo_label(sec_type, thk_key, x)
+        combo_info[ck]['eset']  = 'SEC{}_ELEMS'.format(i)
 
     # ── 5. Setup output directories ───────────────────────────────────────────
     l1_dir   = os.path.join(workspace, 'l1')
@@ -543,6 +589,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
     etd_rows = []   # (inst, etype, count, has_midnodes, n_corner, n_faces)
     pairs_nr = []   # for node_to_elements CSR — node row indices
     pairs_el = []   # for node_to_elements CSR — element labels
+    combo_to_labels = {}  # combo_key → [element labels] — backs merged SEC*_ELEMS
 
     with h5py.File(h5_abs, 'w') as f:
         # Nodes
@@ -614,73 +661,32 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                         pairs_nr.append(int(nr))
                         pairs_el.append(int(labels_arr[j]))
 
+            # Accumulate element labels per (type, thickness) combo → backs the
+            # merged SEC*_ELEMS sets below.
+            for lbl, pid in zip(g['labels'], g['pids']):
+                ck = pid_to_combo.get(pid)
+                if ck is not None:
+                    combo_to_labels.setdefault(ck, []).append(int(lbl))
+
             etd_rows.append((inst_name, abaqus_name, len(labels_arr), 0, n_corner, n_faces_et))
             print('    {}: {} elem(s)'.format(abaqus_name, len(labels_arr)))
 
-        # Sections
-        for pid in all_pids:
-            prop = model.properties.get(pid)
-            if prop is None:
+        # Sections — one group per (type, thickness) combo. The group key is the
+        # human-readable label (e.g. "SHELL_1 (h=3.5)") which L3 surfaces as the
+        # section_assignment legend entry; its element_set attr points at the
+        # merged SEC*_ELEMS set written above. Combos with no elements are
+        # skipped so the legend never shows empty entries.
+        for ck in sorted(combo_info,
+                         key=lambda c: (c[0], c[1] if c[1] is not None else -1.0)):
+            if ck not in combo_to_labels:
                 continue
-            ptype = prop.type
-            sg = f.require_group('sections/{}'.format(pid))
-            sg.attrs['element_set'] = 'P{}_ELEMS'.format(pid)
-            if ptype == 'PSHELL':
-                # pyNastran uses mid1 for PSHELL, not mid
-                mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
-                sg.attrs['type']          = 'SHELL'
-                sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
-                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
-            elif ptype in ('PCOMP', 'PCOMPG'):
-                # Layered composite — report total thickness and first ply material
-                total_t = 0.0
-                if hasattr(prop, 'TotalThickness'):
-                    try:
-                        total_t = float(prop.TotalThickness())
-                    except Exception:
-                        pass
-                elif hasattr(prop, 'thicknesses'):
-                    try:
-                        total_t = float(sum(prop.thicknesses))
-                    except Exception:
-                        pass
-                mids = getattr(prop, 'mids', None)
-                first_mid = _unwrap_mid(mids[0] if mids and len(mids) > 0 else None)
-                sg.attrs['type']          = 'SHELL'
-                sg.attrs['thickness']     = total_t
-                sg.attrs['material_name'] = first_mid
-            elif ptype == 'PSOLID':
-                mid_raw = getattr(prop, 'mid', None)
-                if hasattr(mid_raw, 'mid'):
-                    mid_raw = mid_raw.mid
-                sg.attrs['type']          = 'SOLID'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
-            elif ptype == 'PSHEAR':
-                mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
-                sg.attrs['type']          = 'SHEAR'
-                sg.attrs['thickness']     = _first_val(getattr(prop, 't', None))
-                sg.attrs['material_name'] = _unwrap_mid(mid_raw)
-            elif ptype in ('PBAR', 'PBEAM', 'PBEND', 'PROD', 'PTUBE', 'PBARL', 'PBEAML'):
-                sg.attrs['type']          = 'BEAM'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = _unwrap_mid(getattr(prop, 'mid', None))
-            elif ptype in ('PBUSH', 'PBUSH1D', 'PELAS'):
-                sg.attrs['type']          = 'SPRING'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
-            elif ptype == 'PDAMP':
-                sg.attrs['type']          = 'DAMPER'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
-            elif ptype == 'PMASS':
-                sg.attrs['type']          = 'MASS'
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
-            else:
-                sg.attrs['type']          = ptype
-                sg.attrs['thickness']     = float('nan')
-                sg.attrs['material_name'] = ''
+            info = combo_info[ck]
+            sg = f.require_group('sections/{}'.format(info['label']))
+            sg.attrs['element_set']   = info['eset']
+            sg.attrs['type']          = info['type']
+            sg.attrs['thickness']     = (info['thk'] if info['thk'] is not None
+                                         else float('nan'))
+            sg.attrs['material_name'] = ''   # merged group spans many materials
 
         # Materials
         for mid, mat in model.materials.items():
@@ -721,6 +727,22 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
             ids_arr = np.array(sorted(s.ids), dtype=np.int32)
             f.create_dataset('instance_sets/element_sets/{}'.format(set_safe), data=ids_arr)
             isets_elem_counts[set_safe] = len(ids_arr)
+
+        # Merged element sets SEC*_ELEMS — one per (type, thickness) combo, the
+        # union of every element whose PID falls in that combo. These are what
+        # sections/<label> reference via their 'element_set' attr, so L3's
+        # section_assignment scheme can resolve section → element labels.
+        # Deliberately NOT added to isets_elem_counts: they stay H5-only and are
+        # not registered in manifest.db, to avoid cluttering the assembly tree.
+        # (They still surface in the elset color scheme, which enumerates
+        # instance_sets/element_sets directly — harmless and consistent with
+        # coloring by section_assignment.)
+        for ck, lbls in combo_to_labels.items():
+            key = 'instance_sets/element_sets/{}'.format(combo_info[ck]['eset'])
+            if key in f:
+                continue
+            ids_arr = np.array(sorted(set(lbls)), dtype=np.int32)
+            f.create_dataset(key, data=ids_arr)
 
         # node_to_elements CSR (used by L3 pick/probe query)
         if pairs_nr:
