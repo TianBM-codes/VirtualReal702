@@ -543,6 +543,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
     etd_rows = []   # (inst, etype, count, has_midnodes, n_corner, n_faces)
     pairs_nr = []   # for node_to_elements CSR — node row indices
     pairs_el = []   # for node_to_elements CSR — element labels
+    pid_to_labels = {}  # pid → [element labels] — backs synthetic P{pid}_ELEMS sets
 
     with h5py.File(h5_abs, 'w') as f:
         # Nodes
@@ -613,6 +614,11 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                     if int(nr) >= 0:
                         pairs_nr.append(int(nr))
                         pairs_el.append(int(labels_arr[j]))
+
+            # Accumulate per-property element labels (by original PID, not the
+            # refined section_id) → backs the P{pid}_ELEMS sets below.
+            for lbl, pid in zip(g['labels'], g['pids']):
+                pid_to_labels.setdefault(pid, []).append(int(lbl))
 
             etd_rows.append((inst_name, abaqus_name, len(labels_arr), 0, n_corner, n_faces_et))
             print('    {}: {} elem(s)'.format(abaqus_name, len(labels_arr)))
@@ -721,6 +727,22 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
             ids_arr = np.array(sorted(s.ids), dtype=np.int32)
             f.create_dataset('instance_sets/element_sets/{}'.format(set_safe), data=ids_arr)
             isets_elem_counts[set_safe] = len(ids_arr)
+
+        # Synthetic per-property element sets P{pid}_ELEMS — these are the sets
+        # that sections/<pid> reference via their 'element_set' attr (line ~627),
+        # so L3's section_assignment scheme can resolve section → element labels.
+        # Deliberately NOT added to isets_elem_counts: they stay H5-only and are
+        # not registered in manifest.db, to avoid cluttering the assembly tree
+        # with dozens of synthetic sets. (They still surface in the elset color
+        # scheme, which enumerates instance_sets/element_sets directly — harmless
+        # and consistent with coloring by section_assignment.)
+        for pid, lbls in pid_to_labels.items():
+            set_safe = 'P{}_ELEMS'.format(pid)
+            key = 'instance_sets/element_sets/{}'.format(set_safe)
+            if key in f:
+                continue
+            ids_arr = np.array(sorted(set(lbls)), dtype=np.int32)
+            f.create_dataset(key, data=ids_arr)
 
         # node_to_elements CSR (used by L3 pick/probe query)
         if pairs_nr:
