@@ -78,6 +78,7 @@ def _make_sensitivity_app(monkeypatch, tmp_path: Path):
                 ("sensitivity_5_U_10_U1", "Step-1", "E", "external"),
                 ("sol200_all_elements_e", "Sensitivity", "SENSITIVITY_CLOUD", "external"),
                 ("viz_rg_PART-1-1_U1_10", "Sensitivity", "E", "external"),
+                ("viz_rg_PART-1-1_U1_10", "Sensitivity", "THICKNESS", "external"),
                 ("plain_result", "Step-1", "U", "odb"),
             ],
         )
@@ -252,4 +253,42 @@ def test_sensitivity_fields_keep_external_fields_for_merge_groups(monkeypatch, t
             "response_node_label": None,
             "component": None,
         }
+    ]
+
+
+def test_sensitivity_fields_keep_external_fields_for_non_prefixed_external_sensitivity_groups(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app = _make_sensitivity_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/odb/demo/sensitivity/fields",
+        params={"result_group": "viz_rg_PART-1-1_U1_10", "step": "Sensitivity"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["fields"] == [
+        {
+            "field_name": "E",
+            "source_field_name": "E",
+            "step": "Sensitivity",
+            "frame_idx": None,
+            "frame_value": None,
+            "frame_description": None,
+            "response_node_label": None,
+            "component": None,
+        },
+        {
+            "field_name": "THICKNESS",
+            "source_field_name": "THICKNESS",
+            "step": "Sensitivity",
+            "frame_idx": None,
+            "frame_value": None,
+            "frame_description": None,
+            "response_node_label": None,
+            "component": None,
+        },
     ]
