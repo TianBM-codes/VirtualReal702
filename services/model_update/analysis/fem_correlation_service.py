@@ -1419,8 +1419,8 @@ def get_project_modal_frequencies_payload(project_id: int) -> dict:
     for mode_no, freq in sorted(fem_freqs.items()):
         freq_text = f"{float(freq):g}"
         frequency_rows.append({
-            "label": int(mode_no),
-            "value": f"Mode: {int(mode_no)} Freq: {freq_text} Hz",
+            "label": f"Mode: {int(mode_no)} Freq: {freq_text} Hz",
+            "value": int(mode_no),
         })
 
     return {
