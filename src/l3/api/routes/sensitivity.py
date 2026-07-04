@@ -266,6 +266,8 @@ async def list_sensitivity_fields(
     if idx is None:
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
     manifest = ManifestRepo(idx.workspace)
+    external_sensitivity_groups = _list_external_sensitivity_groups(manifest)
+    result_group_is_external_sensitivity = str(result_group or "").strip() in external_sensitivity_groups
 
     fields = []
     with manifest._get_conn() as conn:
@@ -286,11 +288,14 @@ async def list_sensitivity_fields(
         field_name = str(row["field_name"] or "")
         source = str(row["source"] or "").strip().lower()
         step_name = str(row["step_name"] or "")
-        if not _is_visible_sensitivity_field(
+        is_visible = _is_visible_sensitivity_field(
             result_group=result_group,
             field_name=field_name,
             source=source,
-        ):
+        )
+        if not is_visible and result_group_is_external_sensitivity and source == "external":
+            is_visible = True
+        if not is_visible:
             continue
         parsed = _parse_merged_field_name(field_name)
         if source == "external" and parsed["response_node_label"] is None and parsed["component"] is None:
