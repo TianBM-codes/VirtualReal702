@@ -2008,6 +2008,44 @@ def _row_element_labels(row: dict) -> set:
     return labels
 
 
+def _load_bdf_capability_detail_map(cursor, project_id: int) -> dict:
+    cursor.execute(
+        """
+        SELECT extra_json
+        FROM t_mt_py_project_config
+        WHERE pid = %s
+        LIMIT 1
+        """,
+        (int(project_id),),
+    )
+    row = cursor.fetchone() or {}
+    config_extra = _json_loads(row.get("extra_json")) if hasattr(row, "get") else _json_loads(row[0] if row else None)
+    config_extra = config_extra if isinstance(config_extra, dict) else {}
+    detail_path = str(config_extra.get("fem_octree_capability_detail_json") or "").strip()
+    if not detail_path or not os.path.isfile(detail_path):
+        return {}
+    with open(detail_path, "r", encoding="utf-8") as fp:
+        payload = json.load(fp) or {}
+    return dict(payload.get("details_by_key") or {})
+
+
+def _resolve_capability_extra_json(cursor, project_id: int, row: dict) -> dict:
+    extra_json = _json_loads(row.get("extra_json")) or {}
+    if not isinstance(extra_json, dict):
+        return {}
+    if extra_json.get("element_labels") and extra_json.get("target_keys"):
+        return extra_json
+    detail_key = str(extra_json.get("detail_key") or "").strip()
+    if not detail_key:
+        return extra_json
+    detail_extra = _load_bdf_capability_detail_map(cursor, int(project_id)).get(detail_key)
+    if isinstance(detail_extra, dict):
+        merged = dict(extra_json)
+        merged.update(detail_extra)
+        return merged
+    return extra_json
+
+
 def _resolve_manual_element_current_values(
         cursor,
         *,
@@ -2551,7 +2589,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
         resolved_mode = _resolve_selection_mode_from_capability(capability_row, selection_mode)
         parameter_group_name = str(parameter_name or _default_parameter_group_name(resolved_quantity_code, capability_row["set_name"]))
 
-        capability_extra = _json_loads(capability_row.get("extra_json")) or {}
+        capability_extra = _resolve_capability_extra_json(cursor, int(project_id), capability_row)
         element_labels = [int(item) for item in (capability_extra.get("element_labels") or [])]
         target_keys = [str(item) for item in (capability_extra.get("target_keys") or [])]
         target_keys_by_label = {
@@ -2599,7 +2637,7 @@ def create_optimization_parameter(project_id, candidate_code=None, quantity_code
             for row in cursor.fetchall() or []:
                 if _set_identity_key(row) not in overlap_global_set_keys:
                     continue
-                existing_extra = _json_loads(row.get("extra_json")) or {}
+                existing_extra = _resolve_capability_extra_json(cursor, int(project_id), row)
                 existing_labels = {
                     int(label) for label in (existing_extra.get("element_labels") or [])
                 }

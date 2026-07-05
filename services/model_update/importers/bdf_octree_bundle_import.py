@@ -20,6 +20,7 @@ if __name__ == "__main__":
     pid = int(PROJECT_ID if PROJECT_ID is not None else bundle["project_id"])
     source_file_path = str(Path(bundle["source_file_path"]).expanduser().resolve())
     cache_file_path = str(Path(bundle["cache_file_path"]).expanduser().resolve())
+    detail_file = str(Path(bundle.get("capability_detail_file") or "").expanduser().resolve()) if bundle.get("capability_detail_file") else ""
     bbox_min = list(bundle["bbox_min"])
     bbox_max = list(bundle["bbox_max"])
     capabilities = [dict(x or {}) for x in list(bundle.get("quantity_set_capabilities") or [])]
@@ -100,6 +101,7 @@ if __name__ == "__main__":
                 "fem_data_source": "bdf_octree_bundle",
                 "fem_octree_source_file": source_file_path,
                 "fem_octree_bundle_json": str(bundle_path),
+                "fem_octree_capability_detail_json": detail_file,
             },
             cursor=cursor,
         )

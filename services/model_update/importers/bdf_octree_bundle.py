@@ -23,13 +23,35 @@ def _default(x):
 
 def _compact_capability_rows(rows):
     compact_rows = []
+    detail_rows = {}
     for row in rows:
         extra = dict(row.get("extra_json") or {})
+        detail_key = "|".join([
+            str(row["quantity_code"]),
+            str(row["set_scope"]),
+            str(row["set_type"]),
+            str(row["set_name"]),
+            str(row.get("instance_name") or ""),
+            str(row.get("part_name") or ""),
+        ])
         compact_extra = {}
         if extra.get("property_id") is not None:
             compact_extra["property_id"] = int(extra["property_id"])
         if extra.get("material_id") is not None:
             compact_extra["material_id"] = int(extra["material_id"])
+        compact_extra["detail_key"] = detail_key
+
+        detail_rows[detail_key] = {
+            "element_labels": [int(x) for x in (extra.get("element_labels") or [])],
+            "target_keys": [str(x) for x in (extra.get("target_keys") or [])],
+            "target_keys_by_label": {
+                str(key): [str(x) for x in (value or [])]
+                for key, value in dict(extra.get("target_keys_by_label") or {}).items()
+            },
+            "element_values": {
+                str(key): value for key, value in dict(extra.get("element_values") or {}).items()
+            },
+        }
 
         compact_rows.append({
             "quantity_code": row["quantity_code"],
@@ -48,7 +70,7 @@ def _compact_capability_rows(rows):
             "current_value": row.get("current_value"),
             "extra_json": compact_extra,
         })
-    return compact_rows
+    return compact_rows, detail_rows
 
 
 if __name__ == "__main__":
@@ -60,12 +82,13 @@ if __name__ == "__main__":
     parser.parse()
 
     node_data = _build_bdf_octree_node_data(parser)
-    capabilities = _compact_capability_rows(_build_bdf_property_set_capabilities(parser))
+    capabilities, capability_details = _compact_capability_rows(_build_bdf_property_set_capabilities(parser))
     tree = _build_octree(node_data["point_coords"])
 
     stem = Path(bdf_path).stem
     npz_path = out_dir / f"{stem}.node_octree.npz"
     json_path = out_dir / f"{stem}.octree_bundle.json"
+    detail_path = out_dir / f"{stem}.octree_capability_detail.json"
 
     np.savez_compressed(
         str(npz_path),
@@ -86,6 +109,7 @@ if __name__ == "__main__":
         "project_id": PROJECT_ID,
         "source_file_path": bdf_path,
         "cache_file_path": str(npz_path),
+        "capability_detail_file": str(detail_path),
         "node_count": int(len(node_data["point_labels"])),
         "instance_count": int(len(set(str(x) for x in node_data["point_instances"]))),
         "bbox_min": node_data["bbox_min"].tolist(),
@@ -94,7 +118,9 @@ if __name__ == "__main__":
         "quantity_set_capability_count": len(capabilities),
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=_default), encoding="utf-8")
+    detail_path.write_text(json.dumps({"details_by_key": capability_details}, ensure_ascii=False, indent=2, default=_default), encoding="utf-8")
 
     print("npz :", npz_path)
     print("json:", json_path)
+    print("detail:", detail_path)
     print("capability_count:", len(capabilities))
