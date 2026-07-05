@@ -31,6 +31,7 @@ from .project_config_service import (
     get_node_match_parameter_context,
     save_fem_model_dimensions,
 )
+from .fem_modal_bundle_service import list_fem_modal_frequencies
 from .project_path_service import resolve_project_cal_subdir
 from .project_source_service import resolve_project_source_inp_path
 from .project_status_service import update_work_condition_project_status
@@ -1658,6 +1659,8 @@ def get_inp_catalog(project_id):
         response_catalog_count = int(cursor.fetchone()["cnt"])
         cursor.execute("SELECT COUNT(DISTINCT mode_no) AS cnt FROM t_mt_py_fem_modal_result WHERE pid = %s", (project_id,))
         fem_mode_count = int(cursor.fetchone()["cnt"])
+        if fem_mode_count == 0:
+            fem_mode_count = int(len(list_fem_modal_frequencies(int(project_id), cursor=cursor)))
         cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
         correlation_count = int(cursor.fetchone()["cnt"])
         cursor.execute("SELECT COUNT(*) AS cnt FROM t_mt_py_fem_material_overview WHERE pid = %s", (project_id,))

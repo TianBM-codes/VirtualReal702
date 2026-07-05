@@ -3,6 +3,11 @@ from pathlib import Path
 import numpy as np
 
 from db import ensure_tables_exist, get_connection
+from services.model_update.analysis.fem_modal_bundle_service import (
+    clear_fem_modal_bundle,
+    save_fem_modal_manifest,
+)
+from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
 from services.model_update.importers.op2_service import (
     _abs_file,
     _extract_mode_frequency,
@@ -42,28 +47,14 @@ if __name__ == "__main__":
         ordered_node_ids = sorted(int(node_id) for node_id in bdf_model.nodes.keys())
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(dictionary=True)
     try:
+        bundle_dir = clear_fem_modal_bundle(int(PROJECT_ID)) if OVERWRITE else resolve_project_cal_subdir(int(PROJECT_ID), "fem_modal_bundle")
         if OVERWRITE:
             cursor.execute("DELETE FROM t_mt_py_fem_modal_result WHERE pid = %s", (int(PROJECT_ID),))
             cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (int(PROJECT_ID),))
             conn.commit()
-
-        sql = """
-        INSERT INTO t_mt_py_fem_modal_result
-        (pid, mode_no, frequency, instance_name, part_name, fem_node_label, u1, u2, u3, extra_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            frequency = VALUES(frequency),
-            part_name = VALUES(part_name),
-            u1 = VALUES(u1),
-            u2 = VALUES(u2),
-            u3 = VALUES(u3),
-            extra_json = VALUES(extra_json),
-            created_at = CURRENT_TIMESTAMP
-        """
-
-        rows = []
+        manifest_modes = []
         total_rows = 0
         total_modes = 0
         import_mode_no = 1
@@ -81,47 +72,57 @@ if __name__ == "__main__":
                 source_mode_no = int(modes_array[mode_index])
                 frequency, eigenvalue, _warnings = _extract_mode_frequency(eigen_data, mode_index)
                 mode_data = np.asarray(eigen_data.data[mode_index], dtype=np.float64)
+                node_labels = []
+                vectors = []
 
                 for node_id in active_node_ids:
                     result_idx = result_node_index.get(int(node_id))
                     if result_idx is None:
                         continue
                     values = mode_data[result_idx]
-                    rows.append((
-                        int(PROJECT_ID),
-                        int(import_mode_no),
-                        float(frequency) if frequency is not None else None,
-                        str(instance_name or "BDF_MODEL"),
-                        str(part_name or instance_name or "BDF_MODEL"),
-                        int(node_id),
+                    node_labels.append(int(node_id))
+                    vectors.append([
                         float(values[0]) if len(values) > 0 else 0.0,
                         float(values[1]) if len(values) > 1 else 0.0,
                         float(values[2]) if len(values) > 2 else 0.0,
-                        (
-                            "{"
-                            f"\"node_id\": {int(node_id)}, "
-                            f"\"subcase_id\": {int(subcase_id)}, "
-                            f"\"source_mode_no\": {int(source_mode_no)}, "
-                            f"\"eigenvalue\": {('null' if eigenvalue is None else float(eigenvalue))}, "
-                            f"\"ur1\": {float(values[3]) if len(values) > 3 else 0.0}, "
-                            f"\"ur2\": {float(values[4]) if len(values) > 4 else 0.0}, "
-                            f"\"ur3\": {float(values[5]) if len(values) > 5 else 0.0}"
-                            "}"
-                        ),
-                    ))
-                    if len(rows) >= int(CHUNK_SIZE):
-                        cursor.executemany(sql, rows)
-                        conn.commit()
-                        total_rows += len(rows)
-                        rows = []
+                    ])
+
+                file_path = str(Path(bundle_dir) / f"mode_{int(import_mode_no):04d}.npz")
+                np.savez_compressed(
+                    file_path,
+                    node_labels=np.asarray(node_labels, dtype=np.int32),
+                    vectors=np.asarray(vectors, dtype=np.float32),
+                )
+                manifest_modes.append(
+                    {
+                        "mode_no": int(import_mode_no),
+                        "frequency": None if frequency is None else float(frequency),
+                        "subcase_id": int(subcase_id),
+                        "source_mode_no": int(source_mode_no),
+                        "eigenvalue": None if eigenvalue is None else float(eigenvalue),
+                        "instance_name": str(instance_name or "BDF_MODEL"),
+                        "part_name": str(part_name or instance_name or "BDF_MODEL"),
+                        "file_path": file_path,
+                        "node_count": int(len(node_labels)),
+                    }
+                )
+                total_rows += len(node_labels)
 
                 total_modes += 1
                 import_mode_no += 1
 
-        if rows:
-            cursor.executemany(sql, rows)
-            conn.commit()
-            total_rows += len(rows)
+        save_fem_modal_manifest(
+            int(PROJECT_ID),
+            {
+                "source_file_path": op2_path,
+                "bdf_file_path": bdf_path,
+                "instance_name": str(instance_name or "BDF_MODEL"),
+                "part_name": str(part_name or instance_name or "BDF_MODEL"),
+                "modes": manifest_modes,
+            },
+            cursor=cursor,
+        )
+        conn.commit()
 
     except Exception:
         conn.rollback()

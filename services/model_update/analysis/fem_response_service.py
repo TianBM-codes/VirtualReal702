@@ -16,6 +16,7 @@ from .fem_catalog_service import (
     _safe_float,
     _scope_contains,
 )
+from .fem_modal_bundle_service import list_fem_modal_frequencies
 from services.model_update.analysis.sensitivity_service import _parse_optional_json_object
 
 
@@ -529,14 +530,16 @@ def get_modal_frequency_response_options(project_id: int, response_source: str) 
         conn = get_connection()
         cursor = conn.cursor(dictionary=True)
         try:
-            cursor.execute("""
-                SELECT mode_no, frequency
-                FROM t_mt_py_fem_modal_result
-                WHERE pid = %s
-                GROUP BY mode_no, frequency
-                ORDER BY mode_no
-            """, (int(project_id),))
-            source_rows = [dict(row) for row in (cursor.fetchall() or [])]
+            source_rows = list_fem_modal_frequencies(int(project_id), cursor=cursor)
+            if not source_rows:
+                cursor.execute("""
+                    SELECT mode_no, frequency
+                    FROM t_mt_py_fem_modal_result
+                    WHERE pid = %s
+                    GROUP BY mode_no, frequency
+                    ORDER BY mode_no
+                """, (int(project_id),))
+                source_rows = [dict(row) for row in (cursor.fetchall() or [])]
         finally:
             cursor.close()
             conn.close()
@@ -701,17 +704,19 @@ def create_modal_frequency_response_catalog_from_fem(
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """
-            SELECT mode_no, frequency
-            FROM t_mt_py_fem_modal_result
-            WHERE pid = %s
-            GROUP BY mode_no, frequency
-            ORDER BY mode_no
-            """,
-            (int(project_id),),
-        )
-        source_rows = [dict(row) for row in (cursor.fetchall() or [])]
+        source_rows = list_fem_modal_frequencies(int(project_id), cursor=cursor)
+        if not source_rows:
+            cursor.execute(
+                """
+                SELECT mode_no, frequency
+                FROM t_mt_py_fem_modal_result
+                WHERE pid = %s
+                GROUP BY mode_no, frequency
+                ORDER BY mode_no
+                """,
+                (int(project_id),),
+            )
+            source_rows = [dict(row) for row in (cursor.fetchall() or [])]
         if not source_rows:
             raise ValidationError(
                 "no FEM modal results were found; import modal results before creating frequency responses",

@@ -9,6 +9,7 @@ from .fem_catalog_service import (
     _require_non_modal_project,
     _safe_float,
 )
+from .fem_modal_bundle_service import list_fem_modal_frequencies, load_fem_mode_vectors_from_bundle
 from .fem_result_service import _STATIC_TEST_DATA_DISPLACEMENT_TYPES
 
 def _normalize_static_test_sensor_type(value) -> str:
@@ -917,6 +918,10 @@ def _load_test_mode_vectors(cursor, project_id: int) -> Dict[int, Dict[str, np.n
 
 
 def _load_fem_mode_vectors(cursor, project_id: int):
+    bundle_modes, bundle_freqs = load_fem_mode_vectors_from_bundle(int(project_id), cursor=cursor)
+    if bundle_modes:
+        return bundle_modes, bundle_freqs
+
     cursor.execute("""
         SELECT mode_no, frequency, instance_name, fem_node_label, u1, u2, u3
         FROM t_mt_py_fem_modal_result
@@ -1392,25 +1397,27 @@ def get_modal_scale_factor_table_payload(project_id):
 def get_project_modal_frequencies_payload(project_id: int) -> dict:
     ensure_tables_exist()
     with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT mode_no, MIN(frequency) AS frequency
-                FROM t_mt_py_fem_modal_result
-                WHERE pid = %s
-                  AND mode_no IS NOT NULL
-                  AND frequency IS NOT NULL
-                GROUP BY mode_no
-                ORDER BY mode_no
-                """,
-                (int(project_id),),
-            )
-            rows = cursor.fetchall()
+        with conn.cursor(dictionary=True) as cursor:
+            rows = list_fem_modal_frequencies(int(project_id), cursor=cursor)
+            if not rows:
+                cursor.execute(
+                    """
+                    SELECT mode_no, MIN(frequency) AS frequency
+                    FROM t_mt_py_fem_modal_result
+                    WHERE pid = %s
+                      AND mode_no IS NOT NULL
+                      AND frequency IS NOT NULL
+                    GROUP BY mode_no
+                    ORDER BY mode_no
+                    """,
+                    (int(project_id),),
+                )
+                rows = cursor.fetchall()
 
     fem_freqs = {}
     for row in rows:
-        mode_no = int(row[0])
-        freq = _safe_float(row[1])
+        mode_no = int(row["mode_no"] if hasattr(row, "get") else row[0])
+        freq = _safe_float(row["frequency"] if hasattr(row, "get") else row[1])
         if freq is None or mode_no in fem_freqs:
             continue
         fem_freqs[mode_no] = float(freq)
