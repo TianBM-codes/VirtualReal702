@@ -2,6 +2,7 @@ import json
 import math
 
 from db import clear_unv_tables, ensure_tables_exist, get_connection
+from services.model_update.analysis.project_config_service import save_test_model_dimensions
 
 
 NODES_TXT = "nodes.txt"
@@ -260,6 +261,15 @@ def save_modes_to_db(cursor, project_id, file_id, modes):
             )
 
 
+def save_test_dimensions_to_db(cursor, project_id, nodes):
+    points = [list(coords) for _node_id, coords in sorted(nodes.items())]
+    save_test_model_dimensions(
+        int(project_id),
+        points=points,
+        cursor=cursor,
+    )
+
+
 def import_txt_to_mysql(project_id, file_id=0, clear_before=True):
     ensure_tables_exist()
 
@@ -277,6 +287,7 @@ def import_txt_to_mysql(project_id, file_id=0, clear_before=True):
         save_nodes_to_db(cursor, project_id, file_id, nodes)
         save_elements_to_db(cursor, project_id, lines)
         save_modes_to_db(cursor, project_id, file_id, modes)
+        save_test_dimensions_to_db(cursor, project_id, nodes)
         conn.commit()
     except Exception:
         conn.rollback()

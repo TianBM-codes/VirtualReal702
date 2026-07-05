@@ -21,6 +21,36 @@ def _default(x):
     raise TypeError(type(x).__name__)
 
 
+def _compact_capability_rows(rows):
+    compact_rows = []
+    for row in rows:
+        extra = dict(row.get("extra_json") or {})
+        compact_extra = {}
+        if extra.get("property_id") is not None:
+            compact_extra["property_id"] = int(extra["property_id"])
+        if extra.get("material_id") is not None:
+            compact_extra["material_id"] = int(extra["material_id"])
+
+        compact_rows.append({
+            "quantity_code": row["quantity_code"],
+            "set_name": row["set_name"],
+            "set_type": row["set_type"],
+            "set_scope": row["set_scope"],
+            "instance_name": row.get("instance_name"),
+            "part_name": row.get("part_name"),
+            "set_role": row["set_role"],
+            "element_family": row.get("element_family"),
+            "section_type": row.get("section_type"),
+            "material_name": row.get("material_name"),
+            "member_count": int(row.get("member_count", 0)),
+            "supports_global": bool(row.get("supports_global")),
+            "supports_local": bool(row.get("supports_local")),
+            "current_value": row.get("current_value"),
+            "extra_json": compact_extra,
+        })
+    return compact_rows
+
+
 if __name__ == "__main__":
     bdf_path = str(Path(BDF_PATH).expanduser().resolve())
     out_dir = Path(OUTPUT_DIR).expanduser().resolve()
@@ -30,7 +60,7 @@ if __name__ == "__main__":
     parser.parse()
 
     node_data = _build_bdf_octree_node_data(parser)
-    capabilities = _build_bdf_property_set_capabilities(parser)
+    capabilities = _compact_capability_rows(_build_bdf_property_set_capabilities(parser))
     tree = _build_octree(node_data["point_coords"])
 
     stem = Path(bdf_path).stem
