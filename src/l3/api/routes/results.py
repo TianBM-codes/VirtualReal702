@@ -237,11 +237,10 @@ def _empty_frame_scalars_response(
         media_type="application/octet-stream",
         headers={
             "X-Payload-Type":         "frame_scalars_v1",
-            "X-Result-Position":      "NONE",
+            "X-Result-Position":      "NODAL",
             "X-Normalization-Scope":  "instance",
             "X-Val-Min":              "0.0",
             "X-Val-Max":              "0.0",
-            "X-Empty":                "1",
             "X-Component-Idx":        str(component_idx) if component_idx is not None else "mag",
             "X-Frame":                str(requested_frame),
             "X-Feature-Angle":        str(feature_angle) if feature_angle is not None else "none",
