@@ -1848,12 +1848,9 @@ def _extract_target_keys(extra_json) -> set:
     return {str(item) for item in (payload.get("target_keys") or [])}
 
 
-def _set_identity_key(row: dict) -> Tuple[str, str, str, Optional[str], Optional[str]]:
+def _set_identity_key(row: dict) -> Tuple[str, Optional[str]]:
     return (
         str(row.get("set_name") or ""),
-        str(row.get("set_type") or ""),
-        str(row.get("set_scope") or ""),
-        str(row.get("instance_name")) if row.get("instance_name") is not None else None,
         str(row.get("part_name")) if row.get("part_name") is not None else None,
     )
 
