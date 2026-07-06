@@ -11,6 +11,7 @@ Pick 单面精确值复用已有 /query/pick 接口，无需重复实现。
 import re
 from typing import List, Literal, Optional
 
+import numpy as np
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
 
@@ -212,6 +213,44 @@ async def get_frame_colors(
     )
 
 
+def _empty_frame_scalars_response(
+    *,
+    component_idx: Optional[int],
+    requested_frame: int,
+    feature_angle: Optional[float],
+    average_threshold: float,
+    use_geometry_split: bool,
+) -> Response:
+    """frame-scalars 找不到结果时的"空"响应：0 个顶点 + 退化 legend [0,0]。
+
+    结构与正常响应完全一致（同样的 L3BE 二进制 + 同样的响应头），只是
+    u_per_vertex 长度为 0、legend 为 0，前端可以照常解析、对该 instance 不上色。
+    """
+    u = np.zeros(0, dtype=np.float32)
+    legend = np.zeros(2, dtype=np.float32)
+    payload = l3be_build([
+        ("u_per_vertex", u),
+        ("legend_range", legend),
+    ])
+    return Response(
+        content=payload,
+        media_type="application/octet-stream",
+        headers={
+            "X-Payload-Type":         "frame_scalars_v1",
+            "X-Result-Position":      "NONE",
+            "X-Normalization-Scope":  "instance",
+            "X-Val-Min":              "0.0",
+            "X-Val-Max":              "0.0",
+            "X-Empty":                "1",
+            "X-Component-Idx":        str(component_idx) if component_idx is not None else "mag",
+            "X-Frame":                str(requested_frame),
+            "X-Feature-Angle":        str(feature_angle) if feature_angle is not None else "none",
+            "X-Average-Threshold":    str(average_threshold),
+            "X-Use-Geometry-Split":   str(use_geometry_split).lower(),
+        },
+    )
+
+
 @router.get("/results/frame-scalars")
 async def get_frame_scalars(
     odb_id: str,
@@ -264,37 +303,51 @@ async def get_frame_scalars(
     gmin = nullable_float(global_min)
     gmax = nullable_float(global_max)
 
-    resolved_result_group, resolved_step = _resolve_single_result_target(
-        odb_id=odb_id,
-        step=step,
-        field=field,
-        result_group=result_group,
-    )
-    resolved_frame = _resolve_display_frame(
-        odb_id=odb_id,
-        requested_step=step,
-        resolved_step=resolved_step,
-        requested_frame=frame,
-        result_group=resolved_result_group,
-    )
-    u, legend, result_position = frame_scalars(
-        registry=registry,
-        odb_id=odb_id,
-        instance=instance,
-        step=resolved_step,
-        field=field,
-        frame_idx=resolved_frame,
-        component_idx=component_idx,
-        render_mode=mode,
-        result_group=resolved_result_group,
-        set_name=set,
-        set_mode=set_mode,
-        feature_angle=feature_angle,
-        average_threshold=average_threshold,
-        use_geometry_split=use_geometry_split,
-        override_min=gmin,
-        override_max=gmax,
-    )
+    # 前端会把同一个查询广播给所有 instance / result_group，其中一部分本来就没有
+    # 这个 step/field/instance 的结果。这种情况以前会返回 404，前端拿到就报错。
+    # 这里改成：凡是"找不到"（NotFoundError），一律返回一个 0 顶点的空 payload，
+    # 前端对这个 instance 不上色即可，不再当成错误。注意 NotReadyError（还在处理，
+    # 202）和 ValidationError（参数非法，400）仍然照常抛出，语义不同不能吞掉。
+    try:
+        resolved_result_group, resolved_step = _resolve_single_result_target(
+            odb_id=odb_id,
+            step=step,
+            field=field,
+            result_group=result_group,
+        )
+        resolved_frame = _resolve_display_frame(
+            odb_id=odb_id,
+            requested_step=step,
+            resolved_step=resolved_step,
+            requested_frame=frame,
+            result_group=resolved_result_group,
+        )
+        u, legend, result_position = frame_scalars(
+            registry=registry,
+            odb_id=odb_id,
+            instance=instance,
+            step=resolved_step,
+            field=field,
+            frame_idx=resolved_frame,
+            component_idx=component_idx,
+            render_mode=mode,
+            result_group=resolved_result_group,
+            set_name=set,
+            set_mode=set_mode,
+            feature_angle=feature_angle,
+            average_threshold=average_threshold,
+            use_geometry_split=use_geometry_split,
+            override_min=gmin,
+            override_max=gmax,
+        )
+    except CoreNotFoundError:
+        return _empty_frame_scalars_response(
+            component_idx=component_idx,
+            requested_frame=frame,
+            feature_angle=feature_angle,
+            average_threshold=average_threshold,
+            use_geometry_split=use_geometry_split,
+        )
 
     norm_scope = "global" if (gmin is not None and gmax is not None) else "instance"
 

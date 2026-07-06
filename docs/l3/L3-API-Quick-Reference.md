@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
+更新时间：2026-07-06（`frame-scalars` 的"找不到"回退：ODB/instance/step/field/result_group 不存在时不再返回 404，改为返回 200 + 空 payload（`u_per_vertex` 长度 0、`legend=[0,0]`、`X-Result-Position: NONE`、`X-Empty: 1`），方便前端广播查询时对缺结果的 instance 只是不上色而非报错；`NotReadyError`→202、`ValidationError`→400 不受影响）。历史：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
 
 历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
@@ -1088,6 +1088,7 @@ X-Frame: <frame>
 X-Feature-Angle: <float>|none
 X-Average-Threshold: <float>
 X-Use-Geometry-Split: true|false
+X-Empty: 1          # 仅当命中"找不到"回退时出现（见下）
 ```
 
 L3BE sections：
@@ -1102,6 +1103,7 @@ L3BE sections：
 - indexed geometry 下通常返回 `[Nv]`。
 - Triangle Soup fallback 下可能返回 `[Rf*3]`。
 - 前端当前用这个接口拿标量，再自行应用 colormap。
+- **"找不到"不再返回 404，而是返回 200 + 空 payload**：当 ODB/instance/step/field/result_group 任一不存在（原本会抛 `NotFoundError`→404）时，改为返回结构一致的空响应——`u_per_vertex` 长度为 0、`legend_range=[0,0]`、`X-Result-Position: NONE`、并带 `X-Empty: 1`。这样前端把同一查询广播给所有 instance 时，缺该结果的 instance 只是不上色，而不会报错。注意：仍在处理中（`NotReadyError`→202）和参数非法（`ValidationError`→400）**不受影响**，照常返回原状态码。
 
 ### `GET /api/odb/{odb_id}/results/frame-scalar-range`
 
