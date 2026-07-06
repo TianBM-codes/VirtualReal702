@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FEM 后处理与模型修正平台 · 技术交付文档</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a2230; --muted:#5b6472; --line:#e2e6ec;
+    --blue:#2563eb; --blue-soft:#e8f0fe;
+    --l1:#0ea5a4; --l1s:#e0f5f4; --l2:#16a34a; --l2s:#e4f6ea;
+    --l3:#ea7a1e; --l3s:#fdeede; --fe:#7c3aed; --fes:#efe7fd;
+    --red:#dc2626; --reds:#fdeaea; --amber:#b45309;
+    --shadow:0 1px 3px rgba(20,30,50,.08),0 8px 24px rgba(20,30,50,.05);
+    --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0f141b; --card:#161d27; --ink:#e6eaf0; --muted:#9aa4b2; --line:#28313d;
+      --blue-soft:#16233b; --l1s:#0d2b2b; --l2s:#0f2a1a; --l3s:#2e1f10; --fes:#20182f; --reds:#2c1517;
+      --shadow:0 1px 3px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.35);}
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+    line-height:1.75;font-size:16px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 22px 80px}
+  header.cover{background:linear-gradient(135deg,#1e3a8a,#2563eb 55%,#0ea5a4);
+    color:#fff;padding:56px 22px 46px;margin-bottom:34px}
+  header.cover .inner{max-width:1000px;margin:0 auto}
+  header.cover .kicker{font-size:13px;letter-spacing:.22em;text-transform:uppercase;opacity:.85;margin:0 0 14px}
+  header.cover h1{font-size:34px;line-height:1.25;margin:0 0 18px;font-weight:800}
+  header.cover .meta{display:flex;flex-wrap:wrap;gap:10px 26px;font-size:14px;opacity:.94}
+  header.cover .meta b{font-weight:600}
+  header.cover .lead{margin-top:22px;padding:16px 20px;background:rgba(255,255,255,.13);
+    border-radius:12px;font-size:16px;border:1px solid rgba(255,255,255,.2)}
+  h2{font-size:26px;margin:52px 0 6px;padding-top:14px;font-weight:800;letter-spacing:.01em}
+  h2 .num{color:var(--blue);font-variant-numeric:tabular-nums}
+  h2+.sub{color:var(--muted);margin:0 0 20px;font-size:15px}
+  h3{font-size:20px;margin:34px 0 12px;font-weight:700}
+  h4{font-size:16px;margin:20px 0 8px;font-weight:700;color:var(--blue)}
+  p{margin:12px 0}
+  a{color:var(--blue);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{background:var(--blue-soft);color:inherit;padding:.1em .42em;border-radius:6px;
+    font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:.88em}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:24px 26px;margin:22px 0}
+  .fig{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:22px;margin:26px 0;overflow-x:auto}
+  .fig figcaption{color:var(--muted);font-size:13.5px;margin-top:12px;text-align:center}
+  .fig svg{display:block;margin:0 auto;max-width:100%;height:auto}
+  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:14.5px;
+    background:var(--card);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--blue-soft);font-weight:700;font-size:13.5px}
+  tr:last-child td{border-bottom:none}
+  .tbl-scroll{overflow-x:auto;margin:18px 0}
+  ul,ol{margin:12px 0;padding-left:22px}
+  li{margin:6px 0}
+  .pill{display:inline-block;font-size:12px;font-weight:700;padding:2px 10px;border-radius:999px;
+    letter-spacing:.03em;vertical-align:middle}
+  .p-l1{background:var(--l1s);color:var(--l1)} .p-l2{background:var(--l2s);color:var(--l2)}
+  .p-l3{background:var(--l3s);color:var(--l3)} .p-fe{background:var(--fes);color:var(--fe)}
+  .dims{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
+  .dim{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
+  .dim .h{font-size:12.5px;font-weight:800;letter-spacing:.04em;margin-bottom:6px;text-transform:uppercase}
+  .dim.d1 .h{color:var(--red)} .dim.d2 .h{color:var(--blue)} .dim.d3 .h{color:var(--l2)}
+  .dim.d4 .h{color:var(--l3)} .dim.d5 .h{color:var(--fe)}
+  .dim p{margin:0;font-size:14px;line-height:1.6}
+  .callout{border-left:4px solid var(--blue);background:var(--blue-soft);
+    padding:14px 18px;border-radius:0 12px 12px 0;margin:20px 0;font-size:14.5px}
+  .callout.warn{border-color:var(--amber);background:var(--l3s)}
+  .callout.danger{border-color:var(--red);background:var(--reds)}
+  .callout .t{font-weight:800;display:block;margin-bottom:4px}
+  .toc{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:20px 26px;margin:26px 0}
+  .toc h3{margin:0 0 12px;font-size:15px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
+  .toc ol{counter-reset:t;list-style:none;padding:0;margin:0;
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:6px 22px}
+  .toc li{counter-increment:t;margin:0}
+  .toc li a::before{content:counter(t) ". ";color:var(--blue);font-weight:700}
+  pre{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+    overflow-x:auto;font-size:13px;line-height:1.55;box-shadow:var(--shadow);
+    font-family:"SFMono-Regular",Consolas,monospace;color:var(--ink)}
+  .tree{white-space:pre;color:var(--muted)}
+  .divider{height:1px;background:var(--line);border:0;margin:44px 0}
+  footer{color:var(--muted);font-size:13px;text-align:center;margin-top:40px;line-height:1.7}
+  /* svg helpers */
+  .svgbox{font-family:inherit}
+  text{font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  @media print{
+    header.cover{background:#2563eb !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .card,.fig,table,pre{box-shadow:none}
+    h2{page-break-after:avoid}
+    .fig,.card{page-break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <div class="inner">
+    <p class="kicker">Technical Delivery Document</p>
+    <h1>通用 FEM 后处理与模型修正平台<br>技术交付文档 · 图文版</h1>
+    <div class="meta">
+      <span><b>版本</b> 1.0</span>
+      <span><b>日期</b> 2026-07-06</span>
+      <span><b>性质</b> 项目交付 · 技术架构与关键技术</span>
+      <span><b>读者</b> 项目评审 · 甲方技术负责人（主）／接手开发者（次）</span>
+    </div>
+    <div class="lead">
+      一句话主线：<b>把不同求解器（Abaqus / Nastran）产出的模型文件，从上传、解析、预处理，
+      一路送到浏览器里做三维云图交互；并在此之上用物理试验数据反过来校准仿真模型。</b>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="toc">
+    <h3>目录</h3>
+    <ol>
+      <li><a href="#s1">平台全景：一个平台，两条主线</a></li>
+      <li><a href="#s2">主线一 · 端到端可视化管线</a></li>
+      <li><a href="#s3">核心技术难点专题</a></li>
+      <li><a href="#s4">主线二 · 模型修正闭环</a></li>
+      <li><a href="#s5">程序组织结构</a></li>
+      <li><a href="#s6">最终达成的效果</a></li>
+      <li><a href="#s7">附录 · 文档地图</a></li>
+    </ol>
+  </div>
+
+  <!-- ============ 1 ============ -->
+  <h2 id="s1"><span class="num">一、</span>平台全景：一个平台，两条主线</h2>
+  <p class="sub">传统 FEM 后处理有三道墙：许可证墙、格式墙、规模墙。本平台把仿真结果发布成一个网页服务来打穿它们。</p>
+
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>痛点</th><th>具体表现</th><th>本平台的破解</th></tr>
+    <tr><td><b>许可证墙</b></td><td>后处理软件按席位收费，设计师/项目经理/甲方看不了结果</td><td>发布成网页，浏览器直接看，免 license</td></tr>
+    <tr><td><b>格式墙</b></td><td>Abaqus（INP/ODB）与 Nastran（BDF/OP2）互不兼容，多工况对比要手工转换</td><td>上游 L1 统一归一化，四种格式一套管道</td></tr>
+    <tr><td><b>规模墙</b></td><td>桌面客户端全量加载，千万节点内存爆、单帧几十秒</td><td>离线预处理 + 二进制协议 + GPU 渲染</td></tr>
+  </table>
+  </div>
+
+  <p>平台是<b>一个 FastAPI 进程</b>（<code>app.py</code>），内部并行跑两条主线，仅在"把修正量写回当成一个结果场"这一处耦合。</p>
+
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 920 380" role="img" aria-label="平台全景图">
+      <!-- inputs -->
+      <rect x="20" y="40" width="150" height="300" rx="12" fill="var(--blue-soft)" stroke="var(--line)"/>
+      <text x="95" y="66" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)">多格式模型文件</text>
+      <g font-size="12" fill="var(--ink)">
+        <rect x="36" y="82" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--l1)"/>
+        <text x="95" y="103" text-anchor="middle">Abaqus INP/ODB</text>
+        <rect x="36" y="124" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--l1)"/>
+        <text x="95" y="145" text-anchor="middle">Nastran BDF/OP2</text>
+        <rect x="36" y="166" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--fe)"/>
+        <text x="95" y="187" text-anchor="middle">试验 UNV 模态</text>
+        <rect x="36" y="208" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--fe)"/>
+        <text x="95" y="229" text-anchor="middle">Ansys CDB/RST</text>
+      </g>
+      <!-- process -->
+      <rect x="230" y="30" width="430" height="320" rx="14" fill="none" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5 4"/>
+      <text x="445" y="24" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--blue)">FastAPI 单进程 · app.py</text>
+      <!-- lane 1 -->
+      <rect x="250" y="52" width="390" height="120" rx="11" fill="var(--l3s)" stroke="var(--l3)"/>
+      <text x="266" y="76" font-size="14" font-weight="800" fill="var(--l3)">主线一 · ODB 可视化服务</text>
+      <text x="266" y="99" font-size="12.5" fill="var(--ink)">L1 提取 → L2 预处理 → L3 服务</text>
+      <text x="266" y="119" font-size="12.5" fill="var(--muted)">把大规模 FEM 数据推给浏览器渲染</text>
+      <g font-size="11" fill="#fff">
+        <rect x="266" y="132" width="66" height="26" rx="6" fill="var(--l1)"/><text x="299" y="149" text-anchor="middle">L1 提取</text>
+        <rect x="342" y="132" width="72" height="26" rx="6" fill="var(--l2)"/><text x="378" y="149" text-anchor="middle">L2 预处理</text>
+        <rect x="424" y="132" width="66" height="26" rx="6" fill="var(--l3)"/><text x="457" y="149" text-anchor="middle">L3 服务</text>
+      </g>
+      <!-- lane 2 -->
+      <rect x="250" y="210" width="390" height="120" rx="11" fill="var(--fes)" stroke="var(--fe)"/>
+      <text x="266" y="234" font-size="14" font-weight="800" fill="var(--fe)">主线二 · 模型修正服务</text>
+      <text x="266" y="257" font-size="12.5" fill="var(--ink)">试验-仿真对比 → 灵敏度 → 贝叶斯迭代</text>
+      <text x="266" y="277" font-size="12.5" fill="var(--muted)">反过来校准仿真模型参数</text>
+      <g font-size="11" fill="#fff">
+        <rect x="266" y="290" width="60" height="26" rx="6" fill="var(--fe)"/><text x="296" y="307" text-anchor="middle">匹配</text>
+        <rect x="336" y="290" width="72" height="26" rx="6" fill="var(--fe)"/><text x="372" y="307" text-anchor="middle">灵敏度</text>
+        <rect x="418" y="290" width="72" height="26" rx="6" fill="var(--fe)"/><text x="454" y="307" text-anchor="middle">贝叶斯</text>
+      </g>
+      <!-- coupling -->
+      <line x1="540" y1="172" x2="540" y2="210" stroke="var(--blue)" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+      <text x="548" y="195" font-size="10.5" fill="var(--blue)">修正量回写</text>
+      <!-- outputs -->
+      <rect x="720" y="52" width="180" height="118" rx="11" fill="var(--l3s)" stroke="var(--l3)"/>
+      <text x="810" y="105" text-anchor="middle" font-size="13.5" font-weight="700" fill="var(--ink)">🖥️ 浏览器 Three.js</text>
+      <text x="810" y="127" text-anchor="middle" font-size="12" fill="var(--muted)">三维云图交互</text>
+      <rect x="720" y="212" width="180" height="118" rx="11" fill="var(--fes)" stroke="var(--fe)"/>
+      <text x="810" y="265" text-anchor="middle" font-size="13.5" font-weight="700" fill="var(--ink)">🗄️ MySQL</text>
+      <text x="810" y="287" text-anchor="middle" font-size="12" fill="var(--muted)">修正结果追溯</text>
+      <!-- arrows in/out -->
+      <line x1="170" y1="110" x2="248" y2="110" stroke="var(--muted)" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="170" y1="225" x2="248" y2="268" stroke="var(--muted)" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="640" y1="110" x2="718" y2="110" stroke="var(--muted)" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="640" y1="270" x2="718" y2="270" stroke="var(--muted)" stroke-width="1.6" marker-end="url(#ar)"/>
+      <defs>
+        <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L7,3 L0,6 Z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+    </svg>
+    <figcaption>图 1 · 平台全景：一个 FastAPI 进程内的两条主线，唯一耦合点是"修正量写回可视化"</figcaption>
+  </figure>
+
+  <div class="callout"><span class="t">两条主线的唯一耦合点</span>
+    主线二算出的"每个部件被改了多少"，会作为一个新的结果场写回主线一——评审因此可以像看应力云图一样，
+    <b>在浏览器里直接看到这次修正动了模型的哪些地方</b>。</div>
+
+  <!-- ============ 2 ============ -->
+  <h2 id="s2"><span class="num">二、</span>主线一 · 端到端可视化管线</h2>
+  <p class="sub">上传 → 解析 → 预处理 → 服务 → 渲染。一条单向、分层、无反向依赖的流水线，数据每过一层就换一次"形态"。</p>
+
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 940 210" role="img" aria-label="端到端数据格式转换图">
+      <defs>
+        <marker id="ar2" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L7,3 L0,6 Z" fill="var(--blue)"/>
+        </marker>
+      </defs>
+      <!-- 7 stages -->
+      <g font-size="11.5">
+        <rect x="12"  y="70" width="106" height="70" rx="10" fill="var(--l1s)" stroke="var(--l1)"/>
+        <text x="65"  y="98" text-anchor="middle" font-weight="700">.odb/.inp</text>
+        <text x="65"  y="114" text-anchor="middle" font-weight="700">.bdf/.op2</text>
+        <text x="65"  y="130" text-anchor="middle" fill="var(--muted)" font-size="10">求解器专有</text>
+
+        <rect x="148" y="70" width="100" height="70" rx="10" fill="var(--card)" stroke="var(--l1)"/>
+        <text x="198" y="100" text-anchor="middle" font-weight="700">.npy</text>
+        <text x="198" y="118" text-anchor="middle" fill="var(--muted)" font-size="10">L1 内部中转</text>
+
+        <rect x="278" y="70" width="112" height="70" rx="10" fill="var(--l1s)" stroke="var(--l1)"/>
+        <text x="334" y="96" text-anchor="middle" font-weight="700">l1/*.h5</text>
+        <text x="334" y="112" text-anchor="middle" font-weight="700">+ manifest.db</text>
+        <text x="334" y="128" text-anchor="middle" fill="var(--muted)" font-size="10">忠实转储</text>
+
+        <rect x="420" y="70" width="100" height="70" rx="10" fill="var(--l2s)" stroke="var(--l2)"/>
+        <text x="470" y="96" text-anchor="middle" font-weight="700">l2/*.h5</text>
+        <text x="470" y="114" text-anchor="middle" fill="var(--muted)" font-size="10">渲染缓冲</text>
+        <text x="470" y="128" text-anchor="middle" fill="var(--muted)" font-size="10">+八叉树</text>
+
+        <rect x="550" y="70" width="104" height="70" rx="10" fill="var(--l3s)" stroke="var(--l3)"/>
+        <text x="602" y="96" text-anchor="middle" font-weight="700">内存索引</text>
+        <text x="602" y="114" text-anchor="middle" fill="var(--muted)" font-size="10">ModelIndex</text>
+        <text x="602" y="128" text-anchor="middle" fill="var(--muted)" font-size="10">pre-fork 加载</text>
+
+        <rect x="684" y="70" width="104" height="70" rx="10" fill="var(--l3s)" stroke="var(--l3)"/>
+        <text x="736" y="100" text-anchor="middle" font-weight="700">L3BE 二进制</text>
+        <text x="736" y="118" text-anchor="middle" fill="var(--muted)" font-size="10">HTTP 响应</text>
+
+        <rect x="818" y="70" width="110" height="70" rx="10" fill="var(--fes)" stroke="var(--fe)"/>
+        <text x="873" y="96" text-anchor="middle" font-weight="700">TypedArray</text>
+        <text x="873" y="114" text-anchor="middle" font-weight="700">→ GPU</text>
+        <text x="873" y="130" text-anchor="middle" fill="var(--muted)" font-size="10">Three.js 渲染</text>
+      </g>
+      <!-- arrows with labels -->
+      <g stroke="var(--blue)" stroke-width="1.6" fill="none">
+        <line x1="118" y1="105" x2="146" y2="105" marker-end="url(#ar2)"/>
+        <line x1="248" y1="105" x2="276" y2="105" marker-end="url(#ar2)"/>
+        <line x1="390" y1="105" x2="418" y2="105" marker-end="url(#ar2)"/>
+        <line x1="520" y1="105" x2="548" y2="105" marker-end="url(#ar2)"/>
+        <line x1="654" y1="105" x2="682" y2="105" marker-end="url(#ar2)"/>
+        <line x1="788" y1="105" x2="816" y2="105" marker-end="url(#ar2)"/>
+      </g>
+      <g font-size="9.5" fill="var(--blue)" text-anchor="middle">
+        <text x="132" y="60">①解析</text>
+        <text x="262" y="60">②打包</text>
+        <text x="404" y="60">③预处理</text>
+        <text x="534" y="60">④装载</text>
+        <text x="668" y="60">⑤切片</text>
+        <text x="802" y="60">⑥HTTP</text>
+      </g>
+      <text x="65" y="165" text-anchor="middle" font-size="10" fill="var(--red)">ODB 阶段需 license</text>
+      <text x="470" y="165" text-anchor="middle" font-size="10" fill="var(--l2)">纯 numpy · 一次性离线</text>
+      <text x="736" y="165" text-anchor="middle" font-size="10" fill="var(--l3)">持续运行 · 按需</text>
+    </svg>
+    <figcaption>图 2 · 端到端格式转换：数据从求解器专有格式，一路"变形"到 GPU 显存里的顶点缓冲</figcaption>
+  </figure>
+
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 780 340" role="img" aria-label="三层流水线架构图">
+      <defs>
+        <marker id="ar3" markerWidth="11" markerHeight="11" refX="7" refY="3.2" orient="auto">
+          <path d="M0,0 L8,3.2 L0,6.4 Z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <!-- L1 -->
+      <rect x="30" y="16" width="720" height="70" rx="12" fill="var(--l1s)" stroke="var(--l1)"/>
+      <text x="46" y="40" font-size="14" font-weight="800" fill="var(--l1)">L1 · 格式适配与忠实提取</text>
+      <text x="46" y="62" font-size="12" fill="var(--ink)">INP→inp_pack ｜ ODB→abaqus_dump(Py2.7)+l1_pack ｜ BDF→bdf_pack ｜ OP2→op2_pack</text>
+      <text x="46" y="79" font-size="11.5" fill="var(--muted)">📦 统一输出 HDF5 + manifest.db</text>
+      <text x="700" y="34" font-size="10.5" text-anchor="end" fill="var(--red)">一次性 · ODB需license</text>
+      <!-- L2 -->
+      <rect x="30" y="104" width="720" height="64" rx="12" fill="var(--l2s)" stroke="var(--l2)"/>
+      <text x="46" y="128" font-size="14" font-weight="800" fill="var(--l2)">L2 · 离线预处理</text>
+      <text x="46" y="150" font-size="12" fill="var(--ink)">全局坐标 → 表面提取 → 三角化 → 索引几何 → 特征边 → 八叉树 → 均化域</text>
+      <text x="700" y="122" font-size="10.5" text-anchor="end" fill="var(--l2)">一次性 · 无license · 纯numpy</text>
+      <!-- L3 -->
+      <rect x="30" y="186" width="720" height="64" rx="12" fill="var(--l3s)" stroke="var(--l3)"/>
+      <text x="46" y="210" font-size="14" font-weight="800" fill="var(--l3)">L3 · 按需数据服务</text>
+      <text x="46" y="232" font-size="12" fill="var(--ink)">内存索引预加载(CoW共享) + 注册表热加载 ｜ HTTP API + L3BE 二进制协议</text>
+      <text x="700" y="204" font-size="10.5" text-anchor="end" fill="var(--l3)">持续运行 · Gunicorn多进程</text>
+      <!-- FE -->
+      <rect x="30" y="268" width="720" height="60" rx="12" fill="var(--fes)" stroke="var(--fe)"/>
+      <text x="46" y="292" font-size="14" font-weight="800" fill="var(--fe)">前端查看器</text>
+      <text x="46" y="313" font-size="12" fill="var(--ink)">WebGL 渲染 · BVH 拾取 · 着色器动画 · 云图/变形/截面/探针/图例</text>
+      <text x="700" y="286" font-size="10.5" text-anchor="end" fill="var(--fe)">浏览器 · Vue3+Three.js</text>
+      <!-- arrows -->
+      <line x1="390" y1="86" x2="390" y2="104" stroke="var(--muted)" stroke-width="1.8" marker-end="url(#ar3)"/>
+      <line x1="390" y1="168" x2="390" y2="186" stroke="var(--muted)" stroke-width="1.8" marker-end="url(#ar3)"/>
+      <line x1="390" y1="250" x2="390" y2="268" stroke="var(--muted)" stroke-width="1.8" marker-end="url(#ar3)"/>
+    </svg>
+    <figcaption>图 3 · 三层流水线 + 前端：职责单一，数据单向流动，运行时无反向依赖</figcaption>
+  </figure>
+
+  <p>下面把这条链路拆成四个环节，每个环节都从五个维度讲：
+    <span class="pill p-fe">难点</span>
+    <span class="pill p-l1">思路</span>
+    <span class="pill p-l2">实现</span>
+    <span class="pill p-l3">结构</span>
+    <span class="pill" style="background:var(--blue-soft);color:var(--blue)">效果</span>。</p>
+
+  <h3>2.1 环节一：多格式上传与忠实提取 <span class="pill p-l1">L1</span></h3>
+  <div class="dims">
+    <div class="dim d1"><div class="h">难点</div><p>Abaqus 与 Nastran 是两套"方言"（单元命名/坐标系/结果组织都不同）；ODB 是私有二进制，只能用受限的 Abaqus Python 2.7 读，还装不了 h5py、占 license。</p></div>
+    <div class="dim d2"><div class="h">思路</div><p>在最上游就把格式差异"焊死"成同一套内部表示（HDF5 + manifest.db 路由）。新增格式只加一个 L1 适配器，其他层零改动。ODB 用两阶段拆分隔离 license。</p></div>
+    <div class="dim d3"><div class="h">实现</div><p>受限环境只"读"（导出 .npy），标准环境只"写"（打包 HDF5），中间用临时文件交接。忠实原则：只搬运不加工，保留全部原始精度。</p></div>
+    <div class="dim d4"><div class="h">结构</div><p><code>src/l1/</code>：abaqus_dump / l1_pack / inp_pack / bdf_pack / op2_pack / cdb_pack / rst_pack；manifest_schema 定义路由表。</p></div>
+    <div class="dim d5"><div class="h">效果</div><p>四格式四工作流统一接入；几何与结果解耦，可多工况追加；license 严格隔离在提取阶段。</p></div>
+  </div>
+  <div class="callout"><span class="t">manifest.db —— 路由中枢</span>
+    L3 运行时<b>从不扫描文件系统</b>，任何"这个字段在哪个文件的哪个路径"都是一次 SQLite 查询。这也是"新增格式零改动其他层"的技术基础。</div>
+
+  <h3>2.2 环节二：预处理与渲染缓冲预构建 <span class="pill p-l2">L2</span></h3>
+  <div class="dims">
+    <div class="dim d1"><div class="h">难点</div><p>L1 存的是含大量内部面的完整体网格，GPU 只认三角面；千万单元逐面判断内外，Python 循环要跑几小时；还要算特征边否则模型没棱角。</p></div>
+    <div class="dim d2"><div class="h">思路</div><p>把计算密集的活儿一次性搬到离线阶段，NumPy 全程向量化，算好的缓冲存 HDF5，L3 只读不算——"计算"与"服务"彻底分家。</p></div>
+    <div class="dim d3"><div class="h">实现</div><p>面哈希去重（出现1次=表面，2次=内部面丢弃）；向量化三角化；索引几何；特征边；八叉树；并查集划分均化域。</p></div>
+    <div class="dim d4"><div class="h">结构</div><p><code>src/l2/ingest.py</code> 一个文件跑完整条 L2（约1600行），输出 surface.h5 / render.h5 并回填 manifest.db。</p></div>
+    <div class="dim d5"><div class="h">效果</div><p>百万单元分钟级完成；云图切换只重传颜色；特殊单元一并提取不再"看不见"。</p></div>
+  </div>
+
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 900 190" role="img" aria-label="表面提取哈希去重流程">
+      <defs>
+        <marker id="ar4" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--l2)"/></marker>
+        <marker id="ar4r" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--red)"/></marker>
+      </defs>
+      <g font-size="11.5">
+        <rect x="14" y="66" width="118" height="58" rx="9" fill="var(--l1s)" stroke="var(--l1)"/>
+        <text x="73" y="90" text-anchor="middle" font-weight="700">体网格</text>
+        <text x="73" y="107" text-anchor="middle" fill="var(--muted)" font-size="10">所有单元的所有面</text>
+
+        <rect x="176" y="66" width="130" height="58" rx="9" fill="var(--card)" stroke="var(--l2)"/>
+        <text x="241" y="88" text-anchor="middle" font-weight="700">面哈希表</text>
+        <text x="241" y="106" text-anchor="middle" fill="var(--muted)" font-size="10">节点排序作键</text>
+
+        <path d="M360 95 l40 -28 l40 28 l-40 28 Z" fill="var(--l3s)" stroke="var(--l3)"/>
+        <text x="400" y="92" text-anchor="middle" font-size="10.5" font-weight="700">出现几次?</text>
+        <text x="400" y="106" text-anchor="middle" font-size="9.5" fill="var(--muted)">np.unique</text>
+
+        <rect x="500" y="24" width="150" height="44" rx="9" fill="var(--l2s)" stroke="var(--l2)"/>
+        <text x="575" y="42" text-anchor="middle" font-weight="700" fill="var(--l2)">✅ 1次 = 外表面</text>
+        <text x="575" y="59" text-anchor="middle" font-size="10" fill="var(--muted)">保留</text>
+
+        <rect x="500" y="118" width="150" height="44" rx="9" fill="var(--reds)" stroke="var(--red)"/>
+        <text x="575" y="136" text-anchor="middle" font-weight="700" fill="var(--red)">❌ 2次 = 内部面</text>
+        <text x="575" y="153" text-anchor="middle" font-size="10" fill="var(--muted)">两单元共享，丢弃</text>
+
+        <rect x="694" y="24" width="192" height="44" rx="9" fill="var(--card)" stroke="var(--l2)"/>
+        <text x="790" y="42" text-anchor="middle" font-weight="700">三角化 → 索引几何</text>
+        <text x="790" y="59" text-anchor="middle" font-size="10" fill="var(--muted)">四边形沿对角线劈2三角</text>
+
+        <rect x="694" y="82" width="192" height="46" rx="9" fill="var(--card)" stroke="var(--l3)"/>
+        <text x="790" y="101" text-anchor="middle" font-weight="700">特征边 + 八叉树</text>
+        <text x="790" y="118" text-anchor="middle" font-size="10" fill="var(--muted)">边界边 / 折角≥30° / 空间索引</text>
+      </g>
+      <g fill="none" stroke-width="1.6">
+        <line x1="132" y1="95" x2="174" y2="95" stroke="var(--l2)" marker-end="url(#ar4)"/>
+        <line x1="306" y1="95" x2="358" y2="95" stroke="var(--l2)" marker-end="url(#ar4)"/>
+        <line x1="440" y1="80" x2="498" y2="50" stroke="var(--l2)" marker-end="url(#ar4)"/>
+        <line x1="440" y1="110" x2="498" y2="138" stroke="var(--red)" marker-end="url(#ar4r)"/>
+        <line x1="650" y1="46" x2="692" y2="46" stroke="var(--l2)" marker-end="url(#ar4)"/>
+        <line x1="650" y1="46" x2="692" y2="100" stroke="var(--l2)" marker-end="url(#ar4)"/>
+      </g>
+    </svg>
+    <figcaption>图 4 · 表面提取的核心技巧：纯向量化哈希去重，O(F log F) 完成千万面的内外判断</figcaption>
+  </figure>
+
+  <div class="callout warn"><span class="t">设计演进 · Triangle Soup → 索引几何</span>
+    最初设计每个三角形三顶点完全独立（Triangle Soup），实测内存太大，改为<b>同一单元面内共享顶点</b>的索引几何，
+    内存降到 1/3~1/2，同时保留跨单元面的"硬边"效果。<b>均化域</b>子系统用并查集分组，决定平滑着色"平滑得对不对"。</div>
+
+  <h3>2.3 环节三：按需数据服务 <span class="pill p-l3">L3</span></h3>
+  <div class="dims">
+    <div class="dim d1"><div class="h">难点</div><p>多 worker 每个各存 2GB 索引就是 8GB；大数组用 JSON 传体积膨胀 33%；HDF5/SQLite 单写多读，算与读的进程要并行不打架。</p></div>
+    <div class="dim d2"><div class="h">思路</div><p>内存靠 fork+写时复制共享；传输靠自研二进制协议 L3BE；并发靠读写分离——写活儿全交给独立后台 job_runner，靠状态机同步。</p></div>
+    <div class="dim d3"><div class="h">实现</div><p>label→行号用排序数组+searchsorted（不用 dict，能被多进程真共享）；L3BE 一个响应装多段异构数组；抢占任务用一条原子 SQL。</p></div>
+    <div class="dim d4"><div class="h">结构</div><p><code>src/l3/</code>：api/routes（15文件~70端点）· services（>1万行）· infra（DB+l3be+runner）· core（config/state/errors）。</p></div>
+    <div class="dim d5"><div class="h">效果</div><p>4 worker 内存≈单 worker（2GB）；千万顶点端到端<2秒；新项目10秒内热加载不重启。</p></div>
+  </div>
+
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 760 240" role="img" aria-label="fork+CoW内存共享图">
+      <defs><marker id="ar5" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--l3)"/></marker></defs>
+      <rect x="250" y="14" width="260" height="60" rx="11" fill="var(--l3s)" stroke="var(--l3)"/>
+      <text x="380" y="37" text-anchor="middle" font-size="13" font-weight="800" fill="var(--l3)">主进程 · pre-fork 阶段</text>
+      <text x="380" y="57" text-anchor="middle" font-size="11" fill="var(--ink)">_bootstrap_registry() 把索引装进内存</text>
+      <g font-size="12" font-weight="700">
+        <rect x="40"  y="118" width="140" height="42" rx="9" fill="var(--card)" stroke="var(--l3)"/><text x="110" y="144" text-anchor="middle">Worker 1</text>
+        <rect x="235" y="118" width="140" height="42" rx="9" fill="var(--card)" stroke="var(--l3)"/><text x="305" y="144" text-anchor="middle">Worker 2</text>
+        <rect x="430" y="118" width="140" height="42" rx="9" fill="var(--card)" stroke="var(--l3)"/><text x="500" y="144" text-anchor="middle">Worker 3</text>
+        <rect x="600" y="118" width="130" height="42" rx="9" fill="var(--card)" stroke="var(--l3)"/><text x="665" y="144" text-anchor="middle">Worker 4</text>
+      </g>
+      <g stroke="var(--l3)" stroke-width="1.6" fill="none">
+        <line x1="330" y1="74" x2="120" y2="116" marker-end="url(#ar5)"/>
+        <line x1="360" y1="74" x2="305" y2="116" marker-end="url(#ar5)"/>
+        <line x1="400" y1="74" x2="500" y2="116" marker-end="url(#ar5)"/>
+        <line x1="430" y1="74" x2="655" y2="116" marker-end="url(#ar5)"/>
+      </g>
+      <text x="380" y="92" text-anchor="middle" font-size="11" fill="var(--muted)">fork()</text>
+      <rect x="215" y="192" width="330" height="42" rx="11" fill="var(--l2s)" stroke="var(--l2)"/>
+      <text x="380" y="212" text-anchor="middle" font-size="13" font-weight="800" fill="var(--l2)">共享同一份物理内存 ≈ 2 GB</text>
+      <text x="380" y="228" text-anchor="middle" font-size="10.5" fill="var(--muted)">只读访问不触发页面复制 (Copy-on-Write)</text>
+      <g stroke="var(--l2)" stroke-width="1.4" stroke-dasharray="4 3" fill="none">
+        <line x1="110" y1="160" x2="250" y2="192"/><line x1="305" y1="160" x2="340" y2="192"/>
+        <line x1="500" y1="160" x2="420" y2="192"/><line x1="665" y1="160" x2="510" y2="192"/>
+      </g>
+    </svg>
+    <figcaption>图 5 · fork + 写时复制：4 个 worker 共享同一份只读索引，内存开销与单 worker 相当</figcaption>
+  </figure>
+
+  <h3>2.4 环节四：浏览器 GPU 可视化 <span class="pill p-fe">前端</span></h3>
+  <div class="dims">
+    <div class="dim d1"><div class="h">难点</div><p>在浏览器（CPU 很弱）里对千万三角面做到拾取毫秒响应、振型60fps动画、云图/变形/截面实时交互。</p></div>
+    <div class="dim d2"><div class="h">思路</div><p>能交给 GPU 的绝不让 CPU 算：几何永驻显存；云图只更新颜色；动画在着色器里算；拾取用 BVH 把 O(N) 降到 O(log N)。</p></div>
+    <div class="dim d3"><div class="h">实现</div><p>模态动画 d(t)=Re·cos(ωt)+Im·sin(ωt) 写进顶点着色器，CPU 每帧只更新一个时间变量；拾取命中后服务端 O(1) 反查读 L1 精确原始值。</p></div>
+    <div class="dim d4"><div class="h">结构</div><p><code>viewer/</code>（Vue3+Three.js+Pinia+Vite）：ThreeViewport 统管场景对象 + 各功能卡片。</p></div>
+    <div class="dim d5"><div class="h">效果</div><p>拾取<100ms；动画60fps与规模无关；云图切换<500ms；免安装免license。</p></div>
+  </div>
+  <div class="callout"><span class="t">后端优先原则</span>前端实际嵌入在第三方项目里、发布成本高，因此平台设计原则是<b>优先在后端消化问题、尽量不改前端</b>。</div>
+
+  <!-- ============ 3 ============ -->
+  <h2 id="s3"><span class="num">三、</span>核心技术难点专题</h2>
+  <p class="sub">第 2 章讲"正常流程"，这一章讲真正的硬骨头——那些"不报错、但结果悄悄错了"的坑，最能体现工程功力。</p>
+
+  <h3>3.1 应力云图数值口径与商业软件严格对齐 <span class="pill" style="background:var(--reds);color:var(--red)">最难</span></h3>
+  <p>云图上的"应力值"不是仿真直接吐的数字，而是从单元内部"积分点"的原始张量，经过外推、算 Mises/主应力/不变量、正负号处理算出来的。Abaqus 这套口径是不公开的"潜规则"，<b>任何一步差一点，云图就偏离 3%~5%，而且不报错</b>——只能靠对照脚本逐值比对揪出来。真实踩过的坑：</p>
+  <ul>
+    <li>Mises 是非线性量，"先在积分点算 Mises 再外推" ≠ "先外推张量再算"，前者会算出物理上不可能的<b>负 Mises</b>；</li>
+    <li>第三不变量 INV3 漏了系数与开方；"Abs 变体"应取"绝对值更大的主应力但<b>保留符号</b>"；</li>
+    <li>应变剪切分量是工程剪应变 γ=2ε，算不变量前要 ÷2 还原，且应变不该算 Mises；</li>
+    <li>官方分量名 <code>MAX_INPLANE_PRINCIPAL</code>（无下划线）被误写成有下划线，导致面内不变量<b>从没生成过</b>。</li>
+  </ul>
+
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 820 240" role="img" aria-label="混合solid-shell交集并集陷阱">
+      <defs><marker id="ar6" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--muted)"/></marker></defs>
+      <rect x="20" y="90" width="180" height="66" rx="10" fill="var(--l1s)" stroke="var(--l1)"/>
+      <text x="110" y="112" text-anchor="middle" font-size="12.5" font-weight="700">混合模型</text>
+      <text x="110" y="130" text-anchor="middle" font-size="10.5" fill="var(--muted)">实体(6分量)+壳(4分量,</text>
+      <text x="110" y="145" text-anchor="middle" font-size="10.5" fill="var(--muted)">多面内/面外主应力)</text>
+      <path d="M250 123 l44 -30 l44 30 l-44 30 Z" fill="var(--l3s)" stroke="var(--l3)"/>
+      <text x="294" y="120" text-anchor="middle" font-size="10.5" font-weight="700">API 返回?</text>
+      <rect x="392" y="20" width="220" height="56" rx="10" fill="var(--reds)" stroke="var(--red)"/>
+      <text x="502" y="42" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--red)">❌ 取交集</text>
+      <text x="502" y="60" text-anchor="middle" font-size="10.5" fill="var(--muted)">静默丢掉壳独有面内/面外不变量</text>
+      <rect x="392" y="90" width="220" height="56" rx="10" fill="var(--reds)" stroke="var(--red)"/>
+      <text x="502" y="112" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--red)">❌ 若取并集</text>
+      <text x="502" y="130" text-anchor="middle" font-size="10.5" fill="var(--muted)">纯壳实例选到实体分量→全NaN崩溃</text>
+      <rect x="392" y="162" width="410" height="62" rx="10" fill="var(--l2s)" stroke="var(--l2)"/>
+      <text x="597" y="184" text-anchor="middle" font-size="12" font-weight="800" fill="var(--l2)">✅ 项目方案：解耦</text>
+      <text x="597" y="202" text-anchor="middle" font-size="10.5" fill="var(--ink)">主动探测壳块→交集漏的补回，实体块显式写 NaN</text>
+      <text x="597" y="217" text-anchor="middle" font-size="10.5" fill="var(--muted)">前端渲染成灰色而非报错</text>
+      <g stroke="var(--muted)" stroke-width="1.5" fill="none">
+        <line x1="200" y1="123" x2="248" y2="123" marker-end="url(#ar6)"/>
+        <line x1="338" y1="110" x2="390" y2="52" marker-end="url(#ar6)"/>
+        <line x1="338" y1="123" x2="390" y2="118" marker-end="url(#ar6)"/>
+        <line x1="502" y1="146" x2="502" y2="160" marker-end="url(#ar6)"/>
+      </g>
+    </svg>
+    <figcaption>图 6 · 混合 solid-shell 的"交集 vs 并集"陷阱——通用原则：并集要置灰，交集要补回</figcaption>
+  </figure>
+  <p>所有公式集中在 <code>src/l1/abaqus_dump.py::_compute_invariants_numpy</code>，配 <code>docs/l1/不变量计算公式表.md</code> 做公式台账逐条记录修正历史，并有回归测试固化。</p>
+
+  <h3>3.2 大规模数据渲染：内存 / 传输 / 空间索引三件套</h3>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>维度</th><th>最初设计</th><th>实际实现</th><th>为什么改</th></tr>
+    <tr><td>几何格式</td><td>Triangle Soup（全展开无索引）</td><td><b>索引几何</b>（单元面内共享顶点）</td><td>内存降到 1/3~1/2，硬边照样保留</td></tr>
+    <tr><td>内存</td><td>—</td><td><b>fork+CoW 共享</b>（searchsorted 数组，不用 dict）</td><td>4 worker 内存 ≈ 1 worker</td></tr>
+    <tr><td>传输</td><td>—</td><td><b>L3BE 二进制协议</b> + GZip</td><td>避开 JSON 的 33% 膨胀与序列化开销</td></tr>
+  </table>
+  </div>
+
+  <h3>3.3 表面提取与高阶单元线性化</h3>
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 760 150" role="img" aria-label="高阶单元中节点细分对比">
+      <defs><marker id="ar7" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--muted)"/></marker></defs>
+      <rect x="18" y="46" width="170" height="58" rx="10" fill="var(--l1s)" stroke="var(--l1)"/>
+      <text x="103" y="70" text-anchor="middle" font-size="12" font-weight="700">高阶单元表面</text>
+      <text x="103" y="88" text-anchor="middle" font-size="10.5" fill="var(--muted)">角节点+边中节点</text>
+      <rect x="300" y="10" width="230" height="56" rx="10" fill="var(--reds)" stroke="var(--red)"/>
+      <text x="415" y="32" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--red)">❌ 只连角节点</text>
+      <text x="415" y="50" text-anchor="middle" font-size="10.5" fill="var(--muted)">边中节点峰值被抹平 → 偏低3~4%</text>
+      <rect x="300" y="84" width="230" height="56" rx="10" fill="var(--l2s)" stroke="var(--l2)"/>
+      <text x="415" y="106" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--l2)">✅ 方案A2：中节点细分</text>
+      <text x="415" y="124" text-anchor="middle" font-size="10.5" fill="var(--muted)">6节点面→4子三角，8节点面→6子三角</text>
+      <rect x="588" y="84" width="160" height="56" rx="10" fill="var(--card)" stroke="var(--l2)"/>
+      <text x="668" y="112" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--l2)">峰值对齐 Abaqus</text>
+      <text x="668" y="129" text-anchor="middle" font-size="10" fill="var(--muted)">8032 → 对齐 8324</text>
+      <g stroke="var(--muted)" stroke-width="1.5" fill="none">
+        <line x1="188" y1="66" x2="298" y2="38" marker-end="url(#ar7)"/>
+        <line x1="188" y1="84" x2="298" y2="112" marker-end="url(#ar7)"/>
+        <line x1="530" y1="112" x2="586" y2="112" marker-end="url(#ar7)"/>
+      </g>
+    </svg>
+    <figcaption>图 7 · 高阶单元中节点细分——与 3.1 同源：不报错，但云图峰值系统性偏低 3~4%</figcaption>
+  </figure>
+
+  <h3>3.4 自研 Abaqus INP 解析器</h3>
+  <p>pyNastran 只认 Nastran；市面上没有输出能跟 ODB 提取严格对齐的开源 INP 解析库；而模型修正要在<b>不启动 license</b> 下解析/改写 INP。INP 陷阱不少：大小写不敏感、行尾逗号续行、<code>*INCLUDE</code> 递归防死循环、同名 Set 取并集、<code>*Coupling</code> 约束根本不是单元、要靠子块定性再"凭空"展开成几何线段。解法是四层职责严格分离：</p>
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 840 110" role="img" aria-label="INP解析器四层流水线">
+      <defs><marker id="ar8" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--fe)"/></marker></defs>
+      <g font-size="11.5">
+        <rect x="14" y="34" width="90" height="46" rx="9" fill="var(--card)" stroke="var(--muted)"/>
+        <text x="59" y="61" text-anchor="middle" font-weight="700">.inp 文本</text>
+        <rect x="150" y="26" width="150" height="62" rx="9" fill="var(--fes)" stroke="var(--fe)"/>
+        <text x="225" y="46" text-anchor="middle" font-weight="700" fill="var(--fe)">lexer.py</text>
+        <text x="225" y="63" text-anchor="middle" font-size="10" fill="var(--muted)">INCLUDE递归/续行/剥注释</text>
+        <text x="225" y="78" text-anchor="middle" font-size="9.5" fill="var(--red)">只拆不解释语义</text>
+        <rect x="346" y="26" width="150" height="62" rx="9" fill="var(--fes)" stroke="var(--fe)"/>
+        <text x="421" y="46" text-anchor="middle" font-weight="700" fill="var(--fe)">parser.py</text>
+        <text x="421" y="63" text-anchor="middle" font-size="10" fill="var(--muted)">40+关键字处理器</text>
+        <text x="421" y="78" text-anchor="middle" font-size="9.5" fill="var(--muted)">建 Part/Instance/约束</text>
+        <rect x="542" y="26" width="140" height="62" rx="9" fill="var(--fes)" stroke="var(--fe)"/>
+        <text x="612" y="46" text-anchor="middle" font-weight="700" fill="var(--fe)">resolver.py</text>
+        <text x="612" y="63" text-anchor="middle" font-size="10" fill="var(--muted)">Set展开/</text>
+        <text x="612" y="78" text-anchor="middle" font-size="9.5" fill="var(--muted)">旋转→4×4矩阵</text>
+        <rect x="728" y="26" width="104" height="62" rx="9" fill="var(--l1s)" stroke="var(--l1)"/>
+        <text x="780" y="46" text-anchor="middle" font-weight="700" fill="var(--l1)">exporter.py</text>
+        <text x="780" y="63" text-anchor="middle" font-size="10" fill="var(--muted)">写成与 ODB</text>
+        <text x="780" y="78" text-anchor="middle" font-size="9.5" fill="var(--muted)">一致的 HDF5</text>
+      </g>
+      <g stroke="var(--fe)" stroke-width="1.6" fill="none">
+        <line x1="104" y1="57" x2="148" y2="57" marker-end="url(#ar8)"/>
+        <line x1="300" y1="57" x2="344" y2="57" marker-end="url(#ar8)"/>
+        <line x1="496" y1="57" x2="540" y2="57" marker-end="url(#ar8)"/>
+        <line x1="682" y1="57" x2="726" y2="57" marker-end="url(#ar8)"/>
+      </g>
+    </svg>
+    <figcaption>图 8 · INP 解析器四层流水线，核心原则 "Data Fidelity"：产出必须与 ODB 提取在 HDF5 schema 上完全一致</figcaption>
+  </figure>
+
+  <h3>3.5 跨数据源一致性与特殊单元</h3>
+  <p><b>大小写坑</b>：Abaqus 把 ODB 集合名"烙成"大写不可逆，INP 保留原始大小写，字面比较对不上（<code>_PickedSet6</code> vs <code>_PICKEDSET6</code>）——解法是在名字第一次进入流水线的源头归一化，而不是在每个比较点打补丁。<b>特殊单元 spider 耦合</b>：同一约束有两种"变身"，两条完全不同的起点最终要拼出同一份数据：</p>
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 760 170" role="img" aria-label="ODB与INP路径殊途同归">
+      <defs><marker id="ar9" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--muted)"/></marker></defs>
+      <rect x="18" y="20" width="270" height="48" rx="10" fill="var(--l1s)" stroke="var(--l1)"/>
+      <text x="153" y="40" text-anchor="middle" font-size="12" font-weight="700">ODB 路径</text>
+      <text x="153" y="57" text-anchor="middle" font-size="10.5" fill="var(--muted)">求解器实体化成 DCOUP3D 单元→反推</text>
+      <rect x="18" y="102" width="270" height="48" rx="10" fill="var(--fes)" stroke="var(--fe)"/>
+      <text x="153" y="122" text-anchor="middle" font-size="12" font-weight="700">INP 路径</text>
+      <text x="153" y="139" text-anchor="middle" font-size="10.5" fill="var(--muted)">解析 *Coupling+*Kinematic/*Distributing</text>
+      <rect x="360" y="61" width="180" height="48" rx="10" fill="var(--l2s)" stroke="var(--l2)"/>
+      <text x="450" y="81" text-anchor="middle" font-size="12" font-weight="700" fill="var(--l2)">同一份</text>
+      <text x="450" y="98" text-anchor="middle" font-size="10.5" fill="var(--muted)">couplings/positions</text>
+      <rect x="590" y="40" width="156" height="90" rx="10" fill="var(--card)" stroke="var(--fe)"/>
+      <text x="668" y="62" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--fe)">前端复用组件</text>
+      <text x="668" y="82" text-anchor="middle" font-size="10.5" fill="var(--muted)">线→LineSegments</text>
+      <text x="668" y="99" text-anchor="middle" font-size="10.5" fill="var(--muted)">质量点→Points</text>
+      <text x="668" y="116" text-anchor="middle" font-size="10.5" fill="var(--muted)">耦合→蜘蛛线段</text>
+      <g stroke="var(--muted)" stroke-width="1.6" fill="none">
+        <line x1="288" y1="44" x2="358" y2="76" marker-end="url(#ar9)"/>
+        <line x1="288" y1="126" x2="358" y2="94" marker-end="url(#ar9)"/>
+        <line x1="540" y1="85" x2="588" y2="85" marker-end="url(#ar9)"/>
+      </g>
+    </svg>
+    <figcaption>图 9 · ODB / INP 双路径"殊途同归"，最终拼出同一份耦合数据，前端零改动复用已有渲染组件</figcaption>
+  </figure>
+  <div class="callout warn"><span class="t">附带案例 · section_assignment 图例演进</span>
+    真实优化型 BDF 可能有 1000+ 个仅厚度不同的 PSHELL，按属性号逐个生成图例会炸出 1000+ 条。经 4 次迭代打磨，改为<b>按"截面类型+厚度"归并</b>，某模型从 <b>1548 个属性塌缩到 11 条</b>可读图例（标签 <code>SHELL_{代表PID} (h=..)</code>），既可读又可追溯。</div>
+
+  <!-- ============ 4 ============ -->
+  <h2 id="s4"><span class="num">四、</span>主线二 · 模型修正闭环</h2>
+  <p class="sub">可视化解决"看结果"，这条主线解决"结果不准怎么办"——用试验数据自动校准仿真参数，让仿真越来越接近现实。</p>
+
+  <figure class="fig">
+    <svg class="svgbox" viewBox="0 0 880 300" role="img" aria-label="模型修正闭环流程">
+      <defs><marker id="arA" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--fe)"/></marker>
+        <marker id="arB" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--l3)"/></marker></defs>
+      <g font-size="11.5">
+        <rect x="18" y="20" width="150" height="58" rx="10" fill="var(--fes)" stroke="var(--fe)"/>
+        <text x="93" y="42" text-anchor="middle" font-weight="700">📥 导入试验数据</text>
+        <text x="93" y="60" text-anchor="middle" font-size="10" fill="var(--muted)">UNV模态/振型/静力</text>
+        <rect x="210" y="20" width="150" height="58" rx="10" fill="var(--card)" stroke="var(--fe)"/>
+        <text x="285" y="42" text-anchor="middle" font-weight="700">📍 空间匹配</text>
+        <text x="285" y="60" text-anchor="middle" font-size="10" fill="var(--muted)">ICP配准+八叉树最近邻</text>
+        <rect x="402" y="20" width="150" height="58" rx="10" fill="var(--card)" stroke="var(--fe)"/>
+        <text x="477" y="42" text-anchor="middle" font-weight="700">🎯 自由度匹配</text>
+        <text x="477" y="60" text-anchor="middle" font-size="10" fill="var(--muted)">传感器方向↔节点DOF</text>
+        <rect x="594" y="20" width="150" height="58" rx="10" fill="var(--card)" stroke="var(--fe)"/>
+        <text x="669" y="42" text-anchor="middle" font-weight="700">📊 相关性评估</text>
+        <text x="669" y="60" text-anchor="middle" font-size="10" fill="var(--muted)">DAC/DSF/MAC</text>
+
+        <rect x="594" y="130" width="150" height="58" rx="10" fill="var(--l3s)" stroke="var(--l3)"/>
+        <text x="669" y="152" text-anchor="middle" font-weight="700">📐 灵敏度矩阵 DSA</text>
+        <text x="669" y="170" text-anchor="middle" font-size="10" fill="var(--muted)">参数动1%响应变多少</text>
+        <rect x="402" y="130" width="150" height="58" rx="10" fill="var(--l3s)" stroke="var(--l3)"/>
+        <text x="477" y="152" text-anchor="middle" font-weight="700">🔄 贝叶斯迭代</text>
+        <text x="477" y="170" text-anchor="middle" font-size="10" fill="var(--muted)">最小方差估计反解修正量</text>
+        <path d="M285 130 l52 29 l-52 29 l-52 -29 Z" fill="var(--l3s)" stroke="var(--l3)"/>
+        <text x="285" y="155" text-anchor="middle" font-size="11" font-weight="700">收敛?</text>
+        <text x="285" y="170" text-anchor="middle" font-size="9" fill="var(--muted)">CCABS阈值</text>
+
+        <rect x="60" y="238" width="220" height="48" rx="10" fill="var(--l2s)" stroke="var(--l2)"/>
+        <text x="170" y="260" text-anchor="middle" font-weight="700" fill="var(--l2)">✅ 写回 INP / MySQL</text>
+        <text x="170" y="277" text-anchor="middle" font-size="10" fill="var(--muted)">下一版模型 + 迭代追溯</text>
+        <rect x="360" y="238" width="240" height="48" rx="10" fill="var(--l3s)" stroke="var(--l3)"/>
+        <text x="480" y="260" text-anchor="middle" font-weight="700" fill="var(--l3)">✅ 写回 L3 外部字段</text>
+        <text x="480" y="277" text-anchor="middle" font-size="10" fill="var(--muted)">→ 浏览器看修正效果云图（跨主线耦合点）</text>
+      </g>
+      <g stroke="var(--fe)" stroke-width="1.6" fill="none">
+        <line x1="168" y1="49" x2="208" y2="49" marker-end="url(#arA)"/>
+        <line x1="360" y1="49" x2="400" y2="49" marker-end="url(#arA)"/>
+        <line x1="552" y1="49" x2="592" y2="49" marker-end="url(#arA)"/>
+        <line x1="669" y1="78" x2="669" y2="128" marker-end="url(#arA)"/>
+      </g>
+      <g stroke="var(--l3)" stroke-width="1.6" fill="none">
+        <line x1="594" y1="159" x2="554" y2="159" marker-end="url(#arB)"/>
+        <line x1="402" y1="159" x2="340" y2="159" marker-end="url(#arB)"/>
+        <path d="M300 135 C 360 100, 560 100, 610 128" marker-end="url(#arB)"/>
+        <text x="470" y="104" text-anchor="middle" font-size="10" fill="var(--l3)">否：写回INP，重新求解</text>
+        <line x1="270" y1="184" x2="190" y2="236" marker-end="url(#arB)"/>
+        <line x1="300" y1="184" x2="440" y2="236" marker-end="url(#arB)"/>
+        <text x="250" y="212" font-size="10" fill="var(--l2)">是</text>
+      </g>
+    </svg>
+    <figcaption>图 10 · 模型修正闭环：试验 → 匹配 → 相关性 → 灵敏度 → 贝叶斯迭代 → 收敛写回（含跨主线的云图回写）</figcaption>
+  </figure>
+
+  <h4>三个技术要点</h4>
+  <ul>
+    <li><b>试验-仿真配准</b>：传感器坐标系与仿真节点坐标系往往不重合、有安装误差，用 <b>ICP 迭代最近点</b>自动刚体配准（支持仅平移 / 平移+旋转），再用八叉树最近邻落点，超容差允许剔除。</li>
+    <li><b>灵敏度不是"试出来"的</b>：不用有限差分，而是生成 Abaqus DSA / Nastran SOL200 专用输入，调用求解器自身的<b>解析灵敏度</b>能力，精度更高。三级映射链路 <code>d_U_1 → 参数序号 → 参数名 → INP Section</code> 是最容易困惑的地方。灵敏度矩阵做<b>无量纲归一化</b>（因为弹性模量 1e11 和壳厚 1e-3 数量级天差地别），反演才稳定。</li>
+    <li><b>贝叶斯参数估计</b>（注意：不是机器学习里的"贝叶斯优化"）：用参数先验协方差+响应观测协方差构造增益矩阵（本质最小方差估计/类卡尔曼滤波），加 Tikhonov 阻尼防病态，参数夹到物理上下界。之所以不用遗传算法——<b>有精确梯度时十几次就收敛，无梯度方法要几百上千次</b>。</li>
+  </ul>
+  <div class="callout"><span class="t">多求解器统一</span>主线二后扩展支持 Nastran（BDF/OP2）和 Ansys（CDB/RST），做法是"归一化 model dict + 统一落库函数"——无论数据来自哪个求解器，元数据落到同一批 MySQL 表，下游灵敏度/贝叶斯完全不区分来源。所有耗时操作走"提交任务→轮询状态"的异步模式。</div>
+
+  <!-- ============ 5 ============ -->
+  <h2 id="s5"><span class="num">五、</span>程序组织结构</h2>
+  <p class="sub">一图看清整个仓库的模块分层与依赖方向。</p>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>层/模块</th><th>目录</th><th>职责</th></tr>
+    <tr><td>入口</td><td><code>app.py</code></td><td>合并两条主线的 FastAPI 路由，端口默认 5000</td></tr>
+    <tr><td>L1 提取</td><td><code>src/l1/</code></td><td>各格式 → 统一 HDF5 + manifest.db</td></tr>
+    <tr><td>L2 预处理</td><td><code>src/l2/ingest.py</code></td><td>表面/三角化/特征边/八叉树/均化域</td></tr>
+    <tr><td>L3 服务</td><td><code>src/l3/</code></td><td>Router / Service / Repo 三层，HTTP + L3BE</td></tr>
+    <tr><td>前端</td><td><code>viewer/</code></td><td>Vue3 + Three.js</td></tr>
+    <tr><td>模型修正</td><td><code>services/model_update/</code>、<code>webapi/</code></td><td>匹配/灵敏度/贝叶斯 + REST</td></tr>
+    <tr><td>INP 解析器</td><td><code>src/inp/</code></td><td>两线共用，纯 Python 解析 Abaqus INP</td></tr>
+    <tr><td>后台调度</td><td><code>src/job_runner.py</code></td><td>独立进程，认领并执行 L1/L2/导入任务</td></tr>
+  </table>
+  </div>
+  <pre class="tree">项目根/
+├── app.py                     唯一入口（L3 + 模型修正路由合并）
+├── src/
+│   ├── l1/                    各格式适配器 → HDF5 + manifest.db
+│   ├── l2/ingest.py           离线预处理（表面/三角化/八叉树/均化域）
+│   ├── l3/  ├─ api/routes/    15 文件 ~70 端点（只解析 HTTP）
+│   │        ├─ services/      业务核心 >1万行（query/result/color）
+│   │        ├─ infra/         DB 访问 + l3be 协议 + 内嵌 runner
+│   │        └─ core/          config / state(ModelIndex) / errors
+│   ├── inp/                   自研 INP 解析器（lexer→parser→resolver→exporter）
+│   └── job_runner.py          独立进程：L1/L2 + 各格式导入调度
+├── services/model_update/     模型修正（analysis/importers/solver_prep）
+├── webapi/                    模型修正 REST 路由
+└── viewer/                    前端 Vue3 + Three.js</pre>
+
+  <!-- ============ 6 ============ -->
+  <h2 id="s6"><span class="num">六、</span>最终达成的效果</h2>
+  <p class="sub">从四种格式原始文件到浏览器三维交互后处理的完整贯通，并叠加模型修正闭环。</p>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>维度</th><th>达成效果</th></tr>
+    <tr><td><b>格式支持</b></td><td>Abaqus INP/ODB、Nastran BDF/OP2（含/不含嵌入几何）、Ansys CDB/RST；自动识别 + 一致性校验</td></tr>
+    <tr><td><b>模型规模</b></td><td>≤ 1000 万节点、数十装配实例、数十分析步、数百帧</td></tr>
+    <tr><td><b>免许可证</b></td><td>INP/BDF/OP2 全链路免 license，ODB 仅提取阶段需要</td></tr>
+    <tr><td><b>免客户端</b></td><td>任意现代浏览器直接访问，无需安装插件</td></tr>
+    <tr><td><b>拾取响应</b></td><td>&lt; 100 ms（千万三角面，BVH 加速）</td></tr>
+    <tr><td><b>振型动画</b></td><td>60 fps（GPU 着色器，与规模无关）</td></tr>
+    <tr><td><b>云图切换</b></td><td>&lt; 500 ms（百万节点，只传颜色属性）</td></tr>
+    <tr><td><b>并发内存</b></td><td>4 worker 共享 ≈ 2 GB（CoW）</td></tr>
+    <tr><td><b>数值精度</b></td><td>不变量公式逐位对齐 Abaqus，混合 solid-shell、高阶单元峰值均已对齐</td></tr>
+  </table>
+  </div>
+  <h4>功能清单</h4>
+  <p style="font-size:14.5px;color:var(--muted)">三维旋转/平移/缩放 · 透视/正交切换 · 结果云图（平滑/平面着色）· 自定义图例区间 · 变形显示（nlgeom 自动锁定）· 单元/节点精确拾取（返回 ODB 原始标签与结果值）· 包围框区域选择 · 多点探针表格 · 截面切割（X/Y/Z，含填充与着色）· 模态振型动画（GPU/CPU 双模式）· 特征边线框 · 梁杆线单元 / 质量点 / 耦合蜘蛛线渲染 · 结果分量选择 · 多工况结果组切换 · 用户自定义集合 · 模型修正闭环（ICP 配准 / DAC-DSF-MAC / DSA 灵敏度 / 贝叶斯迭代 / 修正效果云图回写）。</p>
+  <div class="callout"><span class="t">工程方法论沉淀</span>
+    项目最有价值的沉淀是一套<b>"逐位对齐 + 对照脚本 + 回归测试"</b>的方法论：对每个"不报错但会悄悄错"的数值口径问题（不变量公式、混合模型交并集、高阶单元峰值、Nastran 坐标系），都通过独立对照脚本逐值比对商业软件、定位修复、再用回归测试固化——避免同一个坑踩第二次。这比任何单一功能都更能体现团队真功夫。</div>
+
+  <!-- ============ 7 ============ -->
+  <h2 id="s7"><span class="num">七、</span>附录 · 文档地图</h2>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>文档</th><th>用途</th></tr>
+    <tr><td><code>docs/技术文档.md</code></td><td><b>逐模块详尽工程说明书</b>（本文的详细版底座）</td></tr>
+    <tr><td><code>ODB-Service-Architecture.md</code></td><td>最初整体设计文档（理解初衷；冲突处以代码为准）</td></tr>
+    <tr><td><code>docs/l3/L3-API-Quick-Reference.md</code></td><td><b>当前权威接口文档</b>（前端/调用方对接）</td></tr>
+    <tr><td><code>docs/l3/Binary-Payload-Spec.md</code></td><td>L3BE 二进制协议规范</td></tr>
+    <tr><td><code>docs/l1/不变量计算公式表.md</code></td><td>应力不变量公式台账（数值对齐历史）</td></tr>
+    <tr><td><code>docs/混合solid-shell模型陷阱与排查.md</code></td><td>交集/并集陷阱方法论</td></tr>
+    <tr><td><code>docs/l2/HighOrder-Midside-Subdivision-Design.md</code></td><td>高阶单元中节点细分设计</td></tr>
+    <tr><td><code>docs/Special-Element-Handling.md</code></td><td>特殊单元处理约定</td></tr>
+    <tr><td><code>docs/model_update/</code></td><td>模型修正主线全部设计文档</td></tr>
+    <tr><td><code>FEM-Viewer-Primer.md</code></td><td>FEM 概念与 Three.js 渲染关系科普</td></tr>
+  </table>
+  </div>
+
+  <hr class="divider">
+  <footer>
+    本文由项目技术架构梳理汇总而成，图示均为原理示意。<br>
+    需要精确接口签名、部署命令、数据库表结构时，请以上表所列对应权威文档与代码为准。<br>
+    通用 FEM 后处理与模型修正平台 · 技术交付文档 图文版 v1.0 · 2026-07-06
+  </footer>
+</div>
+</body>
+</html>
