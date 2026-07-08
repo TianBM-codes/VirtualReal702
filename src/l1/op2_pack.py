@@ -223,9 +223,8 @@ def _build_coord_context(bdf_path):
     if not bdf_path or not os.path.exists(bdf_path):
         return None
 
-    from pyNastran.bdf.bdf import BDF
-    model = BDF(debug=False)
-    model.read_bdf(bdf_path, xref=True)
+    from src.l1.bdf_read import read_bdf_safe
+    model = read_bdf_safe(bdf_path, xref=True)
 
     # nid_cp_cd: [N, 3] = (node id, CP, CD), sorted by node id
     icd_t, icp_t, xyz_cp, nid_cp_cd = model.get_displacement_index_xyz_cp_cd(sort_ids=True)

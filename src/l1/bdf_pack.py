@@ -826,15 +826,14 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
 
 
 def pack(bdf_path, workspace):
-    from pyNastran.bdf.bdf import BDF
+    from src.l1.bdf_read import read_bdf_safe
     t_total = time.time()
     bdf_basename = os.path.basename(bdf_path)
     inst_name = os.path.splitext(bdf_basename)[0].upper()
     print('BDF pack: {} → instance \'{}\''.format(bdf_basename, inst_name))
     print('  Reading BDF ...')
     t0 = time.time()
-    model = BDF(debug=False)
-    model.read_bdf(bdf_path, xref=True)
+    model = read_bdf_safe(bdf_path, xref=True)
     print('  Read done. ({})'.format(_fmt_t(time.time() - t0)))
     _pack_model(model, inst_name, workspace, source_bdf_path=bdf_path)
     print('BDF pack complete. ({} total)'.format(_fmt_t(time.time() - t_total)))
