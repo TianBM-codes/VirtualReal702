@@ -76,8 +76,17 @@ def _write_ascii_sidecar(path, encoding):
     return sidecar
 
 
+# 与几何/坐标提取无关、但已知会让 pyNastran 崩溃或纯属求解器参数的卡片。
+# 默认在读取前禁用（禁用后 pyNastran 把它们当作 reject 卡片存原文，不解析），
+# L1 只要节点/单元/坐标系,这些卡片一律用不到。
+#   MDLPRM: MSC 模型参数卡。pyNastran 1.4.x 的 _add_mdlprm_object 有个必崩的断言
+#           (assert self.model.mdlprm is None) —— 只要文件里出现第二张 MDLPRM 且键
+#           重复(如两次 OFFDEF),就抛 AssertionError: MDLPRM OFFDEF LROFF。
+_DEFAULT_DISABLE_CARDS = ('MDLPRM',)
+
+
 def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
-                  model=None, **read_kwargs):
+                  model=None, disable_cards=_DEFAULT_DISABLE_CARDS, **read_kwargs):
     """构造并读取一个 pyNastran BDF，规避中文 Windows 的 locale 编码崩溃。
 
     参数
@@ -99,7 +108,10 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
     enc = detect_bdf_encoding(bdf_filename)
 
     def _new_model():
-        return model if model is not None else BDF(debug=debug)
+        m = model if model is not None else BDF(debug=debug)
+        if disable_cards:
+            m.disable_cards(list(disable_cards))
+        return m
 
     m = _new_model()
     try:
@@ -114,6 +126,8 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
             "已改用 ASCII 化副本读取: {}\n".format(enc, sidecar))
         # 若外部传入了 model，它此刻可能已被半初始化污染，这里只能新建一个干净的
         m2 = BDF(debug=debug)
+        if disable_cards:
+            m2.disable_cards(list(disable_cards))
         try:
             m2.read_bdf(sidecar, xref=xref, punch=punch, encoding='utf-8', **read_kwargs)
             return m2
