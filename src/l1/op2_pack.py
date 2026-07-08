@@ -303,9 +303,16 @@ def _align_data(raw_data, op2_node_ids, bdf_node_labels):
     n_frames, N_op2, n_comp = raw_data.shape
     N_bdf = len(bdf_node_labels)
 
-    # For each OP2 node, find its position in the sorted BDF label array
+    # For each OP2 node, find its position in the sorted BDF label array.
+    # searchsorted returns N_bdf for OP2 node ids larger than every BDF label,
+    # which is out of bounds. numpy's & is NOT short-circuit, so we must clip
+    # the indices BEFORE indexing bdf_node_labels, otherwise it raises IndexError.
     rows = np.searchsorted(bdf_node_labels, op2_node_ids)
-    valid = (rows < N_bdf) & (bdf_node_labels[rows] == op2_node_ids)
+    if N_bdf:
+        safe_rows = np.clip(rows, 0, N_bdf - 1)
+        valid = (rows < N_bdf) & (bdf_node_labels[safe_rows] == op2_node_ids)
+    else:
+        valid = np.zeros(N_op2, dtype=bool)
 
     n_extra = int((~valid).sum())
     if n_extra:
