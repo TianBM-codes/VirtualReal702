@@ -2271,6 +2271,8 @@ node mode 响应字段：
 `order=0` 时返回未变形数据（`componentData` 全零、`frames` 为空），`fem.scale` 仍按 `fem_frame`（若显式传入）计算。
 
 > **配套测试数据**：没有真实试验 UNV 时，可用 `tools/gen_test_unv_from_op2.py` 从 BDF+OP2（SOL103）生成模拟试验模态 UNV（采样测点 + 线框 + 加噪振型），走 `POST /import/unv` 导入后即可联调本接口。
+>
+> **前端参考实现**：`viewer/src/modules/modal-sync/`（独立模块，只依赖 three.js，可整目录拷贝到其他前端项目；含播放器、API 封装与三种集成形态说明，demo 页 `viewer/modal-sync-demo.html`，`npm run dev` 后浏览 `/odb-viewer/modal-sync-demo.html`）。
 
 ## 14. Simright Compatibility
 
