@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-07-06（`frame-scalars` 的"找不到"回退：ODB/instance/step/field/result_group 不存在时不再返回 404，改为静默返回 200 + 空 payload（`u_per_vertex` 长度 0、`legend=[0,0]`，响应头无特殊标记），前端广播查询时缺结果的 instance 渲成灰色而非整批报错；`NotReadyError`→202、`ValidationError`→400 不受影响）。历史：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
+更新时间：2026-07-13（testMesh 新增 `POST /api/model/testMesh/syncAnimation`：试验网格与 FEM 模型（BDF/OP2 project）同屏同步动画。统一幅度基准（两模型包围盒并集最大边 / 10 / coefficient 为目标最大变形，两侧各自返回换算后的放大倍数）并统一动画相位（试验侧预计算 n_frames 帧、第 i 帧相位 sin(2πi/n)，与 FEM `results/modal-animation` 同相），前端用同一个帧计数器驱动两边 buffer 即逐帧同步；FEM 数据不可用时自动降级为仅试验侧，兼容单独显示。既有 testMesh 接口不变）。历史：2026-07-06（`frame-scalars` 的"找不到"回退：ODB/instance/step/field/result_group 不存在时不再返回 404，改为静默返回 200 + 空 payload（`u_per_vertex` 长度 0、`legend=[0,0]`，响应头无特殊标记），前端广播查询时缺结果的 instance 渲成灰色而非整批报错；`NotReadyError`→202、`ValidationError`→400 不受影响）。历史：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
 
 历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
@@ -2069,6 +2069,7 @@ node mode 响应字段：
 | POST | `/api/model/testMesh/modelSelect` | 模态阶次下拉列表 |
 | POST | `/api/model/testMesh/animation` | 实部/虚部 flat 数组（供前端做谐波动画） |
 | POST | `/api/model/testMesh/colormap` | 指定分量的云图数据 |
+| POST | `/api/model/testMesh/syncAnimation` | 试验网格 + FEM 模型同屏同步动画（统一 scale 与相位） |
 
 ### 公共请求字段
 
@@ -2191,6 +2192,85 @@ node mode 响应字段：
 ---
 
 > **`flip` 参数说明**：振型（特征向量）符号任意，乘以 −1 仍是有效振型。`flip=true` 对 `real`/`imag` 取反，使变形方向与 FEM 侧一致。符号是否需要翻转由上层计算逻辑决定后由前端传入，默认不传（`false`）时行为不变。
+
+### `POST /api/model/testMesh/syncAnimation`
+
+试验网格与 FEM 模型（同一 project 的 BDF/OP2 workspace）**同屏叠加、同步动画**专用接口。既有 testMesh / `results/modal-animation` 接口保持不变（单独显示场景继续用旧接口）。
+
+解决两个不同步根源：
+
+1. **幅度统一**：参考尺寸 `refSize` = 试验包围盒 ∪ FEM 装配包围盒的最大边；目标最大变形 `targetDeform = refSize / 10 / coefficient`（沿用 FEM `deform-suggest-scale` 的 1/10 约定）。试验侧 `test.scaleFactor = targetDeform / 试验振型最大复幅值`，FEM 侧 `fem.scale = targetDeform / FEM 最大位移分量`。两个模型放大后的最大变形量都恰好是 `targetDeform`。
+2. **相位统一**：`test.frames` 预计算 `n_frames` 帧变形坐标，第 i 帧相位 θ = 2π·i/n_frames，位移 = `real·sinθ + imag·cosθ`（试验振型 imag≈0 时与 FEM `results/modal-animation` 的 `sinθ` 完全同相）。
+
+**前端用法**：调本接口拿 `test.frames` 与 `fem.scale`，再用**相同的 `n_frames` 和 `fem.scale`** 调 `GET /api/odb/{project_id}/results/modal-animation?step={fem.step}&frame={fem.frame}&scale={fem.scale}&n_frames={n_frames}`，播放时用**同一个帧计数器**同时切换两边的 buffer。
+
+请求：
+
+```json
+{
+  "project_id": 1,
+  "order": 1,
+  "step": null,
+  "fem_frame": null,
+  "result_group": null,
+  "n_frames": 20,
+  "coefficient": 1.0,
+  "component": "usum",
+  "flip": false,
+  "include_frames": true
+}
+```
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `order` | int | `0` | 试验模态阶次；0 = 未变形 |
+| `step` | string | `null` | FEM 步名；缺省自动取第一个 `FREQUENCY`（模态）步 |
+| `fem_frame` | int | `null` | FEM 模态帧号（0-based）；缺省 `order-1`，即默认试验阶次与 FEM 阶次一一对应，不对应时由前端显式传入 |
+| `result_group` | string | `null` | FEM 结果组（project 分支的 OP2 结果组） |
+| `n_frames` | int | `20` | 动画帧数（4–120），需与 FEM `modal-animation` 请求一致 |
+| `coefficient` | float | `1.0` | 用户缩放系数（越大变形越小，与 testMesh 其余接口约定一致） |
+| `component` | string | `"usum"` | 云图分量 `usum` \| `ux` \| `uy` \| `uz` |
+| `flip` | bool | `false` | 试验振型符号翻转（同 `flip` 参数说明） |
+| `include_frames` | bool | `true` | `false` 时不返回 `test.frames`（只要 scale 时可省流量） |
+
+响应 `data`：
+
+```json
+{
+  "test": {
+    "ids": [1, 57, 103],
+    "originPos": [0,0,0, ...],
+    "elementsIndex": [0,1, 1,2, ...],
+    "componentData": [0.0, 0.12, ...],
+    "maxValue": 0.12, "minValue": 0.0,
+    "scaleFactor": 45.3,
+    "frequency": "462.39", "unit": "Hz",
+    "frames": [[...N*3...], ...共 n_frames 组]
+  },
+  "fem": {
+    "available": true,
+    "reason": null,
+    "scale": 38.7,
+    "step": "SUBCASE 1", "frame": 0, "result_group": null,
+    "frequency": 454.74
+  },
+  "sync": { "n_frames": 20, "phase": "sin(2*pi*i/n_frames)", "refSize": 1200.0, "targetDeform": 120.0 }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `test.frames` | 预计算的变形坐标序列 `[n_frames][N*3]`，第 i 帧直接覆盖顶点 buffer |
+| `test.scaleFactor` | 统一基准后的试验侧放大倍数（`frames` 已乘好，仅供显示/调试） |
+| `fem.available` | FEM 数据是否可用；`false` 时 `reason` 给出原因，试验侧字段照常返回（scale 退化为只按试验包围盒归一化），可用于单独显示 |
+| `fem.scale` | 前端调 FEM `results/modal-animation` 时应传的 `scale` |
+| `fem.step` / `fem.frame` | 实际使用的 FEM 定位（缺省解析结果），前端调 FEM 接口时原样带上 |
+| `fem.frequency` | 该阶 FEM 频率（Hz），可与 `test.frequency` 并排显示 |
+| `sync.targetDeform` | 两侧统一的目标最大变形量（模型坐标单位） |
+
+`order=0` 时返回未变形数据（`componentData` 全零、`frames` 为空），`fem.scale` 仍按 `fem_frame`（若显式传入）计算。
+
+> **配套测试数据**：没有真实试验 UNV 时，可用 `tools/gen_test_unv_from_op2.py` 从 BDF+OP2（SOL103）生成模拟试验模态 UNV（采样测点 + 线框 + 加噪振型），走 `POST /import/unv` 导入后即可联调本接口。
 
 ## 14. Simright Compatibility
 
