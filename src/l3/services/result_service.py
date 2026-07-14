@@ -1798,20 +1798,22 @@ def frame_deformed_aux_geometry(
     return _deform_aux_from_disp(idx, instance, disp_node, scale)
 
 
-def suggest_deform_scale(
+def deform_scale_stats(
     registry: OdbRegistry,
     odb_id: str,
     step: str,
     frame_idx: int,
     result_group: str = None,
-) -> float:
+) -> dict:
     """
-    Compute a globally consistent deformation scale factor for the given step/frame.
+    Aggregate the raw quantities behind the deform-scale suggestion, across ALL
+    instances regardless of which are currently displayed:
+      bbox_min / bbox_max — assembly-level bounding box (union of instance bboxes), or None
+      max_disp            — max(|U|) across all three displacement directions, all instances
+      nlgeom              — True if the step ran with nlgeom (displacement already physical)
 
-    Aggregates across ALL instances regardless of which are currently displayed:
-      maxScalarSize = longest edge of the assembly-level bounding box (union of all instance bboxes)
-      maxScalarDisp = max(|U|) across all three displacement directions across all instances
-      scale = maxScalarSize / 10 / maxScalarDisp  (returns 0 if maxScalarDisp == 0)
+    Exposed separately so callers that need a scale consistent with OTHER geometry
+    (e.g. the test-mesh sync view) can combine these stats with their own bbox.
     """
     import json as _json
 
@@ -1824,12 +1826,13 @@ def suggest_deform_scale(
     manifest = ManifestRepo(idx.workspace)
 
     step_info = manifest.get_step_info(step, result_group)
-    if step_info is not None and step_info.get("nlgeom"):
-        return 1.0
+    nlgeom = bool(step_info.get("nlgeom")) if step_info is not None else False
+
+    stats = {"bbox_min": None, "bbox_max": None, "max_disp": 0.0, "nlgeom": nlgeom}
 
     all_instances = manifest.list_instances()
     if not all_instances:
-        return 0.0
+        return stats
 
     # Aggregate assembly-level bbox across all instances
     global_min = None
@@ -1851,12 +1854,13 @@ def suggest_deform_scale(
         global_max = hi if global_max is None else np.maximum(global_max, hi)
 
     if global_min is None:
-        return 0.0
-    max_scalar_size = float(np.max(global_max - global_min))
+        return stats
+    stats["bbox_min"] = global_min.tolist()
+    stats["bbox_max"] = global_max.tolist()
 
     h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
     if not os.path.exists(h5_path):
-        return 0.0
+        return stats
 
     # Aggregate max displacement across all instances
     max_scalar_disp = 0.0
@@ -1876,9 +1880,32 @@ def suggest_deform_scale(
             if inst_max > max_scalar_disp:
                 max_scalar_disp = inst_max
 
-    if max_scalar_disp == 0.0:
+    stats["max_disp"] = max_scalar_disp
+    return stats
+
+
+def suggest_deform_scale(
+    registry: OdbRegistry,
+    odb_id: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+) -> float:
+    """
+    Compute a globally consistent deformation scale factor for the given step/frame.
+
+    Aggregates across ALL instances regardless of which are currently displayed:
+      maxScalarSize = longest edge of the assembly-level bounding box (union of all instance bboxes)
+      maxScalarDisp = max(|U|) across all three displacement directions across all instances
+      scale = maxScalarSize / 10 / maxScalarDisp  (returns 0 if maxScalarDisp == 0)
+    """
+    stats = deform_scale_stats(registry, odb_id, step, frame_idx, result_group)
+    if stats["nlgeom"]:
+        return 1.0
+    if stats["bbox_min"] is None or stats["max_disp"] == 0.0:
         return 0.0
-    return float(max_scalar_size / 10.0 / max_scalar_disp)
+    max_scalar_size = float(np.max(np.asarray(stats["bbox_max"]) - np.asarray(stats["bbox_min"])))
+    return float(max_scalar_size / 10.0 / stats["max_disp"])
 
 
 # ── 模态谐波动画辅助 ─────────────────────────────────────────────────────────

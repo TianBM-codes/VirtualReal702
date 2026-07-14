@@ -738,6 +738,24 @@ class ManifestRepo:
         except Exception:
             return []
 
+    def list_steps_by_group(self, result_group: str = None):
+        """Return steps rows for one result_group, ordered by step_number.
+
+        Falls back to the unfiltered list on old manifest.db files whose steps
+        table has no result_group column (only correct there for result_group=None,
+        which is the only value old data can have).
+        """
+        rg_clause, rg_params = self._rg_clause(result_group)
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM steps WHERE {} ORDER BY step_number".format(rg_clause),
+                    rg_params,
+                ).fetchall()
+                return [dict(r) for r in rows]
+        except Exception:
+            return self.list_steps()
+
     def list_frames(self, step_name: str):
         """Return lightweight frame list for a step (idx + description only)."""
         try:

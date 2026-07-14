@@ -263,6 +263,7 @@ uvicorn src.modal_service.main:app --reload --port 8001
 | `docs/l1/abaqus_dump_guide.md` | Practical guide for running L1 extraction |
 | `docs/Special-Element-Handling.md` | 特殊单元（耦合/连接器/质量/弹簧）在 ODB/INP 两路径的解析与显示约定 |
 | `temp/` | Historical design iterations (v1–v4) and review notes; not authoritative |
+| `docs/modal_sync/` | 试验网格/FEM 同步动画：页面测试步骤 + 试验数据（UNV）导入指南 |
 | `docs/model_update/模型修正接口清单.md` | 模型修正全部接口清单（可能部分过时，以代码为准） |
 | `docs/model_update/DSA-Config-Preview-Design.md` | 灵敏度 DSA 配置预览设计 |
 | `docs/model_update/DSA-Merge-Field-Design.md` | 灵敏度字段合并设计 |

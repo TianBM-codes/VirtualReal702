@@ -272,6 +272,201 @@ def get_geometry(project_id: str, order: int, max_scalar_size: float, coefficien
     return obj
 
 
+def _bbox_min_max(pos_flat: list):
+    """返回 flat 坐标数组的 (min[3], max[3]),空数组返回 (None, None)。"""
+    if not pos_flat:
+        return None, None
+    xyz = np.reshape(np.asarray(pos_flat, dtype=np.float64), (-1, 3))
+    return xyz.min(axis=0), xyz.max(axis=0)
+
+
+def _fem_modal_stats(project_id, order: int, step: Optional[str],
+                     frame: Optional[int], result_group: Optional[str]) -> dict:
+    """
+    读取 FEM 侧(project 分支,BDF/OP2 workspace)指定模态帧的统计量。
+
+    返回 dict:
+      available   bool,FEM 数据是否可用
+      reason      不可用原因(可用时为 None)
+      step/frame/result_group  实际使用的定位(step 缺省取第一个 FREQUENCY 步,
+                               frame 缺省取 order-1,即默认试验阶次与 FEM 阶次一一对应)
+      frequency   该阶 FEM 频率(Hz,取 frames.frame_value)
+      bbox_min/bbox_max/max_disp  见 result_service.deform_scale_stats
+
+    与 L3 同进程运行(app.py 同时挂载两套路由),直接复用 L3 的 registry 单例。
+    独立启动 modal_service(端口 8001)时 registry 为空,自动降级为不可用。
+    """
+    out = {"available": False, "reason": None, "step": step, "frame": frame,
+           "result_group": result_group, "frequency": None,
+           "bbox_min": None, "bbox_max": None, "max_disp": 0.0}
+    try:
+        from src.l3.core.state import registry
+        from src.l3.infra.manifest_repo import ManifestRepo
+        from src.l3.services.result_service import deform_scale_stats
+
+        idx = registry.get(str(project_id))
+        if idx is None:
+            out["reason"] = f"FEM workspace '{project_id}' 未加载(project 未创建或 L1 未完成)"
+            return out
+
+        manifest = ManifestRepo(idx.workspace)
+        if step is None:
+            freq_steps = [s for s in manifest.list_steps_by_group(result_group)
+                          if (s.get("procedure") or "").upper() == "FREQUENCY"]
+            if not freq_steps:
+                out["reason"] = "FEM workspace 中没有 FREQUENCY(模态)步"
+                return out
+            step = freq_steps[0]["step_name"]
+        out["step"] = step
+
+        frames = manifest.get_frames(step, result_group)
+        if frame is None:
+            frame = order - 1          # 默认按阶次一一对应
+        if frame < 0 or (frames and frame >= len(frames)):
+            out["frame"] = frame
+            out["reason"] = f"FEM 模态帧 {frame} 超出范围 [0, {len(frames)})"
+            return out
+        out["frame"] = frame
+        if frames:
+            try:
+                out["frequency"] = float(frames[frame]["frame_value"])
+            except (KeyError, TypeError, ValueError, IndexError):
+                pass
+
+        stats = deform_scale_stats(registry, str(project_id), step, frame, result_group)
+        out.update(bbox_min=stats["bbox_min"], bbox_max=stats["bbox_max"],
+                   max_disp=stats["max_disp"])
+        if stats["bbox_min"] is None:
+            out["reason"] = "FEM 实例包围盒缺失"
+        elif stats["max_disp"] <= 0.0:
+            out["reason"] = "FEM U 场缺失或位移全为 0"
+        else:
+            out["available"] = True
+    except Exception as e:  # registry 未初始化 / workspace 数据异常等,降级不阻断试验侧
+        logger.warning("FEM 模态统计读取失败: %s", e)
+        out["reason"] = f"FEM 数据读取失败: {e}"
+    return out
+
+
+def get_sync_animation(project_id, order: int, step: Optional[str] = None,
+                       fem_frame: Optional[int] = None, result_group: Optional[str] = None,
+                       n_frames: int = 20, coefficient: float = 1.0,
+                       component: str = "usum", flip: bool = False,
+                       include_frames: bool = True) -> dict:
+    """
+    试验网格 / FEM 模型同屏同步动画数据。
+
+    两个模型不同步的根源是各自归一化:试验侧按试验包围盒、FEM 侧按装配包围盒
+    分别计算放大倍数,且动画相位各走各的。本接口统一两者:
+
+    1. 统一幅度基准:参考尺寸 L = 试验包围盒与 FEM 装配包围盒并集的最大边,
+       目标最大变形 target = L / 10 / coefficient(与 FEM deform-suggest-scale
+       的 1/10 约定一致)。
+         试验 scaleFactor = target / 试验振型最大复幅值
+         FEM  scale       = target / FEM 最大位移分量
+       两个模型放大后的最大变形量都恰好是 target,视觉幅度一致。
+
+    2. 统一动画相位:test.frames 预计算 n_frames 帧变形坐标,第 i 帧相位
+       θ = 2π·i/n_frames,位移 = real·sinθ + imag·cosθ(试验振型 imag≈0 时
+       与 FEM /results/modal-animation 的 sinθ 完全同相)。前端用同一个帧
+       计数器同时翻两边的 buffer 即严格逐帧同步。
+
+    FEM 侧体量大,仍走既有二进制接口:前端拿本接口返回的 fem.scale 与相同的
+    n_frames 调 GET /api/odb/{project_id}/results/modal-animation。
+    FEM 数据不可用时自动降级(fem.available=false),试验侧照常返回,
+    scale 退化为只按试验包围盒归一化——兼容单独显示试验模型的场景。
+    """
+    n_frames = max(4, min(int(n_frames), 120))
+    if not coefficient:
+        coefficient = 1.0
+
+    db_node_data = _db_node_elements(project_id)
+    pos = db_node_data["node_coords"]
+    ids = db_node_data["node_ids"]
+    index = db_node_data["eles"]
+
+    test_obj = {
+        "ids": [], "originPos": [], "elementsIndex": [],
+        "componentData": [], "maxValue": 0.0, "minValue": 0.0,
+        "scaleFactor": 1.0, "frequency": None, "unit": "Hz",
+        "frames": [],
+    }
+    sync_obj = {"n_frames": n_frames, "phase": "sin(2*pi*i/n_frames)",
+                "refSize": 0.0, "targetDeform": 0.0}
+
+    if not pos:
+        fem = _fem_modal_stats(project_id, order, step, fem_frame, result_group)
+        return {"test": test_obj, "fem": _fem_public(fem, 0.0), "sync": sync_obj}
+
+    test_obj["ids"] = ids.tolist()
+    test_obj["originPos"] = pos
+    test_obj["elementsIndex"] = index
+
+    fem = _fem_modal_stats(project_id, order, step, fem_frame, result_group)
+
+    # 参考尺寸:试验包围盒 ∪ FEM 装配包围盒
+    t_min, t_max = _bbox_min_max(pos)
+    lo, hi = t_min, t_max
+    if fem["bbox_min"] is not None:
+        lo = np.minimum(lo, np.asarray(fem["bbox_min"], dtype=np.float64))
+        hi = np.maximum(hi, np.asarray(fem["bbox_max"], dtype=np.float64))
+    ref_size = float(np.max(hi - lo))
+    target = ref_size / 10.0 / float(coefficient)
+    sync_obj["refSize"] = ref_size
+    sync_obj["targetDeform"] = target
+
+    fem_scale = (target / fem["max_disp"]) if fem["available"] else 0.0
+
+    if order == 0:
+        test_obj["componentData"] = [0.0] * (len(pos) // 3)
+        return {"test": test_obj, "fem": _fem_public(fem, fem_scale), "sync": sync_obj}
+
+    db_shape = _db_node_shapes(project_id, ids, order)
+    if db_shape is None or not db_shape["real"]:
+        return {"test": test_obj, "fem": _fem_public(fem, fem_scale), "sync": sync_obj}
+
+    real = np.asarray(db_shape["real"], dtype=np.float64)
+    imag = np.asarray(db_shape["imag"], dtype=np.float64)
+    if flip:
+        real = -real
+        imag = -imag
+    test_obj["frequency"] = db_shape["frequency"]
+
+    max_amp = float(np.max(np.sqrt(real * real + imag * imag)))
+    scale = (target / max_amp) if max_amp > 1e-15 else 1.0
+    test_obj["scaleFactor"] = scale
+
+    comp_vals, vmin, vmax = _component_data(real.tolist(), imag.tolist(), component)
+    test_obj["componentData"] = comp_vals
+    test_obj["minValue"] = vmin
+    test_obj["maxValue"] = vmax
+
+    if include_frames:
+        p = np.asarray(pos, dtype=np.float64)
+        theta = 2.0 * np.pi * np.arange(n_frames) / n_frames
+        # [n_frames, N*3] = pos + scale * (real·sinθ + imag·cosθ)
+        frames = p[np.newaxis, :] + scale * (
+            np.sin(theta)[:, np.newaxis] * real[np.newaxis, :]
+            + np.cos(theta)[:, np.newaxis] * imag[np.newaxis, :]
+        )
+        test_obj["frames"] = frames.tolist()
+
+    return {"test": test_obj, "fem": _fem_public(fem, fem_scale), "sync": sync_obj}
+
+
+def _fem_public(fem: dict, fem_scale: float) -> dict:
+    """内部统计 dict → 对外响应字段(不暴露 bbox/max_disp 细节)。"""
+    return {
+        "available": fem["available"],
+        "reason": fem["reason"],
+        "scale": fem_scale,
+        "step": fem["step"],
+        "frame": fem["frame"],
+        "result_group": fem["result_group"],
+        "frequency": fem["frequency"],
+    }
+
+
 def get_modes_select(model_id: str) -> list:
     """
     #2 模态阶次下拉。
