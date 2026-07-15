@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-07-13（testMesh 新增 `POST /api/model/testMesh/syncAnimation`：试验网格与 FEM 模型（BDF/OP2 project）同屏同步动画。统一幅度基准（两模型包围盒并集最大边 / 10 / coefficient 为目标最大变形，两侧各自返回换算后的放大倍数）并统一动画相位（试验侧预计算 n_frames 帧、第 i 帧相位 sin(2πi/n)，与 FEM `results/modal-animation` 同相），前端用同一个帧计数器驱动两边 buffer 即逐帧同步；FEM 数据不可用时自动降级为仅试验侧，兼容单独显示。既有 testMesh 接口不变）。历史：2026-07-06（`frame-scalars` 的"找不到"回退：ODB/instance/step/field/result_group 不存在时不再返回 404，改为静默返回 200 + 空 payload（`u_per_vertex` 长度 0、`legend=[0,0]`，响应头无特殊标记），前端广播查询时缺结果的 instance 渲成灰色而非整批报错；`NotReadyError`→202、`ValidationError`→400 不受影响）。历史：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
+更新时间：2026-07-15（新增 `POST /api/odb/{odb_id}/results/node-time-value`：按时间（而非 frame_idx）查一组节点上某 NODAL 场的全部分量+不变量。step 传了按 step 内局部时间、不传按全局时间（STATIC/DYNAMIC step 按 step_number 首尾相接，FREQUENCY/BUCKLE 不参与）；时间不落帧时按 `time_match` 取 prev/next 或线性插值，命中帧时三者等价返回 `resolved_mode=exact`；越界时 prev/next 单侧仍可取、interp 报 400）。历史：2026-07-13（testMesh 新增 `POST /api/model/testMesh/syncAnimation`：试验网格与 FEM 模型（BDF/OP2 project）同屏同步动画。统一幅度基准（两模型包围盒并集最大边 / 10 / coefficient 为目标最大变形，两侧各自返回换算后的放大倍数）并统一动画相位（试验侧预计算 n_frames 帧、第 i 帧相位 sin(2πi/n)，与 FEM `results/modal-animation` 同相），前端用同一个帧计数器驱动两边 buffer 即逐帧同步；FEM 数据不可用时自动降级为仅试验侧，兼容单独显示。既有 testMesh 接口不变）。历史：2026-07-06（`frame-scalars` 的"找不到"回退：ODB/instance/step/field/result_group 不存在时不再返回 404，改为静默返回 200 + 空 payload（`u_per_vertex` 长度 0、`legend=[0,0]`，响应头无特殊标记），前端广播查询时缺结果的 instance 渲成灰色而非整批报错；`NotReadyError`→202、`ValidationError`→400 不受影响）。历史：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
 
 历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
@@ -100,6 +100,7 @@ project_id + result_group
 - `GET /api/odb/{odb_id}/results/raw-values?result_group=...`
 - `GET /api/odb/{odb_id}/fields?result_group=...`
 - `POST /api/odb/{odb_id}/results/node-table` body 中的 `result_group`
+- `POST /api/odb/{odb_id}/results/node-time-value` body 中的 `result_group`
 - `GET /api/odb/{odb_id}/query/pick?result_group=...`
 - `POST /api/odb/{odb_id}/query/ray-pick` body 中的 `result_group`
 - `POST /api/odb/{odb_id}/results/external-field` body 中的 `result_group`
@@ -172,6 +173,7 @@ project_id + result_group
 | results | GET | `/api/odb/{odb_id}/results/section-mesh` |
 | node table | GET | `/api/odb/{odb_id}/fields` |
 | node table | POST | `/api/odb/{odb_id}/results/node-table` |
+| node table | POST | `/api/odb/{odb_id}/results/node-time-value` |
 | user field | POST | `/api/odb/{odb_id}/results/user-field` |
 | user field | GET | `/api/odb/{odb_id}/results/user-fields` |
 | user field | GET | `/api/odb/{odb_id}/results/user-field-colors` |
@@ -1451,6 +1453,68 @@ L3BE sections：
 |---|---|---|
 | `node_labels` | `[N]` | `int32` |
 | `values` | `[N, M]` | `float32` |
+
+### `POST /api/odb/{odb_id}/results/node-time-value`
+
+按**时间**（而不是 frame_idx）查一组节点上某个 NODAL 场的值，返回该场**全部分量 + 可用不变量**。主要面向静力/动力结果。响应为普通 JSON。
+
+请求：
+
+```json
+{
+  "instance": "PART-1-1",
+  "field": "U",
+  "node_labels": [1, 2, 3],
+  "time": 0.75,
+  "step": "Step-1",
+  "time_match": "interp",
+  "result_group": "case1"
+}
+```
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `instance` | 是 | instance 名 |
+| `field` | 是 | 场名（如 `U`、`S`），只支持 NODAL 位置 |
+| `node_labels` | 是 | 节点 label 数组（1 个或多个） |
+| `time` | 是 | 查询时间 |
+| `step` | 否 | **传** → `time` 按该 step 内局部时间（Abaqus step time）解释；**不传** → `time` 按全局时间解释：各 STATIC/DYNAMIC step 按 step_number 顺序首尾相接（step 时长 = 该 step 最后一帧的 frame_value），FREQUENCY/BUCKLE step 不参与全局时间轴 |
+| `time_match` | 否 | `time` 没有正好落在帧上时的匹配策略：`prev`=取 ≤time 的最近一帧；`next`=取 ≥time 的最近一帧；`interp`（默认）=两侧帧线性插值。正好命中（相对容差 1e-9）时三者等价 |
+| `result_group` | 否 | project 模式必带 |
+
+越界规则：`time` 早于第一帧时 `prev`/`interp` 返回 400（`next` 取第一帧）；晚于最后一帧时 `next`/`interp` 返回 400（`prev` 取最后一帧）。400 的 `details` 里带 `time_min`/`time_max`。
+
+响应 `data`：
+
+```json
+{
+  "instance": "PART-1-1",
+  "field": "U",
+  "components": ["U1", "U2", "U3"],
+  "invariants": ["MAGNITUDE"],
+  "time_mode": "step",
+  "step": "Step-1",
+  "requested_time": 0.75,
+  "time_match": "interp",
+  "resolved_mode": "interp",
+  "frames_used": [
+    {"step": "Step-1", "frame_idx": 1, "step_time": 0.5, "global_time": null, "weight": 0.5},
+    {"step": "Step-1", "frame_idx": 2, "step_time": 1.0, "global_time": null, "weight": 0.5}
+  ],
+  "time_range": {"min": 0.0, "max": 1.0},
+  "nodes": [
+    {"label": 1, "found": true, "values": {"U1": 0.1, "U2": 0.0, "U3": 0.0, "MAGNITUDE": 0.1}},
+    {"label": 999, "found": false, "values": null}
+  ]
+}
+```
+
+说明：
+
+- `resolved_mode` 是实际采用的解析方式（`exact`/`prev`/`next`/`interp`），比如请求 `interp` 但正好命中帧时返回 `exact`。
+- 不变量既包括 L1 预提取的存储式不变量（如 `S` 的 `MISES`，来自 `S_MISES.h5`），也包括查询时现算的 `MAGNITUDE`（向量场 L2 范数）。插值口径统一为"先逐帧取不变量、再对标量插值"。
+- 节点不在该 instance 里 → `found=false`、`values=null`，不报错。
+- 前端测试页：`viewer/node-time-value-demo.html`（独立页面，`npm run dev` 后访问 `/odb-viewer/node-time-value-demo.html`，不影响主 viewer）。
 
 ## 9. User Field
 

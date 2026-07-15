@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...services.node_table_service import get_instance_fields, get_node_table
+from ...services.node_time_value_service import get_node_time_value
 from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
@@ -108,3 +109,34 @@ async def get_node_table_endpoint(
             "X-Field-Coverage": "step",
         },
     )
+
+
+# ── POST /results/node-time-value ──────────────────────────────────────────────
+
+class NodeTimeValueRequest(BaseModel):
+    instance: str
+    field: str
+    node_labels: List[int]
+    time: float
+    step: Optional[str] = None          # 传=step 内局部时间；不传=全局时间
+    time_match: str = "interp"          # prev | next | interp
+    result_group: Optional[str] = None
+
+
+@router.post("/results/node-time-value")
+async def get_node_time_value_endpoint(
+    odb_id: str,
+    body: NodeTimeValueRequest,
+):
+    data = get_node_time_value(
+        registry=registry,
+        odb_id=odb_id,
+        instance=body.instance,
+        field=body.field,
+        node_labels=body.node_labels,
+        time=body.time,
+        step=body.step,
+        time_match=body.time_match,
+        result_group=body.result_group,
+    )
+    return ok(data)

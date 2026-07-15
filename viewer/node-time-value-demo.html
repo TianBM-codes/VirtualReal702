@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Node Time Value Demo — 按时间查节点值</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d1117; color: #c9d1d9;
+                 font: 13px/1.5 -apple-system, "Segoe UI", sans-serif; }
+    #app { display: flex; height: 100%; }
+    #panel { width: 320px; padding: 12px; box-sizing: border-box; overflow-y: auto;
+             background: #161b22; border-right: 1px solid #30363d; flex-shrink: 0; }
+    #result { flex: 1; padding: 16px; box-sizing: border-box; overflow: auto; }
+    label { display: block; margin-top: 8px; color: #8b949e; }
+    input[type=text], input[type=number], select {
+             width: 100%; box-sizing: border-box; padding: 4px 6px;
+             background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; }
+    button { margin: 10px 6px 0 0; padding: 5px 14px; border: none; border-radius: 4px;
+             background: #21262d; color: #c9d1d9; cursor: pointer; }
+    button.primary { background: #1f6feb; color: #fff; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    .radio-row { margin-top: 6px; }
+    .radio-row label { display: inline-block; margin: 0 10px 0 2px; color: #c9d1d9; }
+    #status { margin-top: 12px; padding: 8px; background: #0d1117; border-radius: 4px;
+              white-space: pre-wrap; word-break: break-all; min-height: 60px; font-size: 12px; }
+    .warn { color: #d29922; }
+    .err { color: #f85149; }
+    .okc { color: #3fb950; }
+    h3 { margin: 0 0 4px; font-size: 14px; }
+    .hint { color: #8b949e; font-size: 12px; }
+    table { border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid #30363d; padding: 4px 10px; text-align: right;
+             font-variant-numeric: tabular-nums; }
+    th { background: #161b22; color: #8b949e; }
+    td.miss { color: #f85149; text-align: center; }
+    #meta-summary { margin-top: 8px; color: #8b949e; font-size: 12px; white-space: pre-wrap; }
+    pre { background: #161b22; padding: 10px; border-radius: 4px; overflow: auto; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="panel">
+      <h3>按时间查节点值</h3>
+      <div class="hint">测试 POST /api/odb/{id}/results/node-time-value。独立页面,不影响主 viewer。</div>
+
+      <label>后端地址</label>
+      <input type="text" id="baseUrl" value="http://127.0.0.1:5000" />
+      <label>Project ID / ODB ID</label>
+      <input type="text" id="odbId" value="" />
+      <label>Result Group(project 模式必填)</label>
+      <input type="text" id="resultGroup" value="" />
+
+      <button id="btnMeta">加载元数据</button>
+      <div id="meta-summary"></div>
+
+      <label>Instance</label>
+      <select id="instance"></select>
+      <label>Field(NODAL)</label>
+      <select id="field"></select>
+      <label>Step(留空 = 全局时间)</label>
+      <select id="step"><option value="">（全局时间）</option></select>
+      <label>节点 label(逗号/空格分隔)</label>
+      <input type="text" id="nodeLabels" value="" placeholder="如 1, 2, 3" />
+      <label>时间 time</label>
+      <input type="number" id="time" value="0.5" step="any" />
+      <label>时间匹配策略</label>
+      <div class="radio-row">
+        <input type="radio" name="tm" id="tm-prev" value="prev"><label for="tm-prev">前一帧</label>
+        <input type="radio" name="tm" id="tm-next" value="next"><label for="tm-next">后一帧</label>
+        <input type="radio" name="tm" id="tm-interp" value="interp" checked><label for="tm-interp">插值</label>
+      </div>
+
+      <button class="primary" id="btnQuery">查询</button>
+      <div id="status">就绪。先填 Project ID,点"加载元数据"可自动列出 instance/step/field。</div>
+    </div>
+    <div id="result">
+      <h3>结果</h3>
+      <div id="frames-info" class="hint"></div>
+      <div id="table-holder"></div>
+      <h3 style="margin-top:16px">原始响应</h3>
+      <pre id="raw">-</pre>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const status = (msg, cls) => { const el = $("status"); el.textContent = msg; el.className = cls || ""; };
+
+    function apiBase() {
+      const base = $("baseUrl").value.replace(/\/+$/, "");
+      const odb = encodeURIComponent($("odbId").value.trim());
+      return `${base}/api/odb/${odb}`;
+    }
+    function rgQuery() {
+      const rg = $("resultGroup").value.trim();
+      return rg ? `?result_group=${encodeURIComponent(rg)}` : "";
+    }
+
+    // ── 元数据:meta/overview 填充下拉框 ──────────────────────────────────────
+    $("btnMeta").onclick = async () => {
+      if (!$("odbId").value.trim()) { status("请先填 Project ID / ODB ID", "err"); return; }
+      status("加载元数据…");
+      try {
+        const resp = await fetch(`${apiBase()}/meta/overview${rgQuery()}`);
+        const body = await resp.json();
+        if (!resp.ok || body.code !== 200) throw new Error(body.message || `HTTP ${resp.status}`);
+        const d = body.data || {};
+        const instances = d.instances || [];
+        const steps = d.steps || [];
+        // 只列出含 NODAL 位置的场
+        const fields = (d.fields || []).filter(f => (f.positions || []).includes("NODAL"));
+
+        $("instance").innerHTML = instances.map(i =>
+          `<option>${i.instance_name}</option>`).join("");
+        $("step").innerHTML = `<option value="">（全局时间）</option>` + steps.map(s =>
+          `<option value="${s.step_name}">${s.step_name} (${s.procedure}, ${s.num_frames}帧)</option>`).join("");
+        $("field").innerHTML = fields.map(f => {
+          const inv = (f.invariants || []).length ? ` +${(f.invariants || []).join("/")}` : "";
+          return `<option value="${f.field_name}">${f.field_name} [${(f.components || []).join(",") || "标量"}]${inv}</option>`;
+        }).join("");
+        $("meta-summary").textContent =
+          `${instances.length} instance / ${steps.length} step / ${fields.length} NODAL field`;
+        status("元数据已加载。", "okc");
+      } catch (e) { status(`加载失败:${e.message}`, "err"); }
+    };
+
+    // ── 查询 ──────────────────────────────────────────────────────────────────
+    $("btnQuery").onclick = async () => {
+      const labels = $("nodeLabels").value.split(/[\s,;]+/).filter(Boolean).map(Number);
+      if (!$("odbId").value.trim()) { status("请先填 Project ID / ODB ID", "err"); return; }
+      if (!labels.length || labels.some(isNaN)) { status("节点 label 格式不对", "err"); return; }
+      const bodyReq = {
+        instance: $("instance").value,
+        field: $("field").value,
+        node_labels: labels,
+        time: parseFloat($("time").value),
+        step: $("step").value || null,
+        time_match: document.querySelector("input[name=tm]:checked").value,
+        result_group: $("resultGroup").value.trim() || null,
+      };
+      status("查询中…");
+      $("raw").textContent = "-"; $("table-holder").innerHTML = ""; $("frames-info").textContent = "";
+      try {
+        const resp = await fetch(`${apiBase()}/results/node-time-value`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(bodyReq),
+        });
+        const body = await resp.json();
+        $("raw").textContent = JSON.stringify(body, null, 2);
+        if (!resp.ok || body.code !== 200) throw new Error(body.message || `HTTP ${resp.status}`);
+        render(body.data);
+        status("查询成功。", "okc");
+      } catch (e) { status(`查询失败:${e.message}`, "err"); }
+    };
+
+    function render(d) {
+      const fu = (d.frames_used || []).map(f => {
+        const t = d.time_mode === "global" ? `全局 ${f.global_time}` : `step 内 ${f.step_time}`;
+        return `${f.step} / 帧 ${f.frame_idx}(${t},权重 ${f.weight})`;
+      }).join(" + ");
+      $("frames-info").textContent =
+        `解析方式:${d.resolved_mode} | 时间口径:${d.time_mode === "global" ? "全局" : "step 内局部"}` +
+        ` | 使用帧:${fu} | 时间范围 [${d.time_range.min}, ${d.time_range.max}]`;
+
+      const cols = [...(d.components || []), ...(d.invariants || [])];
+      const head = `<tr><th>节点</th>${cols.map(c => `<th>${c}</th>`).join("")}</tr>`;
+      const rows = (d.nodes || []).map(n => {
+        if (!n.found) return `<tr><td>${n.label}</td><td class="miss" colspan="${cols.length}">不在该 instance</td></tr>`;
+        return `<tr><td>${n.label}</td>${cols.map(c => {
+          const v = n.values[c];
+          return `<td>${v === null || v === undefined ? "—" : Number(v).toPrecision(6)}</td>`;
+        }).join("")}</tr>`;
+      }).join("");
+      $("table-holder").innerHTML = `<table>${head}${rows}</table>`;
+    }
+  </script>
+</body>
+</html>
