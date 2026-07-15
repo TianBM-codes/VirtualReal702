@@ -90,11 +90,25 @@ def _fmt_t(secs):
 
 # ─── manifest.db ──────────────────────────────────────────────────────────────
 
+def _migrate_manifest(conn):
+    """给已存在的旧 manifest.db 补新增列（CREATE TABLE IF NOT EXISTS 对旧表不生效）。"""
+    migrations = {
+        'steps': [('total_time', 'REAL'), ('time_period', 'REAL')],
+    }
+    for table, columns in migrations.items():
+        existing = {r[1] for r in conn.execute(
+            "PRAGMA table_info({})".format(table)).fetchall()}
+        for col, coltype in columns:
+            if col not in existing:
+                conn.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, col, coltype))
+
+
 def init_manifest(workspace):
     db_path = os.path.join(workspace, 'manifest.db')
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.executescript(MANIFEST_SCHEMA)
+    _migrate_manifest(conn)
     conn.commit()
     return conn
 
@@ -664,9 +678,13 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
     # Write steps and frames to manifest.db
     for step_name, sm in steps_meta.items():
         db_conn.execute(
-            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO steps"
+            " (result_group, step_name, step_number, procedure, num_frames,"
+            "  description, nlgeom, total_time, time_period)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (result_group, step_name, sm['step_number'], sm['procedure'], sm['num_frames'],
-             sm.get('description'), sm.get('nlgeom', 0))
+             sm.get('description'), sm.get('nlgeom', 0),
+             sm.get('total_time'), sm.get('time_period'))
         )
         for fm in sm['frames']:
             db_conn.execute(

@@ -1169,12 +1169,16 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
             })
             all_field_names.update(frame.fieldOutputs.keys())
 
+        _tt = getattr(step, 'totalTime', None)
+        _tp = getattr(step, 'timePeriod', None)
         steps_meta[step_name] = {
             'step_number': step_num,
             'procedure':   procedure,
             'num_frames':  num_frames,
             'description': getattr(step, 'description', None),
             'nlgeom':      int(bool(getattr(step, 'nlgeom', False))),
+            'total_time':  float(_tt) if _tt is not None else None,
+            'time_period': float(_tp) if _tp is not None else None,
             'frames':      frames_meta,
         }
         field_list = sorted(all_field_names)
@@ -1764,12 +1768,16 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 'load_case':          str(_lc) if _lc is not None else None,
             })
 
+        _tt = getattr(step, 'totalTime', None)
+        _tp = getattr(step, 'timePeriod', None)
         steps_meta[step_name] = {
             'step_number': step_num,
             'procedure':   procedure,
             'num_frames':  num_frames,
             'description': getattr(step, 'description', None),
             'nlgeom':      int(bool(getattr(step, 'nlgeom', False))),
+            'total_time':  float(_tt) if _tt is not None else None,
+            'time_period': float(_tp) if _tp is not None else None,
             'frames':      frames_meta,
         }
 

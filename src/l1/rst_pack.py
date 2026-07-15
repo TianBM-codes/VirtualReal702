@@ -142,7 +142,9 @@ def pack_rst(rst_path, workspace, result_group='default_result', display_name=No
     db.execute('PRAGMA journal_mode=WAL')
 
     # steps / frames
-    db.execute("INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
+    db.execute("INSERT OR REPLACE INTO steps"
+               " (result_group, step_name, step_number, procedure, num_frames,"
+               "  description, nlgeom) VALUES (?,?,?,?,?,?,?)",
                (result_group, step_name, 1, procedure, nsets, display_name, 0))
     for fi in range(nsets):
         is_modal = (procedure == 'FREQUENCY')

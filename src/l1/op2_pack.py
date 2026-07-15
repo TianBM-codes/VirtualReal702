@@ -497,7 +497,9 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
 
         # steps
         db_conn.execute(
-            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO steps"
+            " (result_group, step_name, step_number, procedure, num_frames,"
+            "  description, nlgeom) VALUES (?,?,?,?,?,?,?)",
             (result_group, step_name, step_number, procedure, n_frames, None, None),
         )
 

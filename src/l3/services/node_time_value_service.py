@@ -89,6 +89,11 @@ def _build_timeline(repo: ManifestRepo, step: Optional[str],
     offset = 0.0
     for srow in steps:
         sname = srow["step_name"]
+        # 新数据（L1 已提取 step.totalTime）直接用精确的 step 起始全局时间；
+        # 旧数据没有该列/为 NULL 时退回"各 step 末帧时间累加"的推算
+        exact_start = srow.get("total_time")
+        if exact_start is not None:
+            offset = float(exact_start)
         frames = repo.get_frames(sname, result_group)
         step_times = [float(r["frame_value"] or 0.0) for r in frames]
         for row, t in zip(frames, step_times):
@@ -96,8 +101,12 @@ def _build_timeline(repo: ManifestRepo, step: Optional[str],
                 "step": sname, "frame_idx": int(row["frame_idx"]),
                 "step_time": t, "global_time": offset + t, "time": offset + t,
             })
-        # step 时长 = 该 step 最大帧时间（静力默认 1.0）；无帧则不推进
-        offset += max(step_times) if step_times else 0.0
+        # 推进到下一 step 的起点：优先精确时长 timePeriod，否则用最大帧时间推算
+        period = srow.get("time_period")
+        if period is not None:
+            offset += float(period)
+        else:
+            offset += max(step_times) if step_times else 0.0
     if not points:
         raise NotFoundError("No frames found in any STATIC/DYNAMIC step",
                             {"result_group": result_group})

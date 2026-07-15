@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS steps (
     num_frames   INTEGER,
     description  TEXT,
     nlgeom       INTEGER,
+    total_time   REAL,   -- step 开始时的累计分析总时间（odb step.totalTime；旧数据为 NULL）
+    time_period  REAL,   -- 该 step 的时长（odb step.timePeriod；旧数据为 NULL）
     PRIMARY KEY (result_group, step_name)
 );
 CREATE TABLE IF NOT EXISTS frames (

@@ -16,6 +16,7 @@ INSTANCE = "PART-1-1"
 def _setup_manifest(workspace: Path, steps: list, fields: dict) -> None:
     """
     steps:  [(step_name, step_number, procedure, [frame_value, ...]), ...]
+            或带精确时间的 6 元组 (..., total_time, time_period)
     fields: {field_name: {"components": [...], "invariants": [...]}}
             每个 field 在所有 step 注册 NODAL block。
     """
@@ -25,11 +26,14 @@ def _setup_manifest(workspace: Path, steps: list, fields: dict) -> None:
             "INSERT OR REPLACE INTO instances (instance_name, part_name, geom_path) VALUES (?,?,?)",
             (INSTANCE, "PART-1", f"l1/geometry/{INSTANCE}.h5"),
         )
-        for step_name, step_number, procedure, frame_values in steps:
+        for entry in steps:
+            step_name, step_number, procedure, frame_values = entry[:4]
+            total_time, time_period = (entry[4], entry[5]) if len(entry) > 4 else (None, None)
             conn.execute(
-                "INSERT INTO steps (result_group, step_name, step_number, procedure, num_frames)"
-                " VALUES (NULL,?,?,?,?)",
-                (step_name, step_number, procedure, len(frame_values)),
+                "INSERT INTO steps (result_group, step_name, step_number, procedure,"
+                " num_frames, total_time, time_period) VALUES (NULL,?,?,?,?,?,?)",
+                (step_name, step_number, procedure, len(frame_values),
+                 total_time, time_period),
             )
             for fi, fv in enumerate(frame_values):
                 conn.execute(
@@ -217,6 +221,42 @@ def test_global_time_spans_steps_and_skips_frequency(two_step_ws):
     assert out["nodes"][0]["values"]["MISES"] == pytest.approx(200.0)
     # 全局时间范围 [0, 2]，FREQUENCY step 的 100/200 没被当成时间
     assert out["time_range"] == {"min": 0.0, "max": 2.0}
+
+
+def test_global_time_prefers_exact_step_times(workspace, make_registry):
+    """
+    Step-1 中途中止：帧只到 0.7,但精确 time_period=1.0 → Step-2 起点应是 1.0。
+    若走推算(末帧累加)Step-2 起点会错成 0.7。
+    """
+    (workspace / "manifest.db").unlink()
+    _setup_manifest(
+        workspace,
+        steps=[
+            ("Step-1", 1, "STATIC", [0.0, 0.7], 0.0, 1.0),
+            ("Step-2", 2, "STATIC", [0.0, 1.0], 1.0, 1.0),
+        ],
+        fields={"U": {"components": ["U1"], "invariants": []}},
+    )
+    labels = np.array([10], dtype=np.int32)
+    _write_result(workspace, "Step-1", "U", labels,
+                  np.array([[[0.0]], [[7.0]]], dtype=np.float32))
+    _write_result(workspace, "Step-2", "U", labels,
+                  np.array([[[10.0]], [[30.0]]], dtype=np.float32))
+    registry = make_registry(workspace)
+
+    # 全局 1.5 = Step-2 局部 0.5(精确口径);推算口径会当成 Step-2 局部 0.8
+    out = get_node_time_value(registry, "odb", INSTANCE, "U", [10],
+                              time=1.5, step=None, time_match="interp")
+    assert all(f["step"] == "Step-2" for f in out["frames_used"])
+    assert out["nodes"][0]["values"]["U1"] == pytest.approx(20.0)
+    # 时间轴终点 = Step-2 起点 1.0 + 末帧 1.0
+    assert out["time_range"] == {"min": 0.0, "max": 2.0}
+
+    # 全局 0.85 落在 Step-1 末帧(0.7)和 Step-2 首帧(1.0)之间 → 跨 step 插值
+    out2 = get_node_time_value(registry, "odb", INSTANCE, "U", [10],
+                               time=0.85, step=None, time_match="interp")
+    assert [f["step"] for f in out2["frames_used"]] == ["Step-1", "Step-2"]
+    assert out2["nodes"][0]["values"]["U1"] == pytest.approx(8.5)  # 7→10 中点
 
 
 def test_global_time_on_step_boundary_degenerates_to_exact(two_step_ws):
