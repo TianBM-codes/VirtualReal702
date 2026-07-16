@@ -721,20 +721,27 @@ CREATE TABLE result_files (
 );
 
 -- 每个结果文件内的 DataBlock 目录
--- （按 instance × position × elem_type 分块，查结果块不需要扫描文件）
+-- （按 instance × position × elem_type × 截面点分块，查结果块不需要扫描文件）
 CREATE TABLE result_blocks (
+  result_group  TEXT,     -- 结果组（project 模式）；几何管道打包时为 NULL，
+                          -- 由 job_runner 完成后统一打上 'default_result'
   step_name     TEXT,
   field_name    TEXT,
   instance_name TEXT,
   position      TEXT,     -- 'NODAL', 'INTEGRATION_POINT', 'ELEMENT_NODAL'
   elem_type     TEXT,     -- NULL 表示 NODAL（不区分单元类型）
+  sp_num        INTEGER NOT NULL DEFAULT -1,
+                          -- 壳截面点编号（sp1=底面等）；-1 = 无截面点。
+                          -- 壳单元同一 elem_type 会有多个 sp 块（如 sp1/sp5），
+                          -- 必须入主键，否则多块互撞（见 2026-07 sp_num 迁移）
   h5_path       TEXT,     -- 文件内 Instance 组路径，如 '/NODAL/Part-1-1'（不含 /data）
+                          -- 有截面点时带 /spN 后缀，如 '/ELEMENT_NODAL/P-1/S4R/sp1'
                           -- 查询时拼接：f"{h5_path}/data" 或 f"{h5_path}/invariants"
   label_path    TEXT,     -- 对应 labels 数组路径，如 '/NODAL/Part-1-1/labels'
   n_entities    INTEGER,  -- N（节点数）或 M（单元数）
   n_ip          INTEGER,  -- 积分点数，NODAL 时为 NULL
   n_sp          INTEGER,  -- 截面点数，非壳单元时为 NULL
-  PRIMARY KEY (step_name, field_name, instance_name, position, elem_type)
+  PRIMARY KEY (result_group, step_name, field_name, instance_name, position, elem_type, sp_num)
 );
 
 -- 集合目录

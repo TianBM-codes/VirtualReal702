@@ -136,7 +136,7 @@ Central routing registry — no filesystem scanning at runtime.
 | `steps` | `step_name, procedure (STATIC\|FREQUENCY\|DYNAMIC\|BUCKLE), num_frames` |
 | `frames` | `step_name, frame_idx, frame_value, description` |
 | `result_files` | `step_name, field_name, file_path, components, positions` |
-| `result_blocks` | `step_name, field_name, instance_name, position, elem_type, h5_path` |
+| `result_blocks` | `step_name, field_name, instance_name, position, elem_type, sp_num, h5_path` |
 | `node_sets / element_sets` | `set_name, instance_name, h5_path` |
 | `user_sets` | `set_name, set_scope, user_set_instances` (compressed BLOB) |
 
