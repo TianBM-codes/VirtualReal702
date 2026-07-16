@@ -1056,7 +1056,7 @@ h5py IO：await run_in_threadpool(_read)  # 防事件循环阻塞
 ── 服务启动 ─────────────────────────────────────────────────────
   · 加载 registry.db
   · register 所有 status IN ('ready', 'l1_done') 的 ODB（仅登记路径，不读盘）
-  · 仅预加载 created_at 最新的 N 个（N = APP_MAX_LOADED_PROJECTS，默认 10）
+  · 仅预加载 created_at 最新的 N 个（N = APP_PRELOAD_PROJECTS，默认 3）
     其余首次访问时按需加载，超上限驱逐 LRU（见 8.5）
   · 启动 FastAPI（gunicorn 4 workers）
   注：job-runner 作为独立进程单独启动，不在此处启动（见第 8 章）
@@ -1107,7 +1107,7 @@ Step 2：ingest.py（纯 Python，不依赖 Abaqus license）
 | 节点时程（30帧）| L1 results 文件列切片（一次 IO）| < 10ms |
 | 3D bbox 查询 | cKDTree + 八叉树粗筛 | < 50ms |
 | 点击拾取 | render_face_idx → manifest | < 5ms |
-| 服务启动 | 仅预加载最新 N 个（N=APP_MAX_LOADED_PROJECTS） | 30-60s/ODB × min(N, 项目数) |
+| 服务启动 | 仅预加载最新 N 个（N=APP_PRELOAD_PROJECTS，默认 3） | 30-60s/ODB × min(N, 项目数) |
 | 首次访问未驻留项目 | 按需 materialize | 30-60s（一次性，之后常驻） |
 | 常驻内存（每 worker） | 索引 + 坐标 + KDTree | ~42B/三角面 + 12B/节点，上限 N 个 |
 
@@ -1248,7 +1248,17 @@ GET /api/odb/{odb_id}/query/pick?render_face_idx=<n>
 - `_known`：所有可服务的 ODB/project → `(workspace, status)`，仅一条 dict 记录，数量无关紧要。
 - `loaded`：真正常驻内存的 ModelIndex，`OrderedDict` 兼作 LRU 队列，超出上限驱逐最久未用者。
 
-**启动**：注册全部，仅预加载 `created_at` 最新的 N 个（N = 上限）。
+**两个参数，各管各的**（不要合并——曾经合并过，调大上限会连带拖慢启动）：
+
+| 参数 | 含义 | 默认 |
+|---|---|---|
+| `APP_MAX_LOADED_PROJECTS` | 常驻上限，LRU 超出即驱逐。定的是**缓存够不够，会不会抖动** | 10 |
+| `APP_PRELOAD_PROJECTS` | 启动时预加载最新几个。定的是**启动要等多久**（每个大模型 30–60s） | 3 |
+
+`preload = clamp(APP_PRELOAD_PROJECTS, 0, APP_MAX_LOADED_PROJECTS)`。
+钳到上限是因为预加载超过上限会「加载完立刻被驱逐」，白费 IO。0 = 全懒加载，启动最快。
+
+**启动**：注册全部（仅 dict 写入），预加载 `created_at` 最新的 preload 个。
 预加载按**由旧到新**灌入，使最新项目落在 MRU 端——否则最新项目反而会被最先驱逐。
 
 **运行时**：`get()` 按需加载，未命中即materialize；轮询线程只 `register()` + `peek()`，
@@ -1289,7 +1299,7 @@ class OdbRegistry:
 ```
 1. 加载 registry.db
 2. register 全部 status IN ('ready','l1_done') 的 ODB/project（仅 dict 写入,不读盘）
-3. 按 created_at 取最新 N 个（N = APP_MAX_LOADED_PROJECTS）预加载,由旧到新灌入
+3. 按 created_at 取最新 N 个（N = APP_PRELOAD_PROJECTS，钳到 MAX 上限）预加载,由旧到新灌入
 4. 启动 FastAPI；Job-Runner 作为独立进程启动（与 gunicorn 完全分离）
 ```
 

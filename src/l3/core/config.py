@@ -59,9 +59,19 @@ class Settings:
 
         # Max ODB/project ModelIndex objects held in RAM at once, per process.
         # A 10M-node model costs ~1.4 GB, so this is the memory ceiling knob.
-        # Startup preloads the newest `max_loaded_projects` and registers the
-        # rest; anything else loads on first access and evicts LRU.
+        # Anything not resident loads on first access and evicts LRU.
         self.max_loaded_projects = max(1, int(_get(cfg, "APP_MAX_LOADED_PROJECTS", "10")))
+
+        # How many of the newest projects to load *at startup*. Deliberately
+        # separate from the cap: the cap sizes the cache to avoid LRU thrashing,
+        # while every preloaded project is startup time paid up front (30-60s
+        # each for a large model) for something the user may never open. 0 = load
+        # nothing eagerly. Clamped to the cap — preloading past it would load and
+        # then immediately evict, spending the IO for nothing.
+        self.preload_projects = min(
+            max(0, int(_get(cfg, "APP_PRELOAD_PROJECTS", "3"))),
+            self.max_loaded_projects,
+        )
 
         # Dev mode: directly specify a single workspace without registry.db
         self.odb_workspace = _get(cfg, "APP_ODB_WORKSPACE", "")
@@ -109,6 +119,8 @@ def log_startup_config() -> None:
         f"  abaqus_cmd        : {settings.abaqus_cmd}",
         f"  embedded_runner   : {settings.embedded_runner}",
         f"  runner_poll_interval: {settings.runner_poll_interval}s",
+        f"  preload_projects  : {settings.preload_projects}   (startup load)",
+        f"  max_loaded_projects: {settings.max_loaded_projects}   (LRU cap)",
         f"  log_level         : {settings.log_level}",
         f"  enable_gzip       : {settings.enable_gzip}",
     ]

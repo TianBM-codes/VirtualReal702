@@ -160,10 +160,12 @@ def _bootstrap_registry() -> None:
 
     # created_at is an ISO-8601 string, so a plain string sort is chronological.
     candidates.sort(key=lambda c: c[0], reverse=True)
-    preload = candidates[:settings.max_loaded_projects]
+    preload = candidates[:settings.preload_projects]
     logger.info(
-        "Registered %d workspace(s); preloading the %d newest (cap=%d)",
-        len(candidates), len(preload), settings.max_loaded_projects,
+        "Registered %d workspace(s); preloading the %d newest "
+        "(APP_PRELOAD_PROJECTS=%d, APP_MAX_LOADED_PROJECTS=%d)",
+        len(candidates), len(preload),
+        settings.preload_projects, settings.max_loaded_projects,
     )
     # Oldest-first, so the newest lands at the most-recently-used end of the LRU
     # queue. Loading newest-first would make the newest project the first victim.
