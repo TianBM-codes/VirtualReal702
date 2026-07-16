@@ -42,7 +42,21 @@ DB_CONFIG = {
     "password": str(_cfg(_SERVICE_CONFIG, "DB_PASSWORD", "sipesc")),
     "database": str(_cfg(_SERVICE_CONFIG, "DB_DATABASE", "db_simu_real_test")),
     "charset": str(_cfg(_SERVICE_CONFIG, "DB_CHARSET", "utf8mb4")),
+    # MySQLConnectionPool opens `pool_size` real connections when it is built,
+    # so this value is also the startup cost of the first DB touch.
+    "pool_size": max(1, int(_cfg(_SERVICE_CONFIG, "DB_POOL_SIZE", 10))),
+    # Without this, an unreachable DB_HOST blocks on the OS TCP timeout
+    # (~21s per attempt on Windows) instead of failing fast.
+    "connect_timeout": max(1, int(_cfg(_SERVICE_CONFIG, "DB_CONNECT_TIMEOUT", 5))),
 }
+
+# DDL reconciliation (63 CREATE TABLE + ~50 information_schema probes) runs on
+# every boot. Set DB_ENSURE_TABLES=0 once the schema is settled to skip it.
+DB_ENSURE_TABLES = _cfg_bool(_SERVICE_CONFIG, "DB_ENSURE_TABLES", True)
+
+# Blocking DB work during startup. 0 = defer to the first request that needs it,
+# so the HTTP server (and the ODB viewer routes) come up even if MySQL is down.
+DB_INIT_ON_STARTUP = _cfg_bool(_SERVICE_CONFIG, "DB_INIT_ON_STARTUP", True)
 
 APP_CONFIG = {
     "host": str(_cfg(_SERVICE_CONFIG, "APP_HOST", "0.0.0.0")),

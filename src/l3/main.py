@@ -222,7 +222,9 @@ def _start_poll_thread() -> None:
 async def lifespan(app: FastAPI):
     from .core.config import log_startup_config
     log_startup_config()
+    _t0 = time.perf_counter()
     _bootstrap_registry()
+    logger.info("Registry bootstrap finished in %.2fs", time.perf_counter() - _t0)
     _start_poll_thread()
     if settings.embedded_runner:
         from .infra.runner_thread import start_embedded_runner
