@@ -253,38 +253,14 @@ def _resolve_sensitivity_frame_alias(field: str, frame_idx: int) -> Tuple[str, i
     return match.group("field"), int(match.group("frame"))
 
 
-def _result_h5_path(workspace: str, step: str, field: str,
-                    result_group: str = None) -> str:
-    def safe(s):
-        return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
-    fname = "{}__{}.h5".format(safe(step), safe(field))
-    if result_group:
-        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
-    return os.path.join(workspace, "l1", "results", fname)
-
-
 def _manifest_result_h5_path(workspace: str, step: str, field: str,
                               result_group: str = None) -> str:
     """
     Get result H5 path from manifest.db file_path column (authoritative),
-    falling back to _result_h5_path if no manifest entry exists.
-
-    Also tries result_group=NULL as a secondary fallback so that legacy
-    ODB projects whose result_files rows were only partially migrated
-    (result_group column still NULL) can still be served correctly.
+    falling back to convention-based path building. 实现已下沉到
+    ManifestRepo.result_h5_abspath，与 node_table/query/node_time_value 共用。
     """
-    try:
-        manifest = ManifestRepo(workspace)
-        rf = manifest.get_result_file(step, field, result_group)
-        if rf is None and result_group is not None:
-            # Partial migration: result_files row still has NULL result_group
-            rf = manifest.get_result_file(step, field, None)
-        if rf and rf["file_path"]:
-            rel = rf["file_path"].replace("\\", os.sep).replace("/", os.sep)
-            return os.path.join(workspace, rel)
-    except Exception:
-        pass
-    return _result_h5_path(workspace, step, field, result_group)
+    return ManifestRepo(workspace).result_h5_abspath(step, field, result_group)
 
 
 def _should_force_flat_external_element_render(

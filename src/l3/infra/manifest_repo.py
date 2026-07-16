@@ -71,6 +71,38 @@ class ManifestRepo:
             return os.path.join(self.workspace, row["geom_path"])
         return None
 
+    def result_h5_abspath(self, step: str, field: str,
+                          result_group: str = None) -> str:
+        """
+        Resolve the absolute result HDF5 path for (step, field, result_group).
+
+        manifest 的 result_files.file_path 是权威路径，必须优先用它：
+        adopt 型 default_result（几何管道直出的 ODB 结果）打包时 result_group
+        还是 NULL，文件落在 l1/results/ 根目录、没有 result_group 子目录，
+        按 result_group 拼子目录会 miss。file_path 查不到时才退回约定拼路径。
+
+        Also tries result_group=NULL as a secondary fallback so that legacy
+        ODB projects whose result_files rows were only partially migrated
+        (result_group column still NULL) can still be served correctly.
+        """
+        try:
+            rf = self.get_result_file(step, field, result_group)
+            if rf is None and result_group is not None:
+                rf = self.get_result_file(step, field, None)
+            if rf and rf["file_path"]:
+                rel = rf["file_path"].replace("\\", os.sep).replace("/", os.sep)
+                return os.path.join(self.workspace, rel)
+        except Exception:
+            pass
+
+        def safe(s):
+            return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
+        fname = "{}__{}.h5".format(safe(step), safe(field))
+        if result_group:
+            return os.path.join(self.workspace, "l1", "results",
+                                safe(result_group), fname)
+        return os.path.join(self.workspace, "l1", "results", fname)
+
     @staticmethod
     def _rg_clause(result_group, prefix=""):
         """生成 result_group 过滤子句和参数。
