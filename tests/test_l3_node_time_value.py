@@ -268,3 +268,46 @@ def test_global_time_on_step_boundary_degenerates_to_exact(two_step_ws):
     assert out["resolved_mode"] == "exact"
     assert len(out["frames_used"]) == 1
     assert out["nodes"][0]["values"]["S11"] == pytest.approx(10.0)
+
+
+# ── FREQUENCY 步：frame_value 是模态阶次/频率，不是时间 ────────────────────────
+
+@pytest.fixture
+def frequency_step_ws(workspace, make_registry):
+    """Modal (FREQUENCY)，frame_value [0, 1, 2]（基态 + 两阶模态），场 U。"""
+    (workspace / "manifest.db").unlink()
+    _setup_manifest(
+        workspace,
+        steps=[("Modal", 1, "FREQUENCY", [0.0, 1.0, 2.0])],
+        fields={"U": {"components": ["U1", "U2", "U3"], "invariants": []}},
+    )
+    labels = np.array([10], dtype=np.int32)
+    data = np.array(
+        [[[0.0, 0.0, 0.0]], [[10.0, 0.0, 0.0]], [[20.0, 0.0, 0.0]]],
+        dtype=np.float32,
+    )
+    _write_result(workspace, "Modal", "U", labels, data)
+    return make_registry(workspace)
+
+
+def test_frequency_step_rejects_interp_between_modes(frequency_step_ws):
+    """两个模态振型之间插值无物理意义，落在两帧之间的 interp 必须报 400。"""
+    with pytest.raises(ValidationError, match="FREQUENCY"):
+        get_node_time_value(frequency_step_ws, "odb", INSTANCE, "U", [10],
+                            time=0.5, step="Modal", time_match="interp")
+
+
+def test_frequency_step_allows_exact_prev_next(frequency_step_ws):
+    # 精确命中某阶 → interp 退化为 exact，放行
+    out = get_node_time_value(frequency_step_ws, "odb", INSTANCE, "U", [10],
+                              time=1.0, step="Modal", time_match="interp")
+    assert out["resolved_mode"] == "exact"
+    assert out["nodes"][0]["values"]["U1"] == pytest.approx(10.0)
+
+    # prev/next 按阶次轴取最近一帧，有意义，放行
+    prev = get_node_time_value(frequency_step_ws, "odb", INSTANCE, "U", [10],
+                               time=1.5, step="Modal", time_match="prev")
+    assert prev["frames_used"][0]["frame_idx"] == 1
+    nxt = get_node_time_value(frequency_step_ws, "odb", INSTANCE, "U", [10],
+                              time=1.5, step="Modal", time_match="next")
+    assert nxt["frames_used"][0]["frame_idx"] == 2

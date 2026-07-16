@@ -24,6 +24,10 @@ Node time-value query service.
   越界规则：time 早于第一帧时 prev/interp 报 400（next 取第一帧）；
   晚于最后一帧时 next/interp 报 400（prev 取最后一帧）。
 
+  显式传 FREQUENCY/BUCKLE 步时，"time" 轴实际是 frame_value（模态阶次/
+  频率/特征值）：exact/prev/next 按该轴取最近一帧有意义，interp 落在
+  两帧之间时报 400（两个模态振型插值无物理意义）。
+
 值的读取方式与 node_table_service 相同：L1 结果 HDF5 的
 /NODAL/<instance>/{data,labels}，label → 行号用排序 + searchsorted。
 """
@@ -248,6 +252,20 @@ def get_node_time_value(
 
     points, time_mode = _build_timeline(repo, step, result_group)
     selection, resolved_mode = _resolve_frames(points, float(time), time_match)
+
+    # FREQUENCY/BUCKLE 步的 frame_value 是模态阶次/频率/特征值，不是时间：
+    # 按该轴取最近一帧（exact/prev/next）有意义，但两个模态振型之间做线性
+    # 插值在物理上没有意义，直接拒绝并提示改用 prev/next
+    if step is not None and resolved_mode == "interp":
+        sinfo = repo.get_step_info(step, result_group) or {}
+        proc = (sinfo.get("procedure") or "").upper()
+        if proc not in _TIME_PROCEDURES:
+            raise ValidationError(
+                f"Step '{step}' is a {proc} step: frame_value is a mode/frequency"
+                f"/eigenvalue axis, not time — interpolating between mode shapes"
+                f" is not meaningful. Use time_match='prev' or 'next', or pass an"
+                f" exact frame_value as time.",
+                {"step": step, "procedure": proc, "time_match": time_match})
     involved_steps = []
     for point, _w in selection:
         if point["step"] not in involved_steps:
