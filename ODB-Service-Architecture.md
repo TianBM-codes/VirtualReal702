@@ -1293,6 +1293,17 @@ class OdbRegistry:
 4. 启动 FastAPI；Job-Runner 作为独立进程启动（与 gunicorn 完全分离）
 ```
 
+**上限设小了会静默降级，因此内置抖动告警**：
+活跃项目数一旦超过上限，LRU 每次驱逐的恰好是下一个要用的，命中率不是缓慢下滑而是
+**断崖归零**（实测 cap=5：5 个活跃项目命中率 97.5%，第 6 个加进来直接变 0%，每次访问
+都重读 L2）。`_note_reload_locked` 检测「驱逐后 300s 内又被重新加载」并 WARNING
+（每 60s 最多一条），提示调大 `APP_MAX_LOADED_PROJECTS`。
+
+**上限约束的是常驻集，不是内存峰值**：
+驱逐只是从 `loaded` 移除引用，在途请求仍持有该 ModelIndex。N 个并发请求打 N 个不同
+项目时，N 个 ModelIndex 同时存活，峰值 ≈ max(上限, 并发不同项目数) × 单项目大小。
+容量规划要按后者估，不能只看上限。
+
 **注意 CoW 的实际收益有限**：
 - Windows 无 fork（spawn），worker 间零共享，CoW 那套省内存的算盘不成立。
 - 即使 Linux，也只有 `_bootstrap_registry` 期间预加载的那批享受 CoW；

@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import time
 from collections import OrderedDict
 import h5py
 import numpy as np
@@ -9,6 +10,12 @@ from typing import Dict, Optional, Tuple
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+# Thrash detection: an ODB evicted and then reloaded within this window means
+# the active set is larger than the cap, so the LRU is buying nothing.
+_THRASH_WINDOW_S = 300.0
+# Thrashing produces one event per access; report at most this often.
+_THRASH_LOG_INTERVAL_S = 60.0
 
 
 class ModelIndex:
@@ -193,6 +200,14 @@ class OdbRegistry:
         self.max_loaded = max(1, int(
             settings.max_loaded_projects if max_loaded is None else max_loaded))
 
+        # Thrash detection state: odb_id -> monotonic time it was evicted.
+        self._evicted_at: "OrderedDict[str, float]" = OrderedDict()
+        self._thrash_events = 0
+        # None = never logged. Not 0.0: time.monotonic() counts from boot, so on
+        # a freshly started container it is small enough that `now - 0.0` would
+        # fall inside the rate-limit window and swallow the first warning.
+        self._last_thrash_log: Optional[float] = None
+
     def register(self, odb_id: str, workspace: str, status: str) -> None:
         """
         Record that an ODB exists and where, without reading a single byte.
@@ -245,6 +260,7 @@ class OdbRegistry:
             with self._lock:
                 self.loaded[odb_id] = idx
                 self.loaded.move_to_end(odb_id)
+                self._note_reload_locked(odb_id)
                 self._evict_locked()
             return idx
 
@@ -254,9 +270,44 @@ class OdbRegistry:
             victim_id, _ = self.loaded.popitem(last=False)
             # An in-flight request may still hold a reference; refcounting frees
             # the arrays once it returns. A later get() simply reloads it.
+            self._evicted_at[victim_id] = time.monotonic()
+            self._evicted_at.move_to_end(victim_id)
+            # Only recent evictions can prove thrashing — keep the map bounded.
+            while len(self._evicted_at) > 4 * self.max_loaded:
+                self._evicted_at.popitem(last=False)
             logger.info(
                 "Evicted ODB %s from memory (LRU, cap=%d)", victim_id, self.max_loaded
             )
+
+    def _note_reload_locked(self, odb_id: str) -> None:
+        """
+        Warn when the working set outgrows the cap. Caller must hold `_lock`.
+
+        Reloading an ODB shortly after evicting it means the LRU is evicting
+        exactly what is about to be needed — hit rate collapses to ~0 and every
+        access re-reads L2 from disk. That degrades silently, so say it out loud.
+        """
+        evicted_at = self._evicted_at.pop(odb_id, None)
+        if evicted_at is None:
+            return
+        now = time.monotonic()
+        if now - evicted_at > _THRASH_WINDOW_S:
+            return          # a genuinely cold project coming back, not thrashing
+
+        self._thrash_events += 1
+        if (self._last_thrash_log is not None
+                and now - self._last_thrash_log < _THRASH_LOG_INTERVAL_S):
+            return          # rate-limit: thrashing fires on every access
+        self._last_thrash_log = now
+        logger.warning(
+            "ODB %s reloaded %.0fs after eviction — %d thrash event(s) so far. "
+            "The active set exceeds APP_MAX_LOADED_PROJECTS=%d, so cached "
+            "projects are evicted before reuse and every access re-reads L2 "
+            "from disk. Raise the cap above the number of concurrently active "
+            "projects (each costs ~42 B/triangle + 12 B/node).",
+            odb_id, now - evicted_at, self._thrash_events, self.max_loaded,
+        )
+        self._thrash_events = 0
 
     def get(self, odb_id: str) -> Optional[ModelIndex]:
         """
