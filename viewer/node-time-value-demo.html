@@ -60,7 +60,8 @@
       <label>Field(NODAL,按上面 instance/step 过滤)</label>
       <select id="field"></select>
       <label>节点 label(逗号/空格分隔)</label>
-      <input type="text" id="nodeLabels" value="" placeholder="如 1, 2, 3" />
+      <input type="text" id="nodeLabels" value="" placeholder="选 instance 后自动预填" />
+      <div class="hint" id="node-hint"></div>
       <label>时间 time</label>
       <input type="number" id="time" value="0.5" step="any" />
       <label>时间匹配策略</label>
@@ -123,6 +124,7 @@
           `${instances.length} instance / ${metaSteps.length} step`;
         status("元数据已加载。", "okc");
         await refreshFields();
+        await refreshNodeHint();
       } catch (e) { status(`加载失败:${e.message}`, "err"); }
     };
 
@@ -177,7 +179,26 @@
       } catch (e) { status(`字段列表加载失败:${e.message}`, "err"); }
     }
 
-    $("instance").onchange = refreshFields;
+    // ── 节点号提示:GET /geometry/{instance}/node-labels ──────────────────────
+    // 节点编号不一定从 1 开始(常见部件偏移如 30050001 起),
+    // 展示真实范围并预填前几个,避免瞎猜 label 查出一排 found=false
+    async function refreshNodeHint() {
+      const inst = $("instance").value;
+      const hint = $("node-hint");
+      if (!inst) { hint.textContent = ""; return; }
+      try {
+        const resp = await fetch(
+          `${apiBase()}/geometry/${encodeURIComponent(inst)}/node-labels?limit=5`);
+        const body = await resp.json();
+        if (!resp.ok || body.code !== 200) throw new Error(body.message || `HTTP ${resp.status}`);
+        const d = body.data;
+        hint.textContent = `共 ${d.total} 个节点,编号 ${d.label_min} ~ ${d.label_max}`;
+        if (!$("nodeLabels").value.trim())
+          $("nodeLabels").value = d.labels.slice(0, 3).join(", ");
+      } catch (e) { hint.textContent = `节点列表加载失败:${e.message}`; }
+    }
+
+    $("instance").onchange = () => { refreshFields(); refreshNodeHint(); };
     $("step").onchange = refreshFields;
 
     // ── 查询 ──────────────────────────────────────────────────────────────────
