@@ -57,6 +57,12 @@ class Settings:
         self.default_chunk_size = int(_get(cfg, "APP_DEFAULT_CHUNK_SIZE", "50000"))
         self.gunicorn_workers   = int(_get(cfg, "APP_GUNICORN_WORKERS",   "4"))
 
+        # Max ODB/project ModelIndex objects held in RAM at once, per process.
+        # A 10M-node model costs ~1.4 GB, so this is the memory ceiling knob.
+        # Startup preloads the newest `max_loaded_projects` and registers the
+        # rest; anything else loads on first access and evicts LRU.
+        self.max_loaded_projects = max(1, int(_get(cfg, "APP_MAX_LOADED_PROJECTS", "5")))
+
         # Dev mode: directly specify a single workspace without registry.db
         self.odb_workspace = _get(cfg, "APP_ODB_WORKSPACE", "")
         self.odb_id        = _get(cfg, "APP_ODB_ID",        "")

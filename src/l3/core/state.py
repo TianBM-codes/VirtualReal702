@@ -1,9 +1,12 @@
 import logging
 import os
 import threading
+from collections import OrderedDict
 import h5py
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
+
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -162,38 +165,136 @@ class ModelIndex:
 class OdbRegistry:
     """
     Global singleton registry holding ModelIndex instances.
-    Thread-safe: a Lock protects the loaded dict, which is mutated by both
-    request handlers and the per-worker polling daemon thread.
-    """
-    def __init__(self):
-        self.loaded: Dict[str, ModelIndex] = {}
-        self._lock = threading.Lock()
 
-    def load(self, odb_id: str, workspace: str, status: str):
+    Two-tier by design:
+      - `_known`  : every ODB/project we could serve → (workspace, status).
+                    One dict entry each, so this stays flat regardless of count.
+      - `loaded`  : the ModelIndex objects actually resident in RAM, capped at
+                    `max_loaded` and evicted least-recently-used first.
+
+    A ModelIndex costs roughly 42 B per surface triangle + 12 B per node
+    (~1.4 GB for a 10M-node model), so loading every ready project — as this
+    class used to do — grows without bound and makes startup scale with the
+    project count. `get()` therefore materialises on demand and keeps only the
+    working set.
+
+    Thread-safe. `_lock` guards the dicts and is never held across HDF5 IO;
+    a per-odb_id load lock keeps two concurrent requests from loading the same
+    workspace twice. Lock order is always load-lock → `_lock`, never reversed.
+    """
+    def __init__(self, max_loaded: Optional[int] = None):
+        # Public name kept: tests inject via registry.loaded[id] = idx and
+        # simright_service reads registry.loaded.keys().
+        # OrderedDict doubles as the LRU list — leftmost is least recent.
+        self.loaded: "OrderedDict[str, ModelIndex]" = OrderedDict()
+        self._known: Dict[str, Tuple[str, str]] = {}
+        self._load_locks: Dict[str, threading.Lock] = {}
+        self._lock = threading.Lock()
+        self.max_loaded = max(1, int(
+            settings.max_loaded_projects if max_loaded is None else max_loaded))
+
+    def register(self, odb_id: str, workspace: str, status: str) -> None:
         """
-        Load an ODB into memory.  Called at startup and by the polling thread
-        when a new ready/l1_done job is detected.
-        Skipped silently if workspace does not exist on disk.
+        Record that an ODB exists and where, without reading a single byte.
+        Cheap enough to call for every row on every poll.
         """
         if not os.path.exists(workspace):
             logger.warning(
-                "ODB %s: workspace '%s' not found on disk, skipping load",
+                "ODB %s: workspace '%s' not found on disk, skipping register",
                 odb_id, workspace,
             )
             return
-        idx = ModelIndex(odb_id, workspace)
-        if status == "ready":
-            idx.load_l2_render_data()
         with self._lock:
-            self.loaded[odb_id] = idx
+            self._known[odb_id] = (workspace, status)
+
+    def load(self, odb_id: str, workspace: str, status: str) -> None:
+        """
+        Register an ODB and materialise it now. Used by the startup preload and
+        by callers that must close the poll gap (see GET /api/projects/{id}).
+        """
+        self.register(odb_id, workspace, status)
+        self._materialize(odb_id)
+
+    def _materialize(self, odb_id: str) -> Optional[ModelIndex]:
+        """Load `odb_id` into RAM if known. Heavy IO runs outside `_lock`."""
+        with self._lock:
+            idx = self.loaded.get(odb_id)
+            if idx is not None:
+                self.loaded.move_to_end(odb_id)
+                return idx
+            entry = self._known.get(odb_id)
+            if entry is None:
+                return None
+            load_lock = self._load_locks.get(odb_id)
+            if load_lock is None:
+                load_lock = self._load_locks[odb_id] = threading.Lock()
+
+        with load_lock:
+            # Another thread may have finished loading while we queued here.
+            with self._lock:
+                idx = self.loaded.get(odb_id)
+                if idx is not None:
+                    self.loaded.move_to_end(odb_id)
+                    return idx
+
+            workspace, status = entry
+            idx = ModelIndex(odb_id, workspace)
+            if status == "ready":
+                idx.load_l2_render_data()
+
+            with self._lock:
+                self.loaded[odb_id] = idx
+                self.loaded.move_to_end(odb_id)
+                self._evict_locked()
+            return idx
+
+    def _evict_locked(self) -> None:
+        """Drop LRU entries past the cap. Caller must hold `_lock`."""
+        while len(self.loaded) > self.max_loaded:
+            victim_id, _ = self.loaded.popitem(last=False)
+            # An in-flight request may still hold a reference; refcounting frees
+            # the arrays once it returns. A later get() simply reloads it.
+            logger.info(
+                "Evicted ODB %s from memory (LRU, cap=%d)", victim_id, self.max_loaded
+            )
+
+    def get(self, odb_id: str) -> Optional[ModelIndex]:
+        """
+        Return the ModelIndex, loading it on first use. None only when the id is
+        unknown. Callers see the same contract as the old eager registry.
+        """
+        with self._lock:
+            idx = self.loaded.get(odb_id)
+            if idx is not None:
+                self.loaded.move_to_end(odb_id)
+                return idx
+            if odb_id not in self._known:
+                return None
+        return self._materialize(odb_id)
+
+    def peek(self, odb_id: str) -> Optional[ModelIndex]:
+        """
+        Resident-only lookup — never triggers a load. The poll thread uses this:
+        calling get() there would drag every project back into RAM every 10s.
+        """
+        with self._lock:
+            return self.loaded.get(odb_id)
+
+    def known_ids(self) -> set:
+        """Every id we can serve, resident or not."""
+        with self._lock:
+            return set(self._known) | set(self.loaded)
 
     def upgrade(self, odb_id: str):
         """
-        Supplement an already-loaded ModelIndex with L2 render data after
-        the job transitions from l1_done → ready.
-        The heavy IO runs outside the lock; only the final flag-set is locked.
+        Supplement an ODB with L2 render data after l1_done → ready.
+        If it is not resident there is nothing to patch: the status bump is
+        enough, and the next get() loads it with L2 data included.
         """
         with self._lock:
+            entry = self._known.get(odb_id)
+            if entry is not None:
+                self._known[odb_id] = (entry[0], "ready")
             idx = self.loaded.get(odb_id)
         if idx is None:
             return
@@ -203,15 +304,14 @@ class OdbRegistry:
 
     def unload(self, odb_id: str):
         """
-        Remove an ODB from memory.  Called by DELETE /api/jobs before the DB
-        record is removed so that in-flight requests receive a 404 immediately.
+        Forget an ODB entirely.  Called by DELETE /api/jobs before the DB record
+        is removed, so it must also drop the `_known` entry — otherwise the next
+        get() would happily reload the deleted workspace.
         """
         with self._lock:
             self.loaded.pop(odb_id, None)
-
-    def get(self, odb_id: str) -> Optional[ModelIndex]:
-        with self._lock:
-            return self.loaded.get(odb_id)
+            self._known.pop(odb_id, None)
+            self._load_locks.pop(odb_id, None)
 
 
 # Global singleton instance (initialized during FastAPI lifespan / Gunicorn pre-fork)

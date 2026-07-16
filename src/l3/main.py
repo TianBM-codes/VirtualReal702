@@ -134,31 +134,46 @@ def _bootstrap_registry() -> None:
             logger.exception("Dev mode: failed to load workspace '%s'", ws)
         return
 
-    # Prod mode: load all ready / l1_done jobs from odb_jobs table
+    # Prod mode. Registering is a dict write; loading reads L2 HDF5 into RAM
+    # (~1.4 GB for a 10M-node model). So register everything, then preload only
+    # the newest few — the rest materialise on first access and evict LRU.
+    candidates = []   # (created_at, kind, odb_id, workspace, status)
+
     for row in repo.list_ready_or_l1done():
         odb_id    = row["odb_id"]
         workspace = repo.resolve_workspace(row["workspace"], settings.data_root)
         status    = row["status"]
-        try:
-            registry.load(odb_id, workspace, status)
-            logger.info("Loaded ODB %s (status=%s)", odb_id, status)
-        except Exception:
-            logger.exception("Failed to load ODB %s", odb_id)
+        registry.register(odb_id, workspace, status)
+        candidates.append((row["created_at"] or "", "ODB", odb_id, workspace, status))
 
     # Backfill ODB projects that were processed before result_group registration existed
     _migrate_legacy_odb_results(repo)
 
-    # Load ready projects (geometry parsed, mesh viewable even without result_groups)
+    # Ready projects (geometry parsed, mesh viewable even without result_groups)
     for row in repo.list_projects():
         if row["geom_status"] != "ready":
             continue
         project_id = row["project_id"]
         workspace  = _resolve_project_workspace(row["workspace"], project_id)
+        registry.register(project_id, workspace, "ready")
+        candidates.append((row["created_at"] or "", "project", project_id, workspace, "ready"))
+
+    # created_at is an ISO-8601 string, so a plain string sort is chronological.
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    preload = candidates[:settings.max_loaded_projects]
+    logger.info(
+        "Registered %d workspace(s); preloading the %d newest (cap=%d)",
+        len(candidates), len(preload), settings.max_loaded_projects,
+    )
+    # Oldest-first, so the newest lands at the most-recently-used end of the LRU
+    # queue. Loading newest-first would make the newest project the first victim.
+    for created_at, kind, entry_id, workspace, status in reversed(preload):
         try:
-            registry.load(project_id, workspace, "ready")
-            logger.info("Loaded project %s", project_id)
+            registry.load(entry_id, workspace, status)
+            logger.info("Preloaded %s %s (status=%s, created=%s)",
+                        kind, entry_id, status, created_at or "?")
         except Exception:
-            logger.exception("Failed to load project %s", project_id)
+            logger.exception("Failed to preload %s %s", kind, entry_id)
 
 
 def _poll_registry_once(repo: RegistryRepo) -> None:
@@ -169,15 +184,17 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
     - New ready projects not yet in memory → load them.
     - Existing ready projects without L2 render data → supplement with L2 data.
     """
+    # Registering (not loading) is the whole point here: a newly ready ODB only
+    # needs to become *reachable*, and the first request for it pays the load.
+    # peek() rather than get() — get() would pull every project back into RAM
+    # on every tick and defeat the LRU cap.
     for row in repo.list_ready_or_l1done():
         odb_id = row["odb_id"]
         status = row["status"]
-        existing = registry.get(odb_id)
-        if existing is None:
-            workspace = repo.resolve_workspace(row["workspace"], settings.data_root)
-            registry.load(odb_id, workspace, status)
-            logger.info("Poll: hot-loaded ODB %s (status=%s)", odb_id, status)
-        elif status == "ready" and not existing.is_render_ready:
+        workspace = repo.resolve_workspace(row["workspace"], settings.data_root)
+        registry.register(odb_id, workspace, status)
+        existing = registry.peek(odb_id)
+        if existing is not None and status == "ready" and not existing.is_render_ready:
             registry.upgrade(odb_id)
             logger.info("Poll: upgraded ODB %s to render-ready", odb_id)
 
@@ -185,12 +202,10 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         if row["geom_status"] != "ready":
             continue
         project_id = row["project_id"]
-        existing = registry.get(project_id)
-        if existing is None:
-            workspace = _resolve_project_workspace(row["workspace"], project_id)
-            registry.load(project_id, workspace, "ready")
-            logger.info("Poll: hot-loaded project %s", project_id)
-        elif not existing.is_render_ready:
+        workspace = _resolve_project_workspace(row["workspace"], project_id)
+        registry.register(project_id, workspace, "ready")
+        existing = registry.peek(project_id)
+        if existing is not None and not existing.is_render_ready:
             registry.upgrade(project_id)
             logger.info("Poll: upgraded project %s to render-ready", project_id)
         # Backfill: if ODB project has no result_groups yet, try to adopt now
