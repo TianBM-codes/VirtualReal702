@@ -1056,7 +1056,7 @@ h5py IO：await run_in_threadpool(_read)  # 防事件循环阻塞
 ── 服务启动 ─────────────────────────────────────────────────────
   · 加载 registry.db
   · register 所有 status IN ('ready', 'l1_done') 的 ODB（仅登记路径，不读盘）
-  · 仅预加载 created_at 最新的 N 个（N = APP_MAX_LOADED_PROJECTS，默认 5）
+  · 仅预加载 created_at 最新的 N 个（N = APP_MAX_LOADED_PROJECTS，默认 10）
     其余首次访问时按需加载，超上限驱逐 LRU（见 8.5）
   · 启动 FastAPI（gunicorn 4 workers）
   注：job-runner 作为独立进程单独启动，不在此处启动（见第 8 章）
@@ -1239,7 +1239,7 @@ GET /api/odb/{odb_id}/query/pick?render_face_idx=<n>
 
 ### 8.5 L3 内存管理策略
 
-**懒加载 + LRU 上限**（`APP_MAX_LOADED_PROJECTS`，默认 5）。
+**懒加载 + LRU 上限**（`APP_MAX_LOADED_PROJECTS`，默认 10）。
 
 单个 ModelIndex 约 42 B/三角面 + 12 B/节点（1000 万节点模型约 1.4 GB），
 早期"全量常驻、无需 LRU"的做法假定只有 2–3 个活跃 ODB；项目变多后内存无上限增长，

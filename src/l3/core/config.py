@@ -61,7 +61,7 @@ class Settings:
         # A 10M-node model costs ~1.4 GB, so this is the memory ceiling knob.
         # Startup preloads the newest `max_loaded_projects` and registers the
         # rest; anything else loads on first access and evicts LRU.
-        self.max_loaded_projects = max(1, int(_get(cfg, "APP_MAX_LOADED_PROJECTS", "5")))
+        self.max_loaded_projects = max(1, int(_get(cfg, "APP_MAX_LOADED_PROJECTS", "10")))
 
         # Dev mode: directly specify a single workspace without registry.db
         self.odb_workspace = _get(cfg, "APP_ODB_WORKSPACE", "")
