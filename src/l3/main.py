@@ -38,6 +38,11 @@ logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+# mysql-connector logs 3 INFO lines per auth-plugin lookup, i.e. per new
+# connection — 30 lines just to fill the pool. Nothing actionable in them.
+logging.getLogger("mysql.connector").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 10          # seconds between registry.db polls
