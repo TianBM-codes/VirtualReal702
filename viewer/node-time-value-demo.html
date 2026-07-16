@@ -55,10 +55,10 @@
 
       <label>Instance</label>
       <select id="instance"></select>
-      <label>Field(NODAL)</label>
-      <select id="field"></select>
       <label>Step(留空 = 全局时间)</label>
       <select id="step"><option value="">（全局时间）</option></select>
+      <label>Field(NODAL,按上面 instance/step 过滤)</label>
+      <select id="field"></select>
       <label>节点 label(逗号/空格分隔)</label>
       <input type="text" id="nodeLabels" value="" placeholder="如 1, 2, 3" />
       <label>时间 time</label>
@@ -91,12 +91,17 @@
       const odb = encodeURIComponent($("odbId").value.trim());
       return `${base}/api/odb/${odb}`;
     }
-    function rgQuery() {
+    function rgQuery(sep) {
       const rg = $("resultGroup").value.trim();
-      return rg ? `?result_group=${encodeURIComponent(rg)}` : "";
+      return rg ? `${sep || "?"}result_group=${encodeURIComponent(rg)}` : "";
     }
 
-    // ── 元数据:meta/overview 填充下拉框 ──────────────────────────────────────
+    // overview 缓存:steps 列表(算全局时间的交集用) + 各 field 的 invariants(展示用,
+    // GET /fields 不返回 invariants)
+    let metaSteps = [];
+    let overviewInvariants = {};
+
+    // ── 元数据:meta/overview 填充 instance/step 下拉框 ────────────────────────
     $("btnMeta").onclick = async () => {
       if (!$("odbId").value.trim()) { status("请先填 Project ID / ODB ID", "err"); return; }
       status("加载元数据…");
@@ -106,23 +111,74 @@
         if (!resp.ok || body.code !== 200) throw new Error(body.message || `HTTP ${resp.status}`);
         const d = body.data || {};
         const instances = d.instances || [];
-        const steps = d.steps || [];
-        // 只列出含 NODAL 位置的场
-        const fields = (d.fields || []).filter(f => (f.positions || []).includes("NODAL"));
+        metaSteps = d.steps || [];
+        overviewInvariants = {};
+        for (const f of d.fields || []) overviewInvariants[f.field_name] = f.invariants || [];
 
         $("instance").innerHTML = instances.map(i =>
           `<option>${i.instance_name}</option>`).join("");
-        $("step").innerHTML = `<option value="">（全局时间）</option>` + steps.map(s =>
+        $("step").innerHTML = `<option value="">（全局时间）</option>` + metaSteps.map(s =>
           `<option value="${s.step_name}">${s.step_name} (${s.procedure}, ${s.num_frames}帧)</option>`).join("");
-        $("field").innerHTML = fields.map(f => {
-          const inv = (f.invariants || []).length ? ` +${(f.invariants || []).join("/")}` : "";
-          return `<option value="${f.field_name}">${f.field_name} [${(f.components || []).join(",") || "标量"}]${inv}</option>`;
-        }).join("");
         $("meta-summary").textContent =
-          `${instances.length} instance / ${steps.length} step / ${fields.length} NODAL field`;
+          `${instances.length} instance / ${metaSteps.length} step`;
         status("元数据已加载。", "okc");
+        await refreshFields();
       } catch (e) { status(`加载失败:${e.message}`, "err"); }
     };
+
+    // ── 字段列表:按 instance + step 精确过滤(GET /fields)────────────────────
+    // overview 的 fields 是跨所有 step 汇总的,直接用会选出该 step 下不存在的
+    // 组合(接口按 result_blocks 校验会报 400),所以这里改用逐 step 查询。
+    async function fetchStepFields(instance, step) {
+      const url = `${apiBase()}/fields?instance=${encodeURIComponent(instance)}` +
+                  `&step=${encodeURIComponent(step)}${rgQuery("&")}`;
+      const resp = await fetch(url);
+      const body = await resp.json();
+      if (!resp.ok || body.code !== 200) throw new Error(body.message || `HTTP ${resp.status}`);
+      return (body.data.fields || []).filter(f => (f.positions || []).includes("NODAL"));
+    }
+
+    async function refreshFields() {
+      const instance = $("instance").value;
+      if (!instance) { $("field").innerHTML = ""; return; }
+      const step = $("step").value;
+      const prev = $("field").value;
+      status("加载字段列表…");
+      try {
+        let fields;
+        if (step) {
+          fields = await fetchStepFields(instance, step);
+        } else {
+          // 全局时间只串联 STATIC/DYNAMIC step(与后端时间轴规则一致),
+          // 且插值可能跨 step,取各 step 字段的交集才保证任意 time 都可查
+          const timeSteps = metaSteps.filter(s =>
+            ["STATIC", "DYNAMIC"].includes((s.procedure || "").toUpperCase()));
+          if (!timeSteps.length) {
+            $("field").innerHTML = "";
+            status("没有 STATIC/DYNAMIC step,全局时间不可用,请选具体 step", "warn");
+            return;
+          }
+          const perStep = await Promise.all(
+            timeSteps.map(s => fetchStepFields(instance, s.step_name)));
+          fields = perStep.reduce((acc, list) => {
+            const names = new Set(list.map(f => f.name));
+            return acc.filter(f => names.has(f.name));
+          });
+        }
+        $("field").innerHTML = fields.map(f => {
+          const inv = (overviewInvariants[f.name] || []).length
+            ? ` +${overviewInvariants[f.name].join("/")}` : "";
+          return `<option value="${f.name}">${f.name} [${(f.components || []).join(",") || "标量"}]${inv}</option>`;
+        }).join("");
+        if (fields.some(f => f.name === prev)) $("field").value = prev;
+        status(fields.length
+          ? `${fields.length} 个可查字段(已按 instance/step 过滤)。`
+          : "该 instance/step 组合下没有 NODAL 字段。", fields.length ? "okc" : "warn");
+      } catch (e) { status(`字段列表加载失败:${e.message}`, "err"); }
+    }
+
+    $("instance").onchange = refreshFields;
+    $("step").onchange = refreshFields;
 
     // ── 查询 ──────────────────────────────────────────────────────────────────
     $("btnQuery").onclick = async () => {
