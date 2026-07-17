@@ -339,6 +339,24 @@ def safe(name):
     return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
 
 
+def split_region_field(name):
+    """Split a region-qualified field name into (base_name, region).
+
+    Contact outputs are stored per contact pair with the surface names baked
+    into the field name after whitespace, e.g.
+        'CPRESS   ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1'
+        -> ('CPRESS', 'ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1')
+    A suffix counts as a region only if it contains '/' (surface pair) or
+    starts with 'ASSEMBLY'. Plain fields return (name, None) unchanged.
+    """
+    parts = name.split(None, 1)
+    if len(parts) == 2:
+        suffix = parts[1].strip()
+        if '/' in suffix or suffix.startswith('ASSEMBLY'):
+            return parts[0], suffix
+    return name, None
+
+
 def _section_material_name(sec):
     """从 ODB section 对象取材料名。
 
@@ -1293,7 +1311,8 @@ def _compute_invariants_numpy(comp, inv_name, is_strain=False):
 
 def _extract_ip_invariants(step, step_name, field_name, first_field,
                            invariants, results_dir, safe_step, safe_field,
-                           block_struct, odb_instances, selected_frames=None):
+                           block_struct, odb_instances, selected_frames=None,
+                           odb_field_names=None):
     """Extract scalar invariant fields via Abaqus getScalarField(invariant=...).
 
     Uses the Abaqus API to compute each invariant (guaranteed accuracy),
@@ -1435,10 +1454,15 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
         selected_frames = list(enumerate(step.frames))
     num_frames = len(selected_frames)
 
+    # field_name may be a normalized logical name (region suffix stripped);
+    # odb_field_names carries the raw ODB keys to look up in fieldOutputs.
+    _lookup_names = odb_field_names or [field_name]
+
     for frame_idx, (_, frame) in enumerate(selected_frames):
-        if field_name not in frame.fieldOutputs:
+        _present = [n for n in _lookup_names if n in frame.fieldOutputs]
+        if not _present:
             continue
-        field_out = frame.fieldOutputs[field_name]
+        field_out = frame.fieldOutputs[_present[0]]
 
         # ── Method B precompute: extrapolated tensor at EN / NODAL, ONCE per ──
         # frame. EN/NODAL invariants are computed from these tensor components
@@ -1789,31 +1813,53 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
         # Apply field_filter within this step
         allowed_fields = field_filter[step_name] if field_filter is not None else None
 
-        for field_name in sorted(all_field_names):
-            if allowed_fields is not None and field_name not in allowed_fields:
+        # ── Group region-qualified fields by base name ────────────────────────
+        # Contact outputs (CPRESS/CSHEAR/COPEN/CSLIP...) are stored per contact
+        # pair as e.g. 'CPRESS   ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1'.
+        # All pairs sharing a base name are dumped as ONE logical field (block
+        # labels are unioned), matching the aggregated entry CAE shows.
+        # Plain fields form single-member groups — identical to old behaviour.
+        field_groups = {}   # base name -> [raw odb field name, ...]
+        for raw_name in sorted(all_field_names):
+            if (allowed_fields is not None and raw_name not in allowed_fields
+                    and split_region_field(raw_name)[0] not in allowed_fields):
                 continue
-            if field_prefix is not None and not field_name.startswith(field_prefix):
+            if field_prefix is not None and not raw_name.startswith(field_prefix):
                 continue
+            field_groups.setdefault(split_region_field(raw_name)[0], []).append(raw_name)
+
+        for field_name in sorted(field_groups.keys()):
+            member_names = field_groups[field_name]
             t_field = time.time()
-            print("    Field '{}' ...".format(field_name))
+            if member_names == [field_name]:
+                print("    Field '{}' ...".format(field_name))
+            else:
+                print("    Field '{}' (merged from {} region-qualified field(s)) ...".format(
+                    field_name, len(member_names)))
 
-            # First frame with this field → discover structure
-            first_frame = next(
-                (fr for _, fr in selected_frames if field_name in fr.fieldOutputs), None)
-            if first_frame is None:
+            # First frame (per member) with data → discover structure
+            member_first_fields = []
+            for m_name in member_names:
+                _ff = next(
+                    (fr.fieldOutputs[m_name] for _, fr in selected_frames
+                     if m_name in fr.fieldOutputs), None)
+                if _ff is not None:
+                    member_first_fields.append(_ff)
+            if not member_first_fields:
                 continue
 
-            first_field = first_frame.fieldOutputs[field_name]
+            first_field = member_first_fields[0]
             # Build component list as union across all block componentLabels.
             # first_field.componentLabels returns the intersection across element
             # types, which drops S13/S23 for mixed shell+solid models.
             _comp_union = []
             _comp_set   = set()
-            for _blk in first_field.bulkDataBlocks:
-                for _c in list(getattr(_blk, 'componentLabels', None) or []):
-                    if _c not in _comp_set:
-                        _comp_union.append(_c)
-                        _comp_set.add(_c)
+            for _mf in member_first_fields:
+                for _blk in _mf.bulkDataBlocks:
+                    for _c in list(getattr(_blk, 'componentLabels', None) or []):
+                        if _c not in _comp_set:
+                            _comp_union.append(_c)
+                            _comp_set.add(_c)
             components  = _comp_union if _comp_union else list(first_field.componentLabels)
             invariants  = [str(i) for i in first_field.validInvariants]
             # 混合 solid+shell 模型: first_field.validInvariants 返回的是跨单元类型的
@@ -1864,14 +1910,20 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             # ALL blocks per key first, then take the union of their labels
             # so the canonical labels.npy is always the full superset.
             key_to_disc_blocks = {}
-            for block in first_field.bulkDataBlocks:
+            for block in [b for _mf in member_first_fields
+                          for b in _mf.bulkDataBlocks]:
                 if block.instance is None:
                     continue
                 inst_name = _canon_inst(block.instance.name)
                 position  = _pos_str(block.position)
                 elem_type = (getattr(block, 'elementType', None)
                              or getattr(block, 'baseElementType', None))
-                if elem_type is None:
+                if position == 'NODAL':
+                    # NODAL data is per-node: elem_type must stay empty so the
+                    # HDF5 path is always /NODAL/<inst> (the only path L3
+                    # reads). Never fall back to _auto naming here.
+                    elem_type = elem_type or ''
+                elif elem_type is None:
                     _d = np.array(block.data)
                     _n = len(getattr(block, 'elementLabels',
                              getattr(block, 'nodeLabels', [])))
@@ -2009,20 +2061,25 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             # and every frame file has exactly the same shape as labels.npy.
             has_section = 0
             for frame_idx, (_, frame) in enumerate(selected_frames):
-                if field_name not in frame.fieldOutputs:
+                fr_members = [frame.fieldOutputs[m] for m in member_names
+                              if m in frame.fieldOutputs]
+                if not fr_members:
                     continue
-                field_out = frame.fieldOutputs[field_name]
+                field_out = fr_members[0]   # for getSubset(EN) extrapolation below
 
-                # Group this frame's blocks by key
+                # Group this frame's blocks by key (across all member fields)
                 key_to_fr_blocks = {}
-                for block in field_out.bulkDataBlocks:
+                for block in [b for _fo in fr_members
+                              for b in _fo.bulkDataBlocks]:
                     if block.instance is None:
                         continue
                     inst_name = _canon_inst(block.instance.name)
                     position  = _pos_str(block.position)
                     elem_type = (getattr(block, 'elementType', None)
                                  or getattr(block, 'baseElementType', None))
-                    if elem_type is None:
+                    if position == 'NODAL':
+                        elem_type = elem_type or ''   # keep /NODAL/<inst> path
+                    elif elem_type is None:
                         _d = np.array(block.data)
                         _n = len(getattr(block, 'elementLabels',
                                  getattr(block, 'nodeLabels', [])))
@@ -2148,6 +2205,12 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 'components':  components,
                 'invariants':  invariants,
                 'has_section': has_section,
+                # Raw ODB field names merged into this logical field (contact
+                # outputs carry the surface pair as a region suffix).
+                'source_fields': [
+                    {'name': m, 'region': split_region_field(m)[1]}
+                    for m in member_names
+                ],
                 'blocks':      [
                     dict(
                         {'inst_name': k[0], 'position': k[1],
@@ -2167,6 +2230,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     invariants, results_dir, safe_step, safe_field,
                     block_struct, odb.rootAssembly.instances,
                     selected_frames=selected_frames,
+                    odb_field_names=member_names,
                 )
         print("  Step '{}' done. ({})".format(step_name, _fmt_t(time.time() - t_step)))
 
