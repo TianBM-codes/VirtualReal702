@@ -128,32 +128,40 @@ chunk 划分从"按字段"改为"按逻辑字段组"。
 
 首轮实测（project 202607171639）发现两个显示问题，都已修：
 
-### 7.1 图例最大值比 CAE 大（4.828e8 vs 4.161e8）——主/从面
+### 7.1 图例最大值比 CAE 大（4.828e8 vs 4.161e8）——隐藏"节点集"那一侧
 
-实测定位：ODB 的 `CPRESS ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1` 字段里
-**两个 instance 都有数据块**——
+实测定位（project 202607171729）：ODB 的
+`CPRESS ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1` 字段里**两个 instance 都有数据块**——
 
-| instance | 角色 | 节点数 | frame 50 max |
-|---|---|---|---|
-| PART-1-1（大块，S_SET-3 从面） | slave | 从面那圈节点 | **4.161e8 = CAE 图例值** |
-| PART-2-1（小块，M_SURF-1 主面） | master | 16（4×4 接触面） | 4.828e8 |
+| instance | 接触对里的角色 | 节点数 | frame 50 max | CAE 是否显示 |
+|---|---|---|---|---|
+| PART-2-1（小块） | 从面 S_SET-3：**纯节点集**（`_CNS_` = 内部 contact node set） | 16（4×4 面） | 4.828e8 | **不显示** |
+| PART-1-1（大块） | 主面 M_SURF-1：单元面 surface | 主面那圈节点 | **4.161e8 = CAE 图例值** | 显示（涂在这张脸上） |
 
-Abaqus 把接触对**两侧**的节点值都写进了同一个场，但 **CAE 只显示从面（S_）一侧**
-——所以 CAE 图例是 4.161e8，而我们把主面侧也算进去就成了 4.828e8。
+关键机理：**CAE 的等值云图只能涂在"有单元面"的 surface 上**。从面是裸节点集
+（没有面可涂），CAE 干脆完全忽略这一侧的值——颜色和图例都不算它。所以 CAE
+图例是主面侧的 4.161e8；我们两侧都算，就成了 4.828e8。
 
-**修复（L1）**：`abaqus_dump.py` 提取时解析接触对 region 的第一段（从面名，如
-`ASSEMBLY_S_SET-3_CNS_` → 去掉 `ASSEMBLY_` 前缀后到 `rootAssembly.nodeSets` /
-`surfaces` 里查），得到从面所属 instance 集合，**丢弃主面侧的 NODAL 块**。
-这样云图/图例/pick/node-table/time-value 所有口径天然一致，全部只剩从面。
-细节：
+> 注意方向：不是"保留从面、丢主面"，而是"**丢节点集（_CNS_）那一侧，保留有面
+> 的那一侧**"。本例里被丢的恰好是从面。
 
-- 解析失败（查不到集合、或解析结果与数据块 instance 对不上）→ 保留两侧
-  （回到旧行为），日志打 `[contact] '...': slave side unresolved, keeping both sides`；
-- 解析成功 → 日志打 `[contact] '...': slave side = ['PART-1-1'], master-side NODAL blocks dropped`
+**修复（L1）**：`abaqus_dump.py` 把 region 拆成两段，若**恰好一段**带 `_CNS_`
+后缀（节点集侧），解析该集合属于哪些 instance（依次试
+`S_SET-3_CNS_`→`S_SET-3`→`SET-3_CNS_`→`SET-3`，先查 assembly 级
+nodeSets/surfaces/elementSets，再查 instance 级），**丢弃这些 instance 的 NODAL
+块**。这样云图/图例/pick/node-table/time-value 所有口径天然一致。保守规则：
+
+- 解析失败、region 两段都是（或都不是）`_CNS_`、两侧解析到同一 instance
+  （自接触）、或丢弃后一个 instance 都不剩 → **保留全部块**（回到旧行为），
+  日志打 `[contact] '...': no side hidden (unresolved or no _CNS_ side), keeping all blocks`；
+- 隐藏成功 → 日志打
+  `[contact] '...': node-set (_CNS_) side on ['PART-2-1'] hidden — CAE only contours the face-based side`
   （**重新解析时请在日志里确认这一行**）；
-- 通用接触（region 不含 `/`，如 `General_Contact_Domain`）不做过滤——CAE 对
-  通用接触本来就显示整个接触域；
-- 自接触（主从同一 instance）按 instance 粒度分不开 → 保留两侧（记录在案的局限）。
+- 通用接触（region 不含 `/`）不做过滤——CAE 对通用接触显示整个接触域。
+
+> 第一版（commit d7b29ea）曾按"保留从面"实现且按 `S_SET-3_CNS_` 全名查集合：
+> 全名查不到（真实集合名是 `S_SET-3`），保守放行了，才没把方向搞反。本版
+> （见 git log）已改为按 `_CNS_` 标记判断方向 + 多候选名查找。
 
 ### 7.2 云图颜色溢出到侧面——整三角形掩蔽
 

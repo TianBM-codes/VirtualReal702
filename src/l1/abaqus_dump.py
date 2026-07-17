@@ -357,50 +357,116 @@ def split_region_field(name):
     return name, None
 
 
-def _resolve_contact_slave_instances(odb, region):
-    """For a contact-pair region like
-    'ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1', resolve which instances carry
-    the slave (first) side.
+def _contact_token_candidates(token):
+    """Candidate set/surface names for one side of a contact-pair region.
 
-    Abaqus writes contact-pair output (CPRESS/CSHEAR/...) for BOTH surfaces
-    into the same field, but CAE displays only the slave side — keeping the
-    master-side blocks would color both parts and inflate the legend past
-    CAE's. Returns a set of canonical instance names, or None when the slave
-    set/surface cannot be found (caller then keeps every block).
+    'ASSEMBLY_S_SET-3_CNS_' → ['S_SET-3_CNS_', 'S_SET-3', 'SET-3_CNS_', 'SET-3']
+    The _CNS_ suffix is Abaqus' internal marker for a node-set-based surface;
+    the underlying user set keeps its original name (may itself start with
+    'S_' — only strip the side prefix as a last resort).
     """
-    if not region or '/' not in region:
-        return None
-    token = region.split('/')[0].strip()
-    if token.upper().startswith('ASSEMBLY_'):
-        token = token[len('ASSEMBLY_'):]
-    if not token:
-        return None
+    name = token.strip()
+    if name.upper().startswith('ASSEMBLY_'):
+        name = name[len('ASSEMBLY_'):]
+    cands = []
+
+    def _add(n):
+        if n and n not in cands:
+            cands.append(n)
+
+    _add(name)
+    up = name.upper()
+    if up.endswith('_CNS_'):
+        _add(name[:-5])
+    elif up.endswith('_CNS'):
+        _add(name[:-4])
+    for c in list(cands):
+        if c[:2].upper() in ('S_', 'M_'):
+            _add(c[2:])
+    return cands
+
+
+def _resolve_region_side_instances(odb, token):
+    """Resolve one contact-region side token to the set of canonical instance
+    names carrying it. Tries assembly-level nodeSets/surfaces/elementSets,
+    then instance-level nodeSets/surfaces. Returns None when unresolved."""
     ra = odb.rootAssembly
-    for repo in (getattr(ra, 'nodeSets', None), getattr(ra, 'surfaces', None)):
-        if repo is None:
-            continue
-        try:
-            obj = repo[token]
-        except Exception:
-            continue
-        insts = set()
-        try:
-            for nm in list(getattr(obj, 'instanceNames', None) or []):
-                insts.add(_canon_inst(nm))
-        except Exception:
-            pass
-        if not insts:
+    cands = _contact_token_candidates(token)
+    repos = [getattr(ra, 'nodeSets', None), getattr(ra, 'surfaces', None),
+             getattr(ra, 'elementSets', None)]
+    for cand in cands:
+        for repo in repos:
+            if repo is None:
+                continue
             try:
-                # Assembly-level sets expose .nodes as a tuple of per-instance
-                # node arrays; each node carries .instanceName.
-                for arr in (getattr(obj, 'nodes', None) or ()):
-                    if len(arr) > 0:
-                        insts.add(_canon_inst(arr[0].instanceName))
+                obj = repo[cand]
+            except Exception:
+                continue
+            insts = set()
+            try:
+                for nm in list(getattr(obj, 'instanceNames', None) or []):
+                    insts.add(_canon_inst(nm))
             except Exception:
                 pass
-        if insts:
-            return insts
+            if not insts:
+                try:
+                    # Assembly-level sets expose .nodes as a tuple of
+                    # per-instance node arrays; nodes carry .instanceName.
+                    for arr in (getattr(obj, 'nodes', None) or ()):
+                        if len(arr) > 0:
+                            insts.add(_canon_inst(arr[0].instanceName))
+                except Exception:
+                    pass
+            if insts:
+                return insts
+    # Instance-level sets (part-level *NSET end up here)
+    for cand in cands:
+        for iname in ra.instances.keys():
+            inst = ra.instances[iname]
+            for repo in (getattr(inst, 'nodeSets', None),
+                         getattr(inst, 'surfaces', None)):
+                if repo is None:
+                    continue
+                try:
+                    repo[cand]
+                except Exception:
+                    continue
+                return set([_canon_inst(iname)])
     return None
+
+
+def _resolve_contact_hidden_instances(odb, region):
+    """For a contact-pair region like
+    'ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1', resolve which instances' NODAL
+    blocks CAE does NOT display.
+
+    Abaqus writes contact-pair output (CPRESS/CSHEAR/...) for BOTH sides into
+    the same field. CAE can only contour on a face-based surface — the side
+    backed by a bare node set (marked with the internal _CNS_ suffix) has no
+    faces to paint, so CAE ignores its values entirely (colors AND legend).
+    Keeping them would color the wrong part and inflate our legend past CAE's.
+
+    Returns a set of canonical instance names to hide, or None when nothing
+    should be hidden (unresolved / no _CNS_ side / both sides share an
+    instance, where instance-level dropping would also kill visible data).
+    """
+    if not region:
+        return None
+    tokens = [t.strip() for t in region.split('/') if t.strip()]
+    if len(tokens) != 2:
+        return None
+    is_cns = [t.upper().rstrip('_').endswith('_CNS') for t in tokens]
+    if sum(is_cns) != 1:
+        return None   # both face surfaces (or both node sets) → keep all
+    cns_token   = tokens[is_cns.index(True)]
+    other_token = tokens[is_cns.index(False)]
+    hidden = _resolve_region_side_instances(odb, cns_token)
+    if not hidden:
+        return None
+    other = _resolve_region_side_instances(odb, other_token)
+    if other and (hidden & other):
+        return None   # both sides live on one instance → can't drop safely
+    return hidden
 
 
 def _section_material_name(sec):
@@ -1884,9 +1950,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     field_name, len(member_names)))
 
             # First frame (per member) with data → discover structure.
-            # member_infos: (raw odb field name, first FieldOutput, slave
+            # member_infos: (raw odb field name, first FieldOutput, hidden
             # instance set or None). Contact-pair fields carry data for both
-            # surfaces; only the slave side is kept (matches CAE display).
+            # surfaces, but CAE only contours the face-based side — the
+            # node-set (_CNS_) side is dropped to match CAE's display/legend.
             member_infos = []
             for m_name in member_names:
                 _ff = next(
@@ -1895,10 +1962,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 if _ff is None:
                     continue
                 _region = split_region_field(m_name)[1]
-                _slave = (_resolve_contact_slave_instances(odb, _region)
-                          if _region else None)
-                if _slave is not None:
-                    # Sanity: resolution must hit at least one block instance,
+                _hidden = (_resolve_contact_hidden_instances(odb, _region)
+                           if _region else None)
+                if _hidden is not None:
+                    # Sanity: hiding must leave at least one block instance,
                     # otherwise treat as unresolved and keep every block.
                     try:
                         _blk_insts = set(
@@ -1907,17 +1974,18 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             if b.instance is not None)
                     except Exception:
                         _blk_insts = set()
-                    if not (_slave & _blk_insts):
-                        _slave = None
+                    if not (_blk_insts - _hidden):
+                        _hidden = None
                 if _region is not None:
-                    if _slave is None:
-                        print("    [contact] '{}': slave side unresolved, "
-                              "keeping both sides".format(m_name))
+                    if _hidden is None:
+                        print("    [contact] '{}': no side hidden "
+                              "(unresolved or no _CNS_ side), keeping all "
+                              "blocks".format(m_name))
                     else:
-                        print("    [contact] '{}': slave side = {}, "
-                              "master-side NODAL blocks dropped".format(
-                                  m_name, sorted(_slave)))
-                member_infos.append((m_name, _ff, _slave))
+                        print("    [contact] '{}': node-set (_CNS_) side on "
+                              "{} hidden — CAE only contours the face-based "
+                              "side".format(m_name, sorted(_hidden)))
+                member_infos.append((m_name, _ff, _hidden))
             if not member_infos:
                 continue
 
@@ -1984,15 +2052,15 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             # ALL blocks per key first, then take the union of their labels
             # so the canonical labels.npy is always the full superset.
             key_to_disc_blocks = {}
-            for _mslave, block in [(mi[2], b) for mi in member_infos
-                                   for b in mi[1].bulkDataBlocks]:
+            for _mhidden, block in [(mi[2], b) for mi in member_infos
+                                    for b in mi[1].bulkDataBlocks]:
                 if block.instance is None:
                     continue
                 inst_name = _canon_inst(block.instance.name)
                 position  = _pos_str(block.position)
-                if (position == 'NODAL' and _mslave is not None
-                        and inst_name not in _mslave):
-                    continue   # master-side contact block (CAE hides it)
+                if (position == 'NODAL' and _mhidden is not None
+                        and inst_name in _mhidden):
+                    continue   # node-set (_CNS_) side block (CAE hides it)
                 elem_type = (getattr(block, 'elementType', None)
                              or getattr(block, 'baseElementType', None))
                 if position == 'NODAL':
@@ -2147,15 +2215,15 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
 
                 # Group this frame's blocks by key (across all member fields)
                 key_to_fr_blocks = {}
-                for _mslave, block in [(s, b) for (s, _fo) in fr_members
-                                       for b in _fo.bulkDataBlocks]:
+                for _mhidden, block in [(s, b) for (s, _fo) in fr_members
+                                        for b in _fo.bulkDataBlocks]:
                     if block.instance is None:
                         continue
                     inst_name = _canon_inst(block.instance.name)
                     position  = _pos_str(block.position)
-                    if (position == 'NODAL' and _mslave is not None
-                            and inst_name not in _mslave):
-                        continue   # master-side contact block (CAE hides it)
+                    if (position == 'NODAL' and _mhidden is not None
+                            and inst_name in _mhidden):
+                        continue   # node-set (_CNS_) side block (CAE hides it)
                     elem_type = (getattr(block, 'elementType', None)
                                  or getattr(block, 'baseElementType', None))
                     if position == 'NODAL':
@@ -2288,14 +2356,14 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 'has_section': has_section,
                 # Raw ODB field names merged into this logical field (contact
                 # outputs carry the surface pair as a region suffix).
-                # slave_instances: instances kept for that member's NODAL
-                # blocks (master side dropped, matching CAE); None = unresolved
-                # (both sides kept).
+                # hidden_instances: instances whose NODAL blocks were dropped
+                # (the node-set/_CNS_ side of a contact pair, which CAE never
+                # contours); None = nothing hidden.
                 'source_fields': [
                     {'name': mi[0],
                      'region': split_region_field(mi[0])[1],
-                     'slave_instances': (sorted(mi[2])
-                                         if mi[2] is not None else None)}
+                     'hidden_instances': (sorted(mi[2])
+                                          if mi[2] is not None else None)}
                     for mi in member_infos
                 ],
                 'blocks':      [
