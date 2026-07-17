@@ -21,12 +21,16 @@ Node time-value query service.
            张量重算不变量略有差别，但与存储式不变量的读取口径一致）。
 
   time 正好命中某帧（相对容差 1e-9）时三种策略等价，直接取该帧。
-  越界规则：time 早于第一帧时 prev/interp 报 400（next 取第一帧）；
-  晚于最后一帧时 next/interp 报 400（prev 取最后一帧）。
+  越界规则：time 早于第一帧时 prev/interp 报错（next 取第一帧）；
+  晚于最后一帧时 next/interp 报错（prev 取最后一帧）。
 
   显式传 FREQUENCY/BUCKLE 步时，"time" 轴实际是 frame_value（模态阶次/
   频率/特征值）：exact/prev/next 按该轴取最近一帧有意义，interp 落在
-  两帧之间时报 400（两个模态振型插值无物理意义）。
+  两帧之间时报错（两个模态振型插值无物理意义）。
+
+本服务的错误一律抛 ValidationError / NotFoundError，message 用中文（会直接
+展示给最终用户）。路由层把它们转成 HTTP 200 + 信封里的 code/message，见
+api/routes/node_table.py。
 
 值的读取方式与 node_table_service 相同：L1 结果 HDF5 的
 /NODAL/<instance>/{data,labels}，label → 行号用排序 + searchsorted。
@@ -68,7 +72,7 @@ def _build_timeline(repo: ManifestRepo, step: Optional[str],
     """
     if step is not None:
         if repo.get_step_info(step, result_group) is None:
-            raise NotFoundError(f"Step '{step}' not found", {"step": step})
+            raise NotFoundError(f"分析步 '{step}' 不存在", {"step": step})
         points = []
         for row in repo.get_frames(step, result_group):
             t = float(row["frame_value"] or 0.0)
@@ -77,7 +81,7 @@ def _build_timeline(repo: ManifestRepo, step: Optional[str],
                 "step_time": t, "global_time": None, "time": t,
             })
         if not points:
-            raise NotFoundError(f"Step '{step}' has no frames", {"step": step})
+            raise NotFoundError(f"分析步 '{step}' 没有任何帧", {"step": step})
         points.sort(key=lambda p: (p["time"], p["frame_idx"]))
         return points, "step"
 
@@ -85,8 +89,8 @@ def _build_timeline(repo: ManifestRepo, step: Optional[str],
              if (s.get("procedure") or "").upper() in _TIME_PROCEDURES]
     if not steps:
         raise ValidationError(
-            "No STATIC/DYNAMIC step available for global-time query; "
-            "pass 'step' explicitly for other procedures",
+            "该结果组里没有 STATIC/DYNAMIC 分析步，无法按全局时间查询；"
+            "其他类型的分析步（如 FREQUENCY/BUCKLE）请显式传 step 参数",
             {"result_group": result_group},
         )
     points = []
@@ -112,7 +116,7 @@ def _build_timeline(repo: ManifestRepo, step: Optional[str],
         else:
             offset += max(step_times) if step_times else 0.0
     if not points:
-        raise NotFoundError("No frames found in any STATIC/DYNAMIC step",
+        raise NotFoundError("所有 STATIC/DYNAMIC 分析步都没有帧数据",
                             {"result_group": result_group})
     points.sort(key=lambda p: (p["time"], p["step"], p["frame_idx"]))
     return points, "global"
@@ -141,21 +145,21 @@ def _resolve_frames(points: List[dict], time: float,
     if time_match == "prev":
         if left < 0:
             raise ValidationError(
-                "requested time is before the first frame; no 'prev' frame exists",
+                "请求的时间早于第一帧，不存在更早的帧（time_match='prev'）",
                 t_range)
         return [(points[left], 1.0)], "prev"
 
     if time_match == "next":
         if right >= len(points):
             raise ValidationError(
-                "requested time is after the last frame; no 'next' frame exists",
+                "请求的时间晚于最后一帧，不存在更晚的帧（time_match='next'）",
                 t_range)
         return [(points[right], 1.0)], "next"
 
     # interp
     if left < 0 or right >= len(points):
         raise ValidationError(
-            "requested time is outside the frame time range; cannot interpolate",
+            f"请求的时间超出帧的时间范围 [{times[0]}, {times[-1]}]，无法插值",
             t_range)
     t0, t1 = times[left], times[right]
     if t1 - t0 <= tol:  # 两帧时间重合（如跨 step 边界），退化为取左帧
@@ -186,8 +190,8 @@ def _read_frame_matrix(workspace: str, step: str, field: str, instance: str,
         ds = rf[data_path]
         if frame_idx >= ds.shape[0]:
             raise ValidationError(
-                f"frame_idx {frame_idx} out of range [0, {ds.shape[0]}) "
-                f"for field '{field}' in step '{step}'",
+                f"帧号 {frame_idx} 超出范围 [0, {ds.shape[0]})："
+                f"分析步 '{step}' 的字段 '{field}' 没有这一帧",
                 {"frame_idx": frame_idx, "field": field, "step": step},
             )
         if labels_path in rf:
@@ -235,19 +239,19 @@ def get_node_time_value(
     instance = canon_instance(instance)
     if time_match not in _VALID_TIME_MATCH:
         raise ValidationError(
-            f"time_match must be one of {list(_VALID_TIME_MATCH)}, got '{time_match}'",
+            f"time_match 只能是 {list(_VALID_TIME_MATCH)} 之一，收到 '{time_match}'",
             {"time_match": time_match})
     if not node_labels:
-        raise ValidationError("node_labels must not be empty")
+        raise ValidationError("node_labels 不能为空")
     if not field:
-        raise ValidationError("field must not be empty")
+        raise ValidationError("field 不能为空")
 
     idx = registry.get(odb_id)
     if idx is None:
-        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+        raise NotFoundError(f"工程 '{odb_id}' 不存在", {"odb_id": odb_id})
     repo = ManifestRepo(idx.workspace)
     if repo.get_instance_info(instance) is None:
-        raise NotFoundError(f"Instance '{instance}' not found in ODB '{odb_id}'",
+        raise NotFoundError(f"工程 '{odb_id}' 中不存在部件实例 '{instance}'",
                             {"instance": instance})
 
     points, time_mode = _build_timeline(repo, step, result_group)
@@ -261,10 +265,10 @@ def get_node_time_value(
         proc = (sinfo.get("procedure") or "").upper()
         if proc not in _TIME_PROCEDURES:
             raise ValidationError(
-                f"Step '{step}' is a {proc} step: frame_value is a mode/frequency"
-                f"/eigenvalue axis, not time — interpolating between mode shapes"
-                f" is not meaningful. Use time_match='prev' or 'next', or pass an"
-                f" exact frame_value as time.",
+                f"分析步 '{step}' 是 {proc} 类型：它的 frame_value 是模态阶次/频率/"
+                f"特征值，不是时间轴，两个模态振型之间做插值没有物理意义。"
+                f"请改用 time_match='prev' 或 'next'，或把 time 填成某一帧的确切"
+                f" frame_value。",
                 {"step": step, "procedure": proc, "time_match": time_match})
     involved_steps = []
     for point, _w in selection:
@@ -277,8 +281,8 @@ def get_node_time_value(
     for i, sname in enumerate(involved_steps):
         if not repo.has_nodal_block(sname, field, instance, result_group):
             raise ValidationError(
-                f"Field '{field}' does not have NODAL position for instance "
-                f"'{instance}' in step '{sname}'",
+                f"分析步 '{sname}' 中，字段 '{field}' 在部件实例 '{instance}' 上"
+                f"没有 NODAL（节点）位置的数据",
                 {"field": field, "instance": instance, "step": sname})
         rf_row = repo.get_result_file(sname, field, result_group)
         if i == 0 and rf_row:
@@ -333,8 +337,8 @@ def get_node_time_value(
         if mat.shape[1] != ncomp:
             ncomp_actual = mat.shape[1]
             raise ValidationError(
-                f"Field '{field}' data has {ncomp_actual} components but "
-                f"manifest declares {ncomp}",
+                f"字段 '{field}' 的数据有 {ncomp_actual} 个分量，与 manifest 中"
+                f"声明的 {ncomp} 个不一致",
                 {"field": field, "step": point["step"]})
         main_vals += weight * mat
 
@@ -350,7 +354,7 @@ def get_node_time_value(
 
     if main_missing:
         raise NotFoundError(
-            f"Result data for field '{field}' / instance '{instance}' not found",
+            f"找不到字段 '{field}' 在部件实例 '{instance}' 上的结果数据",
             {"field": field, "instance": instance, "steps": involved_steps})
 
     # ── assemble JSON-safe response ────────────────────────────────────────────

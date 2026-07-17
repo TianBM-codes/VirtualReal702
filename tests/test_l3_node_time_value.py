@@ -311,3 +311,66 @@ def test_frequency_step_allows_exact_prev_next(frequency_step_ws):
     nxt = get_node_time_value(frequency_step_ws, "odb", INSTANCE, "U", [10],
                               time=1.5, step="Modal", time_match="next")
     assert nxt["frames_used"][0]["frame_idx"] == 2
+
+
+# ── 路由层：业务错误一律 HTTP 200 + 信封里的 code/message ──────────────────────
+
+def _client(monkeypatch, registry):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.l3.api.routes import node_table
+
+    monkeypatch.setattr(node_table, "registry", registry)
+    app = FastAPI()
+    app.include_router(node_table.router)
+    return TestClient(app)
+
+
+def _post(client, **overrides):
+    body = {"instance": INSTANCE, "field": "U", "node_labels": [10],
+            "time": 0.5, "step": "Step-1", "time_match": "interp"}
+    body.update(overrides)
+    return client.post("/api/odb/odb/results/node-time-value", json=body)
+
+
+def test_route_returns_200_on_success(monkeypatch, single_step_ws):
+    resp = _post(_client(monkeypatch, single_step_ws))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 200 and body["message"] == ""
+    assert body["data"]["nodes"][0]["values"]["U1"] == pytest.approx(10.0)
+
+
+def test_route_returns_200_when_time_out_of_range(monkeypatch, single_step_ws):
+    """原来是 HTTP 400；现在 HTTP 层永远 200，错误在信封里。"""
+    resp = _post(_client(monkeypatch, single_step_ws), time=99.0)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 400
+    assert "超出" in body["message"]
+    # data 与成功时同构，取不到值 → found=false / values=null
+    assert body["data"]["nodes"] == [{"label": 10, "found": False, "values": None}]
+    assert body["data"]["resolved_mode"] is None
+    assert body["data"]["frames_used"] == []
+
+
+def test_route_returns_200_on_frequency_interp(monkeypatch, frequency_step_ws):
+    resp = _post(_client(monkeypatch, frequency_step_ws), step="Modal")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 400
+    assert "FREQUENCY" in body["message"] and "插值" in body["message"]
+    assert body["data"]["nodes"][0]["values"] is None
+
+
+def test_route_returns_200_on_unknown_step(monkeypatch, single_step_ws):
+    """NotFound 类错误同样走 200，code=404。"""
+    resp = _post(_client(monkeypatch, single_step_ws), step="Step-99")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 404
+    assert "Step-99" in body["message"]
+    assert body["data"]["nodes"][0]["values"] is None

@@ -1,8 +1,15 @@
 """
 GET  /api/odb/{odb_id}/fields
 POST /api/odb/{odb_id}/results/node-table
+POST /api/odb/{odb_id}/results/node-time-value
 
 Field discovery and batch node-result query endpoints.
+
+POST /results/node-time-value
+-----------------------------
+HTTP 状态码永远是 200 —— 业务错误（时间越界、FREQUENCY 步不能插值、字段
+没有 NODAL 位置……）通过信封里的 code(4xx) + message(中文) 表达，data 仍是
+与成功时同构的结构，只是 nodes[].values 为 null。调用方只解析响应体即可。
 
 GET /fields
 -----------
@@ -41,6 +48,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from ...core.errors import AppError
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...services.node_table_service import get_instance_fields, get_node_table
@@ -123,20 +131,52 @@ class NodeTimeValueRequest(BaseModel):
     result_group: Optional[str] = None
 
 
+def _empty_time_value_data(body: "NodeTimeValueRequest") -> dict:
+    """出错时返回一份与成功响应同构、但取不到值的 data。
+
+    调用方（前端）因此只需要一套解析逻辑：nodes 数组永远在，found=false /
+    values=null 表示这个节点这次没取到值。
+    """
+    return {
+        "instance": body.instance,
+        "field": body.field,
+        "components": [],
+        "invariants": [],
+        "time_mode": "step" if body.step else "global",
+        "step": body.step,
+        "requested_time": body.time,
+        "time_match": body.time_match,
+        "resolved_mode": None,
+        "frames_used": [],
+        "time_range": None,
+        "nodes": [{"label": int(l), "found": False, "values": None}
+                  for l in body.node_labels],
+    }
+
+
 @router.post("/results/node-time-value")
 async def get_node_time_value_endpoint(
     odb_id: str,
     body: NodeTimeValueRequest,
 ):
-    data = get_node_time_value(
-        registry=registry,
-        odb_id=odb_id,
-        instance=body.instance,
-        field=body.field,
-        node_labels=body.node_labels,
-        time=body.time,
-        step=body.step,
-        time_match=body.time_match,
-        result_group=body.result_group,
-    )
+    # 本端点的业务错误一律走 HTTP 200 + 信封里的 code/message，调用方不必再区分
+    # "HTTP 报错" 和 "业务报错" 两条分支。未预期的异常仍然抛出走 500。
+    try:
+        data = get_node_time_value(
+            registry=registry,
+            odb_id=odb_id,
+            instance=body.instance,
+            field=body.field,
+            node_labels=body.node_labels,
+            time=body.time,
+            step=body.step,
+            time_match=body.time_match,
+            result_group=body.result_group,
+        )
+    except AppError as exc:
+        return {
+            "code": exc.status_code,
+            "data": _empty_time_value_data(body),
+            "message": exc.message,
+        }
     return ok(data)

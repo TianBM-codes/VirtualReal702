@@ -29,7 +29,8 @@ python -m pytest tests/test_manifest_migration.py tests/test_l3_node_time_value.
 ```
 
 - `test_manifest_migration.py`：sp_num 迁移（含"不迁移直接打标必撞主键"的反向用例）
-- `test_l3_node_time_value.py`：新增 FREQUENCY 步两条——interp 落两帧间报 400、exact/prev/next 放行
+- `test_l3_node_time_value.py`：FREQUENCY 步两条——interp 落两帧间报错、exact/prev/next 放行；
+  另有四条路由层用例，断言 node-time-value 无论成功失败 HTTP 都是 200、失败时包体 code=4xx + 中文 message + values=null
 
 ## 2. demo 页测试（`viewer/node-time-value-demo.html`）
 
@@ -44,8 +45,8 @@ python -m pytest tests/test_manifest_migration.py tests/test_l3_node_time_value.
 | 5 | sag + U + 预填节点 + time=0.5 + 插值 | 200；正好命中帧 → resolved_mode=exact |
 | 6 | 同上 time=0.523 | resolved_mode=interp，两帧权重 ≈0.54/0.46，值为线性插值 |
 | 7 | 同上 time=99 + 前一帧 | 取末帧（frame 20） |
-| 8 | 同上 time=99 + 插值 | 400 "outside the frame time range" |
-| 9 | 选 eigenfrequency + time=0.5 + 插值 | **400**，提示 FREQUENCY 步 frame_value 是模态阶次/频率、振型插值无意义、改用 prev/next |
+| 8 | 同上 time=99 + 插值 | HTTP **200**，页面显示中文提示"请求的时间超出帧的时间范围…"（包体 code=400） |
+| 9 | 选 eigenfrequency + time=0.5 + 插值 | HTTP **200** + 中文提示：FREQUENCY 步 frame_value 是模态阶次/频率、振型插值无意义、改用 prev/next（包体 code=400） |
 | 10 | eigenfrequency + time=1 + 插值 | 200，命中第 1 阶（resolved_mode=exact） |
 | 11 | 填一个不存在的节点号（如 1） | 该行显示"不在该 instance"（found=false），不报错 |
 
@@ -64,10 +65,14 @@ curl "$BASE/fields?instance=PART-1-1&step=sag&result_group=default_result"
 curl -X POST "$BASE/results/node-time-value" -H "Content-Type: application/json" \
   -d '{"instance":"PART-1-1","field":"U","node_labels":[<真实label>],"time":0.523,"step":"sag","result_group":"default_result"}'
 
-# FREQUENCY 步插值防护 → 400
-curl -X POST "$BASE/results/node-time-value" -H "Content-Type: application/json" \
+# FREQUENCY 步插值防护 → HTTP 200，包体 code=400 + 中文 message，nodes[].values=null
+curl -i -X POST "$BASE/results/node-time-value" -H "Content-Type: application/json" \
   -d '{"instance":"PART-1-1","field":"U","node_labels":[<真实label>],"time":0.5,"step":"eigenfrequency","result_group":"default_result"}'
 ```
+
+> node-time-value 的 HTTP 状态码现在**永远是 200**（2026-07-17 起），所以上面加 `-i` 看状态行；
+> 错误看包体的 `code`（4xx）和 `message`（中文）。这条只改了 node-time-value，
+> 同文件的 `/fields`、`node-table` 还是老样子会返回 4xx。
 
 ## 4. 回归确认（改动不该影响的东西）
 
