@@ -101,6 +101,11 @@
     // GET /fields 不返回 invariants)
     let metaSteps = [];
     let overviewInvariants = {};
+    let globalTimeRange = null;   // overview 顶层 global_time_range,给"（全局时间）"选项标范围
+
+    // 区间显示成 [min,max];数值过长时截断,避免下拉框里一行放不下
+    const fmtNum = (v) => Number.isInteger(v) ? String(v) : Number(v.toPrecision(6)).toString();
+    const fmtRange = (r) => r ? `[${fmtNum(r.min)},${fmtNum(r.max)}]` : "无";
 
     // ── 元数据:meta/overview 填充 instance/step 下拉框 ────────────────────────
     $("btnMeta").onclick = async () => {
@@ -113,13 +118,23 @@
         const d = body.data || {};
         const instances = d.instances || [];
         metaSteps = d.steps || [];
+        globalTimeRange = d.global_time_range || null;
         overviewInvariants = {};
         for (const f of d.fields || []) overviewInvariants[f.field_name] = f.invariants || [];
 
         $("instance").innerHTML = instances.map(i =>
           `<option>${i.instance_name}</option>`).join("");
-        $("step").innerHTML = `<option value="">（全局时间）</option>` + metaSteps.map(s =>
-          `<option value="${s.step_name}">${s.step_name} (${s.procedure}, ${s.num_frames}帧)</option>`).join("");
+        // 下拉框里直接标出 time 的合法区间(来自 overview 的 time_range /
+        // global_time_range),填时间前先看范围,不用试错。FREQUENCY/BUCKLE 的
+        // 区间是模态阶次/频率(time_axis=mode),不是秒,所以额外标注一下。
+        const globalLabel = globalTimeRange
+          ? `（全局时间 ${fmtRange(globalTimeRange)}）`
+          : `（全局时间 — 无 STATIC/DYNAMIC step,不可用）`;
+        $("step").innerHTML = `<option value="">${globalLabel}</option>` + metaSteps.map(s => {
+          const unit = s.time_axis === "mode" ? " 阶次/频率" : "";
+          return `<option value="${s.step_name}">${s.step_name} (${s.procedure}, ` +
+                 `${fmtRange(s.time_range)}${unit})</option>`;
+        }).join("");
         $("meta-summary").textContent =
           `${instances.length} instance / ${metaSteps.length} step`;
         status("元数据已加载。", "okc");
@@ -151,10 +166,10 @@
         if (step) {
           fields = await fetchStepFields(instance, step);
         } else {
-          // 全局时间只串联 STATIC/DYNAMIC step(与后端时间轴规则一致),
-          // 且插值可能跨 step,取各 step 字段的交集才保证任意 time 都可查
-          const timeSteps = metaSteps.filter(s =>
-            ["STATIC", "DYNAMIC"].includes((s.procedure || "").toUpperCase()));
+          // 全局时间只串联有时间语义的 step,且插值可能跨 step,取各 step 字段
+          // 的交集才保证任意 time 都可查。哪些 step 参与全局轴不在这里自己判,
+          // 直接用 overview 标好的 global_time_range(后端口径,改规则不用改这里)
+          const timeSteps = metaSteps.filter(s => s.global_time_range);
           if (!timeSteps.length) {
             $("field").innerHTML = "";
             status("没有 STATIC/DYNAMIC step,全局时间不可用,请选具体 step", "warn");
