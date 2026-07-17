@@ -1,6 +1,6 @@
 # L3 API Quick Reference
 
-更新时间：2026-07-17（`POST /api/odb/{odb_id}/results/node-time-value` 的 HTTP 状态码改为**永远 200**：业务错误（时间越界、FREQUENCY/BUCKLE 步 interp、字段无 NODAL 位置、step/instance 不存在……）不再返回 4xx，改为 200 + 包体 `code`=4xx + `message`=中文提示 + `data` 与成功时同构（`resolved_mode=null`、`frames_used=[]`、`nodes[].found=false`、`values=null`），调用方只解析包体即可；未预期异常仍走 500。同日该接口的全部错误提示改为中文（`details` 的 key 仍是英文）。仅影响此端点，`/fields`、`node-table` 等不变）。历史：2026-07-16（新增 `GET /api/odb/{odb_id}/geometry/{instance}/node-labels`：分页列出 instance 的节点 label（升序）+ 总数 + 编号范围，节点编号常带部件偏移不从 1 开始，先打它拿真实编号再查 node-table/node-time-value；demo 页选中 instance 后自动显示范围并预填。同日 `node-time-value` 增加 FREQUENCY/BUCKLE 步防护：显式传这类 step 时 "time" 轴实为 frame_value（模态阶次/频率/特征值），exact/prev/next 照常，interp 落在两帧之间报 400——两个模态振型插值无物理意义，提示改用 prev/next。同日修复两处底层 bug：① result_blocks 表主键加 sp_num（壳截面点），修复壳单元多 sp 块导致 job_runner 打 result_group 标签静默失败、/fields+node-table+node-time-value+result-catalog 在 result_group 下全部查空的问题，存量工程用 `tools/fix_result_blocks.py` 修复（见 docs/维护注意事项.md）；② 结果 HDF5 路径解析统一走 manifest `result_files.file_path`（`ManifestRepo.result_h5_abspath`），不再按 result_group 拼子目录猜路径——adopt 型 default_result 的文件在 `l1/results/` 根目录，猜必 404）。历史：2026-07-15（`node-time-value` 全局时间改为优先精确值：L1 现在提取 `step.totalTime`/`timePeriod` 写入 manifest `steps.total_time`/`time_period` 两个新列（旧库自动 ALTER 迁移，CDB/OP2/外部结果的 steps 写入同步改显式列名），全局时间轴优先用精确 step 起点/时长，旧数据无值时退回末帧累加推算；已有 workspace 需重跑 L1 提取才有精确值。同日新增 `POST /api/odb/{odb_id}/results/node-time-value`：按时间（而非 frame_idx）查一组节点上某 NODAL 场的全部分量+不变量。step 传了按 step 内局部时间、不传按全局时间（STATIC/DYNAMIC step 按 step_number 首尾相接，FREQUENCY/BUCKLE 不参与）；时间不落帧时按 `time_match` 取 prev/next 或线性插值，命中帧时三者等价返回 `resolved_mode=exact`；越界时 prev/next 单侧仍可取、interp 报 400）。历史：2026-07-13（testMesh 新增 `POST /api/model/testMesh/syncAnimation`：试验网格与 FEM 模型（BDF/OP2 project）同屏同步动画。统一幅度基准（两模型包围盒并集最大边 / 10 / coefficient 为目标最大变形，两侧各自返回换算后的放大倍数）并统一动画相位（试验侧预计算 n_frames 帧、第 i 帧相位 sin(2πi/n)，与 FEM `results/modal-animation` 同相），前端用同一个帧计数器驱动两边 buffer 即逐帧同步；FEM 数据不可用时自动降级为仅试验侧，兼容单独显示。既有 testMesh 接口不变）。历史：2026-07-06（`frame-scalars` 的"找不到"回退：ODB/instance/step/field/result_group 不存在时不再返回 404，改为静默返回 200 + 空 payload（`u_per_vertex` 长度 0、`legend=[0,0]`，响应头无特殊标记），前端广播查询时缺结果的 instance 渲成灰色而非整批报错；`NotReadyError`→202、`ValidationError`→400 不受影响）。历史：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
+更新时间：2026-07-17（`GET /api/odb/{odb_id}/meta/overview` 新增时间范围标注：顶层 `global_time_range`（不传 step 时 `time` 的合法区间 + 参与全局时间轴的 step 列表，无 STATIC/DYNAMIC 时为 null），每个 step 新增 `time_axis`（`time`/`mode`——FREQUENCY/BUCKLE 的 frame_value 是阶次/频率不是时间）、`time_range`（传该 step 时 `time` 的合法区间）、`global_time_range`（该 step 在全局轴上占的段，mode 轴为 null）。口径与 node-time-value 共用同一份 timeline 计算，调用方填 `time` 前先读范围即可，不用试错。同日 `POST /api/odb/{odb_id}/results/node-time-value` 的 HTTP 状态码改为**永远 200**：业务错误（时间越界、FREQUENCY/BUCKLE 步 interp、字段无 NODAL 位置、step/instance 不存在……）不再返回 4xx，改为 200 + 包体 `code`=4xx + `message`=中文提示 + `data` 与成功时同构（`resolved_mode=null`、`frames_used=[]`、`nodes[].found=false`、`values=null`），调用方只解析包体即可；未预期异常仍走 500。同日该接口的全部错误提示改为中文（`details` 的 key 仍是英文）。仅影响此端点，`/fields`、`node-table` 等不变）。历史：2026-07-16（新增 `GET /api/odb/{odb_id}/geometry/{instance}/node-labels`：分页列出 instance 的节点 label（升序）+ 总数 + 编号范围，节点编号常带部件偏移不从 1 开始，先打它拿真实编号再查 node-table/node-time-value；demo 页选中 instance 后自动显示范围并预填。同日 `node-time-value` 增加 FREQUENCY/BUCKLE 步防护：显式传这类 step 时 "time" 轴实为 frame_value（模态阶次/频率/特征值），exact/prev/next 照常，interp 落在两帧之间报 400——两个模态振型插值无物理意义，提示改用 prev/next。同日修复两处底层 bug：① result_blocks 表主键加 sp_num（壳截面点），修复壳单元多 sp 块导致 job_runner 打 result_group 标签静默失败、/fields+node-table+node-time-value+result-catalog 在 result_group 下全部查空的问题，存量工程用 `tools/fix_result_blocks.py` 修复（见 docs/维护注意事项.md）；② 结果 HDF5 路径解析统一走 manifest `result_files.file_path`（`ManifestRepo.result_h5_abspath`），不再按 result_group 拼子目录猜路径——adopt 型 default_result 的文件在 `l1/results/` 根目录，猜必 404）。历史：2026-07-15（`node-time-value` 全局时间改为优先精确值：L1 现在提取 `step.totalTime`/`timePeriod` 写入 manifest `steps.total_time`/`time_period` 两个新列（旧库自动 ALTER 迁移，CDB/OP2/外部结果的 steps 写入同步改显式列名），全局时间轴优先用精确 step 起点/时长，旧数据无值时退回末帧累加推算；已有 workspace 需重跑 L1 提取才有精确值。同日新增 `POST /api/odb/{odb_id}/results/node-time-value`：按时间（而非 frame_idx）查一组节点上某 NODAL 场的全部分量+不变量。step 传了按 step 内局部时间、不传按全局时间（STATIC/DYNAMIC step 按 step_number 首尾相接，FREQUENCY/BUCKLE 不参与）；时间不落帧时按 `time_match` 取 prev/next 或线性插值，命中帧时三者等价返回 `resolved_mode=exact`；越界时 prev/next 单侧仍可取、interp 报 400）。历史：2026-07-13（testMesh 新增 `POST /api/model/testMesh/syncAnimation`：试验网格与 FEM 模型（BDF/OP2 project）同屏同步动画。统一幅度基准（两模型包围盒并集最大边 / 10 / coefficient 为目标最大变形，两侧各自返回换算后的放大倍数）并统一动画相位（试验侧预计算 n_frames 帧、第 i 帧相位 sin(2πi/n)，与 FEM `results/modal-animation` 同相），前端用同一个帧计数器驱动两边 buffer 即逐帧同步；FEM 数据不可用时自动降级为仅试验侧，兼容单独显示。既有 testMesh 接口不变）。历史：2026-07-06（`frame-scalars` 的"找不到"回退：ODB/instance/step/field/result_group 不存在时不再返回 404，改为静默返回 200 + 空 payload（`u_per_vertex` 长度 0、`legend=[0,0]`，响应头无特殊标记），前端广播查询时缺结果的 instance 渲成灰色而非整批报错；`NotReadyError`→202、`ValidationError`→400 不受影响）。历史：2026-07-02（`deformed-positions` 新增可选 `line_positions`/`point_positions`/`coupling_positions` section：梁/桁架线、MASS 点、RBE2 coupling 蜘蛛线现在随变形一起更新——L2 ingest 为它们写入端点 `node_rows`，L3 按节点位移算出变形后端点坐标，随主 payload 一并返回，前端复用几何 buffer 直接覆盖。需重跑 L2 生成 `node_rows`；coupling 需其来源写入 `couplings/node_rows`）。历史：2026-06-25（`frame-scalars` 的 `global_min/global_max`、`user-field-colors` 的 `val_min/val_max` 改为容错解析：前端把 JS `null` 序列化成字符串 `"null"` 时不再 422，按未传处理。修复不变量字段（如 `S_MAX_PRINCIPAL`）云图请求报错）。历史：2026-06-16（`frame-scalars` 新增 `set_mode`：`mask`=整模型保留、set 外顶点 NaN 渲成灰、只给 set 区域上云图（模式 B，灵敏度/参数更改量按 set 显示采用此模式），`clip`=只返回 set 单元顶点（模式 A）；两模式归一化范围都按 set 子集算，set 内最小值蓝/最大值红。同日新增 `results/frame-scalar-range` 接口文档及其 `set` 参数——按选中 set 子集计算统一归一化范围）
 
 历史：2026-06-12（legend-entries 对 scheme=elset 始终按 all 处理：GET 一次列全各 instance 所选单元集，POST 按 `INSTANCE.setname` 前缀把覆盖路由回归属 instance，前端无需改动即可跨 instance 批量改名/改色；同日早些：color-code/{instance}/schemes 改为返回整模型并集，elsets 带 `instance.` 前缀，跨 instance 单元集一次列全；elset 的 set_names 接受 `INSTANCE.setname` 限定名，非本 instance 的条目自动忽略，可整份广播给每个 instance）
 
@@ -767,8 +767,20 @@ async function pollLogs(odbId) {
     "instances": [
       {"instance_name": "PART-1-1"}
     ],
+    "global_time_range": {"min": 0.0, "max": 2.0, "steps": ["Step-1", "Step-2"]},
     "steps": [
-      {"step_name": "Step-1", "procedure": "STATIC", "num_frames": 3}
+      {
+        "step_name": "Step-1", "procedure": "STATIC", "num_frames": 3,
+        "time_axis": "time",
+        "time_range": {"min": 0.0, "max": 1.0},
+        "global_time_range": {"min": 0.0, "max": 1.0}
+      },
+      {
+        "step_name": "Modal", "procedure": "FREQUENCY", "num_frames": 6,
+        "time_axis": "mode",
+        "time_range": {"min": 1.0, "max": 6.0},
+        "global_time_range": null
+      }
     ],
     "fields": [
       {
@@ -789,6 +801,17 @@ async function pollLogs(odbId) {
 - `steps` / `fields` 会按 `result_group` 过滤。
 - `fields[*].source` 可能是 `odb` 或 `external`。
 - `components` / `positions` 当前通常是 JSON 字符串，前端需要解析。
+
+**时间范围**（2026-07-17 新增，专门给 [`node-time-value`](#post-apiodbodb_idresultsnode-time-value) 填 `time` 用，先读范围再填值，不用试错）：
+
+| 字段 | 位置 | 说明 |
+|---|---|---|
+| `global_time_range` | 顶层 | **不传 `step`**（全局时间口径）时 `time` 的合法区间；`steps` 列出参与全局时间轴的 step。没有 STATIC/DYNAMIC step 时为 `null`，表示该结果组不能按全局时间查、必须显式传 `step` |
+| `time_axis` | 每个 step | 该 step 的 `frame_value` 是什么语义：`time`（STATIC/DYNAMIC）或 `mode`（FREQUENCY/BUCKLE，是模态阶次/频率/特征值，不是时间，`interp` 会被拒） |
+| `time_range` | 每个 step | **传了该 `step`** 时 `time` 的合法区间（= 该 step 的 `frame_value` 范围）。`time_axis="mode"` 时是阶次/频率的范围。该 step 没有帧时为 `null` |
+| `global_time_range` | 每个 step | 该 step 在全局时间轴上占的区间；`time_axis="mode"` 的 step 不参与全局时间轴，为 `null` |
+
+区间口径与 `node-time-value` 完全一致（两者共用同一份 timeline 计算）：`global_time_range` 优先用 L1 提取的精确 `steps.total_time`/`time_period`，旧数据退回末帧累加推算。ODB 不在 registry 里时返回空 overview，`global_time_range` 为 `null`。
 
 ### `GET /api/odb/{odb_id}/steps`
 
