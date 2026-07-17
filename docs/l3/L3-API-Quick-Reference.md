@@ -778,7 +778,7 @@ async function pollLogs(odbId) {
       {
         "step_name": "Modal", "procedure": "FREQUENCY", "num_frames": 6,
         "time_axis": "mode",
-        "time_range": {"min": 1.0, "max": 6.0},
+        "time_range": {"min": 0.0, "max": 5.0},
         "global_time_range": null
       }
     ],
@@ -808,7 +808,7 @@ async function pollLogs(odbId) {
 |---|---|---|
 | `global_time_range` | 顶层 | **不传 `step`**（全局时间口径）时 `time` 的合法区间；`steps` 列出参与全局时间轴的 step。没有 STATIC/DYNAMIC step 时为 `null`，表示该结果组不能按全局时间查、必须显式传 `step` |
 | `time_axis` | 每个 step | 该 step 的 `frame_value` 是什么语义：`time`（STATIC/DYNAMIC）或 `mode`（FREQUENCY/BUCKLE，是模态阶次/频率/特征值，不是时间，`interp` 会被拒） |
-| `time_range` | 每个 step | **传了该 `step`** 时 `time` 的合法区间（= 该 step 的 `frame_value` 范围）。`time_axis="mode"` 时是阶次/频率的范围。该 step 没有帧时为 `null` |
+| `time_range` | 每个 step | **传了该 `step`** 时 `time` 的合法区间（= 该 step 的 `frame_value` 范围）。`time_axis="mode"` 时是阶次/频率的范围（注意模态阶次从 **0** 起，6 阶是 `[0,5]` 不是 `[1,6]`）。该 step 没有帧时为 `null` |
 | `global_time_range` | 每个 step | 该 step 在全局时间轴上占的区间；`time_axis="mode"` 的 step 不参与全局时间轴，为 `null` |
 
 区间口径与 `node-time-value` 完全一致（两者共用同一份 timeline 计算）：`global_time_range` 优先用 L1 提取的精确 `steps.total_time`/`time_period`，旧数据退回末帧累加推算。ODB 不在 registry 里时返回空 overview，`global_time_range` 为 `null`。
