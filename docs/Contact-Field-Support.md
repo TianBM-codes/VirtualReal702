@@ -1,6 +1,6 @@
 # 接触输出场（CPRESS / CSHEAR / COPEN / CSLIP）支持方案
 
-> 更新时间：2026-07-17
+> 更新时间：2026-07-17（第二轮：主/从面过滤 + 云图溢出掩蔽 + frame-colors 稀疏对齐，见 §7）
 > 关联需求：接触分析类 ODB 的云图显示（"只有一面节点有数据"的场）
 
 ## 1. 背景：这类场是什么
@@ -123,3 +123,59 @@ chunk 划分从"按字段"改为"按逻辑字段组"。
    控制台无报错。图例 min/max 与 CAE 对照（图例值 0 ~ 4.161e8 量级）。
 5. pick 接触面上的节点：值与 CAE probe 一致；pick 非接触区节点：不显示结果值。
 6. 节点表格 / node-time-value 选 CPRESS：接触面节点有值，其余 NaN/无数据。
+
+## 7. 第二轮问题与修复（首轮实测后）
+
+首轮实测（project 202607171639）发现两个显示问题，都已修：
+
+### 7.1 图例最大值比 CAE 大（4.828e8 vs 4.161e8）——主/从面
+
+实测定位：ODB 的 `CPRESS ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1` 字段里
+**两个 instance 都有数据块**——
+
+| instance | 角色 | 节点数 | frame 50 max |
+|---|---|---|---|
+| PART-1-1（大块，S_SET-3 从面） | slave | 从面那圈节点 | **4.161e8 = CAE 图例值** |
+| PART-2-1（小块，M_SURF-1 主面） | master | 16（4×4 接触面） | 4.828e8 |
+
+Abaqus 把接触对**两侧**的节点值都写进了同一个场，但 **CAE 只显示从面（S_）一侧**
+——所以 CAE 图例是 4.161e8，而我们把主面侧也算进去就成了 4.828e8。
+
+**修复（L1）**：`abaqus_dump.py` 提取时解析接触对 region 的第一段（从面名，如
+`ASSEMBLY_S_SET-3_CNS_` → 去掉 `ASSEMBLY_` 前缀后到 `rootAssembly.nodeSets` /
+`surfaces` 里查），得到从面所属 instance 集合，**丢弃主面侧的 NODAL 块**。
+这样云图/图例/pick/node-table/time-value 所有口径天然一致，全部只剩从面。
+细节：
+
+- 解析失败（查不到集合、或解析结果与数据块 instance 对不上）→ 保留两侧
+  （回到旧行为），日志打 `[contact] '...': slave side unresolved, keeping both sides`；
+- 解析成功 → 日志打 `[contact] '...': slave side = ['PART-1-1'], master-side NODAL blocks dropped`
+  （**重新解析时请在日志里确认这一行**）；
+- 通用接触（region 不含 `/`，如 `General_Contact_Domain`）不做过滤——CAE 对
+  通用接触本来就显示整个接触域；
+- 自接触（主从同一 instance）按 instance 粒度分不开 → 保留两侧（记录在案的局限）。
+
+### 7.2 云图颜色溢出到侧面——整三角形掩蔽
+
+接触面**边缘**的节点同时被侧面的三角形共享；平滑模式逐顶点插值时，侧面三角形
+"一个角有颜色、两个角灰"，颜色就顺着共享边淌出去了（截图里的溢出）。CAE 的行为
+是只有整张脸都在接触面上的面片才上色。
+
+**修复（L3）**：`result_service._mask_partial_nan_triangles_soup` —— soup 顶点序里
+"三个角只要有一个 NaN"的三角形整体置 NaN（前端渲灰），边界干净利落。应用于
+`frame-colors` 与 `frame-scalars` 的 NODAL smooth（soup）路径；flat 模式天然按
+单元平均（NaN 传播即整单元灰），不需要额外处理。图例范围在**掩蔽前**按节点真实值
+计算，边缘节点的值仍计入图例（与 CAE 一致）。
+
+### 7.3 顺带修复：frame-colors 的稀疏错位
+
+`frame-colors`（demo 页在用的端点）的 NODAL 分支此前对稀疏场是"尾部补 NaN"，
+即假设结果数组第 i 行对应几何第 i 行——稀疏场下值会张冠李戴。现已改为与
+`frame-scalars` 相同的 label 对齐展开。demo 页的 Colormap Legend 卡片也移到了
+Frame Colors 卡片正下方。
+
+### 7.4 生效条件
+
+- §7.2 / §7.3（L3 + demo 页）：重启 `app.py` 即生效，**旧数据也适用**；
+- §7.1（L1 主面过滤）：需要**重新解析** ODB。重新解析前，PART-2-1 的隐藏接触面
+  仍会有颜色、其 4.828e8 也仍会进 frame-scalar-range 的全局范围。

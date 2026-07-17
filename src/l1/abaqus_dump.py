@@ -357,6 +357,52 @@ def split_region_field(name):
     return name, None
 
 
+def _resolve_contact_slave_instances(odb, region):
+    """For a contact-pair region like
+    'ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1', resolve which instances carry
+    the slave (first) side.
+
+    Abaqus writes contact-pair output (CPRESS/CSHEAR/...) for BOTH surfaces
+    into the same field, but CAE displays only the slave side — keeping the
+    master-side blocks would color both parts and inflate the legend past
+    CAE's. Returns a set of canonical instance names, or None when the slave
+    set/surface cannot be found (caller then keeps every block).
+    """
+    if not region or '/' not in region:
+        return None
+    token = region.split('/')[0].strip()
+    if token.upper().startswith('ASSEMBLY_'):
+        token = token[len('ASSEMBLY_'):]
+    if not token:
+        return None
+    ra = odb.rootAssembly
+    for repo in (getattr(ra, 'nodeSets', None), getattr(ra, 'surfaces', None)):
+        if repo is None:
+            continue
+        try:
+            obj = repo[token]
+        except Exception:
+            continue
+        insts = set()
+        try:
+            for nm in list(getattr(obj, 'instanceNames', None) or []):
+                insts.add(_canon_inst(nm))
+        except Exception:
+            pass
+        if not insts:
+            try:
+                # Assembly-level sets expose .nodes as a tuple of per-instance
+                # node arrays; each node carries .instanceName.
+                for arr in (getattr(obj, 'nodes', None) or ()):
+                    if len(arr) > 0:
+                        insts.add(_canon_inst(arr[0].instanceName))
+            except Exception:
+                pass
+        if insts:
+            return insts
+    return None
+
+
 def _section_material_name(sec):
     """从 ODB section 对象取材料名。
 
@@ -1837,17 +1883,45 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 print("    Field '{}' (merged from {} region-qualified field(s)) ...".format(
                     field_name, len(member_names)))
 
-            # First frame (per member) with data → discover structure
-            member_first_fields = []
+            # First frame (per member) with data → discover structure.
+            # member_infos: (raw odb field name, first FieldOutput, slave
+            # instance set or None). Contact-pair fields carry data for both
+            # surfaces; only the slave side is kept (matches CAE display).
+            member_infos = []
             for m_name in member_names:
                 _ff = next(
                     (fr.fieldOutputs[m_name] for _, fr in selected_frames
                      if m_name in fr.fieldOutputs), None)
-                if _ff is not None:
-                    member_first_fields.append(_ff)
-            if not member_first_fields:
+                if _ff is None:
+                    continue
+                _region = split_region_field(m_name)[1]
+                _slave = (_resolve_contact_slave_instances(odb, _region)
+                          if _region else None)
+                if _slave is not None:
+                    # Sanity: resolution must hit at least one block instance,
+                    # otherwise treat as unresolved and keep every block.
+                    try:
+                        _blk_insts = set(
+                            _canon_inst(b.instance.name)
+                            for b in _ff.bulkDataBlocks
+                            if b.instance is not None)
+                    except Exception:
+                        _blk_insts = set()
+                    if not (_slave & _blk_insts):
+                        _slave = None
+                if _region is not None:
+                    if _slave is None:
+                        print("    [contact] '{}': slave side unresolved, "
+                              "keeping both sides".format(m_name))
+                    else:
+                        print("    [contact] '{}': slave side = {}, "
+                              "master-side NODAL blocks dropped".format(
+                                  m_name, sorted(_slave)))
+                member_infos.append((m_name, _ff, _slave))
+            if not member_infos:
                 continue
 
+            member_first_fields = [mi[1] for mi in member_infos]
             first_field = member_first_fields[0]
             # Build component list as union across all block componentLabels.
             # first_field.componentLabels returns the intersection across element
@@ -1910,12 +1984,15 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             # ALL blocks per key first, then take the union of their labels
             # so the canonical labels.npy is always the full superset.
             key_to_disc_blocks = {}
-            for block in [b for _mf in member_first_fields
-                          for b in _mf.bulkDataBlocks]:
+            for _mslave, block in [(mi[2], b) for mi in member_infos
+                                   for b in mi[1].bulkDataBlocks]:
                 if block.instance is None:
                     continue
                 inst_name = _canon_inst(block.instance.name)
                 position  = _pos_str(block.position)
+                if (position == 'NODAL' and _mslave is not None
+                        and inst_name not in _mslave):
+                    continue   # master-side contact block (CAE hides it)
                 elem_type = (getattr(block, 'elementType', None)
                              or getattr(block, 'baseElementType', None))
                 if position == 'NODAL':
@@ -2061,20 +2138,24 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             # and every frame file has exactly the same shape as labels.npy.
             has_section = 0
             for frame_idx, (_, frame) in enumerate(selected_frames):
-                fr_members = [frame.fieldOutputs[m] for m in member_names
-                              if m in frame.fieldOutputs]
+                fr_members = [(mi[2], frame.fieldOutputs[mi[0]])
+                              for mi in member_infos
+                              if mi[0] in frame.fieldOutputs]
                 if not fr_members:
                     continue
-                field_out = fr_members[0]   # for getSubset(EN) extrapolation below
+                field_out = fr_members[0][1]   # for getSubset(EN) extrapolation below
 
                 # Group this frame's blocks by key (across all member fields)
                 key_to_fr_blocks = {}
-                for block in [b for _fo in fr_members
-                              for b in _fo.bulkDataBlocks]:
+                for _mslave, block in [(s, b) for (s, _fo) in fr_members
+                                       for b in _fo.bulkDataBlocks]:
                     if block.instance is None:
                         continue
                     inst_name = _canon_inst(block.instance.name)
                     position  = _pos_str(block.position)
+                    if (position == 'NODAL' and _mslave is not None
+                            and inst_name not in _mslave):
+                        continue   # master-side contact block (CAE hides it)
                     elem_type = (getattr(block, 'elementType', None)
                                  or getattr(block, 'baseElementType', None))
                     if position == 'NODAL':
@@ -2207,9 +2288,15 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 'has_section': has_section,
                 # Raw ODB field names merged into this logical field (contact
                 # outputs carry the surface pair as a region suffix).
+                # slave_instances: instances kept for that member's NODAL
+                # blocks (master side dropped, matching CAE); None = unresolved
+                # (both sides kept).
                 'source_fields': [
-                    {'name': m, 'region': split_region_field(m)[1]}
-                    for m in member_names
+                    {'name': mi[0],
+                     'region': split_region_field(mi[0])[1],
+                     'slave_instances': (sorted(mi[2])
+                                         if mi[2] is not None else None)}
+                    for mi in member_infos
                 ],
                 'blocks':      [
                     dict(

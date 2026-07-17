@@ -297,6 +297,17 @@
     <div id="highlightInfo"></div>
   </div>
 
+  <!-- Legend（紧跟 Frame Colors，云图上色后就近看范围） -->
+  <div class="card" id="legendCard">
+    <h2>Colormap Legend</h2>
+    <canvas id="legendBar" width="230" height="14"></canvas>
+    <div class="legend-labels">
+      <span id="legendMin">—</span>
+      <span id="legendMid">—</span>
+      <span id="legendMax">—</span>
+    </div>
+  </div>
+
   <!-- Color Code -->
   <div class="card" id="colorCodeCard" style="display:none">
     <h2>Color Code</h2>
@@ -405,17 +416,6 @@
       <tr><td>Source</td><td class="val" id="pSource">—</td></tr>
       <tr><td>Value</td><td class="val" id="pVal">—</td></tr>
     </table>
-  </div>
-
-  <!-- Legend -->
-  <div class="card" id="legendCard">
-    <h2>Colormap Legend</h2>
-    <canvas id="legendBar" width="230" height="14"></canvas>
-    <div class="legend-labels">
-      <span id="legendMin">—</span>
-      <span id="legendMid">—</span>
-      <span id="legendMax">—</span>
-    </div>
   </div>
 
   <div id="status">Ready — enter API URL and click Connect.</div>

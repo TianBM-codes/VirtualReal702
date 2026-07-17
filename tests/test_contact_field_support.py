@@ -19,6 +19,7 @@ import pytest
 
 from src.l1.abaqus_dump_parallel import group_fields_for_workers
 from src.l3.services.query_service import _read_pick_result
+from src.l3.services.result_service import _mask_partial_nan_triangles_soup
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,34 @@ class TestGroupFieldsForWorkers:
             "COPEN ASSEMBLY_GENERAL_CONTACT_DOMAIN",
             "COPEN ASSEMBLY_OTHER_DOMAIN",
         ]]
+
+
+# ---------------------------------------------------------------------------
+# _mask_partial_nan_triangles_soup — 接触面云图边界掩蔽（防止颜色溢出侧面）
+# ---------------------------------------------------------------------------
+
+class TestMaskPartialNanTriangles:
+
+    def test_partial_nan_triangle_fully_masked(self):
+        sv = np.array([1, 2, 3,  1, np.nan, 2,  4, 5, 6], dtype=np.float32)
+        out = _mask_partial_nan_triangles_soup(sv)
+        assert out[:3].tolist() == [1, 2, 3]
+        assert np.isnan(out[3:6]).all()          # 有一个角 NaN → 整三角形灰
+        assert out[6:].tolist() == [4, 5, 6]
+
+    def test_dense_array_unchanged(self):
+        sv = np.arange(9, dtype=np.float32)
+        out = _mask_partial_nan_triangles_soup(sv)
+        assert out.tolist() == sv.tolist()
+
+    def test_all_nan_stays_all_nan(self):
+        sv = np.full(6, np.nan, dtype=np.float32)
+        assert np.isnan(_mask_partial_nan_triangles_soup(sv)).all()
+
+    def test_non_soup_length_untouched(self):
+        sv = np.array([1.0, np.nan], dtype=np.float32)
+        out = _mask_partial_nan_triangles_soup(sv)
+        assert out[0] == 1.0 and np.isnan(out[1])
 
 
 # ---------------------------------------------------------------------------
