@@ -29,7 +29,7 @@ import time
 import h5py
 import numpy as np
 
-from manifest_schema import MANIFEST_SCHEMA
+from manifest_schema import MANIFEST_SCHEMA, migrate_result_blocks
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -90,11 +90,26 @@ def _fmt_t(secs):
 
 # ─── manifest.db ──────────────────────────────────────────────────────────────
 
+def _migrate_manifest(conn):
+    """给已存在的旧 manifest.db 补新增列（CREATE TABLE IF NOT EXISTS 对旧表不生效）。"""
+    migrations = {
+        'steps': [('total_time', 'REAL'), ('time_period', 'REAL')],
+    }
+    for table, columns in migrations.items():
+        existing = {r[1] for r in conn.execute(
+            "PRAGMA table_info({})".format(table)).fetchall()}
+        for col, coltype in columns:
+            if col not in existing:
+                conn.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, col, coltype))
+    migrate_result_blocks(conn)  # sp_num 列 + 主键重建（涉及主键变更，须整表重建）
+
+
 def init_manifest(workspace):
     db_path = os.path.join(workspace, 'manifest.db')
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.executescript(MANIFEST_SCHEMA)
+    _migrate_manifest(conn)
     conn.commit()
     return conn
 
@@ -664,9 +679,13 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
     # Write steps and frames to manifest.db
     for step_name, sm in steps_meta.items():
         db_conn.execute(
-            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO steps"
+            " (result_group, step_name, step_number, procedure, num_frames,"
+            "  description, nlgeom, total_time, time_period)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (result_group, step_name, sm['step_number'], sm['procedure'], sm['num_frames'],
-             sm.get('description'), sm.get('nlgeom', 0))
+             sm.get('description'), sm.get('nlgeom', 0),
+             sm.get('total_time'), sm.get('time_period'))
         )
         for fm in sm['frames']:
             db_conn.execute(
@@ -714,6 +733,13 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
         positions_found = set()
         global_min =  float('inf')
         global_max = -float('inf')
+
+        # 重打包同一 step+field 时先清旧 block 行：result_group 为 NULL 时
+        # 主键含 NULL，INSERT OR REPLACE 不会替换旧行，会越积越多
+        db_conn.execute(
+            "DELETE FROM result_blocks"
+            " WHERE result_group IS ? AND step_name=? AND field_name=?",
+            (result_group, step_name, field_name))
 
         with h5py.File(h5_abs, 'w') as f:
             # Metadata
@@ -847,11 +873,15 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
                         global_min = min(global_min, float(finite.min()))
                         global_max = max(global_max, float(finite.max()))
 
-                # manifest.db: result_blocks
+                # manifest.db: result_blocks（sp_num 入主键，区分同 elem_type 的多个截面点块）
                 db_conn.execute(
-                    "INSERT OR REPLACE INTO result_blocks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO result_blocks"
+                    " (result_group, step_name, field_name, instance_name, position,"
+                    "  elem_type, sp_num, h5_path, label_path, n_entities, n_ip, n_sp)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (result_group, step_name, field_name, inst_name, position,
                      elem_type,
+                     sp_num if sp_num is not None else -1,
                      grp_path,
                      grp_path + '/labels',
                      N_ent,

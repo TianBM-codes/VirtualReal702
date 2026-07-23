@@ -945,15 +945,29 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
     manifest_path = os.path.join(workspace, "manifest.db")
     if os.path.exists(manifest_path):
         try:
+            from src.l1.manifest_schema import migrate_result_blocks
             with sqlite3.connect(manifest_path, timeout=5.0) as conn:
+                # 先做 sp_num 迁移：旧表里壳截面点块是"重复行"，直接 UPDATE
+                # 会撞主键导致整条失败，result_blocks 就永远打不上标签
+                try:
+                    migrate_result_blocks(conn)
+                except Exception as exc:
+                    logger.warning("[%s] _adopt_odb_result_group: "
+                                   "migrate_result_blocks failed: %s", project_id, exc)
                 for tbl in ("steps", "frames", "result_files", "result_blocks"):
                     try:
                         conn.execute(
                             "UPDATE {} SET result_group=? WHERE result_group IS NULL".format(tbl),
                             (rg_name,),
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # 打标失败会让 L3 按 result_group 查这张表时全部落空，
+                        # 必须留痕，不能静默降级
+                        logger.warning("[%s] _adopt_odb_result_group: tagging %s "
+                                       "failed: %s", project_id, tbl, exc)
+                        _log_job(project_id, "warn",
+                                 "result_group 打标失败：表 {} — {}".format(tbl, exc),
+                                 stage="adopt_result_group")
                 # result_group_meta
                 try:
                     conn.execute(

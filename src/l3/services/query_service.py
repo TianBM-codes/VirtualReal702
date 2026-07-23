@@ -133,12 +133,9 @@ def _resolve_comp(
 
 def _result_h5_path(workspace: str, step: str, field: str,
                     result_group: str = None) -> str:
-    def safe(s):
-        return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
-    fname = f"{safe(step)}__{safe(field)}.h5"
-    if result_group:
-        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
-    return os.path.join(workspace, "l1", "results", fname)
+    # manifest result_files.file_path 优先（adopt 型 default_result 的文件
+    # 在 l1/results/ 根目录，按 result_group 拼子目录会 miss），见 repo 方法注释
+    return ManifestRepo(workspace).result_h5_abspath(step, field, result_group)
 
 
 def _read_u_displacement(
@@ -276,6 +273,11 @@ def _read_pick_result(
         """Extract scalar from a 1-D or vector row."""
         if row_data.ndim == 0:
             return float(row_data)
+        # 标量场（ncomp==1，如 CPRESS/CSHEAR1/S_PRESS）必须保号：对单分量取
+        # L2 范数等于 abs()，会把负值翻正。与 result_service._extract_component
+        # 的口径一致，只有真正的矢量场才折算模长。
+        if len(row_data) == 1:
+            return float(row_data[0])
         if use_magnitude:
             return float(np.linalg.norm(row_data))
         if ci is not None and ci < len(row_data):
@@ -299,11 +301,37 @@ def _read_pick_result(
                     )
                 else:
                     node_rows_to_read = face_node_rows
+
+                # 稀疏 NODAL 场（如接触输出 CPRESS/CSHEAR，只在接触面节点有值）:
+                # data 的行号与几何节点行号不对齐，必须先把几何行号换成节点
+                # label，再在结果 labels 里二分查找。稠密场 labels 与几何全节点
+                # 一致，映射是恒等的，行为不变。找不到的节点 = 该处无数据。
+                labels_path = f"/NODAL/{instance}/labels"
+                if labels_path in f:
+                    result_labels = np.asarray(f[labels_path][:]).reshape(-1)
+                    node_labels = np.asarray(
+                        HDF5Repo(workspace).get_node_labels_for_rows(
+                            instance, node_rows_to_read))
+                    if len(result_labels) == 0:
+                        data_rows = []
+                    else:
+                        pos = np.searchsorted(result_labels, node_labels)
+                        pos_c = np.clip(pos, 0, len(result_labels) - 1)
+                        hit = result_labels[pos_c] == node_labels
+                        data_rows = [int(pos_c[i])
+                                     for i in range(len(node_labels)) if hit[i]]
+                else:
+                    data_rows = list(node_rows_to_read)
+
                 def _nval(r):
                     if fd.ndim == 1:
                         return float(fd[r])
                     return _scalar(fd[r])
-                values = [_nval(r) for r in node_rows_to_read]
+                values = [_nval(r) for r in data_rows if r < len(fd)]
+                if not values:
+                    # 请求的节点在该场里都没有数据（非接触区）→ 视为无结果，
+                    # 走后续 ELEMENT_NODAL / INTEGRATION_POINT fallback。
+                    return None
                 if len(values) == 1:
                     return PickResultInfo(field=field, position="NODAL",
                                          component=component, raw_value=values[0])

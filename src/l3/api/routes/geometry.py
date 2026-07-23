@@ -27,6 +27,7 @@ from ...infra.l3be import build as l3be_build
 from ...infra.manifest_repo import ManifestRepo
 from ...infra.registry_repo import RegistryRepo
 from ...services.user_field_service import get_face_mask_for_elem_labels
+from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["geometry"])
 
@@ -150,6 +151,50 @@ async def get_orientations(odb_id: str):
             for i in range(N)
         ]
     }
+
+
+@router.get("/geometry/{instance}/node-labels")
+async def get_node_labels(
+    odb_id: str,
+    instance: str,
+    offset: int = Query(0, ge=0, description="分页起点（按 label 升序）"),
+    limit: int = Query(100, ge=1, le=10000, description="本页最多返回多少个 label"),
+):
+    """
+    分页列出该 instance 的全部节点 label（升序），并附总数和编号范围。
+
+    节点编号不一定从 1 开始也不一定连续（常见部件偏移如 30050001 起），
+    调用方（demo 页/调试）先打这个接口拿真实编号，再去查 node-table /
+    node-time-value 等按 label 的接口。读 L1 geometry，不依赖 L2。
+
+    Response data:
+      { "instance", "total", "label_min", "label_max",
+        "offset", "limit", "labels": [int, ...] }
+    """
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+
+    geom_path = ManifestRepo(idx.workspace).get_geom_path(instance)
+    if not geom_path or not os.path.exists(geom_path):
+        raise NotFoundError(
+            f"Instance '{instance}' not found in ODB '{odb_id}'",
+            {"instance": instance})
+
+    with h5py.File(geom_path, "r") as f:
+        labels = np.sort(f["nodes/labels"][:].astype(np.int64))
+
+    total = int(labels.size)
+    page = labels[offset:offset + limit]
+    return ok({
+        "instance": instance,
+        "total": total,
+        "label_min": int(labels[0]) if total else None,
+        "label_max": int(labels[-1]) if total else None,
+        "offset": offset,
+        "limit": limit,
+        "labels": page.tolist(),
+    })
 
 
 @router.get("/geometry/{instance}/render-buffers", dependencies=[Depends(_l2_ready)])

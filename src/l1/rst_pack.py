@@ -142,7 +142,9 @@ def pack_rst(rst_path, workspace, result_group='default_result', display_name=No
     db.execute('PRAGMA journal_mode=WAL')
 
     # steps / frames
-    db.execute("INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
+    db.execute("INSERT OR REPLACE INTO steps"
+               " (result_group, step_name, step_number, procedure, num_frames,"
+               "  description, nlgeom) VALUES (?,?,?,?,?,?,?)",
                (result_group, step_name, 1, procedure, nsets, display_name, 0))
     for fi in range(nsets):
         is_modal = (procedure == 'FREQUENCY')
@@ -220,7 +222,10 @@ def pack_rst(rst_path, workspace, result_group='default_result', display_name=No
             h5_abs_f, step_name, field_name, components, invariants,
             inst_name, labels, data, inv_arr, nsets)
 
-        db.execute("INSERT OR REPLACE INTO result_blocks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        db.execute("INSERT OR REPLACE INTO result_blocks"
+                   " (result_group, step_name, field_name, instance_name, position,"
+                   "  elem_type, h5_path, label_path, n_entities, n_ip, n_sp)"
+                   " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                    (result_group, step_name, field_name, inst_name, 'NODAL',
                     None, grp_path, grp_path + '/labels', n_ent, None, None))
         db.execute("INSERT OR REPLACE INTO result_files VALUES (?,?,?,?,?,?,?,?,?,?,?)",

@@ -339,6 +339,136 @@ def safe(name):
     return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
 
 
+def split_region_field(name):
+    """Split a region-qualified field name into (base_name, region).
+
+    Contact outputs are stored per contact pair with the surface names baked
+    into the field name after whitespace, e.g.
+        'CPRESS   ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1'
+        -> ('CPRESS', 'ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1')
+    A suffix counts as a region only if it contains '/' (surface pair) or
+    starts with 'ASSEMBLY'. Plain fields return (name, None) unchanged.
+    """
+    parts = name.split(None, 1)
+    if len(parts) == 2:
+        suffix = parts[1].strip()
+        if '/' in suffix or suffix.startswith('ASSEMBLY'):
+            return parts[0], suffix
+    return name, None
+
+
+def _contact_token_candidates(token):
+    """Candidate set/surface names for one side of a contact-pair region.
+
+    'ASSEMBLY_S_SET-3_CNS_' → ['S_SET-3_CNS_', 'S_SET-3', 'SET-3_CNS_', 'SET-3']
+    The _CNS_ suffix is Abaqus' internal marker for a node-set-based surface;
+    the underlying user set keeps its original name (may itself start with
+    'S_' — only strip the side prefix as a last resort).
+    """
+    name = token.strip()
+    if name.upper().startswith('ASSEMBLY_'):
+        name = name[len('ASSEMBLY_'):]
+    cands = []
+
+    def _add(n):
+        if n and n not in cands:
+            cands.append(n)
+
+    _add(name)
+    up = name.upper()
+    if up.endswith('_CNS_'):
+        _add(name[:-5])
+    elif up.endswith('_CNS'):
+        _add(name[:-4])
+    for c in list(cands):
+        if c[:2].upper() in ('S_', 'M_'):
+            _add(c[2:])
+    return cands
+
+
+def _resolve_region_side_instances(odb, token):
+    """Resolve one contact-region side token to the set of canonical instance
+    names carrying it. Tries assembly-level nodeSets/surfaces/elementSets,
+    then instance-level nodeSets/surfaces. Returns None when unresolved."""
+    ra = odb.rootAssembly
+    cands = _contact_token_candidates(token)
+    repos = [getattr(ra, 'nodeSets', None), getattr(ra, 'surfaces', None),
+             getattr(ra, 'elementSets', None)]
+    for cand in cands:
+        for repo in repos:
+            if repo is None:
+                continue
+            try:
+                obj = repo[cand]
+            except Exception:
+                continue
+            insts = set()
+            try:
+                for nm in list(getattr(obj, 'instanceNames', None) or []):
+                    insts.add(_canon_inst(nm))
+            except Exception:
+                pass
+            if not insts:
+                try:
+                    # Assembly-level sets expose .nodes as a tuple of
+                    # per-instance node arrays; nodes carry .instanceName.
+                    for arr in (getattr(obj, 'nodes', None) or ()):
+                        if len(arr) > 0:
+                            insts.add(_canon_inst(arr[0].instanceName))
+                except Exception:
+                    pass
+            if insts:
+                return insts
+    # Instance-level sets (part-level *NSET end up here)
+    for cand in cands:
+        for iname in ra.instances.keys():
+            inst = ra.instances[iname]
+            for repo in (getattr(inst, 'nodeSets', None),
+                         getattr(inst, 'surfaces', None)):
+                if repo is None:
+                    continue
+                try:
+                    repo[cand]
+                except Exception:
+                    continue
+                return set([_canon_inst(iname)])
+    return None
+
+
+def _resolve_contact_hidden_instances(odb, region):
+    """For a contact-pair region like
+    'ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1', resolve which instances' NODAL
+    blocks CAE does NOT display.
+
+    Abaqus writes contact-pair output (CPRESS/CSHEAR/...) for BOTH sides into
+    the same field. CAE can only contour on a face-based surface — the side
+    backed by a bare node set (marked with the internal _CNS_ suffix) has no
+    faces to paint, so CAE ignores its values entirely (colors AND legend).
+    Keeping them would color the wrong part and inflate our legend past CAE's.
+
+    Returns a set of canonical instance names to hide, or None when nothing
+    should be hidden (unresolved / no _CNS_ side / both sides share an
+    instance, where instance-level dropping would also kill visible data).
+    """
+    if not region:
+        return None
+    tokens = [t.strip() for t in region.split('/') if t.strip()]
+    if len(tokens) != 2:
+        return None
+    is_cns = [t.upper().rstrip('_').endswith('_CNS') for t in tokens]
+    if sum(is_cns) != 1:
+        return None   # both face surfaces (or both node sets) → keep all
+    cns_token   = tokens[is_cns.index(True)]
+    other_token = tokens[is_cns.index(False)]
+    hidden = _resolve_region_side_instances(odb, cns_token)
+    if not hidden:
+        return None
+    other = _resolve_region_side_instances(odb, other_token)
+    if other and (hidden & other):
+        return None   # both sides live on one instance → can't drop safely
+    return hidden
+
+
 def _section_material_name(sec):
     """从 ODB section 对象取材料名。
 
@@ -1169,12 +1299,16 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
             })
             all_field_names.update(frame.fieldOutputs.keys())
 
+        _tt = getattr(step, 'totalTime', None)
+        _tp = getattr(step, 'timePeriod', None)
         steps_meta[step_name] = {
             'step_number': step_num,
             'procedure':   procedure,
             'num_frames':  num_frames,
             'description': getattr(step, 'description', None),
             'nlgeom':      int(bool(getattr(step, 'nlgeom', False))),
+            'total_time':  float(_tt) if _tt is not None else None,
+            'time_period': float(_tp) if _tp is not None else None,
             'frames':      frames_meta,
         }
         field_list = sorted(all_field_names)
@@ -1289,7 +1423,8 @@ def _compute_invariants_numpy(comp, inv_name, is_strain=False):
 
 def _extract_ip_invariants(step, step_name, field_name, first_field,
                            invariants, results_dir, safe_step, safe_field,
-                           block_struct, odb_instances, selected_frames=None):
+                           block_struct, odb_instances, selected_frames=None,
+                           odb_field_names=None):
     """Extract scalar invariant fields via Abaqus getScalarField(invariant=...).
 
     Uses the Abaqus API to compute each invariant (guaranteed accuracy),
@@ -1431,10 +1566,15 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
         selected_frames = list(enumerate(step.frames))
     num_frames = len(selected_frames)
 
+    # field_name may be a normalized logical name (region suffix stripped);
+    # odb_field_names carries the raw ODB keys to look up in fieldOutputs.
+    _lookup_names = odb_field_names or [field_name]
+
     for frame_idx, (_, frame) in enumerate(selected_frames):
-        if field_name not in frame.fieldOutputs:
+        _present = [n for n in _lookup_names if n in frame.fieldOutputs]
+        if not _present:
             continue
-        field_out = frame.fieldOutputs[field_name]
+        field_out = frame.fieldOutputs[_present[0]]
 
         # ── Method B precompute: extrapolated tensor at EN / NODAL, ONCE per ──
         # frame. EN/NODAL invariants are computed from these tensor components
@@ -1764,12 +1904,16 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 'load_case':          str(_lc) if _lc is not None else None,
             })
 
+        _tt = getattr(step, 'totalTime', None)
+        _tp = getattr(step, 'timePeriod', None)
         steps_meta[step_name] = {
             'step_number': step_num,
             'procedure':   procedure,
             'num_frames':  num_frames,
             'description': getattr(step, 'description', None),
             'nlgeom':      int(bool(getattr(step, 'nlgeom', False))),
+            'total_time':  float(_tt) if _tt is not None else None,
+            'time_period': float(_tp) if _tp is not None else None,
             'frames':      frames_meta,
         }
 
@@ -1781,31 +1925,83 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
         # Apply field_filter within this step
         allowed_fields = field_filter[step_name] if field_filter is not None else None
 
-        for field_name in sorted(all_field_names):
-            if allowed_fields is not None and field_name not in allowed_fields:
+        # ── Group region-qualified fields by base name ────────────────────────
+        # Contact outputs (CPRESS/CSHEAR/COPEN/CSLIP...) are stored per contact
+        # pair as e.g. 'CPRESS   ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1'.
+        # All pairs sharing a base name are dumped as ONE logical field (block
+        # labels are unioned), matching the aggregated entry CAE shows.
+        # Plain fields form single-member groups — identical to old behaviour.
+        field_groups = {}   # base name -> [raw odb field name, ...]
+        for raw_name in sorted(all_field_names):
+            if (allowed_fields is not None and raw_name not in allowed_fields
+                    and split_region_field(raw_name)[0] not in allowed_fields):
                 continue
-            if field_prefix is not None and not field_name.startswith(field_prefix):
+            if field_prefix is not None and not raw_name.startswith(field_prefix):
                 continue
+            field_groups.setdefault(split_region_field(raw_name)[0], []).append(raw_name)
+
+        for field_name in sorted(field_groups.keys()):
+            member_names = field_groups[field_name]
             t_field = time.time()
-            print("    Field '{}' ...".format(field_name))
+            if member_names == [field_name]:
+                print("    Field '{}' ...".format(field_name))
+            else:
+                print("    Field '{}' (merged from {} region-qualified field(s)) ...".format(
+                    field_name, len(member_names)))
 
-            # First frame with this field → discover structure
-            first_frame = next(
-                (fr for _, fr in selected_frames if field_name in fr.fieldOutputs), None)
-            if first_frame is None:
+            # First frame (per member) with data → discover structure.
+            # member_infos: (raw odb field name, first FieldOutput, hidden
+            # instance set or None). Contact-pair fields carry data for both
+            # surfaces, but CAE only contours the face-based side — the
+            # node-set (_CNS_) side is dropped to match CAE's display/legend.
+            member_infos = []
+            for m_name in member_names:
+                _ff = next(
+                    (fr.fieldOutputs[m_name] for _, fr in selected_frames
+                     if m_name in fr.fieldOutputs), None)
+                if _ff is None:
+                    continue
+                _region = split_region_field(m_name)[1]
+                _hidden = (_resolve_contact_hidden_instances(odb, _region)
+                           if _region else None)
+                if _hidden is not None:
+                    # Sanity: hiding must leave at least one block instance,
+                    # otherwise treat as unresolved and keep every block.
+                    try:
+                        _blk_insts = set(
+                            _canon_inst(b.instance.name)
+                            for b in _ff.bulkDataBlocks
+                            if b.instance is not None)
+                    except Exception:
+                        _blk_insts = set()
+                    if not (_blk_insts - _hidden):
+                        _hidden = None
+                if _region is not None:
+                    if _hidden is None:
+                        print("    [contact] '{}': no side hidden "
+                              "(unresolved or no _CNS_ side), keeping all "
+                              "blocks".format(m_name))
+                    else:
+                        print("    [contact] '{}': node-set (_CNS_) side on "
+                              "{} hidden — CAE only contours the face-based "
+                              "side".format(m_name, sorted(_hidden)))
+                member_infos.append((m_name, _ff, _hidden))
+            if not member_infos:
                 continue
 
-            first_field = first_frame.fieldOutputs[field_name]
+            member_first_fields = [mi[1] for mi in member_infos]
+            first_field = member_first_fields[0]
             # Build component list as union across all block componentLabels.
             # first_field.componentLabels returns the intersection across element
             # types, which drops S13/S23 for mixed shell+solid models.
             _comp_union = []
             _comp_set   = set()
-            for _blk in first_field.bulkDataBlocks:
-                for _c in list(getattr(_blk, 'componentLabels', None) or []):
-                    if _c not in _comp_set:
-                        _comp_union.append(_c)
-                        _comp_set.add(_c)
+            for _mf in member_first_fields:
+                for _blk in _mf.bulkDataBlocks:
+                    for _c in list(getattr(_blk, 'componentLabels', None) or []):
+                        if _c not in _comp_set:
+                            _comp_union.append(_c)
+                            _comp_set.add(_c)
             components  = _comp_union if _comp_union else list(first_field.componentLabels)
             invariants  = [str(i) for i in first_field.validInvariants]
             # 混合 solid+shell 模型: first_field.validInvariants 返回的是跨单元类型的
@@ -1856,14 +2052,23 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             # ALL blocks per key first, then take the union of their labels
             # so the canonical labels.npy is always the full superset.
             key_to_disc_blocks = {}
-            for block in first_field.bulkDataBlocks:
+            for _mhidden, block in [(mi[2], b) for mi in member_infos
+                                    for b in mi[1].bulkDataBlocks]:
                 if block.instance is None:
                     continue
                 inst_name = _canon_inst(block.instance.name)
                 position  = _pos_str(block.position)
+                if (position == 'NODAL' and _mhidden is not None
+                        and inst_name in _mhidden):
+                    continue   # node-set (_CNS_) side block (CAE hides it)
                 elem_type = (getattr(block, 'elementType', None)
                              or getattr(block, 'baseElementType', None))
-                if elem_type is None:
+                if position == 'NODAL':
+                    # NODAL data is per-node: elem_type must stay empty so the
+                    # HDF5 path is always /NODAL/<inst> (the only path L3
+                    # reads). Never fall back to _auto naming here.
+                    elem_type = elem_type or ''
+                elif elem_type is None:
                     _d = np.array(block.data)
                     _n = len(getattr(block, 'elementLabels',
                              getattr(block, 'nodeLabels', [])))
@@ -2001,20 +2206,29 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             # and every frame file has exactly the same shape as labels.npy.
             has_section = 0
             for frame_idx, (_, frame) in enumerate(selected_frames):
-                if field_name not in frame.fieldOutputs:
+                fr_members = [(mi[2], frame.fieldOutputs[mi[0]])
+                              for mi in member_infos
+                              if mi[0] in frame.fieldOutputs]
+                if not fr_members:
                     continue
-                field_out = frame.fieldOutputs[field_name]
+                field_out = fr_members[0][1]   # for getSubset(EN) extrapolation below
 
-                # Group this frame's blocks by key
+                # Group this frame's blocks by key (across all member fields)
                 key_to_fr_blocks = {}
-                for block in field_out.bulkDataBlocks:
+                for _mhidden, block in [(s, b) for (s, _fo) in fr_members
+                                        for b in _fo.bulkDataBlocks]:
                     if block.instance is None:
                         continue
                     inst_name = _canon_inst(block.instance.name)
                     position  = _pos_str(block.position)
+                    if (position == 'NODAL' and _mhidden is not None
+                            and inst_name in _mhidden):
+                        continue   # node-set (_CNS_) side block (CAE hides it)
                     elem_type = (getattr(block, 'elementType', None)
                                  or getattr(block, 'baseElementType', None))
-                    if elem_type is None:
+                    if position == 'NODAL':
+                        elem_type = elem_type or ''   # keep /NODAL/<inst> path
+                    elif elem_type is None:
                         _d = np.array(block.data)
                         _n = len(getattr(block, 'elementLabels',
                                  getattr(block, 'nodeLabels', [])))
@@ -2140,6 +2354,18 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 'components':  components,
                 'invariants':  invariants,
                 'has_section': has_section,
+                # Raw ODB field names merged into this logical field (contact
+                # outputs carry the surface pair as a region suffix).
+                # hidden_instances: instances whose NODAL blocks were dropped
+                # (the node-set/_CNS_ side of a contact pair, which CAE never
+                # contours); None = nothing hidden.
+                'source_fields': [
+                    {'name': mi[0],
+                     'region': split_region_field(mi[0])[1],
+                     'hidden_instances': (sorted(mi[2])
+                                          if mi[2] is not None else None)}
+                    for mi in member_infos
+                ],
                 'blocks':      [
                     dict(
                         {'inst_name': k[0], 'position': k[1],
@@ -2159,6 +2385,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     invariants, results_dir, safe_step, safe_field,
                     block_struct, odb.rootAssembly.instances,
                     selected_frames=selected_frames,
+                    odb_field_names=member_names,
                 )
         print("  Step '{}' done. ({})".format(step_name, _fmt_t(time.time() - t_step)))
 
