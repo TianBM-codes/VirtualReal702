@@ -1,11 +1,14 @@
 import json
 import re
-from pathlib import Path
 
 import numpy as np
 
 from db import ensure_tables_exist, get_connection
 from src.l3.core.errors import NotFoundError, ValidationError
+from services.model_update.importers.unv_utils import (
+    list_unv_dataset_ids,
+    read_unv_blocks as _read_unv_blocks,
+)
 
 
 def _to_float(text: str) -> float:
@@ -13,36 +16,11 @@ def _to_float(text: str) -> float:
 
 
 def read_unv_blocks(filename):
-    lines = Path(filename).read_text(encoding="utf-8", errors="ignore").splitlines()
-
-    blocks = []
-    index = 0
-    total = len(lines)
-    while index < total:
-        if lines[index].strip() != "-1":
-            index += 1
-            continue
-        if index + 1 >= total:
-            break
-
-        dataset_id = lines[index + 1].strip()
-        if dataset_id == "-1":
-            index += 1
-            continue
-
-        start = index + 2
-        end = start
-        while end < total and lines[end].strip() != "-1":
-            end += 1
-
-        blocks.append((dataset_id, lines[start:end]))
-        index = end + 1
-
-    return blocks
+    return _read_unv_blocks(filename)
 
 
 def list_dataset_ids(filename) -> list[str]:
-    return [dataset_id for dataset_id, _ in read_unv_blocks(filename)]
+    return list_unv_dataset_ids(filename)
 
 
 def dof_label(node, direction):

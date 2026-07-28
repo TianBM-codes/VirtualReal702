@@ -1,4 +1,5 @@
 from FemToolsUNVParser import parse_unv
+from services.model_update.importers.unv_frf_service import list_dataset_ids
 
 
 def test_parse_unv_dataset_2411_nodes(tmp_path):
@@ -146,3 +147,56 @@ def test_parse_unv_dataset_55_static_displacement_with_rotation(tmp_path):
     assert message["is_real"] is True
     assert len(modes) == 1
     assert modes[0]["displacements"][1001]["rotate"] == (0.01, 0.02, 0.03)
+
+
+def test_parse_unv_collects_dataset_151_and_164_metadata(tmp_path):
+    unv_path = tmp_path / "meta.unv"
+    unv_path.write_text(
+        "\n".join(
+            [
+                "-1",
+                "151",
+                "MODEL HEADER",
+                "1 2 3 4",
+                "-1",
+                "-1",
+                "164",
+                "UNITS HEADER",
+                "9 8 7 6",
+                "-1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, _, _, _, _, message = parse_unv(str(unv_path))
+
+    assert message["dataset_151_count"] == 1
+    assert message["dataset_164_count"] == 1
+    assert message["dataset_151"][0]["title"] == "MODEL HEADER"
+    assert message["dataset_164"][0]["title"] == "UNITS HEADER"
+
+
+def test_parse_unv_handles_gb18030_chinese_metadata(tmp_path):
+    unv_path = tmp_path / "chinese.unv"
+    content = "\n".join(
+        [
+            "-1",
+            "151",
+            "模型名称",
+            "1 2 3 4",
+            "-1",
+            "-1",
+            "15",
+            "1001 0 0 0 1.0 2.0 3.0",
+            "-1",
+        ]
+    )
+    unv_path.write_bytes(content.encode("gb18030"))
+
+    nodes, nodes_dict, _, _, _, message = parse_unv(str(unv_path))
+
+    assert len(nodes) == 1
+    assert nodes_dict[1001] == [1.0, 2.0, 3.0]
+    assert message["dataset_151"][0]["title"] == "模型名称"
+    assert list_dataset_ids(str(unv_path)) == ["151", "15"]

@@ -19,6 +19,7 @@ from MeshElementFactory import MeshElementFactory
 
 import numpy as np
 import meshio
+from services.model_update.importers.unv_utils import iter_unv_blocks
 
 UNV_2412_SUPPORTED = {
     11: ("line", 2),
@@ -290,6 +291,28 @@ def _create_unv2412_element(element_id: int, kind: str, node_ids: List[int]):
         return None
 
     return None
+
+
+def _parse_dataset_151(records: List[str]) -> dict:
+    header = records[0].strip() if records else ""
+    fields = records[1].split() if len(records) >= 2 else []
+    return {
+        "title": header,
+        "fields": fields,
+        "record_count": len(records),
+        "preview": records[:4],
+    }
+
+
+def _parse_dataset_164(records: List[str]) -> dict:
+    header = records[0].strip() if records else ""
+    fields = records[1].split() if len(records) >= 2 else []
+    return {
+        "title": header,
+        "fields": fields,
+        "record_count": len(records),
+        "preview": records[:4],
+    }
 
 
 # ----------------------------------------------------------------------
@@ -843,6 +866,333 @@ def parse_unv(filename: str):
     message["message"] = "Reading..."
 
     return nodes, nodes_dict, trace_lines, modes, elements, message
+
+
+def _parse_unv_streaming(filename: str):
+    message = {}
+    nodes = []
+    nodes_dict = {}
+    trace_lines: List[List[int]] = []
+    elements = []
+    modes: List[dict] = []
+    edge_keys_2412 = set()
+    coordinate_systems = {0: _identity_coordinate_system()}
+    unsupported_coordinate_systems = []
+    dataset_151 = []
+    dataset_164 = []
+
+    for dataset_id_text, records in iter_unv_blocks(filename):
+        try:
+            dataset_id = int(dataset_id_text)
+        except ValueError:
+            continue
+
+        if dataset_id == 15:
+            for raw_line in records:
+                parts = raw_line.split()
+                if len(parts) < 7:
+                    continue
+                node_id = int(parts[0])
+                ics = int(parts[1])
+                ocs = int(parts[2])
+                x = _to_unv_float(parts[4])
+                y = _to_unv_float(parts[5])
+                z = _to_unv_float(parts[6])
+                global_coord = _transform_point_to_global([x, y, z], coordinate_systems, ics)
+                gx, gy, gz = (float(global_coord[0]), float(global_coord[1]), float(global_coord[2]))
+                nodes.append(FemNode(node_id, gx, gy, gz, ics, ocs))
+                nodes_dict[node_id] = [gx, gy, gz]
+            continue
+
+        if dataset_id == 2411:
+            idx = 0
+            while idx < len(records):
+                header_parts = records[idx].split()
+                idx += 1
+                if len(header_parts) < 4 or idx >= len(records):
+                    continue
+
+                coord_parts = records[idx].split()
+                idx += 1
+                if len(coord_parts) < 3:
+                    continue
+
+                node_id = int(header_parts[0])
+                ics = int(header_parts[1])
+                ocs = int(header_parts[2])
+                x = _to_unv_float(coord_parts[0])
+                y = _to_unv_float(coord_parts[1])
+                z = _to_unv_float(coord_parts[2])
+                global_coord = _transform_point_to_global([x, y, z], coordinate_systems, ics)
+                gx, gy, gz = (float(global_coord[0]), float(global_coord[1]), float(global_coord[2]))
+                nodes.append(FemNode(node_id, gx, gy, gz, ics, ocs))
+                nodes_dict[node_id] = [gx, gy, gz]
+            continue
+
+        if dataset_id == 2420:
+            parsed_coordinate_systems, unsupported_types, _ = _parse_dataset_2420(records + ["-1"], 0)
+            coordinate_systems.update(parsed_coordinate_systems)
+            unsupported_coordinate_systems.extend(unsupported_types)
+            continue
+
+        if dataset_id == 82:
+            all_ints: List[int] = []
+            for raw_line in records[2:]:
+                all_ints.extend(int(x) for x in raw_line.split())
+
+            current_poly: List[int] = []
+            for value in all_ints:
+                if value == 0:
+                    if len(current_poly) > 1:
+                        for ii in range(len(current_poly) - 1):
+                            iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type="CBEAM", fem_software="NASTRAN")
+                            elements.append(iter_ele)
+                            iter_ele.setFaces([current_poly[ii], current_poly[ii + 1]])
+                        trace_lines.append(current_poly)
+                    current_poly = []
+                else:
+                    current_poly.append(value)
+            if len(current_poly) > 1:
+                trace_lines.append(current_poly)
+                for ii in range(len(current_poly) - 1):
+                    iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type="CBEAM", fem_software="NASTRAN")
+                    elements.append(iter_ele)
+                    iter_ele.setFaces([current_poly[ii], current_poly[ii + 1]])
+            continue
+
+        if dataset_id == 2412:
+            idx = 0
+            while idx < len(records):
+                line = records[idx].strip()
+                idx += 1
+                if not line:
+                    continue
+
+                header_vals = [int(x) for x in line.split()]
+                if len(header_vals) < 6:
+                    continue
+
+                element_id = int(header_vals[0])
+                fe_descriptor_id = int(header_vals[1])
+                node_count = int(header_vals[5])
+                if node_count <= 0:
+                    continue
+
+                node_block, idx, _ = _unv2412_read_int_block(records, idx, node_count)
+                if len(node_block) < node_count:
+                    continue
+
+                node_ids = [int(v) for v in node_block[-node_count:]]
+                kind_info = UNV_2412_SUPPORTED.get(fe_descriptor_id)
+                if kind_info is None:
+                    continue
+
+                kind, expected_nodes = kind_info
+                if len(node_ids) < expected_nodes:
+                    continue
+
+                node_ids = node_ids[:expected_nodes]
+                elem = _create_unv2412_element(element_id, kind, node_ids)
+                if elem is not None:
+                    elements.append(elem)
+
+                for poly in _unv2412_trace_polylines(kind, node_ids):
+                    if len(poly) < 2:
+                        continue
+                    key = tuple(sorted((poly[0], poly[-1]))) if len(poly) == 2 else tuple(poly)
+                    if key in edge_keys_2412:
+                        continue
+                    edge_keys_2412.add(key)
+                    trace_lines.append(poly)
+            continue
+
+        if dataset_id == 55:
+            lines = records
+            lines_count = len(lines)
+            i = 0
+            id_lines: List[str] = []
+            for _ in range(5):
+                if i >= lines_count:
+                    break
+                id_lines.append(lines[i].rstrip("\n"))
+                i += 1
+
+            if i >= lines_count:
+                continue
+
+            parts = lines[i].split()
+            if len(parts) < 6:
+                continue
+
+            model_type = int(parts[0])
+            analysis_type = int(parts[1])
+            data_ch = int(parts[2])
+            spec_data_type = int(parts[3])
+            data_type = int(parts[4])
+            ndv = int(parts[5])
+            i += 1
+
+            if analysis_type not in (1, 2, 3) or i >= lines_count:
+                continue
+
+            parts = lines[i].split()
+            load_case = int(parts[2]) if len(parts) >= 3 else 0
+            modal_number = int(parts[3]) if len(parts) >= 4 else (len(modes) + 1)
+            i += 1
+
+            if i >= lines_count:
+                continue
+
+            parts = lines[i].split()
+            freq = 0.0
+            eig_real = 0.0
+            eig_imag = 0.0
+            load_factor = 0.0
+
+            if analysis_type == 1:
+                load_factor = _to_unv_float(parts[0]) if len(parts) >= 1 else 0.0
+                damping = 0.0
+                message["is_static"] = True
+            elif analysis_type == 2:
+                freq = _to_unv_float(parts[0]) if len(parts) >= 1 else 0.0
+                damping = _to_unv_float(parts[2]) if len(parts) >= 3 else 0.0
+                message["is_static"] = False
+            else:
+                eig_real = _to_unv_float(parts[0]) if len(parts) >= 1 else 0.0
+                eig_imag = _to_unv_float(parts[1]) if len(parts) >= 2 else 0.0
+                damping = 0.0
+                message["is_static"] = False
+            i += 1
+
+            displacements = {}
+
+            def read_float_values(start_idx: int, count: int):
+                vals = []
+                idx = start_idx
+                while idx < lines_count and len(vals) < count:
+                    s = lines[idx].strip()
+                    if not s:
+                        idx += 1
+                        continue
+                    vals.extend(_to_unv_float(x) for x in s.split())
+                    idx += 1
+                return vals, idx
+
+            while i < lines_count:
+                l = lines[i].strip()
+                if not l:
+                    i += 1
+                    continue
+
+                try:
+                    node_id = int(l.split()[0])
+                except ValueError:
+                    i += 1
+                    continue
+
+                i += 1
+                if i >= lines_count:
+                    break
+
+                if data_type == 2:
+                    message["is_real"] = True
+                    vals, i = read_float_values(i, ndv)
+                    while len(vals) < ndv:
+                        vals.append(0.0)
+
+                    ux = vals[0] if ndv >= 1 else 0.0
+                    uy = vals[1] if ndv >= 2 else 0.0
+                    uz = vals[2] if ndv >= 3 else 0.0
+
+                    if len(vals) >= 6 and analysis_type == 1:
+                        displacements[node_id] = {
+                            "real": (ux, uy, uz),
+                            "imag": (0, 0, 0),
+                            "rotate": (vals[3], vals[4], vals[5]),
+                        }
+                    else:
+                        displacements[node_id] = {"real": (ux, uy, uz), "imag": (0, 0, 0)}
+                    continue
+
+                if data_type == 5:
+                    message["is_real"] = False
+                    vals, i = read_float_values(i, 2 * ndv)
+                    while len(vals) < 2 * ndv:
+                        vals.append(0.0)
+
+                    real_vals = []
+                    imag_vals = []
+                    for k in range(ndv):
+                        real_vals.append(vals[2 * k])
+                        imag_vals.append(vals[2 * k + 1])
+
+                    displacements[node_id] = {
+                        "real": (
+                            real_vals[0] if ndv >= 1 else 0.0,
+                            real_vals[1] if ndv >= 2 else 0.0,
+                            real_vals[2] if ndv >= 3 else 0.0,
+                        ),
+                        "imag": (
+                            imag_vals[0] if ndv >= 1 else 0.0,
+                            imag_vals[1] if ndv >= 2 else 0.0,
+                            imag_vals[2] if ndv >= 3 else 0.0,
+                        ),
+                    }
+                    continue
+
+                break
+
+            mode_info = {
+                "id_lines": id_lines,
+                "model_type": model_type,
+                "analysis_type": analysis_type,
+                "data_ch": data_ch,
+                "spec_data_type": spec_data_type,
+                "data_type": data_type,
+                "ndv": ndv,
+                "load_case": load_case,
+                "modal_number": modal_number,
+                "displacements": displacements,
+                "damping": damping,
+            }
+
+            if analysis_type == 1:
+                mode_info["frequency"] = 0.0
+                mode_info["load_factor"] = load_factor
+            elif analysis_type == 2:
+                mode_info["frequency"] = freq
+            else:
+                mode_info["frequency"] = abs(eig_imag) / (2 * math.pi)
+                mode_info["eigenvalue_Re"] = eig_real
+                mode_info["eigenvalue_Im"] = eig_imag
+
+            modes.append(mode_info)
+            continue
+
+        if dataset_id == 151:
+            dataset_151.append(_parse_dataset_151(records))
+            continue
+
+        if dataset_id == 164:
+            dataset_164.append(_parse_dataset_164(records))
+            continue
+
+    modes.sort(key=lambda x: x["frequency"])
+    for idx, item in enumerate(modes, 1):
+        item["modal_number"] = idx
+
+    message["coordinate_system_count"] = max(len(coordinate_systems) - 1, 0)
+    message["unsupported_coordinate_systems"] = unsupported_coordinate_systems
+    message["dataset_151"] = dataset_151
+    message["dataset_164"] = dataset_164
+    message["dataset_151_count"] = len(dataset_151)
+    message["dataset_164_count"] = len(dataset_164)
+    message["message"] = "Reading..."
+
+    return nodes, nodes_dict, trace_lines, modes, elements, message
+
+
+parse_unv = _parse_unv_streaming
 
 
 # ----------------------------------------------------------------------
