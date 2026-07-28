@@ -31,6 +31,11 @@ from .project_config_service import (
     get_node_match_parameter_context,
     save_fem_model_dimensions,
 )
+from .fem_capability_bundle_service import (
+    load_capability_detail,
+    split_capability_rows,
+    write_capability_detail_h5,
+)
 from .fem_modal_bundle_service import list_fem_modal_frequencies
 from .project_path_service import resolve_project_cal_subdir
 from .project_source_service import resolve_project_source_inp_path
@@ -1277,6 +1282,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
     design_responses = extract_design_response_rows(model)
     supported_quantities = list(_SUPPORTED_CORRECTION_QUANTITIES)
     quantity_set_capabilities = _extract_quantity_set_capabilities(model)
+    compact_capability_rows, capability_detail_rows = split_capability_rows(quantity_set_capabilities)
     node_data = _collect_global_nodes(model)
     cache_path = _save_octree_cache(
         project_id=project_id,
@@ -1471,6 +1477,12 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
                 int(item.get("sort_no", 0)),
             ))
 
+        capability_detail_h5 = write_capability_detail_h5(
+            int(project_id),
+            capability_detail_rows,
+            cursor=cursor,
+        )
+
         capability_sql = """
         INSERT INTO t_mt_py_fem_quantity_set_capability
         (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name,
@@ -1489,7 +1501,7 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             current_value = VALUES(current_value),
             extra_json = VALUES(extra_json)
         """
-        for item in quantity_set_capabilities:
+        for item in compact_capability_rows:
             cursor.execute(capability_sql, (
                 project_id,
                 item["quantity_code"],
@@ -1554,17 +1566,18 @@ def import_inp_catalog(file_path, project_id, clear_before_insert=True,
             "parameter_target_count": len(parameter_targets),
             "design_response_count": len(design_responses),
             "supported_quantity_count": len(supported_quantities),
-            "quantity_set_capability_count": len(quantity_set_capabilities),
+            "quantity_set_capability_count": len(compact_capability_rows),
             "instance_count": len(node_data["entries"]),
             "node_count": int(len(node_data["point_labels"])),
             "octree_cache_path": os.path.abspath(cache_path) if cache_path else None,
+            "capability_detail_h5_path": capability_detail_h5,
             "project_config": project_config,
             "diagnostics": len(getattr(model, "diagnostics", []) or []),
             "parameter_definitions_preview": parameter_definitions[:10],
             "parameter_targets_preview": parameter_targets[:10],
             "design_responses_preview": design_responses[:10],
             "supported_quantities_preview": supported_quantities[:10],
-            "quantity_set_capabilities_preview": quantity_set_capabilities[:10],
+            "quantity_set_capabilities_preview": compact_capability_rows[:10],
         }
         safe_write_console_event(
             int(project_id),
@@ -1632,6 +1645,8 @@ def get_inp_catalog(project_id):
             ORDER BY quantity_code, set_scope, set_type, set_name, instance_name, part_name
         """, (project_id,))
         quantity_set_capabilities = cursor.fetchall()
+        for row in quantity_set_capabilities:
+            row["extra_json"] = _resolve_capability_extra_json(cursor, int(project_id), row)
 
         cursor.execute("""
             SELECT parameter_group_name, parameter_name, quantity_code, selection_mode, set_name, set_type, set_scope,
@@ -2005,27 +2020,6 @@ def _row_element_labels(row: dict) -> set:
     return labels
 
 
-def _load_bdf_capability_detail_map(cursor, project_id: int) -> dict:
-    cursor.execute(
-        """
-        SELECT extra_json
-        FROM t_mt_py_project_config
-        WHERE pid = %s
-        LIMIT 1
-        """,
-        (int(project_id),),
-    )
-    row = cursor.fetchone() or {}
-    config_extra = _json_loads(row.get("extra_json")) if hasattr(row, "get") else _json_loads(row[0] if row else None)
-    config_extra = config_extra if isinstance(config_extra, dict) else {}
-    detail_path = str(config_extra.get("fem_octree_capability_detail_json") or "").strip()
-    if not detail_path or not os.path.isfile(detail_path):
-        return {}
-    with open(detail_path, "r", encoding="utf-8") as fp:
-        payload = json.load(fp) or {}
-    return dict(payload.get("details_by_key") or {})
-
-
 def _resolve_capability_extra_json(cursor, project_id: int, row: dict) -> dict:
     extra_json = _json_loads(row.get("extra_json")) or {}
     if not isinstance(extra_json, dict):
@@ -2035,10 +2029,30 @@ def _resolve_capability_extra_json(cursor, project_id: int, row: dict) -> dict:
     detail_key = str(extra_json.get("detail_key") or "").strip()
     if not detail_key:
         return extra_json
-    detail_extra = _load_bdf_capability_detail_map(cursor, int(project_id)).get(detail_key)
+    detail_extra = load_capability_detail(int(project_id), detail_key, cursor=cursor)
     if isinstance(detail_extra, dict):
         merged = dict(extra_json)
         merged.update(detail_extra)
+        element_labels = [int(item) for item in (merged.get("element_labels") or [])]
+        if element_labels:
+            set_scope = str(row.get("set_scope") or "").strip()
+            part_name = row.get("part_name")
+            instance_name = row.get("instance_name")
+            merged["target_keys"] = _target_keys_for_scope(
+                set_scope=set_scope,
+                part_name=part_name,
+                instance_name=instance_name,
+                labels=element_labels,
+            )
+            merged["target_keys_by_label"] = {
+                str(label): _target_keys_for_scope(
+                    set_scope=set_scope,
+                    part_name=part_name,
+                    instance_name=instance_name,
+                    labels=[int(label)],
+                )
+                for label in element_labels
+            }
         return merged
     return extra_json
 
@@ -2062,7 +2076,7 @@ def _resolve_manual_element_current_values(
     requested = {int(label) for label in element_labels}
     value_map: Dict[int, float] = {}
     for row in cursor.fetchall() or []:
-        extra = _json_loads(row.get("extra_json")) or {}
+        extra = _resolve_capability_extra_json(cursor, int(project_id), row)
         row_labels = [int(item) for item in (extra.get("element_labels") or [])]
         if not row_labels:
             continue

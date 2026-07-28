@@ -5,6 +5,10 @@ import numpy as np
 
 from db import get_connection, ensure_tables_exist, clear_fem_tables
 from BDFParserPyNastran import BDFParser
+from services.model_update.analysis.fem_capability_bundle_service import (
+    split_capability_rows,
+    write_capability_detail_h5,
+)
 from services.model_update.analysis.console_log_service import safe_write_console_event
 from services.model_update.analysis.inp_service import (
     _SUPPORTED_CORRECTION_QUANTITIES,
@@ -316,6 +320,7 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
     bdf_parser.parse()
     bdf_info = bdf_parser.GetDatabaseData()
     quantity_set_capabilities = _build_bdf_property_set_capabilities(bdf_parser)
+    compact_capability_rows, capability_detail_rows = split_capability_rows(quantity_set_capabilities)
     octree_node_data = _build_bdf_octree_node_data(bdf_parser)
 
     conn = get_connection()
@@ -610,7 +615,12 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
             current_value = VALUES(current_value),
             extra_json = VALUES(extra_json)
         """
-        for item in quantity_set_capabilities:
+        capability_detail_h5 = write_capability_detail_h5(
+            int(project_id),
+            capability_detail_rows,
+            cursor=cursor,
+        )
+        for item in compact_capability_rows:
             cursor.execute(capability_sql, (
                 int(project_id),
                 item["quantity_code"],
@@ -693,7 +703,8 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
             "layered_property_count": len(bdf_info.get("layered_properties", [])),
             "boundary_count": len(bdf_info.get("boundary", [])),
             "supported_quantity_count": len(_SUPPORTED_CORRECTION_QUANTITIES),
-            "quantity_set_capability_count": len(quantity_set_capabilities),
+            "quantity_set_capability_count": len(compact_capability_rows),
+            "capability_detail_h5_path": capability_detail_h5,
             "octree_cache_path": os.path.abspath(cache_path),
             "octree_node_count": int(len(octree_node_data["point_labels"])),
             "project_config": project_config,

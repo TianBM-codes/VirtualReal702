@@ -1099,13 +1099,31 @@ def _load_project_thickness_capability_rows(project_id: int) -> List[dict]:
             """,
             (int(project_id),),
         )
-        return [dict(row) for row in (cursor.fetchall() or [])]
+        rows = [dict(row) for row in (cursor.fetchall() or [])]
+        try:
+            from .fem_catalog_service import _resolve_capability_extra_json
+        except Exception:
+            return rows
+
+        for row in rows:
+            try:
+                row["extra_json"] = _resolve_capability_extra_json(cursor, int(project_id), row)
+            except Exception:
+                row["extra_json"] = _parse_optional_json_object(row.get("extra_json"))
+        return rows
     finally:
         cursor.close()
         conn.close()
 
 
 def _capability_scalar_value(capability_row: Optional[dict]) -> Optional[float]:
+    current_value = (capability_row or {}).get("current_value")
+    try:
+        if current_value is not None:
+            return float(current_value)
+    except Exception:
+        pass
+
     extra_json = _parse_optional_json_object((capability_row or {}).get("extra_json"))
     element_values = extra_json.get("element_values")
     if isinstance(element_values, dict):

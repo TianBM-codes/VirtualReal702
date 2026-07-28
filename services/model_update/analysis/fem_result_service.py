@@ -1,8 +1,18 @@
 """FEM modal/static result import helpers."""
 
+import os
+
+import numpy as np
+
 from .fem_response_service import *
-from .fem_catalog_service import _json_dumps, _safe_float
+from .fem_catalog_service import _safe_float
 from . import sensitivity_service as _sens
+from .fem_modal_bundle_service import (
+    clear_fem_modal_bundle,
+    load_fem_modal_manifest,
+    save_fem_modal_manifest,
+)
+from .project_path_service import resolve_project_cal_subdir
 
 def _load_modal_payload(file_path=None, modes=None) -> List[dict]:
     if file_path:
@@ -22,6 +32,119 @@ def _resolve_modal_node_identity(node_item: dict) -> tuple[str, str]:
     if not part_name:
         part_name = instance_name or "BDF_MODEL"
     return instance_name, part_name
+
+
+def _normalize_modal_mode(mode_item: dict) -> dict:
+    nodes = []
+    for node_item in list(mode_item.get("nodes") or []):
+        vector = node_item.get("vector")
+        u1 = node_item.get("u1")
+        u2 = node_item.get("u2")
+        u3 = node_item.get("u3")
+        if vector is not None:
+            vector = list(vector)
+            if u1 is None and len(vector) > 0:
+                u1 = vector[0]
+            if u2 is None and len(vector) > 1:
+                u2 = vector[1]
+            if u3 is None and len(vector) > 2:
+                u3 = vector[2]
+
+        instance_name, part_name = _resolve_modal_node_identity(node_item)
+        nodes.append(
+            {
+                "instance_name": instance_name,
+                "part_name": part_name,
+                "fem_node_label": int(node_item["fem_node_label"]),
+                "u1": _safe_float(u1) or 0.0,
+                "u2": _safe_float(u2) or 0.0,
+                "u3": _safe_float(u3) or 0.0,
+                "extra_json": dict(node_item.get("extra_json") or {}),
+            }
+        )
+
+    return {
+        "mode_no": int(mode_item["mode_no"]),
+        "frequency": _safe_float(mode_item.get("frequency")),
+        "source_mode_no": None if mode_item.get("source_mode_no") is None else int(mode_item.get("source_mode_no")),
+        "eigenvalue": None if mode_item.get("eigenvalue") is None else float(mode_item.get("eigenvalue")),
+        "subcase_id": None if mode_item.get("subcase_id") is None else int(mode_item.get("subcase_id")),
+        "nodes": nodes,
+    }
+
+
+def _save_modal_modes_to_bundle(project_id: int, modal_modes: List[dict], *, overwrite: bool, cursor=None) -> tuple[dict, int, list]:
+    bundle_dir = (
+        clear_fem_modal_bundle(int(project_id))
+        if overwrite
+        else resolve_project_cal_subdir(int(project_id), "fem_modal_bundle")
+    )
+    manifest_modes = []
+    row_count = 0
+    preview = []
+    bundle_instance_name = None
+    bundle_part_name = None
+
+    for mode_item in modal_modes:
+        normalized = _normalize_modal_mode(mode_item)
+        node_labels = []
+        vectors = []
+        instance_name = None
+        part_name = None
+        for node_item in normalized["nodes"]:
+            node_labels.append(int(node_item["fem_node_label"]))
+            vectors.append([float(node_item["u1"]), float(node_item["u2"]), float(node_item["u3"])])
+            instance_name = instance_name or str(node_item["instance_name"] or "BDF_MODEL")
+            part_name = part_name or str(node_item["part_name"] or instance_name or "BDF_MODEL")
+            if len(preview) < 20:
+                preview.append(
+                    {
+                        "mode_no": int(normalized["mode_no"]),
+                        "frequency": normalized["frequency"],
+                        "instance_name": str(node_item["instance_name"]),
+                        "part_name": str(node_item["part_name"]),
+                        "fem_node_label": int(node_item["fem_node_label"]),
+                        "u1": float(node_item["u1"]),
+                        "u2": float(node_item["u2"]),
+                        "u3": float(node_item["u3"]),
+                        "extra_json": dict(node_item.get("extra_json") or {}),
+                    }
+                )
+
+        file_path = os.path.join(bundle_dir, f"mode_{int(normalized['mode_no']):04d}.npz")
+        np.savez_compressed(
+            file_path,
+            node_labels=np.asarray(node_labels, dtype=np.int32),
+            vectors=np.asarray(vectors, dtype=np.float32),
+        )
+        manifest_modes.append(
+            {
+                "mode_no": int(normalized["mode_no"]),
+                "frequency": normalized["frequency"],
+                "subcase_id": normalized["subcase_id"],
+                "source_mode_no": normalized["source_mode_no"],
+                "eigenvalue": normalized["eigenvalue"],
+                "instance_name": str(instance_name or "BDF_MODEL"),
+                "part_name": str(part_name or instance_name or "BDF_MODEL"),
+                "file_path": os.path.abspath(file_path),
+                "node_count": int(len(node_labels)),
+            }
+        )
+        bundle_instance_name = bundle_instance_name or str(instance_name or "BDF_MODEL")
+        bundle_part_name = bundle_part_name or str(part_name or instance_name or "BDF_MODEL")
+        row_count += len(node_labels)
+
+    manifest = save_fem_modal_manifest(
+        int(project_id),
+        {
+            "source_file_path": None,
+            "instance_name": str(bundle_instance_name or "BDF_MODEL"),
+            "part_name": str(bundle_part_name or bundle_instance_name or "BDF_MODEL"),
+            "modes": manifest_modes,
+        },
+        cursor=cursor,
+    )
+    return manifest, row_count, preview
 
 
 def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=None):
@@ -140,6 +263,102 @@ def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=No
 
 
 def get_fe_modal_results(project_id):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT mode_no, frequency, instance_name, part_name, fem_node_label, u1, u2, u3, extra_json, created_at
+            FROM t_mt_py_fem_modal_result
+            WHERE pid = %s
+            ORDER BY mode_no, instance_name, fem_node_label
+        """, (project_id,))
+        return {
+            "project_id": project_id,
+            "rows": cursor.fetchall(),
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def import_fe_modal_results(project_id, overwrite=True, file_path=None, modes=None):
+    ensure_tables_exist()
+    modal_modes = _load_modal_payload(file_path=file_path, modes=modes)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        log_project_step(int(project_id), "开始导入 FEM 模态结果", stage="modal_store_started", percent=0)
+        if overwrite:
+            log_project_info(int(project_id), "将覆盖旧的 FEM 模态结果与模态相关性数据", stage="modal_store_overwrite", percent=10)
+            cursor.execute("DELETE FROM t_mt_py_fem_modal_result WHERE pid = %s", (project_id,))
+            cursor.execute("DELETE FROM t_mt_py_fem_modal_correlation WHERE pid = %s", (project_id,))
+
+        manifest, row_count, preview = _save_modal_modes_to_bundle(
+            int(project_id),
+            modal_modes,
+            overwrite=bool(overwrite),
+            cursor=cursor,
+        )
+        if file_path:
+            manifest["source_file_path"] = os.path.abspath(file_path)
+            save_fem_modal_manifest(int(project_id), manifest, cursor=cursor)
+
+        conn.commit()
+        log_project_step(int(project_id), f"FEM 模态结果导入完成，模态 {len(modal_modes)} 阶，节点向量 {row_count} 条", stage="modal_store_finished", percent=100)
+        return {
+            "project_id": project_id,
+            "mode_count": len(modal_modes),
+            "row_count": row_count,
+            "source_file_path": os.path.abspath(file_path) if file_path else None,
+            "bundle_manifest_path": manifest.get("manifest_path"),
+            "rows_preview": preview,
+        }
+    except Exception as exc:
+        conn.rollback()
+        log_project_error(int(project_id), f"FEM 模态结果导入失败: {exc}", stage="failed")
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_fe_modal_results(project_id):
+    manifest = load_fem_modal_manifest(int(project_id))
+    if manifest:
+        rows = []
+        for mode_item in list(manifest.get("modes") or []):
+            file_path = str(mode_item.get("file_path") or "").strip()
+            if not file_path or not os.path.isfile(file_path):
+                continue
+            data = np.load(file_path)
+            node_labels = np.asarray(data["node_labels"], dtype=np.int64)
+            vectors = np.asarray(data["vectors"], dtype=np.float64)
+            instance_name = str(mode_item.get("instance_name") or manifest.get("instance_name") or "BDF_MODEL")
+            part_name = str(mode_item.get("part_name") or manifest.get("part_name") or instance_name or "BDF_MODEL")
+            for idx, node_label in enumerate(node_labels.tolist()):
+                vector = vectors[idx] if idx < len(vectors) else np.zeros(3, dtype=np.float64)
+                rows.append(
+                    {
+                        "mode_no": int(mode_item["mode_no"]),
+                        "frequency": _safe_float(mode_item.get("frequency")),
+                        "instance_name": instance_name,
+                        "part_name": part_name,
+                        "fem_node_label": int(node_label),
+                        "u1": float(vector[0]) if len(vector) > 0 else 0.0,
+                        "u2": float(vector[1]) if len(vector) > 1 else 0.0,
+                        "u3": float(vector[2]) if len(vector) > 2 else 0.0,
+                        "extra_json": {},
+                        "created_at": None,
+                    }
+                )
+        rows.sort(key=lambda item: (int(item["mode_no"]), str(item["instance_name"]), int(item["fem_node_label"])))
+        return {
+            "project_id": project_id,
+            "bundle_manifest_path": manifest.get("manifest_path"),
+            "rows": rows,
+        }
+
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
