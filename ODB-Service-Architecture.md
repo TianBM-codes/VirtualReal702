@@ -721,20 +721,27 @@ CREATE TABLE result_files (
 );
 
 -- 每个结果文件内的 DataBlock 目录
--- （按 instance × position × elem_type 分块，查结果块不需要扫描文件）
+-- （按 instance × position × elem_type × 截面点分块，查结果块不需要扫描文件）
 CREATE TABLE result_blocks (
+  result_group  TEXT,     -- 结果组（project 模式）；几何管道打包时为 NULL，
+                          -- 由 job_runner 完成后统一打上 'default_result'
   step_name     TEXT,
   field_name    TEXT,
   instance_name TEXT,
   position      TEXT,     -- 'NODAL', 'INTEGRATION_POINT', 'ELEMENT_NODAL'
   elem_type     TEXT,     -- NULL 表示 NODAL（不区分单元类型）
+  sp_num        INTEGER NOT NULL DEFAULT -1,
+                          -- 壳截面点编号（sp1=底面等）；-1 = 无截面点。
+                          -- 壳单元同一 elem_type 会有多个 sp 块（如 sp1/sp5），
+                          -- 必须入主键，否则多块互撞（见 2026-07 sp_num 迁移）
   h5_path       TEXT,     -- 文件内 Instance 组路径，如 '/NODAL/Part-1-1'（不含 /data）
+                          -- 有截面点时带 /spN 后缀，如 '/ELEMENT_NODAL/P-1/S4R/sp1'
                           -- 查询时拼接：f"{h5_path}/data" 或 f"{h5_path}/invariants"
   label_path    TEXT,     -- 对应 labels 数组路径，如 '/NODAL/Part-1-1/labels'
   n_entities    INTEGER,  -- N（节点数）或 M（单元数）
   n_ip          INTEGER,  -- 积分点数，NODAL 时为 NULL
   n_sp          INTEGER,  -- 截面点数，非壳单元时为 NULL
-  PRIMARY KEY (step_name, field_name, instance_name, position, elem_type)
+  PRIMARY KEY (result_group, step_name, field_name, instance_name, position, elem_type, sp_num)
 );
 
 -- 集合目录
@@ -1055,8 +1062,10 @@ h5py IO：await run_in_threadpool(_read)  # 防事件循环阻塞
 ```
 ── 服务启动 ─────────────────────────────────────────────────────
   · 加载 registry.db
-  · 对所有 status IN ('ready', 'l1_done') 的 ODB 并行加载内存索引
-  · 启动 FastAPI（gunicorn 4 workers，fork 前完成内存索引构建）
+  · register 所有 status IN ('ready', 'l1_done') 的 ODB（仅登记路径，不读盘）
+  · 仅预加载 created_at 最新的 N 个（N = APP_PRELOAD_PROJECTS，默认 3）
+    其余首次访问时按需加载，超上限驱逐 LRU（见 8.5）
+  · 启动 FastAPI（gunicorn 4 workers）
   注：job-runner 作为独立进程单独启动，不在此处启动（见第 8 章）
 
 ── 后台 worker（每个 ODB 串行执行 Step 1 → Step 2）────────────
@@ -1105,8 +1114,9 @@ Step 2：ingest.py（纯 Python，不依赖 Abaqus license）
 | 节点时程（30帧）| L1 results 文件列切片（一次 IO）| < 10ms |
 | 3D bbox 查询 | cKDTree + 八叉树粗筛 | < 50ms |
 | 点击拾取 | render_face_idx → manifest | < 5ms |
-| 服务启动 | 构建索引 + cKDTree | 30-60s/ODB × 活跃数 |
-| 常驻内存（4 workers × N ODB）| 索引 + 坐标 + KDTree | ~2GB × N |
+| 服务启动 | 仅预加载最新 N 个（N=APP_PRELOAD_PROJECTS，默认 3） | 30-60s/ODB × min(N, 项目数) |
+| 首次访问未驻留项目 | 按需 materialize | 30-60s（一次性，之后常驻） |
+| 常驻内存（每 worker） | 索引 + 坐标 + KDTree | ~42B/三角面 + 12B/节点，上限 N 个 |
 
 ---
 
@@ -1236,39 +1246,86 @@ GET /api/odb/{odb_id}/query/pick?render_face_idx=<n>
 
 ### 8.5 L3 内存管理策略
 
-**当前规模（2–3 个活跃 ODB）**：全量常驻，无需 LRU。
+**懒加载 + LRU 上限**（`APP_MAX_LOADED_PROJECTS`，默认 10）。
+
+单个 ModelIndex 约 42 B/三角面 + 12 B/节点（1000 万节点模型约 1.4 GB），
+早期"全量常驻、无需 LRU"的做法假定只有 2–3 个活跃 ODB；项目变多后内存无上限增长，
+且启动时间随项目数线性增长（每个 ready 项目的 L2 都要读盘）。现改为两级：
+
+- `_known`：所有可服务的 ODB/project → `(workspace, status)`，仅一条 dict 记录，数量无关紧要。
+- `loaded`：真正常驻内存的 ModelIndex，`OrderedDict` 兼作 LRU 队列，超出上限驱逐最久未用者。
+
+**两个参数，各管各的**（不要合并——曾经合并过，调大上限会连带拖慢启动）：
+
+| 参数 | 含义 | 默认 |
+|---|---|---|
+| `APP_MAX_LOADED_PROJECTS` | 常驻上限，LRU 超出即驱逐。定的是**缓存够不够，会不会抖动** | 10 |
+| `APP_PRELOAD_PROJECTS` | 启动时预加载最新几个。定的是**启动要等多久**（每个大模型 30–60s） | 3 |
+
+`preload = clamp(APP_PRELOAD_PROJECTS, 0, APP_MAX_LOADED_PROJECTS)`。
+钳到上限是因为预加载超过上限会「加载完立刻被驱逐」，白费 IO。0 = 全懒加载，启动最快。
+
+**启动**：注册全部（仅 dict 写入），预加载 `created_at` 最新的 preload 个。
+预加载按**由旧到新**灌入，使最新项目落在 MRU 端——否则最新项目反而会被最先驱逐。
+
+**运行时**：`get()` 按需加载，未命中即materialize；轮询线程只 `register()` + `peek()`，
+绝不 `get()`（否则每 10 秒把所有项目重新拖回内存，LRU 上限形同虚设）。
+
+**并发**：`_lock` 保护字典且从不跨 HDF5 IO 持有；另有 per-odb_id 加载锁，
+避免两个请求重复加载同一 workspace。锁序恒为 加载锁 → `_lock`。
+驱逐时若仍有请求持有该 ModelIndex 引用，Python 引用计数保证其存活至请求结束。
 
 ```python
 class OdbRegistry:
-    # odb_id → ModelIndex（含 label 映射、KDTree、render_source 等）
-    loaded: dict[str, ModelIndex] = {}
+    loaded: OrderedDict[str, ModelIndex]   # 常驻集,兼作 LRU 队列(左端=最久未用)
+    _known: dict[str, tuple[str, str]]     # odb_id → (workspace, status),不占内存
 
-    def load(self, odb_id: str):
-        """L2 完成后或服务启动时调用，根据当前 status 有条件加载索引"""
-        job = registry_db.get_job(odb_id)
-        self.loaded[odb_id] = ModelIndex.from_workspace(job.workspace, job.status)
+    def register(self, odb_id, workspace, status):
+        """仅登记位置,不读盘。轮询线程每 10s 对全部行调用"""
 
-    def upgrade(self, odb_id: str):
-        """L2 完成时调用：补充加载渲染数据，设 is_render_ready=True"""
-        job = registry_db.get_job(odb_id)
-        self.loaded[odb_id].load_l2_render_data(job.workspace)
-        self.loaded[odb_id].is_render_ready = True
+    def load(self, odb_id, workspace, status):
+        """register + 立即 materialize。用于启动预加载、以及需要闭合轮询间隙处"""
 
-    def unload(self, odb_id: str):
-        """DELETE /api/jobs/{odb_id} 时调用"""
-        del self.loaded[odb_id]
+    def get(self, odb_id):
+        """按需加载:未驻留则 materialize,超上限则驱逐 LRU。未知 id 返回 None"""
+
+    def peek(self, odb_id):
+        """只查常驻集,绝不触发加载。轮询线程专用"""
+
+    def known_ids(self):
+        """所有可服务 id(含未驻留)。simright 的文件名反查依赖它"""
+
+    def upgrade(self, odb_id):
+        """l1_done → ready:未驻留则只更新 status,下次 get() 自带 L2 数据"""
+
+    def unload(self, odb_id):
+        """DELETE 时调用,同时移除 _known,否则下次 get() 会重新加载已删项目"""
 ```
 
 **服务启动流程（多 ODB 版）**：
 ```
 1. 加载 registry.db
-2. 对所有 status IN ('ready', 'l1_done') 的 ODB 并行构建内存索引
-   （ModelIndex.from_workspace 按 status 条件加载，不会因 L2 文件不存在而崩溃）
-3. 启动 FastAPI（gunicorn 4 workers，fork 前完成所有内存索引构建，CoW 最大化共享）
-4. Job-Runner 作为独立进程启动（与 gunicorn 完全分离）
+2. register 全部 status IN ('ready','l1_done') 的 ODB/project（仅 dict 写入,不读盘）
+3. 按 created_at 取最新 N 个（N = APP_PRELOAD_PROJECTS，钳到 MAX 上限）预加载,由旧到新灌入
+4. 启动 FastAPI；Job-Runner 作为独立进程启动（与 gunicorn 完全分离）
 ```
 
-**未来扩容（> 10 个 ODB）**：改为 LRU 策略，仅常驻最近访问的 N 个 ODB 的内存索引；其余 ODB 保留文件，查询时按需重建（代价：首次查询需 30–60s 重载）。
+**上限设小了会静默降级，因此内置抖动告警**：
+活跃项目数一旦超过上限，LRU 每次驱逐的恰好是下一个要用的，命中率不是缓慢下滑而是
+**断崖归零**（实测 cap=5：5 个活跃项目命中率 97.5%，第 6 个加进来直接变 0%，每次访问
+都重读 L2）。`_note_reload_locked` 检测「驱逐后 300s 内又被重新加载」并 WARNING
+（每 60s 最多一条），提示调大 `APP_MAX_LOADED_PROJECTS`。
+
+**上限约束的是常驻集，不是内存峰值**：
+驱逐只是从 `loaded` 移除引用，在途请求仍持有该 ModelIndex。N 个并发请求打 N 个不同
+项目时，N 个 ModelIndex 同时存活，峰值 ≈ max(上限, 并发不同项目数) × 单项目大小。
+容量规划要按后者估，不能只看上限。
+
+**注意 CoW 的实际收益有限**：
+- Windows 无 fork（spawn），worker 间零共享，CoW 那套省内存的算盘不成立。
+- 即使 Linux，也只有 `_bootstrap_registry` 期间预加载的那批享受 CoW；
+  之后 `get()` 按需加载的项目，每个 worker 各存一份。
+- 因此 `APP_MAX_LOADED_PROJECTS` 应按「单 worker 上限 × worker 数」估算最坏内存。
 
 ---
 

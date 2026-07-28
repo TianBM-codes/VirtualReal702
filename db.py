@@ -1,12 +1,16 @@
+import logging
 import threading
+import time
 
 import mysql.connector
 import mysql.connector.pooling
 
 try:
-    from VirtualReal702.config import DB_CONFIG
+    from VirtualReal702.config import DB_CONFIG, DB_ENSURE_TABLES
 except ImportError:  # pragma: no cover - local direct run fallback
-    from config import DB_CONFIG
+    from config import DB_CONFIG, DB_ENSURE_TABLES
+
+logger = logging.getLogger(__name__)
 
 CREATE_TABLE_SQL_LIST = [
     """
@@ -1043,6 +1047,7 @@ def _connection_kwargs():
         "password": DB_CONFIG["password"],
         "database": DB_CONFIG["database"],
         "charset": DB_CONFIG["charset"],
+        "connect_timeout": int(DB_CONFIG.get("connect_timeout", 5)),
         "use_pure": True,
     }
 
@@ -1052,22 +1057,26 @@ def _get_connection_pool():
     if _connection_pool is not None:
         return _connection_pool
 
-    _connection_pool_lock.acquire()
-    try:
+    with _connection_pool_lock:
         if _connection_pool is None:
             pool_name = str(DB_CONFIG.get("pool_name", "virtualreal702_pool"))
             pool_size = max(1, int(DB_CONFIG.get("pool_size", 10)))
             pool_reset_session = bool(DB_CONFIG.get("pool_reset_session", True))
+            # The constructor opens `pool_size` connections serially, so this
+            # costs pool_size × (TCP connect + handshake) against DB_HOST.
+            started = time.perf_counter()
             _connection_pool = mysql.connector.pooling.MySQLConnectionPool(
                 pool_name=pool_name,
                 pool_size=pool_size,
                 pool_reset_session=pool_reset_session,
                 **_connection_kwargs(),
             )
+            logger.info(
+                "MySQL pool ready: %s:%s size=%d in %.2fs",
+                DB_CONFIG["host"], DB_CONFIG["port"], pool_size,
+                time.perf_counter() - started,
+            )
         return _connection_pool
-    finally:
-        if _connection_pool_lock.locked():
-            _connection_pool_lock.release()
 
 def get_connection():
     return _get_connection_pool().get_connection()
@@ -1096,13 +1105,25 @@ def initialize_database_runtime(*, ensure_tables: bool = True, warm_connection: 
 
 
 def ensure_tables_exist():
+    """
+    Reconcile the MySQL schema. Cheap after the first call, but the first call
+    costs ~120 round trips, so DB_ENSURE_TABLES=0 disables it outright — the
+    many lazy callers across services/ must honour the switch too, not just the
+    startup hook.
+    """
     global _tables_ensured
-    if _tables_ensured:
+    if _tables_ensured or not DB_ENSURE_TABLES:
         return
-    _tables_ensure_lock.acquire()
-    if _tables_ensured:
-        _tables_ensure_lock.release()
-        return
+    with _tables_ensure_lock:
+        if _tables_ensured:
+            return
+        started = time.perf_counter()
+        _run_schema_ddl()
+        _tables_ensured = True
+        logger.info("MySQL schema reconciled in %.2fs", time.perf_counter() - started)
+
+
+def _run_schema_ddl():
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -1466,15 +1487,12 @@ def ensure_tables_exist():
                 """
             )
         conn.commit()
-        _tables_ensured = True
     except Exception:
         conn.rollback()
         raise
     finally:
         cursor.close()
         conn.close()
-        if _tables_ensure_lock.locked():
-            _tables_ensure_lock.release()
 
 
 def clear_unv_tables(cursor, pid):

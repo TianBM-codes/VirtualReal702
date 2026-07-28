@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pyNastran.converters.format_converter import process_ugrid
 
-from config import APP_CONFIG
+from config import APP_CONFIG, DB_CONFIG, DB_INIT_ON_STARTUP
 from db import initialize_database_runtime
 from fastapi import Request
 from src.l3.main import app
@@ -44,13 +44,36 @@ add_test_mesh_route_rewrite_middleware(app)
 _base_lifespan = app.router.lifespan_context
 
 
+def _startup_database() -> None:
+    """
+    Warm the DB pool before the first frontend request arrives, moving the
+    one-time handshake cost out of endpoints such as /get/sensor_position.
+
+    A MySQL that is unreachable or slow must not keep the HTTP server from
+    binding: the ODB viewer routes do not touch MySQL at all. On failure the
+    pool stays uninitialised and the first request that needs it rebuilds it.
+    """
+    if not DB_INIT_ON_STARTUP:
+        print("[startup] DB_INIT_ON_STARTUP=0 — deferring MySQL init to first request")
+        return
+    started = time.perf_counter()
+    try:
+        initialize_database_runtime(ensure_tables=True, warm_connection=True)
+        recover_background_tasks()
+        print(f"[startup] MySQL ready in {time.perf_counter() - started:.2f}s")
+    except Exception as exc:
+        print(
+            f"[startup] MySQL init FAILED after {time.perf_counter() - started:.2f}s "
+            f"({DB_CONFIG['host']}:{DB_CONFIG['port']}): {exc!r}\n"
+            f"[startup] Serving anyway — ODB viewer routes work; "
+            f"model-update routes will retry on first use."
+        )
+
+
 @asynccontextmanager
 async def model_update_lifespan(application):
     async with _base_lifespan(application):
-        # Warm the DB pool before the first frontend request arrives. This moves
-        # the one-time handshake cost out of endpoints such as /get/sensor_position.
-        initialize_database_runtime(ensure_tables=True, warm_connection=True)
-        recover_background_tasks()
+        _startup_database()
         yield
 
 

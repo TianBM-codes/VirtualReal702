@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS steps (
     num_frames   INTEGER,
     description  TEXT,
     nlgeom       INTEGER,
+    total_time   REAL,   -- step 开始时的累计分析总时间（odb step.totalTime；旧数据为 NULL）
+    time_period  REAL,   -- 该 step 的时长（odb step.timePeriod；旧数据为 NULL）
     PRIMARY KEY (result_group, step_name)
 );
 CREATE TABLE IF NOT EXISTS frames (
@@ -91,12 +93,13 @@ CREATE TABLE IF NOT EXISTS result_blocks (
     instance_name TEXT,
     position      TEXT,
     elem_type     TEXT,
+    sp_num        INTEGER NOT NULL DEFAULT -1,  -- 壳截面点编号（sp1=底面等）；-1 = 无截面点
     h5_path       TEXT,
     label_path    TEXT,
     n_entities    INTEGER,
     n_ip          INTEGER,
     n_sp          INTEGER,
-    PRIMARY KEY (result_group, step_name, field_name, instance_name, position, elem_type)
+    PRIMARY KEY (result_group, step_name, field_name, instance_name, position, elem_type, sp_num)
 );
 CREATE TABLE IF NOT EXISTS node_sets (
     set_name      TEXT,
@@ -140,3 +143,69 @@ CREATE TABLE IF NOT EXISTS display_names (
 # user_sets / user_set_instances tables are NOT created here.
 # They are created on-demand by ManifestRepo._ensure_user_tables() when the
 # first bbox selection is saved, so the schema stays in one place.
+
+
+def migrate_result_blocks(conn):
+    """把旧 schema 的 result_blocks 表升级为含 sp_num 列的新 schema。
+
+    背景：壳单元结果按截面点（section point，如 sp1=底面、sp5=顶面）分块，
+    HDF5 组路径带 /spN 后缀，但旧表主键只有 (result_group, step, field,
+    instance, position, elem_type)——同一 elem_type 的多个 sp 块要么以
+    "重复行"共存（result_group 为 NULL 时，SQLite 唯一索引把 NULL 视为
+    互不相等），要么互相 REPLACE 丢数据。重复行还会让
+    "UPDATE ... SET result_group=... WHERE result_group IS NULL" 撞主键、
+    整条失败，导致 result_blocks 永远打不上 result_group 标签。
+
+    迁移方式：整表重建（SQLite 不能 ALTER 主键），sp_num 从 h5_path 的
+    /spN 后缀解析；真正完全相同的行按新主键自然去重。幂等：已有 sp_num
+    列时直接返回 False。
+
+    Returns True if migration ran, False if the table was already current.
+    """
+    import re
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(result_blocks)")]
+    if not cols:
+        return False          # 表不存在——交给 CREATE TABLE IF NOT EXISTS
+    if "sp_num" in cols:
+        return False
+
+    rows = conn.execute(
+        "SELECT result_group, step_name, field_name, instance_name, position,"
+        "       elem_type, h5_path, label_path, n_entities, n_ip, n_sp"
+        " FROM result_blocks"
+    ).fetchall()
+
+    conn.execute("DROP TABLE result_blocks")
+    conn.execute("""
+        CREATE TABLE result_blocks (
+            result_group  TEXT,
+            step_name     TEXT,
+            field_name    TEXT,
+            instance_name TEXT,
+            position      TEXT,
+            elem_type     TEXT,
+            sp_num        INTEGER NOT NULL DEFAULT -1,
+            h5_path       TEXT,
+            label_path    TEXT,
+            n_entities    INTEGER,
+            n_ip          INTEGER,
+            n_sp          INTEGER,
+            PRIMARY KEY (result_group, step_name, field_name, instance_name,
+                         position, elem_type, sp_num)
+        )
+    """)
+
+    sp_re = re.compile(r"/sp(\d+)$")
+    for row in rows:
+        h5_path = row[6] or ""
+        m = sp_re.search(h5_path)
+        sp_num = int(m.group(1)) if m else -1
+        conn.execute(
+            "INSERT OR REPLACE INTO result_blocks"
+            " (result_group, step_name, field_name, instance_name, position,"
+            "  elem_type, sp_num, h5_path, label_path, n_entities, n_ip, n_sp)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(row[:6]) + (sp_num,) + tuple(row[6:]),
+        )
+    return True

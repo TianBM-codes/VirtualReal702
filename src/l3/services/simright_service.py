@@ -113,9 +113,13 @@ def parse_var_name(var_name: str) -> Tuple[str, Optional[str]]:
 
 def resolve_odb_id(filename: str, registry: OdbRegistry) -> str:
     """
-    Map a simright filename to one of our loaded odb_ids.
+    Map a simright filename to one of our known odb_ids.
     Tries: exact → strip-slash → basename-no-ext.
     Raises NotFoundError if nothing matches.
+
+    Searches every *known* id, not just the resident ones: the registry only
+    keeps a working set in RAM, so matching on registry.loaded would fail for
+    any ODB that has been evicted or never accessed since startup.
     """
     candidates = [
         filename,
@@ -123,17 +127,16 @@ def resolve_odb_id(filename: str, registry: OdbRegistry) -> str:
         os.path.splitext(os.path.basename(filename))[0],
         os.path.basename(filename),
     ]
-    with registry._lock:
-        loaded_ids = set(registry.loaded.keys())
+    known_ids = registry.known_ids()
     for c in candidates:
-        if c in loaded_ids:
+        if c in known_ids:
             return c
-    # Fuzzy: any loaded odb_id that appears in filename or vice versa
-    for oid in loaded_ids:
+    # Fuzzy: any known odb_id that appears in filename or vice versa
+    for oid in known_ids:
         if oid in filename or filename in oid:
             return oid
     raise NotFoundError(
-        f"No loaded ODB matches filename '{filename}'",
+        f"No known ODB matches filename '{filename}'",
         {"filename": filename},
     )
 

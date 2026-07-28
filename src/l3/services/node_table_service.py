@@ -28,12 +28,9 @@ from src.l1.manifest_schema import canon_instance
 
 def _result_h5_path(workspace: str, step: str, field: str,
                     result_group: str = None) -> str:
-    def safe(s):
-        return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
-    fname = f"{safe(step)}__{safe(field)}.h5"
-    if result_group:
-        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
-    return os.path.join(workspace, "l1", "results", fname)
+    # manifest result_files.file_path 优先（adopt 型 default_result 的文件
+    # 在 l1/results/ 根目录，按 result_group 拼子目录会 miss），见 repo 方法注释
+    return ManifestRepo(workspace).result_h5_abspath(step, field, result_group)
 
 
 # Invariant suffixes are now extracted via Abaqus getScalarField — all visible.

@@ -141,6 +141,23 @@ def _expand_sparse_nodal_to_geometry_rows(
     return expanded
 
 
+def _mask_partial_nan_triangles_soup(scalar_vertex: np.ndarray) -> np.ndarray:
+    """
+    Triangle Soup [Nt*3]：稀疏 NODAL 场（接触输出 CPRESS/CSHEAR 等）里，接触面
+    边缘节点会被相邻侧面的三角形共享，逐顶点插值会把颜色"拖"到无数据的侧面上
+    （云图溢出）。这里把"三个角只要有一个 NaN"的三角形整体置 NaN（前端渲灰），
+    得到与 Abaqus 一致的干净单面边界。只适用于 soup 顶点序（长度为 3 的倍数）；
+    稠密场没有 NaN，原样返回，行为不变。
+    """
+    if scalar_vertex.size == 0 or scalar_vertex.size % 3 != 0:
+        return scalar_vertex
+    if not np.isnan(scalar_vertex).any():
+        return scalar_vertex
+    tri = scalar_vertex.reshape(-1, 3).copy()
+    tri[np.isnan(tri).any(axis=1)] = np.nan
+    return tri.reshape(-1)
+
+
 def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
                              component_idx: Optional[int],
                              src_etype: np.ndarray,
@@ -253,38 +270,14 @@ def _resolve_sensitivity_frame_alias(field: str, frame_idx: int) -> Tuple[str, i
     return match.group("field"), int(match.group("frame"))
 
 
-def _result_h5_path(workspace: str, step: str, field: str,
-                    result_group: str = None) -> str:
-    def safe(s):
-        return s.replace("/", "__").replace("\\", "__").replace(" ", "_")
-    fname = "{}__{}.h5".format(safe(step), safe(field))
-    if result_group:
-        return os.path.join(workspace, "l1", "results", safe(result_group), fname)
-    return os.path.join(workspace, "l1", "results", fname)
-
-
 def _manifest_result_h5_path(workspace: str, step: str, field: str,
                               result_group: str = None) -> str:
     """
     Get result H5 path from manifest.db file_path column (authoritative),
-    falling back to _result_h5_path if no manifest entry exists.
-
-    Also tries result_group=NULL as a secondary fallback so that legacy
-    ODB projects whose result_files rows were only partially migrated
-    (result_group column still NULL) can still be served correctly.
+    falling back to convention-based path building. 实现已下沉到
+    ManifestRepo.result_h5_abspath，与 node_table/query/node_time_value 共用。
     """
-    try:
-        manifest = ManifestRepo(workspace)
-        rf = manifest.get_result_file(step, field, result_group)
-        if rf is None and result_group is not None:
-            # Partial migration: result_files row still has NULL result_group
-            rf = manifest.get_result_file(step, field, None)
-        if rf and rf["file_path"]:
-            rel = rf["file_path"].replace("\\", os.sep).replace("/", os.sep)
-            return os.path.join(workspace, rel)
-    except Exception:
-        pass
-    return _result_h5_path(workspace, step, field, result_group)
+    return ManifestRepo(workspace).result_h5_abspath(step, field, result_group)
 
 
 def _should_force_flat_external_element_render(
@@ -470,12 +463,22 @@ def frame_colors(
 
     scalar_vertex = None
     num_frames = None
+    legend_override = None   # NODAL smooth: node-level range computed pre-mask
 
     with h5py.File(h5_path, "r") as f:
         # ── Try NODAL ──────────────────────────────────────────────────────
         result = _scalar_from_nodal(f, instance, frame_idx, component)
         if result is not None:
             scalar_node, num_frames = result
+            # 稀疏 NODAL 场（接触输出等）：data 行号 ≠ 几何节点行号，必须按
+            # /NODAL/<inst>/labels 映射回几何节点行（缺数据的节点补 NaN），
+            # 否则值会张冠李戴。稠密场 labels 与几何一致，恒等映射。
+            scalar_node = _expand_sparse_nodal_to_geometry_rows(
+                f=f,
+                instance=instance,
+                scalar_node=scalar_node,
+                workspace=idx.workspace,
+            )
             n_result_nodes = len(scalar_node)
             max_node_row = int(src_node_rows.max()) if src_node_rows.size else 0
             if max_node_row >= n_result_nodes:
@@ -505,6 +508,13 @@ def frame_colors(
                 scalar_vertex = np.repeat(elem_mean[inverse], 3)  # [Nt*3]
             else:
                 scalar_vertex = scalar_node[src_node_rows.ravel()]  # [Nt*3]
+                # 图例范围在掩蔽前按节点真实值算（接触面边缘节点的值 CAE 也计入），
+                # 掩蔽只影响上色不影响 legend。
+                _finite_pre = scalar_vertex[np.isfinite(scalar_vertex)]
+                if _finite_pre.size > 0:
+                    legend_override = (float(_finite_pre.min()),
+                                       float(_finite_pre.max()))
+                scalar_vertex = _mask_partial_nan_triangles_soup(scalar_vertex)
 
         # ── Try ELEMENT_NODAL ──────────────────────────────────────────────
         if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
@@ -557,13 +567,17 @@ def frame_colors(
             vtx_idx = (render_rows[:, None] * 3 + np.arange(3)).ravel()
             scalar_vertex = scalar_vertex[vtx_idx]
 
-    finite = scalar_vertex[np.isfinite(scalar_vertex)]
-    if finite.size > 0:
-        val_min = float(finite.min())
-        val_max = float(finite.max())
+    if legend_override is not None and set_name is None:
+        # NODAL smooth：用掩蔽前的节点级范围（含接触面边缘节点），与 CAE 一致
+        val_min, val_max = legend_override
     else:
-        val_min = 0.0
-        val_max = 0.0
+        finite = scalar_vertex[np.isfinite(scalar_vertex)]
+        if finite.size > 0:
+            val_min = float(finite.min())
+            val_max = float(finite.max())
+        else:
+            val_min = 0.0
+            val_max = 0.0
     legend_range = np.array([val_min, val_max], dtype=np.float32)
 
     span = val_max - val_min
@@ -900,7 +914,11 @@ def frame_scalars(
             elif vtx_nr is not None:
                 scalar_vertex = scalar_node[vtx_nr]            # [Nv] indexed smooth
             else:
-                scalar_vertex = scalar_node[src_node_rows.ravel()]  # [Nt*3] soup smooth
+                # soup smooth：稀疏场对"部分角点无数据"的三角形整体置灰，
+                # 避免接触面颜色沿共享节点溢出到侧面（global_range 已在上面
+                # 按节点级算好，掩蔽不影响图例）。
+                scalar_vertex = _mask_partial_nan_triangles_soup(
+                    scalar_node[src_node_rows.ravel()])         # [Nt*3] soup smooth
 
         # ── ELEMENT_NODAL (per-local-node with domain averaging) ─────────
         if scalar_vertex is None and src_etype is not None and src_elem_row is not None:

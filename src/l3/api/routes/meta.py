@@ -3,12 +3,14 @@ from fastapi import APIRouter, Query
 from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.manifest_repo import ManifestRepo
+from ...services import meta_service
 from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["meta"])
 
 
-_EMPTY_OVERVIEW = {"instances": [], "steps": [], "fields": []}
+_EMPTY_OVERVIEW = {"instances": [], "steps": [], "fields": [],
+                   "global_time_range": None}
 
 
 @router.get("/meta/overview")
@@ -17,7 +19,7 @@ async def overview(odb_id: str, result_group: Optional[str] = Query(default=None
     if idx is None:
         return ok(_EMPTY_OVERVIEW)
     manifest = ManifestRepo(idx.workspace)
-    data = manifest.get_overview(result_group=result_group)
+    data = meta_service.get_overview(manifest, result_group=result_group)
     return ok(data)
 
 

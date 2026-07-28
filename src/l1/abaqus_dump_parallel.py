@@ -62,6 +62,30 @@ def chunk_list(lst, n):
     return [lst[i:i + size] for i in range(0, len(lst), size)]
 
 
+def group_fields_for_workers(fields):
+    """Group region-qualified fields by base name so one logical field never
+    splits across workers.
+
+    Contact outputs are stored per contact pair, e.g.
+    'CPRESS   ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1'; abaqus_dump.py merges
+    all pairs sharing a base name into ONE field directory (see
+    split_region_field there). If two workers each got one pair, both would
+    write the same directory and corrupt it — keep the group on one worker.
+    """
+    units = {}
+    order = []
+    for fname in fields:
+        parts = fname.split(None, 1)
+        base = fname
+        if len(parts) == 2 and ('/' in parts[1] or parts[1].startswith('ASSEMBLY')):
+            base = parts[0]
+        if base not in units:
+            units[base] = []
+            order.append(base)
+        units[base].append(fname)
+    return [units[b] for b in order]
+
+
 def main():
     args = parse_args()
 
@@ -125,7 +149,10 @@ def main():
     for step_name, fields in sorted(fields_by_step.items()):
         if not fields:
             continue
-        chunks = chunk_list(fields, args.workers)
+        # Chunk by logical field group (contact pairs with the same base name
+        # must land on the same worker), then flatten back to raw field names.
+        unit_chunks = chunk_list(group_fields_for_workers(fields), args.workers)
+        chunks = [[f for unit in uc for f in unit] for uc in unit_chunks]
         for chunk in chunks:
             wid = worker_id
             log_path = os.path.join(raw_dir, 'worker_{}.log'.format(wid))

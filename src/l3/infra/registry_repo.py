@@ -337,8 +337,9 @@ class RegistryRepo:
         """
         with self._connect() as conn:
             return conn.execute(
-                "SELECT odb_id, workspace, status FROM odb_jobs "
-                "WHERE status IN ('ready', 'l1_done')"
+                "SELECT odb_id, workspace, status, created_at FROM odb_jobs "
+                "WHERE status IN ('ready', 'l1_done') "
+                "ORDER BY created_at DESC"
             ).fetchall()
 
     # ── projects ─────────────────────────────────────────────────────────────

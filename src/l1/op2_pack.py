@@ -497,7 +497,9 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
 
         # steps
         db_conn.execute(
-            "INSERT OR REPLACE INTO steps VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO steps"
+            " (result_group, step_name, step_number, procedure, num_frames,"
+            "  description, nlgeom) VALUES (?,?,?,?,?,?,?)",
             (result_group, step_name, step_number, procedure, n_frames, None, None),
         )
 
@@ -539,7 +541,10 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
         # result_blocks (one row per step+field+inst+position)
         h5_grp_path = '/NODAL/{}'.format(inst_name)
         db_conn.execute(
-            "INSERT OR REPLACE INTO result_blocks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO result_blocks"
+            " (result_group, step_name, field_name, instance_name, position,"
+            "  elem_type, h5_path, label_path, n_entities, n_ip, n_sp)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (result_group, step_name, 'U',
              inst_name, 'NODAL',
              None,                              # elem_type (None for NODAL)

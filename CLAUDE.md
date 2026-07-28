@@ -136,7 +136,7 @@ Central routing registry — no filesystem scanning at runtime.
 | `steps` | `step_name, procedure (STATIC\|FREQUENCY\|DYNAMIC\|BUCKLE), num_frames` |
 | `frames` | `step_name, frame_idx, frame_value, description` |
 | `result_files` | `step_name, field_name, file_path, components, positions` |
-| `result_blocks` | `step_name, field_name, instance_name, position, elem_type, h5_path` |
+| `result_blocks` | `step_name, field_name, instance_name, position, elem_type, sp_num, h5_path` |
 | `node_sets / element_sets` | `set_name, instance_name, h5_path` |
 | `user_sets` | `set_name, set_scope, user_set_instances` (compressed BLOB) |
 
@@ -262,6 +262,7 @@ uvicorn src.modal_service.main:app --reload --port 8001
 | `docs/l3/L3-Module-Boundary.md` | Router/Service/Repository responsibility separation |
 | `docs/l1/abaqus_dump_guide.md` | Practical guide for running L1 extraction |
 | `docs/Special-Element-Handling.md` | 特殊单元（耦合/连接器/质量/弹簧）在 ODB/INP 两路径的解析与显示约定 |
+| `docs/维护注意事项.md` | 运维/数据修复的坑与工具（result_blocks 修复、结果路径解析约定等） |
 | `temp/` | Historical design iterations (v1–v4) and review notes; not authoritative |
 | `docs/modal_sync/` | 试验网格/FEM 同步动画：页面测试步骤 + 试验数据（UNV）导入指南 |
 | `docs/model_update/模型修正接口清单.md` | 模型修正全部接口清单（可能部分过时，以代码为准） |
