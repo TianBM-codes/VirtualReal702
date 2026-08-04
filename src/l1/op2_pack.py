@@ -34,6 +34,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from src.l1.manifest_schema import MANIFEST_SCHEMA
+from src.l1.pynastran_op2_compat import make_op2
 
 
 # ─── SOL → procedure mapping ──────────────────────────────────────────────────
@@ -370,8 +371,6 @@ def _write_subcase_u(h5_abs, inst_name, step_name, bdf_node_labels, aligned_data
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
 def pack(op2_path, workspace, result_group, bdf_path=None):
-    from pyNastran.op2.op2 import OP2
-
     t_total = time.time()
     op2_basename = os.path.basename(op2_path)
     rg_safe = safe(result_group)
@@ -390,7 +389,7 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
     # ── 2. Read OP2 ───────────────────────────────────────────────────────────
     print('  Reading OP2 ...')
     t0 = time.time()
-    op2 = OP2(debug=False)
+    op2 = make_op2(debug=False)
     # post=-2 OP2 files hit a benign EOF condition that pyNastran 1.4 treats as
     # FatalError; disabling stop_on_unclosed_file lets reading complete normally.
     op2.stop_on_unclosed_file = False

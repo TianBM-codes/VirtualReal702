@@ -8,10 +8,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import meshio
 import numpy as np
 from pyNastran.bdf.bdf import BDF
-from pyNastran.op2.op2 import read_op2
-from pyNastran.op2.op2_geom import read_op2_geom
 
 from BDFParserPyNastran import BDFParser
+from src.l1.pynastran_op2_compat import read_op2_compat, read_op2_geom_compat
 from src.l3.core.errors import NotFoundError, ValidationError
 
 
@@ -129,13 +128,13 @@ def _select_named_metadata_items(
 
 def _read_op2(op2_path: str):
     try:
-        return read_op2_geom(op2_path, debug=False)
+        return read_op2_geom_compat(op2_path, debug=False)
     except Exception:
         # Some production OP2 files carry enough modal result data for
         # sensitivity/import workflows, but their embedded geometry cannot be
         # fully cross-referenced by pyNastran. Fall back to plain OP2 parsing
         # so modal frequencies/vectors can still be imported.
-        return read_op2(op2_path, debug=False)
+        return read_op2_compat(op2_path, debug=False)
 
 
 def _resolve_sensitivity_result_source(*, op2_path: Optional[str], matrix_path: Optional[str]) -> Tuple[str, str]:

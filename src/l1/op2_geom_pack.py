@@ -22,11 +22,10 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from src.l1.bdf_pack import _pack_model, mkdirs, _fmt_t, safe
+from src.l1.pynastran_op2_compat import read_op2_geom_compat
 
 
 def pack_op2_geom(op2_path, workspace):
-    from pyNastran.op2.op2_geom import read_op2_geom
-
     t_total = time.time()
     op2_basename = os.path.basename(op2_path)
     inst_name = os.path.splitext(op2_basename)[0].upper()
@@ -34,7 +33,7 @@ def pack_op2_geom(op2_path, workspace):
     print('OP2-geom pack: {} → instance \'{}\''.format(op2_basename, inst_name))
     print('  Reading OP2 (with geometry) ...')
     t0 = time.time()
-    model = read_op2_geom(op2_path, debug=False)
+    model = read_op2_geom_compat(op2_path, debug=False)
     # post=-2 OP2 files raise a benign FatalError at EOF; suppress it
     model.stop_on_unclosed_file = False
     print('  Read done. ({})'.format(_fmt_t(time.time() - t0)))

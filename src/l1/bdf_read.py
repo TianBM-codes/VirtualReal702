@@ -38,10 +38,12 @@ encoding，永远用 locale 默认编码 open。所以必须在我们这一层�
 """
 
 import os
+import re
 import sys
 
 # 探测顺序：BOM 版 UTF-8 → 纯 UTF-8 → gbk（中文 Windows 常见）→ latin-1（永远成功兜底）
 _CANDIDATE_ENCODINGS = ('utf-8-sig', 'utf-8', 'gbk', 'latin-1')
+_PROD_FIELD_MISSING_A_RE = re.compile(r"\bA\s*=\s*None\b.*\bfield\s*#?3\b", re.IGNORECASE | re.DOTALL)
 
 
 def detect_bdf_encoding(path):
@@ -74,6 +76,97 @@ def _write_ascii_sidecar(path, encoding):
     with open(sidecar, 'w', encoding='ascii', newline='') as f:
         f.write(ascii_text)
     return sidecar
+
+
+def _split_bdf_fields(line):
+    """Split a single-line BDF card into fields for simple free/fixed-format scans."""
+    text = line.split('$', 1)[0].rstrip('\r\n')
+    if not text.strip():
+        return []
+    if ',' in text:
+        return [field.strip() for field in text.split(',')]
+    return text.split()
+
+
+def _scan_invalid_prod_cleanup(path, encoding):
+    """Find PROD cards missing required A and dependent CROD cards."""
+    invalid_prod_pids = set()
+    invalid_prod_lines = []
+    dependent_crod_eids = set()
+    dependent_crod_lines = []
+    line_entries = []
+
+    with open(path, 'rb') as f:
+        text = f.read().decode(encoding, errors='replace')
+
+    for lineno, line in enumerate(text.splitlines(keepends=True), start=1):
+        fields = _split_bdf_fields(line)
+        line_entries.append((line, fields))
+        if not fields:
+            continue
+
+        card_name = fields[0].upper()
+        if card_name == 'PROD':
+            if len(fields) >= 2:
+                pid = fields[1]
+            else:
+                pid = None
+            a_field = fields[3] if len(fields) >= 4 else ''
+            if pid and not a_field:
+                invalid_prod_pids.add(pid)
+                invalid_prod_lines.append(lineno)
+
+    if not invalid_prod_pids:
+        return None
+
+    for lineno, (_, fields) in enumerate(line_entries, start=1):
+        if not fields:
+            continue
+        if fields[0].upper() != 'CROD':
+            continue
+        if len(fields) < 3:
+            continue
+        pid = fields[2]
+        if pid in invalid_prod_pids:
+            eid = fields[1] if len(fields) >= 2 else None
+            if eid:
+                dependent_crod_eids.add(eid)
+            dependent_crod_lines.append(lineno)
+
+    return {
+        'invalid_prod_pids': sorted(invalid_prod_pids, key=lambda value: int(value) if str(value).isdigit() else str(value)),
+        'invalid_prod_lines': invalid_prod_lines,
+        'dependent_crod_eids': sorted(dependent_crod_eids, key=lambda value: int(value) if str(value).isdigit() else str(value)),
+        'dependent_crod_lines': dependent_crod_lines,
+        'text': text,
+    }
+
+
+def _write_cleanup_sidecar(path, encoding, cleanup):
+    """Write a temporary BDF that comments invalid PROD/CROD cards for visualization fallback."""
+    lines_to_skip = set(cleanup['invalid_prod_lines']) | set(cleanup['dependent_crod_lines'])
+    raw_lines = cleanup['text'].splitlines(keepends=True)
+
+    d, base = os.path.split(os.path.abspath(path))
+    root, ext = os.path.splitext(base)
+    sidecar = os.path.join(d, root + '.pyn_clean' + (ext or '.bdf'))
+
+    with open(sidecar, 'w', encoding=encoding, newline='') as f:
+        for lineno, line in enumerate(raw_lines, start=1):
+            if lineno in lines_to_skip:
+                stripped = line.rstrip('\r\n')
+                newline = line[len(stripped):] or '\n'
+                f.write('$ read_bdf_safe skipped invalid card: ' + stripped + newline)
+            else:
+                f.write(line)
+    return sidecar
+
+
+def _is_prod_missing_a_error(exc):
+    message = str(exc)
+    if 'PROD' not in message.upper():
+        return False
+    return bool(_PROD_FIELD_MISSING_A_RE.search(message))
 
 
 # 与几何/坐标提取无关、但已知会让 pyNastran 崩溃或纯属求解器参数的卡片。
@@ -113,6 +206,11 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
             m.disable_cards(list(disable_cards))
         return m
 
+    def _record_warning(target_model, message):
+        warnings = list(getattr(target_model, 'read_bdf_safe_warnings', []))
+        warnings.append(message)
+        target_model.read_bdf_safe_warnings = warnings
+
     m = _new_model()
     try:
         m.read_bdf(bdf_filename, xref=xref, punch=punch, encoding=enc, **read_kwargs)
@@ -130,6 +228,37 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
             m2.disable_cards(list(disable_cards))
         try:
             m2.read_bdf(sidecar, xref=xref, punch=punch, encoding='utf-8', **read_kwargs)
+            return m2
+        finally:
+            try:
+                os.remove(sidecar)
+            except OSError:
+                pass
+    except SyntaxError as exc:
+        if not _is_prod_missing_a_error(exc):
+            raise
+
+        cleanup = _scan_invalid_prod_cleanup(bdf_filename, enc)
+        if not cleanup or not cleanup['invalid_prod_pids']:
+            raise
+
+        sidecar = _write_cleanup_sidecar(bdf_filename, enc, cleanup)
+        warning = (
+            'read_bdf_safe: skipped invalid PROD cards missing A for PID(s) {} '
+            'and {} dependent CROD element(s) while loading {}'
+        ).format(
+            ', '.join(cleanup['invalid_prod_pids']),
+            len(cleanup['dependent_crod_eids']),
+            os.path.basename(bdf_filename),
+        )
+        sys.stderr.write(warning + '\n')
+
+        m2 = BDF(debug=debug)
+        if disable_cards:
+            m2.disable_cards(list(disable_cards))
+        _record_warning(m2, warning)
+        try:
+            m2.read_bdf(sidecar, xref=xref, punch=punch, encoding=enc, **read_kwargs)
             return m2
         finally:
             try:
