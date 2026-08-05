@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS projects (
     project_id   TEXT PRIMARY KEY,
     workspace    TEXT NOT NULL,
     inp_path     TEXT,
+    source_file  TEXT,
+    original_inp_path TEXT,
+    original_source_file TEXT,
     source_type  TEXT NOT NULL DEFAULT 'inp',
     geom_status  TEXT NOT NULL DEFAULT 'pending',
     created_at   TEXT NOT NULL,
@@ -57,6 +60,8 @@ CREATE TABLE IF NOT EXISTS result_groups (
     display_name    TEXT,
     source_path     TEXT NOT NULL,
     source_file     TEXT,
+    original_source_path TEXT,
+    original_source_file TEXT,
     status          TEXT NOT NULL DEFAULT 'pending',
     parse_options   TEXT,
     error_message   TEXT,
@@ -105,6 +110,11 @@ class RegistryRepo:
             conn.executescript(_SCHEMA)
             for migration in [
                 "ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'inp'",
+                "ALTER TABLE projects ADD COLUMN source_file TEXT",
+                "ALTER TABLE projects ADD COLUMN original_inp_path TEXT",
+                "ALTER TABLE projects ADD COLUMN original_source_file TEXT",
+                "ALTER TABLE result_groups ADD COLUMN original_source_path TEXT",
+                "ALTER TABLE result_groups ADD COLUMN original_source_file TEXT",
                 "ALTER TABLE job_logs ADD COLUMN percent INTEGER",
             ]:
                 try:
@@ -346,14 +356,28 @@ class RegistryRepo:
 
     def create_project(self, project_id: str, workspace: str,
                        inp_path: str = None,
+                       source_file: str = None,
+                       original_inp_path: str = None,
+                       original_source_file: str = None,
                        source_type: str = "inp") -> None:
         now = _now_iso()
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO projects"
-                " (project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)"
-                " VALUES (?,?,?,?,'pending',?,?)",
-                (project_id, workspace, inp_path, source_type, now, now),
+                " (project_id, workspace, inp_path, source_file, original_inp_path,"
+                "  original_source_file, source_type, geom_status, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,'pending',?,?)",
+                (
+                    project_id,
+                    workspace,
+                    inp_path,
+                    source_file,
+                    original_inp_path,
+                    original_source_file,
+                    source_type,
+                    now,
+                    now,
+                ),
             )
 
     def list_projects(self) -> list:
@@ -434,29 +458,53 @@ class RegistryRepo:
 
     def adopt_default_result_group(self, project_id: str, result_group: str,
                                     display_name: str, source_path: str,
-                                    source_file: str = None) -> bool:
+                                    source_file: str = None,
+                                    original_source_path: str = None,
+                                    original_source_file: str = None) -> bool:
         """INSERT OR IGNORE a result_group with status='ready'. Returns True if inserted."""
         now = _now_iso()
         with self._connect() as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO result_groups"
                 " (project_id, result_group, display_name, source_path, source_file,"
+                "  original_source_path, original_source_file,"
                 "  status, parse_options, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
-                (project_id, result_group, display_name,
-                 source_path or '', source_file, now, now),
+                " VALUES (?,?,?,?,?,?,?,'ready',NULL,?,?)",
+                (
+                    project_id,
+                    result_group,
+                    display_name,
+                    source_path or '',
+                    source_file,
+                    original_source_path,
+                    original_source_file,
+                    now,
+                    now,
+                ),
             )
             return cur.rowcount > 0
 
     def reset_project_for_retry(self, project_id: str,
-                                source_path: str, source_type: str) -> None:
+                                source_path: str, source_file: str,
+                                original_source_path: str,
+                                original_source_file: str,
+                                source_type: str) -> None:
         """将 error 状态的 project 重置为 pending（重新提交时调用），同时更新 source_path。"""
         with self._connect() as conn:
             conn.execute("DELETE FROM job_logs WHERE odb_id=?", (project_id,))
             conn.execute(
-                "UPDATE projects SET geom_status='pending', inp_path=?, source_type=?,"
+                "UPDATE projects SET geom_status='pending', inp_path=?, source_file=?,"
+                " original_inp_path=?, original_source_file=?, source_type=?,"
                 " updated_at=? WHERE project_id=? AND geom_status='error'",
-                (source_path, source_type, _now_iso(), project_id),
+                (
+                    source_path,
+                    source_file,
+                    original_source_path,
+                    original_source_file,
+                    source_type,
+                    _now_iso(),
+                    project_id,
+                ),
             )
 
     def delete_project(self, project_id: str) -> None:
@@ -469,17 +517,31 @@ class RegistryRepo:
 
     def create_result_group(self, project_id: str, result_group: str,
                             display_name: str, source_path: str,
-                            source_file: str, parse_options: str) -> None:
+                            source_file: str,
+                            original_source_path: str,
+                            original_source_file: str,
+                            parse_options: str) -> None:
         """插入新 result_group，status='pending'。parse_options 为 JSON 字符串。"""
         now = _now_iso()
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO result_groups"
                 " (project_id, result_group, display_name, source_path,"
-                "  source_file, status, parse_options, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,'pending',?,?,?)",
-                (project_id, result_group, display_name, source_path,
-                 source_file, parse_options, now, now),
+                "  source_file, original_source_path, original_source_file,"
+                "  status, parse_options, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,'pending',?,?,?)",
+                (
+                    project_id,
+                    result_group,
+                    display_name,
+                    source_path,
+                    source_file,
+                    original_source_path,
+                    original_source_file,
+                    parse_options,
+                    now,
+                    now,
+                ),
             )
 
     def get_result_group(self, project_id: str,
@@ -534,12 +596,16 @@ class RegistryRepo:
 
             conn.execute(
                 "INSERT INTO projects"
-                " (project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?)",
+                " (project_id, workspace, inp_path, source_file, original_inp_path,"
+                "  original_source_file, source_type, geom_status, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     new_project_id,
                     new_project_id,
                     src["inp_path"],
+                    src["source_file"] if "source_file" in src.keys() else None,
+                    src["original_inp_path"] if "original_inp_path" in src.keys() else None,
+                    src["original_source_file"] if "original_source_file" in src.keys() else None,
                     src["source_type"],
                     src["geom_status"],
                     now,
@@ -555,15 +621,17 @@ class RegistryRepo:
                 conn.execute(
                     "INSERT INTO result_groups"
                     " (project_id, result_group, display_name, source_path,"
-                    "  source_file, status, parse_options, error_message,"
-                    "  created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "  source_file, original_source_path, original_source_file,"
+                    "  status, parse_options, error_message, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         new_project_id,
                         row["result_group"],
                         row["display_name"],
                         row["source_path"],
                         row["source_file"],
+                        row["original_source_path"] if "original_source_path" in row.keys() else None,
+                        row["original_source_file"] if "original_source_file" in row.keys() else None,
                         row["status"],
                         row["parse_options"],
                         row["error_message"],
@@ -603,6 +671,8 @@ class RegistryRepo:
 
     def reset_result_group_for_resubmit(self, project_id: str, result_group: str,
                                          source_path: str, source_file: str,
+                                         original_source_path: str,
+                                         original_source_file: str,
                                          display_name: str,
                                          parse_options: str) -> None:
         """将非 running 状态的 result_group 重置为 pending，同时更新源文件信息。"""
@@ -610,11 +680,21 @@ class RegistryRepo:
             conn.execute(
                 "UPDATE result_groups"
                 " SET status='pending', error_message=NULL,"
-                "     source_path=?, source_file=?, display_name=?, parse_options=?,"
+                "     source_path=?, source_file=?, original_source_path=?, original_source_file=?,"
+                "     display_name=?, parse_options=?,"
                 "     updated_at=?"
                 " WHERE project_id=? AND result_group=? AND status != 'running'",
-                (source_path, source_file, display_name, parse_options,
-                 _now_iso(), project_id, result_group),
+                (
+                    source_path,
+                    source_file,
+                    original_source_path,
+                    original_source_file,
+                    display_name,
+                    parse_options,
+                    _now_iso(),
+                    project_id,
+                    result_group,
+                ),
             )
 
     def claim_pending_result_group(self, project_id: str) -> Optional[sqlite3.Row]:

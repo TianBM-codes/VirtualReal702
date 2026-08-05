@@ -91,13 +91,23 @@ def _migrate_legacy_odb_results(repo: RegistryRepo,
         if not os.path.isdir(workspace):
             continue
         odb_path = row["inp_path"] or ""
-        source_file = os.path.basename(odb_path) if odb_path else None
-        display_name = os.path.splitext(source_file)[0] if source_file else "default_result"
+        source_file = row["source_file"] if "source_file" in row.keys() else None
+        original_source_path = row["original_inp_path"] if "original_inp_path" in row.keys() else None
+        original_source_file = row["original_source_file"] if "original_source_file" in row.keys() else None
+        if not source_file:
+            source_file = os.path.basename(odb_path) if odb_path else None
+        display_name = os.path.splitext(original_source_file or source_file or "default_result")[0]
         manifest = ManifestRepo(workspace)
         migrated = manifest.adopt_null_result_group("default_result", display_name, source_file)
         if migrated:
             repo.adopt_default_result_group(
-                project_id, "default_result", display_name, odb_path, source_file
+                project_id,
+                "default_result",
+                display_name,
+                odb_path,
+                source_file,
+                original_source_path,
+                original_source_file,
             )
             logger.info("Migrated ODB project %s → result_group='default_result'", project_id)
         else:

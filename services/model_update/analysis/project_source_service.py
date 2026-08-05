@@ -37,8 +37,10 @@ def _downloaded_project_inp_candidate(project_id: int, stored_inp_path: str) -> 
         return None
 
     workspace = repo.resolve_workspace(proj["workspace"], settings.data_root)
-    parsed_path = urlparse(raw).path if _is_http_url(raw) else raw
-    filename = os.path.basename(parsed_path)
+    filename = str(proj["source_file"] or "").strip() if "source_file" in proj.keys() else ""
+    if not filename:
+        parsed_path = urlparse(raw).path if _is_http_url(raw) else raw
+        filename = os.path.basename(parsed_path)
     if not filename:
         return None
     return os.path.abspath(os.path.join(workspace, filename))

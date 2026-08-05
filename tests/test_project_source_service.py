@@ -26,10 +26,10 @@ class _FakeConnection:
         return None
 
 
-def test_resolve_project_source_inp_path_uses_workspace_filename_from_url(monkeypatch, tmp_path):
+def test_resolve_project_source_inp_path_uses_runtime_source_file_from_url(monkeypatch, tmp_path):
     project_dir = tmp_path / "24"
     project_dir.mkdir()
-    inp_path = project_dir / "door.inp"
+    inp_path = project_dir / "project_inp_abcd1234.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
 
     class _FakeRepo:
@@ -40,6 +40,7 @@ def test_resolve_project_source_inp_path_uses_workspace_filename_from_url(monkey
             return {
                 "workspace": "24",
                 "inp_path": "https://example.com/models/door.inp?token=abc",
+                "source_file": "project_inp_abcd1234.inp",
             }
 
         def resolve_workspace(self, stored: str, data_root: str) -> str:

@@ -43,6 +43,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _materialize_runner_source(source_path: str, workspace: str, source_file: str = None) -> str:
+    if is_http_url(str(source_path or "").strip()):
+        return materialize_source_file(source_path, workspace, dest_name=source_file)
+    return os.path.abspath(source_path)
+
+
 def _append_extract_filters(cmd: list, parse_opts: dict) -> list:
     steps = parse_opts.get("steps")
     if isinstance(steps, str):
@@ -387,19 +393,19 @@ class EmbeddedRunner:
                 (_now_iso(),),
             )
             if cur.rowcount == 0:
-                return None, None, None, None
+                return None, None, None, None, None
             row = conn.execute(
-                "SELECT project_id, workspace, inp_path, source_type FROM projects"
+                "SELECT project_id, workspace, inp_path, source_file, source_type FROM projects"
                 " WHERE geom_status='running'"
                 " ORDER BY updated_at DESC LIMIT 1",
             ).fetchone()
             if row is None:
-                return None, None, None, None
+                return None, None, None, None, None
             ws = row["workspace"]
             if not os.path.isabs(ws):
                 ws = os.path.join(self.data_root, row["project_id"])
             source_type = row["source_type"] if "source_type" in row.keys() else "inp"
-            return row["project_id"], row["inp_path"], source_type, ws
+            return row["project_id"], row["inp_path"], row["source_file"], source_type, ws
 
     def _update_project_geom_status(self, project_id: str, status: str,
                                     error_message: str = None):
@@ -430,22 +436,22 @@ class EmbeddedRunner:
                 (_now_iso(),),
             )
             if cur.rowcount == 0:
-                return None, None, None, None, None
+                return None, None, None, None, None, None
             row = conn.execute(
                 "SELECT rg.project_id, rg.result_group, rg.source_path,"
-                "       rg.parse_options, p.workspace"
+                "       rg.source_file, rg.parse_options, p.workspace"
                 " FROM result_groups rg"
                 " JOIN projects p ON rg.project_id = p.project_id"
                 " WHERE rg.status='running'"
                 " ORDER BY rg.updated_at DESC LIMIT 1",
             ).fetchone()
             if row is None:
-                return None, None, None, None, None
+                return None, None, None, None, None, None
             ws = row["workspace"]
             if not os.path.isabs(ws):
                 ws = os.path.join(self.data_root, row["project_id"])
             return (row["project_id"], row["result_group"],
-                    row["source_path"], row["parse_options"], ws)
+                    row["source_path"], row["source_file"], row["parse_options"], ws)
 
     def _update_result_group_status(self, project_id: str, result_group: str,
                                     status: str, error_message: str = None):
@@ -565,7 +571,22 @@ class EmbeddedRunner:
         """Tag NULL result_group in manifest + register in registry.db as 'default_result'."""
         rg_name = "default_result"
         source_file = os.path.basename(odb_path) if odb_path else None
-        display_name = os.path.splitext(source_file)[0] if source_file else rg_name
+        original_source_path = odb_path
+        original_source_file = source_file
+        try:
+            with self._connect() as conn:
+                project_row = conn.execute(
+                    "SELECT inp_path, source_file, original_inp_path, original_source_file"
+                    " FROM projects WHERE project_id=?",
+                    (project_id,),
+                ).fetchone()
+            if project_row is not None:
+                original_source_path = project_row["original_inp_path"] or project_row["inp_path"] or odb_path
+                original_source_file = project_row["original_source_file"] or project_row["source_file"] or source_file
+                source_file = project_row["source_file"] or source_file
+        except Exception:
+            pass
+        display_name = os.path.splitext(original_source_file or source_file or rg_name)[0]
         manifest = _ManifestRepo(workspace)
         migrated = manifest.adopt_null_result_group(rg_name, display_name, source_file)
         logger.debug("[%s] adopt_null_result_group migrated=%s", project_id, migrated)
@@ -575,10 +596,20 @@ class EmbeddedRunner:
                 conn.execute(
                     "INSERT OR IGNORE INTO result_groups"
                     " (project_id, result_group, display_name, source_path, source_file,"
+                    "  original_source_path, original_source_file,"
                     "  status, parse_options, created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
-                    (project_id, rg_name, display_name,
-                     odb_path or '', source_file or '', now, now),
+                    " VALUES (?,?,?,?,?,?,?,'ready',NULL,?,?)",
+                    (
+                        project_id,
+                        rg_name,
+                        display_name,
+                        odb_path or '',
+                        source_file or '',
+                        original_source_path or '',
+                        original_source_file or '',
+                        now,
+                        now,
+                    ),
                 )
             logger.info("[%s] Adopted ODB results as result_group='default_result'", project_id)
 
@@ -770,12 +801,12 @@ class EmbeddedRunner:
             did_work = False
 
             # ── 1. Project geometry tasks (INP) ──────────────────────────────
-            project_id, source_path, source_type, ws = self._claim_pending_project()
+            project_id, source_path, source_file, source_type, ws = self._claim_pending_project()
             if project_id is not None:
                 did_work = True
                 logger.info("Runner claimed project geom %s", project_id)
                 try:
-                    source_path = materialize_source_file(source_path, ws)
+                    source_path = _materialize_runner_source(source_path, ws, source_file)
                     self._run_project(project_id, source_path, source_type, ws)
                 except Exception:
                     logger.exception("Runner: error in project geom %s", project_id)
@@ -787,7 +818,7 @@ class EmbeddedRunner:
                         pass
 
             # ── 2. Result group tasks (ODB) ───────────────────────────────────
-            project_id, rg, src, parse_opts, ws = self._claim_pending_result_group()
+            project_id, rg, src, source_file, parse_opts, ws = self._claim_pending_result_group()
             if project_id is not None:
                 did_work = True
                 label = "{}/{}".format(project_id, rg)
@@ -795,13 +826,7 @@ class EmbeddedRunner:
                 try:
                     # error 重试：先清理旧产物
                     self._cleanup_result_group(ws, rg)
-                    rg_safe = rg.replace("/", "__").replace("\\", "__").replace(" ", "_")
-                    raw_tail = src.split("?")[0] if is_http_url(src) else src
-                    ext = os.path.splitext(raw_tail)[1] or ".odb"
-                    src = materialize_source_file(
-                        src, ws,
-                        dest_name="{}_source{}".format(rg_safe, ext),
-                    )
+                    src = _materialize_runner_source(src, ws, source_file)
                     self._run_result_group(project_id, rg, src, parse_opts, ws)
                 except Exception:
                     logger.exception("Runner: error in result_group %s", label)

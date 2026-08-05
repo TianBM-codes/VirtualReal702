@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 
 def _make_projects_app(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi import FastAPI
     from fastapi.exceptions import RequestValidationError
 
@@ -34,6 +36,7 @@ def _make_projects_app(monkeypatch, tmp_path: Path):
 
 def test_create_project_accepts_json_local_path(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
@@ -59,15 +62,69 @@ def test_create_project_accepts_json_local_path(monkeypatch, tmp_path: Path):
 
     with sqlite3.connect(registry_db) as conn:
         row = conn.execute(
-            "SELECT inp_path, source_type, geom_status FROM projects WHERE project_id=?",
+            """
+            SELECT inp_path, source_file, original_inp_path, original_source_file, source_type, geom_status
+            FROM projects
+            WHERE project_id=?
+            """,
             ("proj_json_001",),
         ).fetchone()
 
-    assert row == (str(source_file), "inp", "pending")
+    assert row == (
+        str(source_file.resolve()),
+        "door.inp",
+        str(source_file),
+        "door.inp",
+        "inp",
+        "pending",
+    )
+
+
+def test_create_project_renames_local_non_ascii_source_in_place(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app, _data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
+    original_file = tmp_path / "车门模型.odb"
+    original_file.write_text("odb", encoding="utf-8")
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/projects",
+        json={
+            "project_id": "proj_cn_001",
+            "source_path": str(original_file),
+        },
+    )
+
+    assert response.status_code == 201
+    with sqlite3.connect(registry_db) as conn:
+        row = conn.execute(
+            """
+            SELECT inp_path, source_file, original_inp_path, original_source_file, source_type
+            FROM projects
+            WHERE project_id=?
+            """,
+            ("proj_cn_001",),
+        ).fetchone()
+
+    runtime_path = Path(row[0])
+    assert row[1].startswith("project_odb_")
+    assert row[1].endswith(".odb")
+    assert row[2] == str(original_file)
+    assert row[3] == "车门模型.odb"
+    assert row[4] == "odb"
+    assert not original_file.exists()
+    assert runtime_path.exists()
+    assert runtime_path.parent == tmp_path
+    assert runtime_path.name == row[1]
+    assert response.json()["data"]["project_id"] == "proj_cn_001"
 
 
 def test_create_project_accepts_http_source_path(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
@@ -92,15 +149,126 @@ def test_create_project_accepts_http_source_path(monkeypatch, tmp_path: Path):
 
     with sqlite3.connect(registry_db) as conn:
         row = conn.execute(
-            "SELECT inp_path, source_type, geom_status FROM projects WHERE project_id=?",
+            """
+            SELECT inp_path, source_file, original_inp_path, original_source_file, source_type, geom_status
+            FROM projects
+            WHERE project_id=?
+            """,
             ("proj_url_001",),
         ).fetchone()
 
-    assert row == (source_url, "odb", "pending")
+    assert row == (
+        source_url,
+        "local_model.odb",
+        source_url,
+        "local_model.odb",
+        "odb",
+        "pending",
+    )
+
+
+def test_create_project_http_non_ascii_name_keeps_original_url_and_stores_runtime_name(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app, _data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+    source_url = "https://example.com/files/%E8%BD%A6%E9%97%A8%E6%A8%A1%E5%9E%8B.odb?token=abc"
+
+    response = client.post(
+        "/api/projects",
+        json={
+            "project_id": "proj_url_cn_001",
+            "source_path": source_url,
+        },
+    )
+
+    assert response.status_code == 201
+    with sqlite3.connect(registry_db) as conn:
+        row = conn.execute(
+            """
+            SELECT inp_path, source_file, original_inp_path, original_source_file, source_type
+            FROM projects
+            WHERE project_id=?
+            """,
+            ("proj_url_cn_001",),
+        ).fetchone()
+
+    assert row[0] == source_url
+    assert row[1].startswith("project_odb_")
+    assert row[1].endswith(".odb")
+    assert row[2] == source_url
+    assert row[3] == "车门模型.odb"
+    assert row[4] == "odb"
+
+
+def test_add_result_group_renames_local_non_ascii_source_in_place(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
+    project_id = "proj_rg_001"
+    workspace = data_root / project_id
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(registry_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO projects(project_id, workspace, inp_path, source_file, original_inp_path,
+                                 original_source_file, source_type, geom_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (
+                project_id,
+                project_id,
+                str(tmp_path / "door.inp"),
+                "door.inp",
+                str(tmp_path / "door.inp"),
+                "door.inp",
+                "inp",
+                "ready",
+            ),
+        )
+
+    result_file = tmp_path / "结果工况.odb"
+    result_file.write_text("odb", encoding="utf-8")
+
+    client = TestClient(app)
+    response = client.post(
+        f"/api/projects/{project_id}/results",
+        json={
+            "source_path": str(result_file),
+            "result_group": "case01",
+        },
+    )
+
+    assert response.status_code == 201
+    with sqlite3.connect(registry_db) as conn:
+        row = conn.execute(
+            """
+            SELECT source_path, source_file, original_source_path, original_source_file, status
+            FROM result_groups
+            WHERE project_id=? AND result_group=?
+            """,
+            (project_id, "case01"),
+        ).fetchone()
+
+    runtime_path = Path(row[0])
+    assert row[1].startswith("result_case01_")
+    assert row[1].endswith(".odb")
+    assert row[2] == str(result_file)
+    assert row[3] == "结果工况.odb"
+    assert row[4] == "pending"
+    assert not result_file.exists()
+    assert runtime_path.exists()
+    assert runtime_path.name == row[1]
 
 
 def test_project_result_catalog_returns_result_group_names_and_manifest_metadata(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
@@ -111,18 +279,37 @@ def test_project_result_catalog_returns_result_group_names_and_manifest_metadata
     with sqlite3.connect(registry_db) as conn:
         conn.execute(
             """
-            INSERT INTO projects(project_id, workspace, inp_path, source_type, geom_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            INSERT INTO projects(project_id, workspace, inp_path, source_file, original_inp_path,
+                                 original_source_file, source_type, geom_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
             """,
-            (project_id, project_id, str(tmp_path / "model.inp"), "inp", "ready"),
+            (
+                project_id,
+                project_id,
+                "D:/runtime/project_odb_abcd1234.odb",
+                "project_odb_abcd1234.odb",
+                "D:/demo/车门模型.odb",
+                "车门模型.odb",
+                "inp",
+                "ready",
+            ),
         )
         conn.execute(
             """
             INSERT INTO result_groups(project_id, result_group, display_name, source_path, source_file,
+                                      original_source_path, original_source_file,
                                       status, parse_options, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'ready', NULL, datetime('now'), datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', NULL, datetime('now'), datetime('now'))
             """,
-            (project_id, "sol200_all_elements_e", "SOL200 灵敏度", "D:/demo/model.op2", "model.op2"),
+            (
+                project_id,
+                "sol200_all_elements_e",
+                "SOL200 sensitivity",
+                "D:/runtime/result_sol200_efgh5678.op2",
+                "result_sol200_efgh5678.op2",
+                "D:/demo/结果模型.op2",
+                "结果模型.op2",
+            ),
         )
 
     manifest_db = workspace / "manifest.db"
@@ -207,7 +394,7 @@ def test_project_result_catalog_returns_result_group_names_and_manifest_metadata
                                      positions, has_section, val_min, val_max, source)
             VALUES ('sol200_all_elements_e', 'Sensitivity', 'SENSITIVITY_CLOUD',
                     'l1/results/sol200_all_elements_e/external__Sensitivity__SENSITIVITY_CLOUD.h5',
-                    '["SENSITIVITY"]', '[]', '["ELEMENT_NODAL"]', 0, NULL, NULL, 'external')
+                    '[\"SENSITIVITY\"]', '[]', '[\"ELEMENT_NODAL\"]', 0, NULL, NULL, 'external')
             """
         )
         conn.execute(
@@ -229,7 +416,9 @@ def test_project_result_catalog_returns_result_group_names_and_manifest_metadata
     assert len(data["result_groups"]) == 1
     result_group = data["result_groups"][0]
     assert result_group["result_group"] == "sol200_all_elements_e"
-    assert result_group["display_name"] == "SOL200 灵敏度"
+    assert result_group["display_name"] == "SOL200 sensitivity"
+    assert result_group["source_file"] == "结果模型.op2"
+    assert result_group["source_path"] == "D:/demo/结果模型.op2"
     assert result_group["instances"] == [{"instance_name": "PART-1-1", "part_name": "PART-1"}]
     assert result_group["steps"][0]["step_name"] == "Sensitivity"
     assert result_group["steps"][0]["fields"][0]["field_name"] == "SENSITIVITY_CLOUD"
@@ -238,6 +427,7 @@ def test_project_result_catalog_returns_result_group_names_and_manifest_metadata
 
 def test_delete_project_purges_mysql_and_workspace(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
@@ -293,6 +483,7 @@ def test_delete_project_purges_mysql_and_workspace(monkeypatch, tmp_path: Path):
 
 def test_delete_project_rejects_active_project(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
     app, data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)

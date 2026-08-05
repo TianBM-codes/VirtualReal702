@@ -11,8 +11,10 @@ import json
 import os
 import shutil
 import sqlite3
+import hashlib
+import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
@@ -37,6 +39,64 @@ from ..response import ok
 
 def _is_http_url(s: str) -> bool:
     return s.startswith("http://") or s.startswith("https://")
+
+
+def _basename_from_source_path(source_path: str) -> str:
+    parsed_path = urlparse(source_path).path if _is_http_url(source_path) else source_path
+    raw_name = os.path.basename(parsed_path) or "download"
+    return unquote(raw_name)
+
+
+def _needs_ascii_runtime_name(file_name: str) -> bool:
+    try:
+        file_name.encode("ascii")
+        return False
+    except UnicodeEncodeError:
+        return True
+
+
+def _build_ascii_runtime_name(*, file_name: str, scope: str, source_key: str) -> str:
+    suffix = Path(str(file_name or "")).suffix or ""
+    digest = hashlib.sha1(str(source_key).encode("utf-8")).hexdigest()[:8]
+    stem_scope = re.sub(r"[^A-Za-z0-9]+", "_", str(scope or "source")).strip("_") or "source"
+    return f"{stem_scope}_{digest}{suffix}"
+
+
+def _prepare_source_reference(*, source_path: str, source_kind: str) -> dict:
+    original_source_path = str(source_path)
+    original_source_file = _basename_from_source_path(original_source_path)
+    runtime_source_path = original_source_path
+    runtime_source_file = original_source_file
+    renamed = False
+
+    if _needs_ascii_runtime_name(original_source_file):
+        runtime_source_file = _build_ascii_runtime_name(
+            file_name=original_source_file,
+            scope=source_kind,
+            source_key=original_source_path,
+        )
+
+    if not _is_http_url(original_source_path):
+        source_abs = os.path.abspath(original_source_path)
+        if runtime_source_file != os.path.basename(source_abs):
+            target_path = os.path.join(os.path.dirname(source_abs), runtime_source_file)
+            if os.path.exists(target_path):
+                raise ConflictError(
+                    f"Cannot rename source file because target '{target_path}' already exists"
+                )
+            os.replace(source_abs, target_path)
+            runtime_source_path = os.path.abspath(target_path)
+            renamed = True
+        else:
+            runtime_source_path = source_abs
+
+    return {
+        "original_source_path": original_source_path,
+        "original_source_file": original_source_file,
+        "runtime_source_path": runtime_source_path,
+        "runtime_source_file": runtime_source_file,
+        "renamed": renamed,
+    }
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -206,12 +266,16 @@ def _build_project_response(proj, repo) -> dict:
             "consistency_check": consistency_check,
             "error_message": rg["error_message"],
             "steps": steps,
+            "source_file": rg["original_source_file"] or rg["source_file"],
+            "source_path": rg["original_source_path"] or rg["source_path"],
         })
 
     return {
         "project_id": project_id,
         "source_type": source_type,
         "geom_status": proj["geom_status"],
+        "source_file": proj["original_source_file"] or proj["source_file"],
+        "source_path": proj["original_inp_path"] or proj["inp_path"],
         "result_groups": result_groups,
     }
 
@@ -249,8 +313,8 @@ def _build_project_result_catalog(proj, repo) -> dict:
                     "display_name": rg["display_name"],
                     "status": rg["status"],
                     "error_message": rg["error_message"],
-                    "source_file": rg["source_file"],
-                    "source_path": rg["source_path"],
+                    "source_file": rg["original_source_file"] or rg["source_file"],
+                    "source_path": rg["original_source_path"] or rg["source_path"],
                     "instances": [],
                     "steps": [],
                     "fields": [],
@@ -359,8 +423,8 @@ def _build_project_result_catalog(proj, repo) -> dict:
                 "display_name": rg["display_name"],
                 "status": rg["status"],
                 "error_message": rg["error_message"],
-                "source_file": rg["source_file"],
-                "source_path": rg["source_path"],
+                "source_file": rg["original_source_file"] or rg["source_file"],
+                "source_path": rg["original_source_path"] or rg["source_path"],
                 "instances": [
                     all_instances.get(name, {"instance_name": name, "part_name": None})
                     for name in sorted(instance_names)
@@ -450,6 +514,10 @@ async def create_project(body: CreateProjectRequest):
     project_id = validate_workspace_id(body.project_id, "project_id")
     resolved_source = _resolve_create_project_source(body)
     source_type = _detect_source_type(resolved_source, body.source_type)
+    source_ref = _prepare_source_reference(
+        source_path=resolved_source,
+        source_kind=f"project_{source_type}",
+    )
 
     repo = _repo()
     existing = repo.get_project(project_id)
@@ -465,7 +533,14 @@ async def create_project(body: CreateProjectRequest):
         if workspace.exists() or workspace.is_symlink():
             safe_rmtree(workspace, settings.data_root, "project workspace")
         workspace.mkdir(parents=True, exist_ok=True)
-        repo.reset_project_for_retry(project_id, resolved_source, source_type)
+        repo.reset_project_for_retry(
+            project_id,
+            source_ref["runtime_source_path"],
+            source_ref["runtime_source_file"],
+            source_ref["original_source_path"],
+            source_ref["original_source_file"],
+            source_type,
+        )
         return ok({
             "project_id": project_id,
             "source_type": source_type,
@@ -486,7 +561,10 @@ async def create_project(body: CreateProjectRequest):
         repo.create_project(
             project_id=project_id,
             workspace=project_id,
-            inp_path=resolved_source,
+            inp_path=source_ref["runtime_source_path"],
+            source_file=source_ref["runtime_source_file"],
+            original_inp_path=source_ref["original_source_path"],
+            original_source_file=source_ref["original_source_file"],
             source_type=source_type,
         )
     except Exception:
@@ -589,13 +667,12 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
 
     display_name = body.display_name or body.result_group
     parse_options_json = json.dumps(body.parse_options) if body.parse_options else None
+    source_ref = _prepare_source_reference(
+        source_path=body.source_path,
+        source_kind=f"result_{body.result_group}",
+    )
 
     # 从 URL 或本地路径中提取干净的文件名（URL 需先剥离 query string）
-    if _is_http_url(body.source_path):
-        source_file = os.path.basename(urlparse(body.source_path).path) or "download"
-    else:
-        source_file = os.path.basename(body.source_path)
-
     existing = repo.get_result_group(project_id, body.result_group)
     if existing is not None:
         if existing["status"] == "running":
@@ -604,17 +681,24 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
             )
         # error 或 ready → 允许覆盖重新解析
         repo.reset_result_group_for_resubmit(
-            project_id, body.result_group,
-            body.source_path, source_file,
-            display_name, parse_options_json,
+            project_id,
+            body.result_group,
+            source_ref["runtime_source_path"],
+            source_ref["runtime_source_file"],
+            source_ref["original_source_path"],
+            source_ref["original_source_file"],
+            display_name,
+            parse_options_json,
         )
     else:
         repo.create_result_group(
             project_id=project_id,
             result_group=body.result_group,
             display_name=display_name,
-            source_path=body.source_path,
-            source_file=source_file,
+            source_path=source_ref["runtime_source_path"],
+            source_file=source_ref["runtime_source_file"],
+            original_source_path=source_ref["original_source_path"],
+            original_source_file=source_ref["original_source_file"],
             parse_options=parse_options_json,
         )
 
