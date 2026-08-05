@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -102,6 +103,7 @@ def _normalize_sol200_response_type(value: Any) -> str:
         "DISP": "DISP",
         "MODAL_DISPLACEMENT": "DISP",
         "NODAL_DISPLACEMENT": "DISP",
+        "MAC": "MODAL_MAC",
         "MODAL_MAC": "MODAL_MAC",
     }
     resolved = mapping.get(token)
@@ -912,6 +914,7 @@ def _sol200_response_metadata_rows(responses: Sequence[Dict[str, Any]]) -> List[
             "node_id": int(node_id) if node_id is not None else None,
             "component": str(component).strip().upper() if component is not None else None,
             "unit": extra.get("unit"),
+            "extra_json": extra,
         })
     return rows
 
@@ -936,6 +939,76 @@ def _load_bdf_model(input_bdf: str) -> BDF:
     model = BDF(debug=False)
     model.read_bdf(input_bdf, xref=True)
     return model
+
+
+def _hydrate_manual_parameters_from_bdf(
+    *,
+    input_bdf: str,
+    parameters: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    hydrated = [dict(item or {}) for item in list(parameters or [])]
+    if not hydrated:
+        return hydrated
+
+    needs_model = False
+    for item in hydrated:
+        param_type = _normalize_sol200_parameter_type(item.get("type"))
+        if param_type in {"E", "RHO"} and item.get("material_id") is None and item.get("property_id") is not None:
+            needs_model = True
+            break
+    if not needs_model:
+        return hydrated
+
+    model = BDF(debug=False)
+    model.read_bdf(input_bdf, xref=False)
+    unresolved = []
+
+    for item in hydrated:
+        param_type = _normalize_sol200_parameter_type(item.get("type"))
+        if param_type not in {"E", "RHO"}:
+            continue
+        if item.get("material_id") is not None or item.get("property_id") is None:
+            continue
+
+        try:
+            pid = int(item.get("property_id"))
+        except Exception:
+            unresolved.append({
+                "parameter": item.get("name"),
+                "property_id": item.get("property_id"),
+                "reason": "invalid_property_id",
+            })
+            continue
+
+        prop = model.properties.get(pid)
+        if prop is None:
+            unresolved.append({
+                "parameter": item.get("name"),
+                "property_id": pid,
+                "reason": "property_not_found",
+            })
+            continue
+
+        mid = _property_material_id(prop)
+        if mid is None:
+            unresolved.append({
+                "parameter": item.get("name"),
+                "property_id": pid,
+                "property_type": str(getattr(prop, "type", "")),
+                "reason": "material_id_unresolved_from_property",
+            })
+            continue
+        item["material_id"] = int(mid)
+
+    if unresolved:
+        raise ValidationError(
+            "failed to resolve material_id from property_id for some SOL200 parameters",
+            {
+                "input_bdf": str(Path(input_bdf).expanduser().resolve()),
+                "unresolved": unresolved[:20],
+            },
+        )
+    return hydrated
 
 
 def _property_material_id(prop: Any) -> Optional[int]:
@@ -1280,13 +1353,119 @@ def _localize_elements_h_parameters(
     return str(output_path), parameters, info
 
 
+def _localize_manual_property_material_parameters(
+    *,
+    input_bdf: str,
+    output_bdf: str,
+    parameters: Sequence[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    resolved_parameters = [dict(item or {}) for item in list(parameters or [])]
+    target_property_ids = sorted({
+        int(item.get("property_id"))
+        for item in resolved_parameters
+        if _normalize_sol200_parameter_type(item.get("type")) in {"E", "RHO"}
+        and item.get("property_id") is not None
+    })
+    if not target_property_ids:
+        return str(Path(input_bdf).expanduser().resolve()), resolved_parameters, {}
+
+    model = BDF(debug=False)
+    model.read_bdf(input_bdf, xref=False)
+    next_pid = (max(model.properties.keys()) if model.properties else 0) + 1
+    next_mid = (max(model.materials.keys()) if model.materials else 0) + 1
+    property_map: Dict[int, Dict[str, int]] = {}
+    localized_element_count = 0
+    skipped: List[dict] = []
+
+    for source_pid in target_property_ids:
+        prop = model.properties.get(int(source_pid))
+        if prop is None:
+            skipped.append({"property_id": int(source_pid), "reason": "property_not_found"})
+            continue
+        source_mid = _property_material_id(prop)
+        if source_mid is None:
+            skipped.append({"property_id": int(source_pid), "reason": "property_has_no_supported_material"})
+            continue
+        material = model.materials.get(int(source_mid))
+        if material is None or str(getattr(material, "type", "")).upper() != "MAT1":
+            skipped.append({
+                "property_id": int(source_pid),
+                "material_id": int(source_mid),
+                "reason": "only_mat1_is_supported",
+            })
+            continue
+
+        new_mid = int(next_mid)
+        next_mid += 1
+        new_pid = int(next_pid)
+        next_pid += 1
+
+        model.materials[new_mid] = _material_copy_with_new_id(material, new_mid=new_mid)
+        model.properties[new_pid] = _clone_property_with_material(prop, new_pid=new_pid, new_mid=new_mid)
+        property_map[int(source_pid)] = {
+            "source_property_id": int(source_pid),
+            "source_material_id": int(source_mid),
+            "property_id": int(new_pid),
+            "material_id": int(new_mid),
+        }
+
+    if skipped:
+        raise ValidationError(
+            "manual SOL200 property-based E/RHO localization failed",
+            {
+                "input_bdf": str(Path(input_bdf).expanduser().resolve()),
+                "skipped": skipped[:20],
+            },
+        )
+
+    for element in model.elements.values():
+        pid = getattr(element, "pid", None)
+        if pid is None:
+            continue
+        mapped = property_map.get(int(pid))
+        if mapped is None:
+            continue
+        element.pid = int(mapped["property_id"])
+        localized_element_count += 1
+
+    for item in resolved_parameters:
+        source_pid = item.get("property_id")
+        if source_pid is None:
+            continue
+        mapped = property_map.get(int(source_pid))
+        if mapped is None:
+            continue
+        ptype = _normalize_sol200_parameter_type(item.get("type"))
+        item["source_property_id"] = int(mapped["source_property_id"])
+        item["source_material_id"] = int(mapped["source_material_id"])
+        if ptype in {"E", "RHO"}:
+            item["property_id"] = int(mapped["property_id"])
+            item["material_id"] = int(mapped["material_id"])
+        elif ptype == "H":
+            item["property_id"] = int(mapped["property_id"])
+
+    output_path = Path(output_bdf).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bdf(str(output_path), interspersed=False)
+    info = {
+        "localized_input_bdf": str(output_path),
+        "localized_property_count": len(property_map),
+        "localized_element_count": int(localized_element_count),
+        "property_mappings": list(property_map.values())[:50],
+    }
+    return str(output_path), resolved_parameters, info
+
+
 def _resolve_phase1_parameters(
     *,
     input_bdf: str,
     parameters: Optional[List[Dict[str, Any]]],
     parameter_preset: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    resolved = [dict(item) for item in (parameters or [])]
+    resolved = _hydrate_manual_parameters_from_bdf(
+        input_bdf=input_bdf,
+        parameters=[dict(item) for item in (parameters or [])],
+    )
     if parameter_preset:
         preset_name = str(parameter_preset.get("preset") or "").strip().lower()
         if preset_name == "all_used_material_e_rho":
@@ -1317,6 +1496,26 @@ def _resolve_phase1_input_and_parameters(
     parameters: Optional[List[Dict[str, Any]]],
     parameter_preset: Optional[Dict[str, Any]],
 ) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    if parameters and not parameter_preset:
+        base_input = Path(input_bdf).expanduser().resolve()
+        localized_output = (
+            str(Path(output_bdf).expanduser().resolve().with_name(
+                Path(output_bdf).expanduser().resolve().stem + ".localized_source.bdf"
+            ))
+            if output_bdf
+            else str(base_input.with_name(f"{base_input.stem}_sol200_manual_localized_source.bdf"))
+        )
+        localized_input_bdf, localized_parameters, info = _localize_manual_property_material_parameters(
+            input_bdf=input_bdf,
+            output_bdf=localized_output,
+            parameters=parameters,
+        )
+        return localized_input_bdf, _resolve_phase1_parameters(
+            input_bdf=localized_input_bdf,
+            parameters=localized_parameters,
+            parameter_preset=None,
+        ), info
+
     if not parameter_preset:
         return input_bdf, _resolve_phase1_parameters(
             input_bdf=input_bdf,
@@ -1387,25 +1586,19 @@ def preview_sol200_workflow(
         parameter_preset=parameter_preset,
         responses=responses,
     )
+    localized_preview_path = str(
+        Path(input_bdf).expanduser().resolve().with_name(
+            Path(input_bdf).expanduser().resolve().stem + "_sol200_preview_localized_source.bdf"
+        )
+    )
+    localized_input_bdf, resolved_parameters, info = _resolve_phase1_input_and_parameters(
+        input_bdf=input_bdf,
+        output_bdf=localized_preview_path,
+        parameters=resolved_input_parameters,
+        parameter_preset=parameter_preset,
+    )
     preset_name = str((parameter_preset or {}).get("preset") or "").strip().lower()
     if preset_name in {"all_elements_e", "all_elements_h"}:
-        localized_preview_path = str(
-            Path(input_bdf).expanduser().resolve().with_name(
-                Path(input_bdf).expanduser().resolve().stem + "_sol200_preview_localized_source.bdf"
-            )
-        )
-        if preset_name == "all_elements_e":
-            localized_input_bdf, resolved_parameters, info = _localize_elements_e_parameters(
-                input_bdf=input_bdf,
-                output_bdf=localized_preview_path,
-                preset=parameter_preset or {},
-            )
-        else:
-            localized_input_bdf, resolved_parameters, info = _localize_elements_h_parameters(
-                input_bdf=input_bdf,
-                output_bdf=localized_preview_path,
-                preset=parameter_preset or {},
-            )
         payload = preview_nastran_sol200_job(
             input_bdf=localized_input_bdf,
             parameters=resolved_parameters,
@@ -1417,17 +1610,15 @@ def preview_sol200_workflow(
         payload["config_source"] = "database" if project_id is not None and not list(responses or []) else "request"
         return payload
 
-    resolved_parameters = _resolve_phase1_parameters(
-        input_bdf=input_bdf,
-        parameters=resolved_input_parameters,
-        parameter_preset=parameter_preset,
-    )
     payload = preview_nastran_sol200_job(
-        input_bdf=input_bdf,
+        input_bdf=localized_input_bdf,
         parameters=resolved_parameters,
         responses=list(resolved_responses or []),
         settings=dict(settings or {}),
     )
+    if info:
+        payload["input_bdf"] = str(Path(input_bdf).expanduser().resolve())
+        payload["parameter_preset_info"] = info
     payload["config_source"] = "database" if project_id is not None and not list(responses or []) and not list(parameters or []) and not parameter_preset else "request"
     return payload
 
@@ -1620,6 +1811,13 @@ def _resolve_generated_sol200_matrix_path(run_payload: Dict[str, Any]) -> Option
     return None
 
 
+def _project_workspace_manifest_path(project_id: int) -> str:
+    from .project_path_service import resolve_project_workspace
+
+    workspace = str(Path(resolve_project_workspace(int(project_id))).expanduser().resolve())
+    return os.path.join(workspace, "manifest.db")
+
+
 def run_sol200_and_store_workflow(
     *,
     project_id: int,
@@ -1692,6 +1890,13 @@ def run_sol200_and_store_workflow(
             or str(Path(str(run_payload.get("input_bdf") or input_bdf)).expanduser().resolve())
         )
 
+        warnings = list(run_payload.get("warnings") or [])
+        if write_cloud_result and not os.path.exists(_project_workspace_manifest_path(int(project_id))):
+            warnings.append(
+                "project workspace has no manifest.db; skipped SOL200 cloud-result writeback for this non-L1 workspace"
+            )
+            write_cloud_result = False
+
         if write_cloud_result:
             store_payload = store_sol200_sensitivity_cloud(
                 project_id=int(project_id),
@@ -1736,7 +1941,7 @@ def run_sol200_and_store_workflow(
             "run": run_payload,
             "store": store_payload,
             "write_cloud_result": bool(write_cloud_result),
-            "warnings": list(run_payload.get("warnings") or []),
+            "warnings": warnings,
         }
     except Exception as exc:
         try:
@@ -1922,6 +2127,13 @@ def run_sol200_modal_mac_and_store_workflow(
             case_name=str(case_name),
             matrix_payload=matrix_payload,
         )
+        warnings = list(run_payload.get("warnings") or []) + list(preview.get("warnings") or [])
+        if write_cloud_result and not os.path.exists(_project_workspace_manifest_path(int(project_id))):
+            warnings.append(
+                "project workspace has no manifest.db; skipped SOL200 cloud-result writeback for this non-L1 workspace"
+            )
+            write_cloud_result = False
+
         if write_cloud_result:
             workspace = _sens._workspace_path(resolve_project_workspace(int(project_id)))
             matrix_payload["workspace"] = workspace
@@ -1968,7 +2180,7 @@ def run_sol200_modal_mac_and_store_workflow(
             "run": run_payload,
             "preview": preview,
             "store": stored,
-            "warnings": list(run_payload.get("warnings") or []) + list(preview.get("warnings") or []),
+            "warnings": warnings,
         }
     except Exception as exc:
         try:

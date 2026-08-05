@@ -45,6 +45,14 @@ def _safe_int(value):
     return int(_to_builtin(value))
 
 
+def _resolve_import_file_id(project_id, file_id):
+    if file_id is not None:
+        return int(file_id)
+    if project_id is not None:
+        return int(project_id)
+    return 1
+
+
 def _classify_unv_result(message, test_modes):
     static_types = {1}
     dynamic_types = {2, 3}
@@ -471,6 +479,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
     test_modes = []
     message = {}
     result_kind = None
+    resolved_file_id = _resolve_import_file_id(project_id, file_id)
     if has_dataset55:
         try:
             test_nodes, test_elements, test_modes, message = parse_unv_file(file_path)
@@ -502,7 +511,7 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
                 cursor.execute(node_sql, (
                     str(node['nid']),
                     project_id,
-                    file_id,
+                    resolved_file_id,
                     _safe_int(node["ics"]),
                     _safe_int(node["ocs"]),
                     node_x,
@@ -537,9 +546,9 @@ def import_unv_data(file_path, project_id, file_id, clear_before_insert=True):
                 ))
 
             if result_kind == "static":
-                static_result_count = _insert_static_results(cursor, project_id, file_id, test_modes)
+                static_result_count = _insert_static_results(cursor, project_id, resolved_file_id, test_modes)
             else:
-                _insert_dynamic_modal_data(cursor, project_id, file_id, test_modes, message)
+                _insert_dynamic_modal_data(cursor, project_id, resolved_file_id, test_modes, message)
 
             project_config = save_test_model_dimensions(
                 project_id=project_id,
