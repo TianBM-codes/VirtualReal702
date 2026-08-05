@@ -884,6 +884,9 @@ class NastranResponseRequest(BaseModel):
     name: str
     type: str
     mode_number: Optional[int] = None
+    node_id: Optional[int] = None
+    component: Optional[str] = None
+    extra_json: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NastranSol200ParameterPresetRequest(BaseModel):
