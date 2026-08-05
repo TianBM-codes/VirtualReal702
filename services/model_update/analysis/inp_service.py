@@ -113,6 +113,7 @@ import_fe_modal_results = _result.import_fe_modal_results
 get_fe_modal_results = _result.get_fe_modal_results
 import_fe_static_results = _result.import_fe_static_results
 import_fe_static_results_from_project_result = _result.import_fe_static_results_from_project_result
+list_project_result_steps = _result.list_project_result_steps
 get_fe_static_results = _result.get_fe_static_results
 
 # Correlation / evaluation workflows.

@@ -44,6 +44,28 @@ def test_bayesian_run_kwargs_uses_service_config_defaults(monkeypatch):
     assert "python3" not in kwargs
 
 
+def test_bayesian_run_kwargs_accepts_step_name_and_frame_idx_aliases(monkeypatch):
+    body = BayesianModelUpdateRequest(
+        project_id=1001,
+        input_inp="D:/demo/model.inp",
+        target_responses={"R1": 1.0},
+        step_name="Step-2",
+        frame_idx=4,
+    )
+    monkeypatch.setattr(optimization, "resolve_project_cal_subdir", lambda project_id, name: "D:/temp/bayesian")
+    monkeypatch.setattr(optimization, "resolve_abaqus_command", lambda value: "abaqus")
+    monkeypatch.setattr(
+        optimization,
+        "resolve_project_input_file",
+        lambda project_id, explicit_path, file_name, field_name: "D:/demo/model.inp",
+    )
+
+    kwargs = optimization._bayesian_run_kwargs(body)
+
+    assert kwargs["step"] == "Step-2"
+    assert kwargs["frame"] == 4
+
+
 def test_run_bayesian_update_workflow_compact_wraps_sensitivity_status(monkeypatch):
     captured = {}
 

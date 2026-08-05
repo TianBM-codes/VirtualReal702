@@ -5,7 +5,7 @@ import os
 import numpy as np
 
 from .fem_response_service import *
-from .fem_catalog_service import _safe_float
+from .fem_catalog_service import _json_dumps, _json_loads, _safe_float
 from . import sensitivity_service as _sens
 from .fem_modal_bundle_service import (
     clear_fem_modal_bundle,
@@ -613,6 +613,108 @@ def _collect_project_result_static_rows(
         "frame_idx": int(chosen_frame),
         "instances": chosen_instances,
         "rows": rows,
+    }
+
+
+def list_project_result_steps(*, project_id: int, result_group: str) -> dict:
+    workspace_abs, _ = _resolve_project_result_workspace(project_id, result_group)
+    conn = _sens._manifest_conn(workspace_abs)
+    try:
+        rg_clause, rg_params = _manifest_result_group_clause(result_group)
+        step_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT step_name, step_number, procedure, num_frames, description
+                FROM steps
+                WHERE {rg_clause}
+                ORDER BY step_number, step_name
+                """,
+                rg_params,
+            ).fetchall()
+        ]
+        if not step_rows:
+            raise NotFoundError(
+                "no steps found for project result group",
+                {
+                    "project_id": int(project_id),
+                    "result_group": str(result_group),
+                    "workspace": workspace_abs,
+                },
+            )
+
+        frame_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT step_name, frame_idx, frame_value, description
+                FROM frames
+                WHERE {rg_clause}
+                ORDER BY step_name, frame_idx
+                """,
+                rg_params,
+            ).fetchall()
+        ]
+        field_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT step_name, field_name, components, invariants, positions
+                FROM result_files
+                WHERE {rg_clause}
+                ORDER BY step_name, field_name
+                """,
+                rg_params,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    frames_by_step = {}
+    for row in frame_rows:
+        step_name = str(row.get("step_name") or "")
+        frames_by_step.setdefault(step_name, []).append(
+            {
+                "frame_idx": int(row.get("frame_idx") or 0),
+                "frame_value": _safe_float(row.get("frame_value")),
+                "description": row.get("description"),
+            }
+        )
+
+    fields_by_step = {}
+    for row in field_rows:
+        step_name = str(row.get("step_name") or "")
+        fields_by_step.setdefault(step_name, []).append(
+            {
+                "field_name": str(row.get("field_name") or ""),
+                "components": _json_loads(row.get("components")) or [],
+                "invariants": _json_loads(row.get("invariants")) or [],
+                "positions": _json_loads(row.get("positions")) or [],
+            }
+        )
+
+    steps = []
+    for row in step_rows:
+        step_name = str(row.get("step_name") or "")
+        frames = list(frames_by_step.get(step_name) or [])
+        steps.append(
+            {
+                "step_name": step_name,
+                "step_number": row.get("step_number"),
+                "procedure": row.get("procedure"),
+                "num_frames": row.get("num_frames"),
+                "description": row.get("description"),
+                "frames": frames,
+                "fields": list(fields_by_step.get(step_name) or []),
+                "default_frame_idx": None if not frames else int(frames[-1]["frame_idx"]),
+            }
+        )
+
+    return {
+        "project_id": int(project_id),
+        "result_group": str(result_group),
+        "workspace": workspace_abs,
+        "steps": steps,
     }
 
 

@@ -1,6 +1,7 @@
 import sqlite3
 
 from services.model_update.analysis import inp_service
+from services.model_update.analysis import fem_result_service
 
 
 class _FakeCursor:
@@ -58,29 +59,47 @@ class _FakeRegistryRepo:
 def _write_project_result_manifest(workspace, *, result_group="rg_static"):
     conn = sqlite3.connect(workspace / "manifest.db")
     conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("CREATE TABLE steps (result_group TEXT, step_name TEXT, step_number INTEGER)")
+    conn.execute(
+        "CREATE TABLE steps (result_group TEXT, step_name TEXT, step_number INTEGER, procedure TEXT, num_frames INTEGER, description TEXT)"
+    )
     conn.execute(
         "CREATE TABLE frames (result_group TEXT, step_name TEXT, frame_idx INTEGER, frame_value REAL, description TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE result_files (result_group TEXT, step_name TEXT, field_name TEXT, components TEXT, invariants TEXT, positions TEXT)"
     )
     conn.execute(
         "CREATE TABLE result_blocks (result_group TEXT, step_name TEXT, field_name TEXT, instance_name TEXT, position TEXT, elem_type TEXT, h5_path TEXT)"
     )
     conn.execute("CREATE TABLE instances (instance_name TEXT, part_name TEXT)")
-    conn.execute(
-        "INSERT INTO steps (result_group, step_name, step_number) VALUES (?, ?, ?)",
-        (result_group, "Step-1", 1),
+    conn.executemany(
+        "INSERT INTO steps (result_group, step_name, step_number, procedure, num_frames, description) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (result_group, "Step-1", 1, "STATIC", 2, "Load case 1"),
+            (result_group, "Step-2", 2, "STATIC", 1, "Load case 2"),
+        ],
     )
     conn.executemany(
         "INSERT INTO frames (result_group, step_name, frame_idx, frame_value, description) VALUES (?, ?, ?, ?, ?)",
         [
             (result_group, "Step-1", 0, 0.0, "initial"),
             (result_group, "Step-1", 1, 1.0, "final"),
+            (result_group, "Step-2", 0, 2.0, "case-2-final"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO result_files (result_group, step_name, field_name, components, invariants, positions) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (result_group, "Step-1", "U", '["U1","U2","U3"]', "[]", '["NODAL"]'),
+            (result_group, "Step-1", "S", '["S11","S22"]', '["MISES"]', '["INTEGRATION_POINT"]'),
+            (result_group, "Step-2", "U", '["U1","U2","U3"]', "[]", '["NODAL"]'),
         ],
     )
     conn.executemany(
         "INSERT INTO result_blocks (result_group, step_name, field_name, instance_name, position, elem_type, h5_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
             (result_group, "Step-1", "U", "PART-1-1", "NODAL", None, "/fake/u"),
+            (result_group, "Step-2", "U", "PART-1-1", "NODAL", None, "/fake/u2"),
             ("other_group", "Step-1", "U", "PART-9-9", "NODAL", None, "/fake/other"),
         ],
     )
@@ -145,6 +164,8 @@ def test_import_fe_static_results_writes_new_static_table(monkeypatch, tmp_path)
     fake_conn = _FakeConnection()
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(fem_result_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(fem_result_service, "get_connection", lambda: fake_conn)
 
     result = inp_service.import_fe_static_results(
         project_id=101,
@@ -205,6 +226,9 @@ def test_import_fe_static_results_from_project_result_uses_latest_frame_and_case
     monkeypatch.setattr(inp_service, "ensure_tables_exist", lambda: None)
     monkeypatch.setattr(inp_service, "get_connection", lambda: fake_conn)
     monkeypatch.setattr(inp_service, "_registry_repo", lambda: _FakeRegistryRepo(str(tmp_path)))
+    monkeypatch.setattr(fem_result_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(fem_result_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(fem_result_service, "_registry_repo", lambda: _FakeRegistryRepo(str(tmp_path)))
     monkeypatch.setattr(inp_service._sens, "_workspace_result_label_map", fake_label_map)
 
     result = inp_service.import_fe_static_results_from_project_result(
@@ -239,3 +263,29 @@ def test_import_fe_static_results_from_project_result_uses_latest_frame_and_case
     assert {item["component"] for item in captured_calls} == {"U1", "U2", "U3"}
     assert {item["result_group"] for item in captured_calls} == {"rg_static"}
     assert {item["frame"] for item in captured_calls} == {1}
+
+
+def test_list_project_result_steps_returns_step_frame_and_field_catalog(monkeypatch, tmp_path):
+    _write_project_result_manifest(tmp_path, result_group="rg_static")
+
+    monkeypatch.setattr(inp_service, "_registry_repo", lambda: _FakeRegistryRepo(str(tmp_path)))
+    monkeypatch.setattr(fem_result_service, "_registry_repo", lambda: _FakeRegistryRepo(str(tmp_path)))
+
+    result = inp_service.list_project_result_steps(
+        project_id=101,
+        result_group="rg_static",
+    )
+
+    assert result["project_id"] == 101
+    assert result["result_group"] == "rg_static"
+    assert [item["step_name"] for item in result["steps"]] == ["Step-1", "Step-2"]
+    assert result["steps"][0]["default_frame_idx"] == 1
+    assert result["steps"][0]["frames"] == [
+        {"frame_idx": 0, "frame_value": 0.0, "description": "initial"},
+        {"frame_idx": 1, "frame_value": 1.0, "description": "final"},
+    ]
+    assert result["steps"][0]["fields"][0]["field_name"] == "S"
+    assert result["steps"][0]["fields"][1]["field_name"] == "U"
+    assert result["steps"][1]["frames"] == [
+        {"frame_idx": 0, "frame_value": 2.0, "description": "case-2-final"},
+    ]

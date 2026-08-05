@@ -108,10 +108,33 @@ class ImportProjectStaticResultRequest(BaseModel):
     result_group: str
     load_case_no: int = Field(default=1, ge=1)
     step: Optional[str] = None
+    step_name: Optional[str] = None
     frame: Optional[int] = None
+    frame_idx: Optional[int] = None
     instances: Optional[List[str]] = None
     overwrite: bool = True
     async_submit: bool = True
+
+    @model_validator(mode="after")
+    def _normalize_step_frame_aliases(self):
+        resolved_step = str(self.step or "").strip()
+        alias_step = str(self.step_name or "").strip()
+        if resolved_step and alias_step and resolved_step != alias_step:
+            raise ValueError("step and step_name must match when both are provided")
+        self.step = resolved_step or alias_step or None
+        self.step_name = self.step
+
+        if self.frame is not None and self.frame_idx is not None and int(self.frame) != int(self.frame_idx):
+            raise ValueError("frame and frame_idx must match when both are provided")
+        resolved_frame = self.frame if self.frame is not None else self.frame_idx
+        self.frame = None if resolved_frame is None else int(resolved_frame)
+        self.frame_idx = self.frame
+        return self
+
+
+class ProjectResultStepCatalogRequest(BaseModel):
+    project_id: int
+    result_group: str
 
 
 class CreateOptimizationParameterRequest(BaseModel):
@@ -243,12 +266,14 @@ class BayesianModelUpdateRequest(BaseModel):
     workspace: Optional[str] = None
     odb_path: Optional[str] = None
     step: Optional[str] = None
+    step_name: Optional[str] = None
     instances: Optional[List[str]] = None
     field_prefix: Optional[str] = None
     response_component: Optional[str] = None
     position: Optional[str] = None
     aggregation: str = "max_abs"
     frame: Optional[int] = None
+    frame_idx: Optional[int] = None
     iterations: int = Field(default=1, ge=1)
     exit_diff_percent: Optional[float] = Field(default=None, ge=0)
     damping: float = 1e-8
@@ -269,6 +294,22 @@ class BayesianModelUpdateRequest(BaseModel):
     cloud_field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT"
     cloud_value_mode: str = "relative_delta_percent"
     async_submit: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_step_frame_aliases(self):
+        resolved_step = str(self.step or "").strip()
+        alias_step = str(self.step_name or "").strip()
+        if resolved_step and alias_step and resolved_step != alias_step:
+            raise ValueError("step and step_name must match when both are provided")
+        self.step = resolved_step or alias_step or None
+        self.step_name = self.step
+
+        if self.frame is not None and self.frame_idx is not None and int(self.frame) != int(self.frame_idx):
+            raise ValueError("frame and frame_idx must match when both are provided")
+        resolved_frame = self.frame if self.frame is not None else self.frame_idx
+        self.frame = None if resolved_frame is None else int(resolved_frame)
+        self.frame_idx = self.frame
+        return self
 
 
 class ModalFrequencyBayesianModelUpdateRequest(BaseModel):
