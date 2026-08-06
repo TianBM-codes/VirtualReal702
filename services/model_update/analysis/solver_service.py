@@ -23,7 +23,11 @@ from .project_log_service import (
     log_project_step,
 )
 from .project_status_service import update_work_condition_project_status
-from .project_file_service import resolve_project_output_dir, resolve_project_output_file
+from .project_file_service import (
+    resolve_project_input_file as _resolve_shared_project_input_file,
+    resolve_project_output_dir,
+    resolve_project_output_file,
+)
 from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
 from ..solver_prep.nastran_sol103 import (
     build_sol103_controls,
@@ -343,6 +347,12 @@ def _resolve_project_file(project_id: int, path: str, field_name: str) -> Path:
             f"field name: {field_name}",
             {"project_id": int(project_id), field_name: path},
         )
+    return _resolve_shared_project_input_file(
+        int(project_id),
+        explicit_path=raw,
+        file_name=None,
+        field_name=field_name,
+    )
 
     candidate = Path(raw).expanduser()
     if candidate.is_absolute():

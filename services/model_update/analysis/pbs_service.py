@@ -18,7 +18,10 @@ from src.l3.core.errors import ConflictError, NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from config import _load_service_config
-from .project_file_service import resolve_project_output_dir
+from .project_file_service import (
+    resolve_project_input_file as _resolve_shared_project_input_file,
+    resolve_project_output_dir,
+)
 from .project_log_service import log_project_error, log_project_info, log_project_step
 from .project_status_service import update_work_condition_project_status
 from .solver_service import (
@@ -109,6 +112,12 @@ def _resolve_project_input_file(project_id: int, path: str, field_name: str) -> 
             f"{field_name} cannot be empty",
             {"project_id": int(project_id), field_name: path},
         )
+    return _resolve_shared_project_input_file(
+        int(project_id),
+        explicit_path=raw,
+        file_name=None,
+        field_name=field_name,
+    )
 
     candidate = Path(raw).expanduser()
     if candidate.is_absolute():
