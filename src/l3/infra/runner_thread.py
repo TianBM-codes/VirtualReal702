@@ -24,7 +24,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.utils.file_fetch import is_http_url, materialize_source_file
+from src.utils.file_fetch import (
+    materialize_source_file,
+    resolve_runner_source,
+)
 from src.l3.infra.manifest_repo import ManifestRepo as _ManifestRepo
 
 logger = logging.getLogger(__name__)
@@ -44,9 +47,8 @@ def _now_iso() -> str:
 
 
 def _materialize_runner_source(source_path: str, workspace: str, source_file: str = None) -> str:
-    if is_http_url(str(source_path or "").strip()):
-        return materialize_source_file(source_path, workspace, dest_name=source_file)
-    return os.path.abspath(source_path)
+    # 统一入口：URL 下载 / 本地 ASCII 原样 / 本地非 ASCII 名挂 ASCII 硬链接（0 复制，原文件不动）。
+    return resolve_runner_source(source_path, workspace, source_file)
 
 
 def _append_extract_filters(cmd: list, parse_opts: dict) -> list:

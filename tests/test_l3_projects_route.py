@@ -80,7 +80,9 @@ def test_create_project_accepts_json_local_path(monkeypatch, tmp_path: Path):
     )
 
 
-def test_create_project_renames_local_non_ascii_source_in_place(monkeypatch, tmp_path: Path):
+def test_create_project_keeps_local_non_ascii_source_and_stores_ascii_runtime_name(
+    monkeypatch, tmp_path: Path
+):
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
@@ -109,17 +111,51 @@ def test_create_project_renames_local_non_ascii_source_in_place(monkeypatch, tmp
             ("proj_cn_001",),
         ).fetchone()
 
-    runtime_path = Path(row[0])
+    # 入库的 inp_path 就是原始（中文名）路径，绝不改名；source_file 是 ASCII 别名（过程文件名）。
+    assert row[0] == os.path.abspath(str(original_file))
     assert row[1].startswith("project_odb_")
     assert row[1].endswith(".odb")
     assert row[2] == str(original_file)
     assert row[3] == "车门模型.odb"
     assert row[4] == "odb"
-    assert not original_file.exists()
-    assert runtime_path.exists()
-    assert runtime_path.parent == tmp_path
-    assert runtime_path.name == row[1]
+    # 关键：客户的中文原文件原样保留，route 阶段不落地任何 ASCII 文件（硬链接由 runner 建）。
+    assert original_file.exists()
+    assert not (tmp_path / row[1]).exists()
     assert response.json()["data"]["project_id"] == "proj_cn_001"
+
+
+def test_create_project_retry_after_error_with_non_ascii_source_succeeds(
+    monkeypatch, tmp_path: Path
+):
+    """回归：改名方案会把原文件改走 → 重试时报「File not found」/ ConflictError。
+    现在原文件保留不动，重试（error → 重新提交同一路径）应成功。"""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    app, _data_root, registry_db = _make_projects_app(monkeypatch, tmp_path)
+    original_file = tmp_path / "车门模型.odb"
+    original_file.write_text("odb", encoding="utf-8")
+
+    client = TestClient(app)
+    body = {"project_id": "proj_cn_retry", "source_path": str(original_file)}
+
+    assert client.post("/api/projects", json=body).status_code == 201
+    # 原文件必须还在（这正是重试能成立的前提）
+    assert original_file.exists()
+
+    # 模拟几何解析失败
+    with sqlite3.connect(registry_db) as conn:
+        conn.execute(
+            "UPDATE projects SET geom_status='error' WHERE project_id=?",
+            ("proj_cn_retry",),
+        )
+
+    # 用同一原始路径重试 → 应成功回到 pending，而不是 400/409
+    retry = client.post("/api/projects", json=body)
+    assert retry.status_code == 201
+    assert retry.json()["data"]["geom_status"] == "pending"
+    assert original_file.exists()
 
 
 def test_create_project_accepts_http_source_path(monkeypatch, tmp_path: Path):
@@ -203,7 +239,9 @@ def test_create_project_http_non_ascii_name_keeps_original_url_and_stores_runtim
     assert row[4] == "odb"
 
 
-def test_add_result_group_renames_local_non_ascii_source_in_place(monkeypatch, tmp_path: Path):
+def test_add_result_group_keeps_local_non_ascii_source_and_stores_ascii_runtime_name(
+    monkeypatch, tmp_path: Path
+):
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
@@ -255,15 +293,15 @@ def test_add_result_group_renames_local_non_ascii_source_in_place(monkeypatch, t
             (project_id, "case01"),
         ).fetchone()
 
-    runtime_path = Path(row[0])
+    assert row[0] == os.path.abspath(str(result_file))
     assert row[1].startswith("result_case01_")
     assert row[1].endswith(".odb")
     assert row[2] == str(result_file)
     assert row[3] == "结果工况.odb"
     assert row[4] == "pending"
-    assert not result_file.exists()
-    assert runtime_path.exists()
-    assert runtime_path.name == row[1]
+    # 客户的中文原文件原样保留，route 阶段不落地任何 ASCII 文件（硬链接由 runner 建）。
+    assert result_file.exists()
+    assert not (workspace / row[1]).exists()
 
 
 def test_project_result_catalog_returns_result_group_names_and_manifest_metadata(monkeypatch, tmp_path: Path):

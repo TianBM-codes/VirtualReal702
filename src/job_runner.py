@@ -36,7 +36,10 @@ REPO_ROOT     = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.utils.file_fetch import is_http_url, materialize_source_file
+from src.utils.file_fetch import (
+    materialize_source_file,
+    resolve_runner_source,
+)
 DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
 PACK_SCRIPT     = REPO_ROOT / "src" / "l1" / "l1_pack.py"
 INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
@@ -75,9 +78,8 @@ def _cfg(cfg: dict, key: str, default: str) -> str:
 
 
 def _materialize_runner_source(source_path: str, workspace: str, source_file: str = None) -> str:
-    if is_http_url(str(source_path or "").strip()):
-        return materialize_source_file(source_path, workspace, dest_name=source_file)
-    return os.path.abspath(source_path)
+    # 统一入口：URL 下载 / 本地 ASCII 原样 / 本地非 ASCII 名挂 ASCII 硬链接（0 复制，原文件不动）。
+    return resolve_runner_source(source_path, workspace, source_file)
 
 
 def _append_extract_filters(cmd: list, parse_opts: dict) -> list:

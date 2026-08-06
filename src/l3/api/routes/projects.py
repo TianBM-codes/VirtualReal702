@@ -42,9 +42,12 @@ def _is_http_url(s: str) -> bool:
 
 
 def _basename_from_source_path(source_path: str) -> str:
-    parsed_path = urlparse(source_path).path if _is_http_url(source_path) else source_path
-    raw_name = os.path.basename(parsed_path) or "download"
-    return unquote(raw_name)
+    # URL 才做 %xx 解码（http 传输里中文名是 percent-encoded 的）；
+    # 本地路径原样取 basename，避免把文件名里字面量的 '%' 误解码成别的字符。
+    if _is_http_url(source_path):
+        raw_name = os.path.basename(urlparse(source_path).path) or "download"
+        return unquote(raw_name)
+    return os.path.basename(source_path) or "download"
 
 
 def _needs_ascii_runtime_name(file_name: str) -> bool:
@@ -63,11 +66,17 @@ def _build_ascii_runtime_name(*, file_name: str, scope: str, source_key: str) ->
 
 
 def _prepare_source_reference(*, source_path: str, source_kind: str) -> dict:
+    """算好「入库要存的源文件引用」，但**绝不改动/移动用户原文件**。
+
+    客户给的文件名（硬性带中文）必须原样保留。这里只做两件事：
+      1. 记住原始路径 / 原始文件名（用于展示与后续 runner 落地）；
+      2. 若原始名含非 ASCII，额外算一个纯 ASCII 的「过程文件别名名」——真正的
+         ASCII 硬链接由 runner 在 workspace 内落地（见 file_fetch.resolve_runner_source），
+         Abaqus/pyNastran 只认 ASCII 路径，而原文件始终不动。
+    """
     original_source_path = str(source_path)
     original_source_file = _basename_from_source_path(original_source_path)
-    runtime_source_path = original_source_path
     runtime_source_file = original_source_file
-    renamed = False
 
     if _needs_ascii_runtime_name(original_source_file):
         runtime_source_file = _build_ascii_runtime_name(
@@ -76,26 +85,17 @@ def _prepare_source_reference(*, source_path: str, source_kind: str) -> dict:
             source_key=original_source_path,
         )
 
-    if not _is_http_url(original_source_path):
-        source_abs = os.path.abspath(original_source_path)
-        if runtime_source_file != os.path.basename(source_abs):
-            target_path = os.path.join(os.path.dirname(source_abs), runtime_source_file)
-            if os.path.exists(target_path):
-                raise ConflictError(
-                    f"Cannot rename source file because target '{target_path}' already exists"
-                )
-            os.replace(source_abs, target_path)
-            runtime_source_path = os.path.abspath(target_path)
-            renamed = True
-        else:
-            runtime_source_path = source_abs
+    # runtime_source_path 就是原路径（URL 原样；本地取绝对路径）。不 rename、不 copy。
+    if _is_http_url(original_source_path):
+        runtime_source_path = original_source_path
+    else:
+        runtime_source_path = os.path.abspath(original_source_path)
 
     return {
         "original_source_path": original_source_path,
         "original_source_file": original_source_file,
         "runtime_source_path": runtime_source_path,
         "runtime_source_file": runtime_source_file,
-        "renamed": renamed,
     }
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])

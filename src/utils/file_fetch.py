@@ -14,6 +14,7 @@ src/utils/file_fetch.py — 内网 HTTP 文件下载工具
 
 纯 stdlib 实现（urllib），不依赖 httpx / requests，确保在所有 Python 3 环境均可用。
 """
+import hashlib
 import logging
 import os
 import shutil
@@ -215,3 +216,85 @@ def materialize_source_file(
     logger.info("file_fetch: copying %s -> %s", source_abs, dest_path)
     shutil.copy2(source_abs, dest_path)
     return dest_path
+
+
+def _is_ascii_path(s: str) -> bool:
+    try:
+        s.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _reuse_or_hardlink(src_abs: str, dest: str):
+    """把 src_abs 以硬链接方式暴露到 dest（同一份数据、零复制）。
+
+    成功返回 dest 的绝对路径；无法建硬链接（跨盘、文件系统不支持等）返回 None。
+    幂等：dest 已指向同一文件则直接复用；dest 被无关文件占用则先删掉再链。
+    硬链接不是符号链接（is_symlink()==False），不会触发 workspace 的 symlink 安全检查。
+    """
+    dest_abs = os.path.abspath(dest)
+    try:
+        os.makedirs(os.path.dirname(dest_abs), exist_ok=True)
+    except OSError:
+        pass
+    if os.path.exists(dest_abs):
+        try:
+            if os.path.samefile(src_abs, dest_abs):
+                return dest_abs
+        except OSError:
+            pass
+        try:
+            os.remove(dest_abs)
+        except OSError:
+            return None
+    try:
+        os.link(src_abs, dest_abs)
+        return dest_abs
+    except (OSError, NotImplementedError, AttributeError):
+        return None
+
+
+def _ascii_alias_no_copy(src_abs: str, workspace: str, alias_name: str = None) -> str:
+    """给一个「本地、名字含非 ASCII」的文件生成一个 ASCII 路径，供只认 ASCII 路径的
+    子进程工具（Abaqus / pyNastran）使用，且**绝不移动/改名用户原文件**。
+
+    优先在 ASCII 的 workspace 目录里挂一个 ASCII 名的硬链接（零复制、零额外磁盘，
+    同时解决「文件名中文」和「目录名中文」）。仅当跨盘等无法硬链接时才退化为复制。
+    """
+    os.makedirs(workspace, exist_ok=True)
+    if not alias_name:
+        digest = hashlib.sha1(src_abs.encode("utf-8")).hexdigest()[:8]
+        alias_name = "source_" + digest + (os.path.splitext(src_abs)[1] or "")
+    dest = os.path.abspath(os.path.join(workspace, alias_name))
+
+    link = _reuse_or_hardlink(src_abs, dest)
+    if link is not None:
+        return link
+
+    # 走到这里说明无法硬链接（通常是 workspace 与源文件不在同一磁盘卷）。
+    # 只能复制——对 6GB 文件是重操作，但这是极少数场景的兜底。
+    logger.warning(
+        "file_fetch: cannot hardlink %s into workspace (cross-volume?); copying (may be large)",
+        src_abs,
+    )
+    shutil.copy2(src_abs, dest)
+    return dest
+
+
+def resolve_runner_source(source_path: str, workspace: str, source_file: str = None) -> str:
+    """返回一个 runner 能安全交给 Abaqus/pyNastran 的「本地 + ASCII」路径。
+
+    - HTTP URL         → 下载到 workspace（文件名用 source_file）。
+    - 本地 + ASCII 路径 → 原样返回（零复制）。
+    - 本地 + 非 ASCII 名 → 用 ASCII 硬链接暴露（零复制）；**原文件永不改名/移动**。
+
+    source_file 为 route 侧算好的 ASCII 别名（过程文件名，无命名规范约束）。
+    """
+    raw = str(source_path or "").strip()
+    if is_http_url(raw):
+        return materialize_source_file(source_path, workspace, dest_name=source_file)
+    src_abs = os.path.abspath(source_path)
+    if _is_ascii_path(src_abs):
+        return src_abs
+    return _ascii_alias_no_copy(src_abs, workspace, source_file)
