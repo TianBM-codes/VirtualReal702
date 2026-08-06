@@ -164,3 +164,32 @@ def test_project_result_steps_route_returns_catalog(monkeypatch):
     assert response["data"]["project_id"] == 101
     assert response["data"]["result_group"] == "rg_static"
     assert response["data"]["steps"][0]["step_name"] == "Step-1"
+
+
+def test_project_result_steps_route_uses_default_result_group(monkeypatch):
+    from webapi.models import ProjectResultStepCatalogRequest
+    from webapi.routers import fem
+
+    captured = {}
+
+    async def _noop_log_request(request, body):
+        return None
+
+    def _fake_list_project_result_steps(**kwargs):
+        captured.update(kwargs)
+        return {
+            "project_id": kwargs["project_id"],
+            "result_group": kwargs["result_group"],
+            "steps": [],
+        }
+
+    monkeypatch.setattr(fem, "log_request", _noop_log_request)
+    monkeypatch.setattr(fem, "list_project_result_steps", _fake_list_project_result_steps)
+
+    body = ProjectResultStepCatalogRequest(project_id=101)
+    response = asyncio.run(fem.get_project_result_steps_api(_FakeRequest(), body))
+
+    assert captured["project_id"] == 101
+    assert captured["result_group"] == "default_result"
+    assert response["code"] == 200
+    assert response["data"]["result_group"] == "default_result"

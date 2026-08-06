@@ -134,7 +134,7 @@ class ImportProjectStaticResultRequest(BaseModel):
 
 class ProjectResultStepCatalogRequest(BaseModel):
     project_id: int
-    result_group: str
+    result_group: str = "default_result"
 
 
 class CreateOptimizationParameterRequest(BaseModel):

@@ -698,7 +698,7 @@ def _claim_pending_project() -> tuple:
             (_now_iso(),),
         )
         if cur.rowcount == 0:
-            return None, None, None, None
+            return None, None, None, None, None
         row = conn.execute(
             "SELECT project_id, workspace, inp_path, source_file, source_type FROM projects"
             " WHERE geom_status='running' ORDER BY updated_at DESC LIMIT 1"
@@ -1403,7 +1403,7 @@ def _claim_pending_result_group() -> tuple:
             (_now_iso(),),
         )
         if cur.rowcount == 0:
-            return None, None, None, None, None
+            return None, None, None, None, None, None
         row = conn.execute(
             "SELECT rg.project_id, rg.result_group, rg.source_path,"
             "       rg.source_file, rg.parse_options, p.workspace"
