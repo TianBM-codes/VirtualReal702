@@ -622,6 +622,20 @@ def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
     return {"iteration_dir": str(iteration_dir), "files": files}
 
 
+def _short_iteration_file_path(
+    iteration_dir: Path,
+    *,
+    iteration_no: int,
+    role: str,
+    suffix: str = ".bdf",
+) -> Path:
+    safe_role = "".join(ch for ch in str(role or "").strip().lower() if ch.isalnum() or ch in {"_", "-"}) or "file"
+    resolved_suffix = str(suffix or "").strip() or ".dat"
+    if not resolved_suffix.startswith("."):
+        resolved_suffix = f".{resolved_suffix}"
+    return (iteration_dir / f"iter_{int(iteration_no):03d}_{safe_role}{resolved_suffix}").resolve()
+
+
 def _normalize_batch_no(batch_no: Optional[int]) -> int:
     resolved = 1 if batch_no is None else int(batch_no)
     if resolved <= 0:
@@ -772,6 +786,17 @@ def _evaluate_exit_condition(
         "mean_abs_response_diff_percent": mean_abs_diff,
         "converged": bool(diffs) and all(float(item) <= threshold for item in diffs),
     }
+
+
+def _max_abs_modal_response_diff_percent(
+    response_values: Sequence[float],
+    target_values: Sequence[float],
+) -> float:
+    diffs = [
+        abs(_response_difference_percent_for_exit(float(calculated), float(target)))
+        for calculated, target in zip(response_values, target_values)
+    ]
+    return float(max(diffs)) if diffs else 0.0
 
 
 def _group_history_rows(rows: Sequence[dict], name_key: str, value_key: str) -> Dict[str, List[Tuple[int, float]]]:
@@ -5091,6 +5116,8 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         final_sensitivity_payload = stored_payload
         final_output_bdf = None
         cloud_export_base_url: Optional[str] = None
+        modal_backtrack_max_attempts = 6
+        modal_backtrack_shrink = 0.5
 
         for iteration_index in range(int(iterations)):
             if progress_callback is not None:
@@ -5102,45 +5129,102 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                     }
                 )
 
-            update_payload = bayesian_update_normalized(
-                p_current=current_parameter_values,
-                r_model=current_response_values,
-                r_target=target_response_values,
-                S_norm=normalized_matrix,
-                p_scatter=p_scatter,
-                r_scatter=r_scatter,
-                damping=damping,
-                step_scale=float(step_scale),
-                lower_bound=lower_bound_values,
-                upper_bound=upper_bound_values,
-                p_ref=current_parameter_values,
+            iteration_no = iteration_index + 1
+            iteration_dir = _iteration_dir(root_dir, iteration_no)
+            updated_bdf_path = _short_iteration_file_path(
+                iteration_dir,
+                iteration_no=iteration_no,
+                role="updated_input",
+                suffix=".bdf",
             )
-            update_payload["p_new"] = _apply_physical_parameter_value_floor(
-                current_parameter_columns,
-                update_payload["p_new"],
+            sol103_output_bdf = _short_iteration_file_path(
+                iteration_dir,
+                iteration_no=iteration_no,
+                role="sol103",
+                suffix=".bdf",
             )
+            objective_before = _max_abs_modal_response_diff_percent(
+                current_response_values.tolist(),
+                target_response_values.tolist(),
+            )
+            trial_step_scale = float(step_scale)
+            chosen_attempt = 1
+            chosen_objective_after: Optional[float] = None
+            backtracking_preview: List[dict] = []
+            modal_run = None
+            updated_bdf_result = None
+            update_payload = None
+            updated_response_values = None
+            for attempt_index in range(modal_backtrack_max_attempts):
+                chosen_attempt = int(attempt_index) + 1
+                update_payload = bayesian_update_normalized(
+                    p_current=current_parameter_values,
+                    r_model=current_response_values,
+                    r_target=target_response_values,
+                    S_norm=normalized_matrix,
+                    p_scatter=p_scatter,
+                    r_scatter=r_scatter,
+                    damping=damping,
+                    step_scale=float(trial_step_scale),
+                    lower_bound=lower_bound_values,
+                    upper_bound=upper_bound_values,
+                    p_ref=current_parameter_values,
+                )
+                update_payload["p_new"] = _apply_physical_parameter_value_floor(
+                    current_parameter_columns,
+                    update_payload["p_new"],
+                )
+                updated_bdf_result = _update_bdf_parameter_values(
+                    input_bdf=current_bdf_path,
+                    parameter_columns=current_parameter_columns,
+                    updated_parameter_values=update_payload["p_new"],
+                    output_bdf=str(updated_bdf_path),
+                )
+                modal_run = _run_sol103_modal_response_values(
+                    input_bdf=str(updated_bdf_path),
+                    response_rows=response_rows,
+                    output_bdf=str(sol103_output_bdf),
+                    project_id=int(project_id),
+                    settings=sol103_settings,
+                    nastran=nastran,
+                    timeout_sec=timeout_sec,
+                    extra_args=extra_args,
+                )
+                updated_response_values = np.asarray(modal_run["response_values"], dtype=np.float64)
+                chosen_objective_after = _max_abs_modal_response_diff_percent(
+                    updated_response_values.tolist(),
+                    target_response_values.tolist(),
+                )
+                backtracking_preview.append(
+                    {
+                        "attempt": chosen_attempt,
+                        "step_scale": float(trial_step_scale),
+                        "objective_before": float(objective_before),
+                        "objective_after": float(chosen_objective_after),
+                        "accepted": bool(chosen_objective_after <= objective_before),
+                    }
+                )
+                if chosen_objective_after <= objective_before or chosen_attempt >= modal_backtrack_max_attempts:
+                    break
+                trial_step_scale *= float(modal_backtrack_shrink)
+            if update_payload is None or modal_run is None or updated_response_values is None:
+                raise ValidationError(
+                    "modal Bayesian backtracking did not produce a valid trial result",
+                    {"project_id": int(project_id), "iteration": int(iteration_index) + 1},
+                )
+            update_payload["effective_step_scale"] = float(trial_step_scale)
+            update_payload["backtracking_attempt"] = int(chosen_attempt)
+            update_payload["backtracking_preview"] = backtracking_preview
+            update_payload["objective_before"] = float(objective_before)
+            update_payload["objective_after"] = float(chosen_objective_after if chosen_objective_after is not None else objective_before)
 
-            iteration_dir = _iteration_dir(root_dir, iteration_index + 1)
-            updated_bdf_path = iteration_dir / Path(current_bdf_path).name
-            updated_bdf_result = _update_bdf_parameter_values(
-                input_bdf=current_bdf_path,
-                parameter_columns=current_parameter_columns,
-                updated_parameter_values=update_payload["p_new"],
-                output_bdf=str(updated_bdf_path),
+            sol200_output_bdf = _short_iteration_file_path(
+                iteration_dir,
+                iteration_no=iteration_no,
+                role="sol200",
+                suffix=".bdf",
             )
-            sol103_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol103_iter{iteration_index + 1}.bdf"
-            modal_run = _run_sol103_modal_response_values(
-                input_bdf=str(updated_bdf_path),
-                response_rows=response_rows,
-                output_bdf=str(sol103_output_bdf),
-                project_id=int(project_id),
-                settings=sol103_settings,
-                nastran=nastran,
-                timeout_sec=timeout_sec,
-                extra_args=extra_args,
-            )
-            sol200_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol200_iter{iteration_index + 1}.bdf"
-            sensitivity_run_no = f"{resolved_batch_no}_iter_{iteration_index + 1}"
+            sensitivity_run_no = f"{resolved_batch_no}_iter_{iteration_no}"
             has_modal_mac = any(
                 str(item.get("response_type") or item.get("type") or "").strip().upper() == "MODAL_MAC"
                 for item in (response_rows or [])
@@ -5151,7 +5235,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 rerun_payload = run_sol200_modal_mac_and_store_workflow(
                     project_id=int(project_id),
                     batch_no=str(sensitivity_run_no),
-                    case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
+                    case_name=f"sol200_modal_bayesian_iter_{iteration_no}",
                     input_bdf=str(updated_bdf_path),
                     output_bdf=str(sol200_output_bdf),
                     parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
@@ -5181,7 +5265,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 rerun_payload = run_sol200_and_store_workflow(
                     project_id=int(project_id),
                     batch_no=str(sensitivity_run_no),
-                    case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
+                    case_name=f"sol200_modal_bayesian_iter_{iteration_no}",
                     input_bdf=str(updated_bdf_path),
                     output_bdf=str(sol200_output_bdf),
                     parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
@@ -5198,7 +5282,6 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 project_id=int(project_id),
                 batch_no=str(sensitivity_run_no),
             )
-            updated_response_values = np.asarray(modal_run["response_values"], dtype=np.float64)
             rerun_matrix = rerun_stored_payload.get("matrix")
             if rerun_matrix is None:
                 normalized_matrix = np.asarray([], dtype=np.float64)
@@ -5257,7 +5340,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 exit_diff_percent=exit_diff_percent,
             )
             iteration_result = {
-                "iteration": iteration_index + 1,
+                "iteration": iteration_no,
                 "analysis_run_id": rerun_stored_payload.get("analysis_run_id"),
                 "input_bdf": str(current_bdf_path) if save_results else None,
                 "sensitivity_batch_no": str(sensitivity_run_no),
@@ -5307,8 +5390,21 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             current_parameter_values = np.asarray(update_payload["p_new"], dtype=np.float64)
             current_parameter_columns = rerun_parameter_columns
             current_response_values = np.asarray(updated_response_values, dtype=np.float64)
-            current_bdf_path = str(rerun_localized_bdf or updated_bdf_path)
-            final_output_bdf = str(rerun_localized_bdf or updated_bdf_path) if save_results else None
+            compact_next_bdf_path = rerun_localized_bdf or str(updated_bdf_path)
+            if rerun_localized_bdf:
+                compact_localized_bdf = _short_iteration_file_path(
+                    iteration_dir,
+                    iteration_no=iteration_no,
+                    role="localized_source",
+                    suffix=".bdf",
+                )
+                source_localized = Path(rerun_localized_bdf)
+                target_localized = Path(compact_localized_bdf)
+                if source_localized.resolve() != target_localized.resolve():
+                    shutil.copyfile(str(source_localized), str(target_localized))
+                compact_next_bdf_path = str(target_localized)
+            current_bdf_path = str(compact_next_bdf_path)
+            final_output_bdf = str(compact_next_bdf_path) if save_results else None
             final_sensitivity_payload = rerun_stored_payload
             cloud_export_base_url = cloud_export_base_url or None
             stopped_early = bool(exit_check and exit_check.get("converged"))
