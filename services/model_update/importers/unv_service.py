@@ -63,7 +63,8 @@ def _load_modal_shape_rows(cursor, project_id):
         (project_id,),
     )
     rows = []
-    for mode_no, frequency, modal_shape in cursor.fetchall():
+    for iter_shape in cursor.fetchall():
+        mode_no, frequency, modal_shape = iter_shape['mode_no'], iter_shape['frequency'], iter_shape['modal_shape']
         parsed_shape = {}
         if modal_shape:
             loaded = json.loads(modal_shape)
