@@ -120,3 +120,36 @@ def test_geometry_filters_nodes_without_current_mode_results(monkeypatch):
 
     assert result["ids"] == [1, 3]
     assert result["elementsIndex"] == []
+
+
+def test_db_node_elements_skips_missing_element_nodes(monkeypatch):
+    class _Cursor:
+        def __init__(self):
+            self.last_sql = ""
+
+        def execute(self, sql, params=None):
+            self.last_sql = " ".join(sql.split())
+
+        def fetchall(self):
+            if "FROM t_mt_py_test_node" in self.last_sql:
+                return [(1, 0.0, 0.0, 0.0), (2, 1.0, 0.0, 0.0)]
+            if "FROM t_mt_py_test_element" in self.last_sql:
+                return [(1, 12288)]
+            return []
+
+        def close(self):
+            return None
+
+    class _Conn:
+        def cursor(self):
+            return _Cursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(svc, "get_connection", lambda: _Conn())
+
+    result = svc._db_node_elements("demo")
+
+    assert result["node_ids"].tolist() == [1, 2]
+    assert result["eles"] == [0]

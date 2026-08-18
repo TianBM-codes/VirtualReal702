@@ -124,7 +124,21 @@ def _db_node_elements(project_id: str) -> dict:
         if not eles_fetchall:
             eles = []
         else:
-            eles = [node2idx[ii] for ii in np.array(eles_fetchall).flatten()]
+            eles = []
+            missing_element_nodes = set()
+            flat_element_nodes = np.array(eles_fetchall).flatten().tolist()
+            for raw_node_id in flat_element_nodes:
+                node_idx = node2idx.get(int(raw_node_id))
+                if node_idx is None:
+                    missing_element_nodes.add(int(raw_node_id))
+                    continue
+                eles.append(node_idx)
+            if missing_element_nodes:
+                logger.warning(
+                    "testMesh geometry skipped element node ids missing from test nodes: project_id=%s missing=%s",
+                    project_id,
+                    sorted(missing_element_nodes),
+                )
 
         return {
             "node_ids": node_ids,
