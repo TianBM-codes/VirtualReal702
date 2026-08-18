@@ -19,6 +19,7 @@ def stub_test_mesh(monkeypatch):
         "real": [0.0, 0.0, 2.0, 0.0, 0.0, -1.0],
         "imag": [0.0] * 6,
     })
+    monkeypatch.setattr(svc, "_db_modal_node_ids", lambda pid, order=None: {1, 2})
 
 
 def _fem_stub(available=True, bbox=20.0, max_disp=4.0, **over):
@@ -99,3 +100,23 @@ def test_sync_coefficient_shrinks_both_sides_equally(stub_test_mesh, monkeypatch
     half = svc.get_sync_animation(1, 1, coefficient=2.0)
     assert half["test"]["scaleFactor"] == pytest.approx(base["test"]["scaleFactor"] / 2.0)
     assert half["fem"]["scale"] == pytest.approx(base["fem"]["scale"] / 2.0)
+
+
+def test_geometry_filters_nodes_without_current_mode_results(monkeypatch):
+    monkeypatch.setattr(svc, "_db_node_elements", lambda pid: {
+        "node_ids": np.array([1, 2, 3]),
+        "node2idx": {1: 0, 2: 1, 3: 2},
+        "node_coords": [0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 20.0, 0.0, 0.0],
+        "eles": [0, 1, 1, 2],
+    })
+    monkeypatch.setattr(svc, "_db_modal_node_ids", lambda pid, order=None: {1, 3} if order == 1 else {1, 2, 3})
+    monkeypatch.setattr(svc, "_db_node_shapes", lambda pid, ids, order: {
+        "order": order, "frequency": "1.0", "unit": "Hz",
+        "real": [1.0, 0.0, 0.0, 0.0, 0.0, 3.0],
+        "imag": [0.0] * 6,
+    })
+
+    result = svc.get_geometry(1, 1, 1.0, 1.0)
+
+    assert result["ids"] == [1, 3]
+    assert result["elementsIndex"] == []
