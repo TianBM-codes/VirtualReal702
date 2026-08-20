@@ -4265,6 +4265,7 @@ def run_bayesian_update_workflow(
         iteration_results = []
         stopped_early = False
         last_resolved_workspace: Optional[str] = None
+        initial_parameter_values: Optional[np.ndarray] = None
         cloud_export_odb_id = str(odb_id or "").strip() or None
         cloud_export_base_url = base_url
         next_source = {
@@ -4340,6 +4341,8 @@ def run_bayesian_update_workflow(
             response_rows = list(matrix_payload["response_rows"])
             S_norm = np.asarray(matrix_payload["matrix"], dtype=np.float64)
             p_current = np.asarray(matrix_payload["parameter_values"], dtype=np.float64)
+            if initial_parameter_values is None:
+                initial_parameter_values = p_current.copy()
             r_model = np.asarray(matrix_payload["response_values"], dtype=np.float64)
             resolved_target_input = target_responses
             if resolved_target_input is None:
@@ -5008,6 +5011,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         cloud_result_group: Optional[str] = None,
         cloud_step_name: str = "BayesianUpdate",
         cloud_field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+        cloud_value_mode: str = "relative_delta_percent",
         progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     from services.model_update.analysis.nastran_sol200_service import run_sol200_and_store_workflow
