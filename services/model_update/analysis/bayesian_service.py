@@ -612,6 +612,11 @@ def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
             iteration_result.get("parameter_element_mapping", []),
         ),
     }
+    if iteration_result.get("parameter_changes") is not None:
+        files["parameter_changes_json"] = _save_json(
+            iteration_dir / "parameter_changes.json",
+            iteration_result.get("parameter_changes", []),
+        )
     if iteration_result.get("response_values_before_update") is not None:
         files["response_values_before_update_txt"] = _save_vector_txt(
             iteration_dir / "response_values_before_update.txt",
@@ -646,6 +651,72 @@ def _normalize_batch_no(batch_no: Optional[int]) -> int:
 def _truncate_tracking_name(value: Optional[str], *, default: str, max_length: int = 100) -> str:
     text = str(value or default).strip()
     return (text or default)[: int(max_length)]
+
+
+def _build_parameter_change_rows(
+        *,
+        parameter_columns: Sequence[dict],
+        previous_values: Sequence[float],
+        updated_values: Sequence[float],
+        initial_values: Optional[Sequence[float]] = None,
+) -> list[dict]:
+    previous_arr = np.asarray(previous_values, dtype=np.float64).reshape(-1)
+    updated_arr = np.asarray(updated_values, dtype=np.float64).reshape(-1)
+    if previous_arr.shape != updated_arr.shape:
+        raise ValidationError(
+            "previous_values and updated_values must have the same shape",
+            {
+                "previous_shape": list(previous_arr.shape),
+                "updated_shape": list(updated_arr.shape),
+            },
+        )
+    if len(parameter_columns or []) != int(previous_arr.size):
+        raise ValidationError(
+            "parameter column count does not match parameter values",
+            {
+                "parameter_count": len(parameter_columns or []),
+                "value_count": int(previous_arr.size),
+            },
+        )
+    if initial_values is None:
+        initial_arr = previous_arr.copy()
+    else:
+        initial_arr = np.asarray(initial_values, dtype=np.float64).reshape(-1)
+        if initial_arr.shape != previous_arr.shape:
+            raise ValidationError(
+                "initial_values shape does not match parameter values",
+                {
+                    "initial_shape": list(initial_arr.shape),
+                    "value_shape": list(previous_arr.shape),
+                },
+            )
+
+    rows: list[dict] = []
+    for index, column in enumerate(parameter_columns or []):
+        previous_value = float(previous_arr[index])
+        updated_value = float(updated_arr[index])
+        initial_value = float(initial_arr[index])
+        rows.append(
+            {
+                "parameter_name": str(column.get("parameter_name") or f"parameter_{index + 1}"),
+                "scope": _parameter_scope_value(dict(column)),
+                "previous_value": previous_value,
+                "updated_value": updated_value,
+                "delta_value": float(updated_value - previous_value),
+                "step_relative_delta_percent": _resolve_cloud_scalar_percent_value(
+                    updated_value=updated_value,
+                    baseline_value=previous_value,
+                ),
+                "total_relative_delta_percent": _resolve_cloud_scalar_percent_value(
+                    updated_value=updated_value,
+                    baseline_value=initial_value,
+                ),
+                "initial_value": initial_value,
+                "lower_bound": None if column.get("lower_bound") is None else float(column.get("lower_bound")),
+                "upper_bound": None if column.get("upper_bound") is None else float(column.get("upper_bound")),
+            }
+        )
+    return rows
 
 
 def _response_tracking_name(row_meta: dict, index: int) -> str:
@@ -1104,6 +1175,7 @@ def _save_bayesian_history_artifacts(
 
     response_history_rows: List[dict] = []
     iteration_summary_rows: List[dict] = []
+    parameter_change_rows: List[dict] = []
     for iteration_result in rows:
         iteration_no = int(iteration_result["iteration"])
         metrics = dict(iteration_result.get("metrics") or _build_iteration_metrics(
@@ -1126,6 +1198,20 @@ def _save_bayesian_history_artifacts(
                     "calculated_value": calculated,
                     "target_value": target,
                     "response_diff_percent": diff,
+                }
+            )
+
+        for change_row in iteration_result.get("parameter_changes") or []:
+            parameter_change_rows.append(
+                {
+                    "iteration": iteration_no,
+                    "parameter_name": str(change_row.get("parameter_name") or ""),
+                    "scope": str(change_row.get("scope") or ""),
+                    "previous_value": float(change_row.get("previous_value") or 0.0),
+                    "updated_value": float(change_row.get("updated_value") or 0.0),
+                    "delta_value": float(change_row.get("delta_value") or 0.0),
+                    "step_relative_delta_percent": float(change_row.get("step_relative_delta_percent") or 0.0),
+                    "total_relative_delta_percent": float(change_row.get("total_relative_delta_percent") or 0.0),
                 }
             )
 
@@ -1165,6 +1251,20 @@ def _save_bayesian_history_artifacts(
             history_dir / "parameter_history.csv",
             ("iteration", "parameter_name", "value"),
             parameter_history_rows,
+        ),
+        "parameter_change_history_csv": _save_csv_rows(
+            history_dir / "parameter_change_history.csv",
+            (
+                "iteration",
+                "parameter_name",
+                "scope",
+                "previous_value",
+                "updated_value",
+                "delta_value",
+                "step_relative_delta_percent",
+                "total_relative_delta_percent",
+            ),
+            parameter_change_rows,
         ),
         "response_history_csv": _save_csv_rows(
             history_dir / "response_history.csv",
@@ -1619,7 +1719,11 @@ def _build_sol200_final_parameter_cloud_request(
             {"parameter_count": len(parameter_columns or []), "mapping_count": len(parameter_mappings or [])},
         )
 
-    per_instance_labels: Dict[str, Dict[int, float]] = {}
+    components = [
+        str(column.get("parameter_name") or column.get("field") or f"parameter_{index + 1}")
+        for index, column in enumerate(parameter_columns or [])
+    ]
+    per_instance_labels: Dict[str, Dict[int, List[float]]] = {}
     instance_counts: Dict[str, int] = {}
 
     for index, raw_mapping in enumerate(parameter_mappings or []):
@@ -1643,19 +1747,11 @@ def _build_sol200_final_parameter_cloud_request(
             label_map = per_instance_labels.setdefault(instance_name, {})
             for label in labels or []:
                 element_label = int(label)
-                existing_value = label_map.get(element_label)
-                if existing_value is not None:
-                    raise ValidationError(
-                        "parameter relative delta cloud export found duplicate element assignments",
-                        {
-                            "batch_no": int(batch_no),
-                            "instance_name": instance_name,
-                            "element_label": element_label,
-                            "existing_value": existing_value,
-                            "new_value": scalar_value,
-                        },
-                    )
-                label_map[element_label] = float(scalar_value)
+                values = label_map.setdefault(
+                    element_label,
+                    [float("nan")] * len(components),
+                )
+                values[index] = float(scalar_value)
 
     if not per_instance_labels:
         raise ValidationError("no element targets were resolved for SOL200 parameter cloud export")
@@ -1667,8 +1763,8 @@ def _build_sol200_final_parameter_cloud_request(
             "frame_value": 1.0,
             "description": "Final Relative Delta Percent",
             "data": [
-                {"label": int(label), "values": [float(value)]}
-                for label, value in sorted(label_map.items())
+                {"label": int(label), "values": values}
+                for label, values in sorted(label_map.items())
             ],
         }
         instances_payload.append({"instance": instance_name, "frames": [frame_entry]})
@@ -1677,7 +1773,7 @@ def _build_sol200_final_parameter_cloud_request(
     request_body = {
         "step_name": resolved_step_name,
         "field_name": resolved_field_name,
-        "components": ["RELATIVE_DELTA_PERCENT"],
+        "components": components,
         "result_group": resolved_result_group,
         "type": "element",
         "instances": instances_payload,
@@ -1696,7 +1792,7 @@ def _build_sol200_final_parameter_cloud_request(
                 "description": "Final Relative Delta Percent",
             }
         ],
-        "components": ["RELATIVE_DELTA_PERCENT"],
+        "components": components,
         "instances": [str(item["instance"]) for item in instances_payload],
         "instance_element_counts": {name: int(count) for name, count in sorted(instance_counts.items())},
     }
@@ -1840,10 +1936,17 @@ def _build_bayesian_cloud_request(
         str(column.get("parameter_name") or column.get("field") or f"parameter_{index + 1}")
         for index, column in enumerate(parameter_columns)
     ]
-    baseline_values = {
-        components[index]: float(column.get("parameter_value") or 0.0)
-        for index, column in enumerate(parameter_columns)
-    }
+    baseline_source = list(first_iteration.get("parameter_values") or [])
+    if len(baseline_source) == len(components):
+        baseline_values = {
+            components[index]: float(baseline_source[index])
+            for index in range(len(components))
+        }
+    else:
+        baseline_values = {
+            components[index]: float(column.get("parameter_value") or 0.0)
+            for index, column in enumerate(parameter_columns)
+        }
 
     instances_payload: List[dict] = []
     instance_frames: Dict[str, List[dict]] = {}
@@ -4320,8 +4423,16 @@ def run_bayesian_update_workflow(
             parameter_element_mapping = []
             for col_idx, column in enumerate(parameter_columns):
                 mapping_entry = _clone_jsonable(column.get("element_mapping") or {})
+                mapping_entry["parameter_value"] = float(matrix_payload["parameter_values"][col_idx])
+                mapping_entry["baseline_parameter_value"] = float(initial_parameter_values[col_idx])
                 mapping_entry["updated_parameter_value"] = float(update_payload["p_new"][col_idx])
                 parameter_element_mapping.append(mapping_entry)
+            parameter_changes = _build_parameter_change_rows(
+                parameter_columns=parameter_columns,
+                previous_values=matrix_payload["parameter_values"],
+                updated_values=update_payload["p_new"],
+                initial_values=initial_parameter_values,
+            )
 
             next_inp = _copy_iteration_input(
                 str(current_inp),
@@ -4358,6 +4469,7 @@ def run_bayesian_update_workflow(
                 "response_scatter": r_scatter.tolist(),
                 "parameter_columns": parameter_columns,
                 "parameter_element_mapping": parameter_element_mapping,
+                "parameter_changes": parameter_changes,
                 "response_rows": response_rows,
                 "bayesian": _clone_jsonable(update_payload),
                 "metrics": _clone_jsonable(iteration_metrics),
@@ -5354,11 +5466,18 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 "parameter_element_mapping": [
                     {
                         **dict(item),
+                        "parameter_value": float(current_parameter_values[index]),
+                        "baseline_parameter_value": float(initial_parameter_values[index]),
                         "updated_parameter_value": float(update_payload["p_new"][index]),
-                        "parameter_value": float(initial_parameter_values[index]),
                     }
                     for index, item in enumerate(parameter_mappings)
                 ],
+                "parameter_changes": _build_parameter_change_rows(
+                    parameter_columns=rerun_parameter_columns,
+                    previous_values=current_parameter_values.tolist(),
+                    updated_values=update_payload["p_new"],
+                    initial_values=initial_parameter_values.tolist(),
+                ),
                 "response_rows": response_rows,
                 "sensitivity_matrix": normalized_matrix.tolist(),
                 "bayesian": _clone_jsonable(update_payload),
@@ -5432,33 +5551,34 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         cloud_result = None
         cloud_result_warning = None
         if write_cloud_result:
-            workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
-            resolved_cloud_odb_id = _resolve_loaded_odb_id_for_workspace(workspace_path)
-            if not resolved_cloud_odb_id:
+            workspace_path = os.path.abspath(resolve_project_workspace(int(project_id)))
+            if not _workspace_has_manifest(workspace_path):
                 cloud_result_warning = {
                     "code": "BAYESIAN_CLOUD_EXPORT_SKIPPED",
-                    "message": "project workspace is not loaded in the L3 registry; skipped final cloud export",
+                    "message": "project workspace has no manifest.db; skipped final cloud export",
                     "project_id": int(project_id),
                     "workspace": workspace_path,
                 }
             else:
-                parameter_mappings = _build_op2_parameter_columns_with_mappings(
-                    workspace=workspace_path,
-                    bdf_path=str(current_bdf_path),
-                    parameter_columns=current_parameter_columns,
-                )
-                cloud_result = _write_sol200_final_parameter_cloud_result(
-                    odb_id=resolved_cloud_odb_id,
-                    base_url=cloud_export_base_url,
-                    batch_no=resolved_batch_no,
-                    parameter_columns=current_parameter_columns,
-                    parameter_mappings=parameter_mappings,
-                    initial_parameter_values=initial_parameter_values.tolist(),
-                    final_parameter_values=current_parameter_values.tolist(),
-                    result_group=cloud_result_group,
-                    step_name=cloud_step_name,
-                    field_name=cloud_field_name,
-                )
+                resolved_cloud_odb_id = _resolve_loaded_odb_id_for_workspace(workspace_path)
+                if not resolved_cloud_odb_id:
+                    cloud_result_warning = {
+                        "code": "BAYESIAN_CLOUD_EXPORT_SKIPPED",
+                        "message": "project workspace is not loaded in the L3 registry; skipped final cloud export",
+                        "project_id": int(project_id),
+                        "workspace": workspace_path,
+                    }
+                else:
+                    cloud_result = _write_bayesian_cloud_result(
+                        odb_id=resolved_cloud_odb_id,
+                        base_url=cloud_export_base_url,
+                        batch_no=resolved_batch_no,
+                        iteration_results=iteration_results,
+                        result_group=cloud_result_group,
+                        step_name=cloud_step_name,
+                        field_name=cloud_field_name,
+                        value_mode=cloud_value_mode,
+                    )
 
         matched_payload = modal_payload.get("matched_payload") or {}
         try:
