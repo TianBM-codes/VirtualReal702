@@ -368,6 +368,183 @@ def _write_subcase_u(h5_abs, inst_name, step_name, bdf_node_labels, aligned_data
         )
 
 
+_STRESS_COMPONENTS = ['MISES']
+_STRESS_HEADER_INDEX = {
+    'oxx': 0, 'sxx': 0, 'xx': 0,
+    'oyy': 1, 'syy': 1, 'yy': 1,
+    'ozz': 2, 'szz': 2, 'zz': 2,
+    'txy': 3, 'sxy': 3, 'xy': 3,
+    'txz': 4, 'tzx': 4, 'sxz': 4, 'szx': 4, 'xz': 4, 'zx': 4,
+    'tyz': 5, 'syz': 5, 'yz': 5,
+}
+_MISES_HEADERS = {'ovm', 'von_mises', 'mises'}
+
+
+def _von_mises(stress):
+    s11, s22, s33, s12, s13, s23 = [stress[..., i] for i in range(6)]
+    return np.sqrt(np.maximum(
+        0.0,
+        0.5 * ((s11 - s22) ** 2 + (s22 - s33) ** 2 + (s33 - s11) ** 2)
+        + 3.0 * (s12 ** 2 + s13 ** 2 + s23 ** 2),
+    ))
+
+
+def _collect_subcase_stress(op2, subcase_id, n_frames):
+    """Extract OES Mises samples, preserving element-node values when available."""
+    result_sets = getattr(getattr(op2, 'op2_results', None), 'stress', None)
+    if result_sets is None:
+        return None
+
+    records = []
+    for table_by_case in vars(result_sets).values():
+        if not isinstance(table_by_case, dict):
+            continue
+        result_obj = table_by_case.get(subcase_id)
+        if result_obj is None or not hasattr(result_obj, 'data'):
+            continue
+        element_node = getattr(result_obj, 'element_node', None)
+        if element_node is None:
+            continue
+        data = np.asarray(result_obj.data)
+        if data.ndim != 3 or data.shape[0] != n_frames or data.shape[2] == 0:
+            continue
+        try:
+            headers = [str(item).lower() for item in result_obj.get_headers()]
+        except Exception:
+            continue
+        if len(headers) != data.shape[2]:
+            continue
+        tensor = np.zeros((n_frames, data.shape[1], 6), dtype=np.float32)
+        found_tensor = False
+        for data_index, header in enumerate(headers):
+            target_index = _STRESS_HEADER_INDEX.get(header)
+            if target_index is not None:
+                tensor[:, :, target_index] = np.real(data[:, :, data_index])
+                found_tensor = True
+        if not found_tensor:
+            continue
+        mises_index = next((i for i, name in enumerate(headers) if name in _MISES_HEADERS), None)
+        mises = (np.abs(np.real(data[:, :, mises_index])) if mises_index is not None
+                 else _von_mises(tensor))
+        eids = np.asarray(element_node)[:, 0].astype(np.int32)
+        nids = np.asarray(element_node)[:, 1].astype(np.int32)
+        records.extend(
+            (int(eid), int(nid), mises[:, row].astype(np.float32))
+            for row, (eid, nid) in enumerate(zip(eids, nids))
+        )
+
+    if not records:
+        return None
+
+    def _max_samples(samples):
+        stacked = np.stack(samples, axis=1)
+        selection = np.argmax(
+            np.where(np.isfinite(stacked), stacked, -np.inf), axis=1)
+        return stacked[np.arange(n_frames), selection]
+
+    by_element_node = {}
+    for eid, nid, values in records:
+        by_element_node.setdefault((eid, nid), []).append(values)
+
+    direct_records = [
+        (eid, nid, _max_samples(samples))
+        for (eid, nid), samples in by_element_node.items()
+        if nid > 0
+    ]
+    direct_eids = {eid for eid, _, _ in direct_records}
+    fallback_by_element = {}
+    for eid, _nid, values in records:
+        if eid not in direct_eids:
+            fallback_by_element.setdefault(eid, []).append(values)
+
+    return {
+        'node_labels': np.asarray([item[1] for item in direct_records], dtype=np.int32),
+        'node_data': np.asarray([item[2] for item in direct_records], dtype=np.float32).T[..., np.newaxis]
+        if direct_records else np.empty((n_frames, 0, 1), dtype=np.float32),
+        'element_labels': np.asarray(sorted(fallback_by_element), dtype=np.int32),
+        'element_data': np.asarray(
+            [_max_samples(fallback_by_element[eid]) for eid in sorted(fallback_by_element)],
+            dtype=np.float32,
+        ).T[..., np.newaxis] if fallback_by_element else np.empty((n_frames, 0, 1), dtype=np.float32),
+    }
+
+
+def _load_element_layout(workspace, geom_path):
+    with h5py.File(os.path.join(workspace, geom_path), 'r') as f:
+        return {
+            etype: {
+                'labels': f['elements/{}/labels'.format(etype)][:],
+                'conn': f['elements/{}/conn'.format(etype)][:],
+            }
+            for etype in f.get('elements', {})
+        }
+
+
+def _write_subcase_s(h5_abs, inst_name, step_name, frame_values, frame_descs,
+                     bdf_node_labels, element_layout, stress_samples):
+    """Write global nodal Mises, preferring direct OES element-node samples."""
+    n_frames = stress_samples['node_data'].shape[0]
+    node_sums = np.zeros((n_frames, len(bdf_node_labels)), dtype=np.float64)
+    node_counts = np.zeros(len(bdf_node_labels), dtype=np.int32)
+    direct_labels = stress_samples['node_labels']
+    if len(direct_labels):
+        direct_rows = np.searchsorted(bdf_node_labels, direct_labels)
+        direct_valid = ((direct_rows < len(bdf_node_labels)) &
+                        (bdf_node_labels[np.clip(direct_rows, 0, len(bdf_node_labels) - 1)] == direct_labels))
+        for frame_index in range(n_frames):
+            np.add.at(node_sums[frame_index], direct_rows[direct_valid],
+                      stress_samples['node_data'][frame_index, direct_valid, 0])
+        np.add.at(node_counts, direct_rows[direct_valid], 1)
+
+    stress_eids = stress_samples['element_labels']
+    stress_data = stress_samples['element_data']
+    for layout in element_layout.values():
+        labels = layout['labels']
+        if len(labels) == 0:
+            continue
+        rows = np.searchsorted(labels, stress_eids)
+        valid = (rows < len(labels)) & (labels[np.clip(rows, 0, len(labels) - 1)] == stress_eids)
+        if not np.any(valid):
+            continue
+        element_nodes = layout['conn'][rows[valid]]
+        values = stress_data[:, valid, 0]
+        for local_node in range(element_nodes.shape[1]):
+            node_rows = element_nodes[:, local_node]
+            node_valid = node_rows >= 0
+            if not np.any(node_valid):
+                continue
+            node_rows = node_rows[node_valid]
+            node_counts[node_rows] += 1
+            for frame_index in range(n_frames):
+                np.add.at(node_sums[frame_index], node_rows, values[frame_index, node_valid])
+
+    has_stress = node_counts > 0
+    if not np.any(has_stress):
+        return [], None, None
+    data = np.full((n_frames, len(bdf_node_labels), 1), np.nan, dtype=np.float32)
+    data[:, has_stress, 0] = (node_sums[:, has_stress] / node_counts[has_stress]).astype(np.float32)
+    finite = data[np.isfinite(data)]
+    value_min = float(finite.min())
+    value_max = float(finite.max())
+    with h5py.File(h5_abs, 'w') as f:
+        mg = f.create_group('meta')
+        mg.create_dataset('step_name', data=step_name.encode())
+        mg.create_dataset('field_name', data=b'S')
+        mg.create_dataset('field_description', data=b'OP2 element stress (max MISES sample)')
+        str_ds(f, 'meta/components', _STRESS_COMPONENTS)
+        str_ds(f, 'meta/invariants', [])
+        fig = f.create_group('frame_index')
+        fig.create_dataset('frame_values', data=np.asarray(frame_values, dtype=np.float64))
+        str_ds(f, 'frame_index/descriptions', frame_descs)
+
+        grp_path = '/NODAL/{}'.format(inst_name)
+        grp = f.require_group(grp_path)
+        grp.create_dataset('labels', data=bdf_node_labels)
+        grp.create_dataset('data', data=data, compression='lzf',
+                           chunks=(1, min(len(bdf_node_labels), 8192), 1))
+    return [(None, '/NODAL/{}'.format(inst_name), len(bdf_node_labels))], value_min, value_max
+
+
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
 def pack(op2_path, workspace, result_group, bdf_path=None):
@@ -383,6 +560,7 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
     print('  Instance: {}'.format(inst_name))
 
     bdf_node_labels = _load_bdf_node_labels(workspace, geom_path)
+    element_layout = _load_element_layout(workspace, geom_path)
     N_bdf = len(bdf_node_labels)
     print('  BDF node count: {}'.format(N_bdf))
 
@@ -457,7 +635,7 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
         print('    CD transform applied to {} node-row(s) across subcases.'.format(
             n_rot_total))
 
-    written_steps = []  # [(step_name, procedure, n_frames, frame_vals, frame_descs, h5_rel)]
+    written_steps = []  # [(step_name, procedure, n_frames, frame_vals, frame_descs, mode_nums, u_h5, s_h5, s_blocks, s_min, s_max)]
 
     for sc_id in sorted(subcases_to_process.keys()):
         result_obj, is_modal = subcases_to_process[sc_id]
@@ -484,14 +662,39 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
         _write_subcase_u(h5_abs, inst_name, step_name, bdf_node_labels, aligned,
                          frame_values, frame_descs)
 
-        written_steps.append((step_name, procedure, n_frames, frame_values, frame_descs, mode_nums, h5_rel))
+        stress_samples = (
+            _collect_subcase_stress(op2, sc_id, n_frames)
+            if len(subcases_to_process) > 1
+            else None
+        )
+        stress_h5_rel = None
+        stress_blocks = []
+        stress_min = stress_max = None
+        if stress_samples is not None:
+            stress_h5_fname = '{}__{}.h5'.format(safe(step_name), 'S')
+            stress_h5_rel = os.path.join('l1', 'results', rg_safe, stress_h5_fname)
+            stress_h5_abs = os.path.join(workspace, stress_h5_rel)
+            stress_blocks, stress_min, stress_max = _write_subcase_s(
+                stress_h5_abs, inst_name, step_name, frame_values, frame_descs,
+                bdf_node_labels, element_layout, stress_samples)
+            if not stress_blocks:
+                os.remove(stress_h5_abs)
+                stress_h5_rel = None
+            else:
+                print('    stress: {} element(s) across {} type(s)'.format(
+                    len(stress_samples['element_labels']), len(stress_blocks)))
+
+        written_steps.append((step_name, procedure, n_frames, frame_values, frame_descs,
+                              mode_nums, h5_rel, stress_h5_rel, stress_blocks,
+                              stress_min, stress_max))
 
     # ── 5. Write manifest.db ──────────────────────────────────────────────────
     print('  Writing manifest.db ...')
     components_json = json.dumps(['U1', 'U2', 'U3', 'USUM'])
     positions_json  = json.dumps(['NODAL'])
 
-    for step_number, (step_name, procedure, n_frames, frame_values, frame_descs, mode_nums, h5_rel) \
+    for step_number, (step_name, procedure, n_frames, frame_values, frame_descs, mode_nums,
+                      h5_rel, stress_h5_rel, stress_blocks, stress_min, stress_max) \
             in enumerate(written_steps):
 
         # steps
@@ -552,6 +755,38 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
              N_bdf,
              None, None),                       # n_ip, n_sp
         )
+
+        if stress_h5_rel:
+            db_conn.execute(
+                "DELETE FROM result_blocks WHERE result_group=? AND step_name=? AND field_name='S'",
+                (result_group, step_name),
+            )
+            db_conn.execute(
+                "INSERT OR REPLACE INTO result_files VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (result_group, step_name, 'S', stress_h5_rel,
+                 json.dumps(_STRESS_COMPONENTS), json.dumps([]),
+                 json.dumps(['NODAL']),
+                 0, stress_min, stress_max, 'nastran'),
+            )
+            for etype, h5_grp_path, n_entities in stress_blocks:
+                db_conn.execute(
+                    "INSERT OR REPLACE INTO result_blocks"
+                    " (result_group, step_name, field_name, instance_name, position,"
+                    "  elem_type, h5_path, label_path, n_entities, n_ip, n_sp)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (result_group, step_name, 'S', inst_name, 'NODAL',
+                     etype, h5_grp_path, h5_grp_path + '/labels', n_entities,
+                     None, None),
+                )
+        else:
+            db_conn.execute(
+                "DELETE FROM result_blocks WHERE result_group=? AND step_name=? AND field_name='S'",
+                (result_group, step_name),
+            )
+            db_conn.execute(
+                "DELETE FROM result_files WHERE result_group=? AND step_name=? AND field_name='S'",
+                (result_group, step_name),
+            )
 
     db_conn.commit()
 

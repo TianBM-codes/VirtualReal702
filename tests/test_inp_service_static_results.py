@@ -265,6 +265,80 @@ def test_import_fe_static_results_from_project_result_uses_latest_frame_and_case
     assert {item["frame"] for item in captured_calls} == {1}
 
 
+def test_import_fe_static_results_from_project_result_imports_all_static_op2_subcases(monkeypatch, tmp_path):
+    _write_project_result_manifest(tmp_path, result_group="rg_static")
+    conn = sqlite3.connect(tmp_path / "manifest.db")
+    for table_name in ("steps", "frames", "result_files", "result_blocks"):
+        conn.execute(
+            f"UPDATE {table_name} SET step_name = CASE step_name "
+            "WHEN 'Step-1' THEN 'SUBCASE_1' WHEN 'Step-2' THEN 'SUBCASE_2' END"
+        )
+    conn.commit()
+    conn.close()
+
+    fake_conn = _FakeConnection()
+    captured_steps = []
+
+    def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None,
+                       component_index=None, result_group=None):
+        captured_steps.append((step, component, frame))
+        value_by_step = {"SUBCASE_1": 1.0, "SUBCASE_2": 2.0}
+        return {"PART-1-1::1001": value_by_step[step]}
+
+    monkeypatch.setattr(fem_result_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(fem_result_service, "get_connection", lambda: fake_conn)
+    monkeypatch.setattr(fem_result_service, "_registry_repo", lambda: _FakeRegistryRepo(str(tmp_path)))
+    monkeypatch.setattr(fem_result_service._sens, "_workspace_result_label_map", fake_label_map)
+
+    result = fem_result_service.import_fe_static_results_from_project_result(
+        project_id=101,
+        result_group="rg_static",
+        load_case_no=7,
+    )
+
+    delete_calls = [
+        params
+        for sql, params in fake_conn.cursor_obj.executed
+        if "DELETE FROM t_mt_py_fem_static_result WHERE pid = %s AND load_case_no = %s" in sql
+    ]
+    insert_params = [
+        params
+        for sql, params in fake_conn.cursor_obj.executed
+        if "INSERT INTO t_mt_py_fem_static_result" in sql
+    ]
+
+    assert fake_conn.committed is True
+    assert delete_calls == [(101, 7), (101, 8)]
+    assert [params[1] for params in insert_params] == [7, 8]
+    assert [params[5] for params in insert_params] == [1.0, 2.0]
+    assert result["load_case_nos"] == [7, 8]
+    assert result["row_count"] == 2
+    assert result["subcases"] == [
+        {
+            "step_name": "SUBCASE_1",
+            "load_case_no": 7,
+            "frame_idx": 1,
+            "instances": ["PART-1-1"],
+            "row_count": 1,
+        },
+        {
+            "step_name": "SUBCASE_2",
+            "load_case_no": 8,
+            "frame_idx": 0,
+            "instances": ["PART-1-1"],
+            "row_count": 1,
+        },
+    ]
+    assert set(captured_steps) == {
+        ("SUBCASE_1", "U1", 1),
+        ("SUBCASE_1", "U2", 1),
+        ("SUBCASE_1", "U3", 1),
+        ("SUBCASE_2", "U1", 0),
+        ("SUBCASE_2", "U2", 0),
+        ("SUBCASE_2", "U3", 0),
+    }
+
+
 def test_list_project_result_steps_returns_step_frame_and_field_catalog(monkeypatch, tmp_path):
     _write_project_result_manifest(tmp_path, result_group="rg_static")
 
