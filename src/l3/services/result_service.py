@@ -4,6 +4,7 @@ Frame-color / frame-scalar computation:
 
 Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT
 """
+import hashlib
 import logging
 import math
 import os
@@ -104,12 +105,155 @@ def _range_cache_put(key: tuple, value) -> None:
 
 
 def clear_result_caches() -> None:
-    """清空结果缓存（测试与运维用）。"""
+    """清空内存结果缓存（测试与运维用）。磁盘缓存不动，删工作区即删。"""
     global _VERTEX_CACHE_BYTES
     with _CACHE_LOCK:
         _VERTEX_CACHE.clear()
         _RANGE_CACHE.clear()
         _VERTEX_CACHE_BYTES = 0
+
+
+# ─── Disk layer of the result cache (write-through, per workspace) ───────────
+# 同一模型的 L1 结果不可变 → 算过的 scalar_vertex / 图例范围落盘到
+# <workspace>/l3_cache/ 下（scalars/*.npz 大数组、ranges/*.json 小结果），
+# 重启后、以及 gunicorn 多 worker 之间都能直接复用。文件名 = 缓存 key 的
+# sha1（key 已含结果文件 mtime+size 签名，重写自动失效，旧文件被容量淘汰）。
+# 写入用 临时文件 + os.replace 原子改名，多进程并发写同一 key 也安全；
+# 这是 "L3 只写 manifest.db" 约定的唯一例外，目录随工作区删除一并清理。
+
+def _disk_cache_root(workspace: str) -> str:
+    return os.path.join(workspace, "l3_cache")
+
+
+def _disk_key_name(key: tuple) -> str:
+    return hashlib.sha1(repr(key).encode("utf-8")).hexdigest()
+
+
+def _evict_scalar_disk(scalars_dir: str, cap_bytes: int) -> None:
+    """按 mtime 从旧到新删除 .npz，直到目录总大小不超过 cap。"""
+    try:
+        entries = []
+        total = 0
+        with os.scandir(scalars_dir) as it:
+            for e in it:
+                if not e.name.endswith(".npz"):
+                    continue
+                st = e.stat()
+                entries.append((st.st_mtime_ns, st.st_size, e.path))
+                total += st.st_size
+        if total <= cap_bytes:
+            return
+        entries.sort()
+        for _, size, path in entries:
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+            total -= size
+            if total <= cap_bytes:
+                break
+    except OSError:
+        pass
+
+
+def _vertex_disk_get(workspace: str, key: tuple) -> Optional[tuple]:
+    if settings.scalar_disk_cache_mb <= 0:
+        return None
+    path = os.path.join(_disk_cache_root(workspace), "scalars",
+                        _disk_key_name(key) + ".npz")
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            scalar_vertex = z["scalar_vertex"]
+            gr = z["global_range"]
+            global_range = (float(gr[0]), float(gr[1])) if gr.size == 2 else None
+            result_position = bytes(z["result_position"][()]).decode("ascii")
+            nf = int(z["num_frames"][()])
+            num_frames = None if nf < 0 else nf
+    except FileNotFoundError:
+        return None
+    except Exception:
+        # 损坏/半截文件：删掉当没有
+        logger.warning("scalar disk cache: dropping unreadable entry %s", path)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    try:
+        os.utime(path)   # LRU 触碰
+    except OSError:
+        pass
+    scalar_vertex.setflags(write=False)
+    return scalar_vertex, global_range, result_position, num_frames
+
+
+def _vertex_disk_put(workspace: str, key: tuple, value: tuple) -> None:
+    cap = settings.scalar_disk_cache_mb * 1024 * 1024
+    if cap <= 0:
+        return
+    scalar_vertex, global_range, result_position, num_frames = value
+    if int(scalar_vertex.nbytes) > cap:
+        return
+    scalars_dir = os.path.join(_disk_cache_root(workspace), "scalars")
+    path = os.path.join(scalars_dir, _disk_key_name(key) + ".npz")
+    if os.path.exists(path):
+        return
+    try:
+        os.makedirs(scalars_dir, exist_ok=True)
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "wb") as fh:
+            np.savez(
+                fh,
+                scalar_vertex=scalar_vertex,
+                global_range=(np.asarray(global_range, dtype=np.float64)
+                              if global_range is not None
+                              else np.zeros(0, dtype=np.float64)),
+                result_position=np.array(result_position.encode("ascii")),
+                num_frames=np.array(
+                    -1 if num_frames is None else int(num_frames), dtype=np.int64),
+            )
+        os.replace(tmp, path)
+    except OSError:
+        logger.warning("scalar disk cache: write failed for %s", path, exc_info=True)
+        return
+    _evict_scalar_disk(scalars_dir, cap)
+
+
+def _range_disk_get(workspace: str, key: tuple):
+    """命中返回缓存值（可能是 None），未命中返回 _CACHE_MISS。"""
+    if settings.scalar_disk_cache_mb <= 0:
+        return _CACHE_MISS
+    path = os.path.join(_disk_cache_root(workspace), "ranges",
+                        _disk_key_name(key) + ".json")
+    try:
+        with open(path, "r", encoding="ascii") as fh:
+            v = json.load(fh)["v"]
+    except FileNotFoundError:
+        return _CACHE_MISS
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return _CACHE_MISS
+    return None if v is None else (float(v[0]), float(v[1]))
+
+
+def _range_disk_put(workspace: str, key: tuple, value) -> None:
+    if settings.scalar_disk_cache_mb <= 0:
+        return
+    ranges_dir = os.path.join(_disk_cache_root(workspace), "ranges")
+    path = os.path.join(ranges_dir, _disk_key_name(key) + ".json")
+    if os.path.exists(path):
+        return
+    try:
+        os.makedirs(ranges_dir, exist_ok=True)
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="ascii") as fh:
+            json.dump({"v": None if value is None else [float(value[0]), float(value[1])]}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 # ─── Generic component extraction ────────────────────────────────────────────
@@ -813,6 +957,10 @@ def compute_scalar_range(
         hit = _range_cache_get(range_key)
         if hit is not _CACHE_MISS:
             return hit
+        hit = _range_disk_get(idx.workspace, range_key)
+        if hit is not _CACHE_MISS:
+            _range_cache_put(range_key, hit)        # 磁盘命中 → 提升到内存层
+            return hit
 
     result_range = _scalar_range_from_h5(
         h5_path=h5_path,
@@ -826,6 +974,7 @@ def compute_scalar_range(
     )
     if h5_sig is not None:
         _range_cache_put(range_key, result_range)
+        _range_disk_put(idx.workspace, range_key, result_range)
     return result_range
 
 
@@ -1003,6 +1152,10 @@ def frame_scalars(
         bool(use_geometry_split),
     )
     cached = _vertex_cache_get(vertex_key) if h5_sig is not None else None
+    if cached is None and h5_sig is not None:
+        cached = _vertex_disk_get(idx.workspace, vertex_key)
+        if cached is not None:
+            _vertex_cache_put(vertex_key, cached)   # 磁盘命中 → 提升到内存层
     if cached is not None:
         scalar_vertex, global_range, result_position, num_frames = cached
     else:
@@ -1128,10 +1281,9 @@ def frame_scalars(
             # 缓存的数组会被多个请求共享：置为只读，下游只允许整体重新赋值
             # （set 过滤 / 归一化都是产生新数组，不做原地修改）。
             scalar_vertex.setflags(write=False)
-            _vertex_cache_put(
-                vertex_key,
-                (scalar_vertex, global_range, result_position, num_frames),
-            )
+            value = (scalar_vertex, global_range, result_position, num_frames)
+            _vertex_cache_put(vertex_key, value)
+            _vertex_disk_put(idx.workspace, vertex_key, value)
 
     if scalar_vertex is None:
         logger.warning(

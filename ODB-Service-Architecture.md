@@ -146,7 +146,7 @@
 
 **明确不做**：服务端三角化 / 几何计算 / 渲染
 
-**结果缓存（进程内 LRU）**：frame-scalars 归一化前的 scalar_vertex 与图例范围按（结果文件 mtime+size、instance、帧、分量、渲染参数）缓存，上限 `APP_SCALAR_CACHE_MB`（默认 512MB/worker，0=关闭）；结果文件被重写（外部字段/result_group 重新解析）即签名变化、自动失效
+**结果缓存（两级 + 预热）**：frame-scalars 归一化前的 scalar_vertex 与图例范围按（结果文件 mtime+size、instance、帧、分量、渲染参数）缓存——进程内 LRU（`APP_SCALAR_CACHE_MB`，默认 512MB/worker）+ 工作区磁盘 `<workspace>/l3_cache/`（`APP_SCALAR_DISK_CACHE_MB`，默认 2048MB/工作区，原子写、按 mtime LRU 淘汰，重启不丢、多 worker 共享；此目录是"L3 只写 manifest.db"约定的唯一例外，随工作区删除）。结果文件被重写（外部字段/result_group 重新解析）即签名变化、自动失效。模型加载完成 / poll 发现新 result_group 就绪时，后台预热第 0 帧默认视图（每 result_group×step×field×instance，`APP_WARMUP=0` 关闭自动，手动 `POST /api/odb/{odb_id}/results/warmup`）
 
 ---
 

@@ -89,6 +89,20 @@ class Settings:
         # invalidates automatically. 0 = disable result caching entirely.
         self.scalar_cache_mb = max(0, int(_get(cfg, "APP_SCALAR_CACHE_MB", "512")))
 
+        # Disk layer of the result-scalar cache: computed scalars are also
+        # persisted under <workspace>/l3_cache/ so they survive restarts and are
+        # shared across worker processes. Cap is per workspace, evicted oldest-
+        # mtime-first. 0 = memory-only caching.
+        self.scalar_disk_cache_mb = max(
+            0, int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "2048")))
+
+        # Cache warm-up: automatically precompute frame-0 default views (every
+        # field × instance, magnitude component) in a background thread when a
+        # model finishes loading or a new result_group becomes ready, so the
+        # first click hits a warm cache. 0 = no automatic warm-up (the manual
+        # POST /results/warmup endpoint still works).
+        self.enable_warmup = _get(cfg, "APP_WARMUP", "1") == "1"
+
         # Embedded runner: run L1+L2 job pipeline as a daemon thread inside
         # the web process.  Default: ON on Linux/macOS, OFF on Windows.
         # On Windows, numpy/MKL (Intel Fortran runtime) conflicts with
@@ -129,7 +143,9 @@ def log_startup_config() -> None:
         f"  max_loaded_projects: {settings.max_loaded_projects}   (LRU cap)",
         f"  log_level         : {settings.log_level}",
         f"  enable_gzip       : {settings.enable_gzip}",
-        f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (0 = off)",
+        f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (RAM, 0 = off)",
+        f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off)",
+        f"  enable_warmup     : {settings.enable_warmup}",
     ]
     if settings.odb_workspace:
         lines.append(f"  [DEV] odb_workspace: {settings.odb_workspace}")

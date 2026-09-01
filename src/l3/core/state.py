@@ -11,6 +11,29 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
+# Callback fired after a render-ready ModelIndex finishes loading (materialize
+# or upgrade). Set by the web app at startup (cache warm-up); stays None in
+# other contexts (job_runner, tests). Must be cheap/non-blocking — callers may
+# hold the per-odb load lock.
+_on_render_ready_loaded = None
+
+
+def set_on_render_ready_loaded(callback) -> None:
+    """callback(odb_id) — 由 main.py 在启动时注册（缓存预热）。"""
+    global _on_render_ready_loaded
+    _on_render_ready_loaded = callback
+
+
+def _fire_render_ready(odb_id: str) -> None:
+    cb = _on_render_ready_loaded
+    if cb is None:
+        return
+    try:
+        cb(odb_id)
+    except Exception:
+        logger.exception("on_render_ready_loaded callback failed for %s", odb_id)
+
+
 # Thrash detection: an ODB evicted and then reloaded within this window means
 # the active set is larger than the cap, so the LRU is buying nothing.
 _THRASH_WINDOW_S = 300.0
@@ -262,6 +285,8 @@ class OdbRegistry:
                 self.loaded.move_to_end(odb_id)
                 self._note_reload_locked(odb_id)
                 self._evict_locked()
+            if idx.is_render_ready:
+                _fire_render_ready(odb_id)
             return idx
 
     def _evict_locked(self) -> None:
@@ -352,6 +377,7 @@ class OdbRegistry:
         idx.load_l2_render_data()       # IO outside lock
         with self._lock:
             idx.is_render_ready = True
+        _fire_render_ready(odb_id)
 
     def unload(self, odb_id: str):
         """

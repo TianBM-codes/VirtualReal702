@@ -200,6 +200,8 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
     # needs to become *reachable*, and the first request for it pays the load.
     # peek() rather than get() — get() would pull every project back into RAM
     # on every tick and defeat the LRU cap.
+    from .services.warmup_service import maybe_warm_new_targets
+
     for row in repo.list_ready_or_l1done():
         odb_id = row["odb_id"]
         status = row["status"]
@@ -209,6 +211,8 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         if existing is not None and status == "ready" and not existing.is_render_ready:
             registry.upgrade(odb_id)
             logger.info("Poll: upgraded ODB %s to render-ready", odb_id)
+        if settings.enable_warmup and existing is not None:
+            maybe_warm_new_targets(odb_id)
 
     for row in repo.list_projects():
         if row["geom_status"] != "ready":
@@ -224,6 +228,11 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         source_type = row["source_type"] if "source_type" in row.keys() else "inp"
         if source_type == "odb" and not repo.list_result_groups(project_id):
             _migrate_legacy_odb_results(repo, only_project_id=project_id)
+        # 常驻项目出现新解析完的 result_group → 后台预热新增字段（幂等）。
+        # 覆盖 Windows 双进程部署：job_runner 在另一进程解析完，本进程靠
+        # poll 发现 result_files 变化。
+        if settings.enable_warmup and existing is not None:
+            maybe_warm_new_targets(project_id)
 
 
 def _poll_loop(repo: RegistryRepo) -> None:
@@ -254,6 +263,12 @@ def _start_poll_thread() -> None:
 async def lifespan(app: FastAPI):
     from .core.config import log_startup_config
     log_startup_config()
+    if settings.enable_warmup:
+        # 在 bootstrap 之前注册，启动预载的模型也会触发预热
+        from .core.state import set_on_render_ready_loaded
+        from .services.warmup_service import warm_odb_async
+        set_on_render_ready_loaded(
+            lambda odb_id: warm_odb_async(odb_id, reason="model loaded"))
     _t0 = time.perf_counter()
     _bootstrap_registry()
     logger.info("Registry bootstrap finished in %.2fs", time.perf_counter() - _t0)
