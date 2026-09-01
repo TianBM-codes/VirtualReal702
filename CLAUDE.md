@@ -147,7 +147,7 @@ Job lifecycle tracked in manifest: `submitted → l1_running → l1_done → l2_
 - **No Abaqus at runtime:** L1 extraction requires Abaqus Python 2.7; L2/L3 use standard Python 3 only.
 - **Concurrent safety:** HDF5/SQLite are single-writer. Job runner (L1/L2) is a separate process from the L3 web service; multiple L3 Gunicorn workers can read in parallel (HDF5 is multi-reader safe). User sets stored as compressed BLOBs in SQLite to avoid HDF5 multi-process write conflicts.
 - **Memory model:** L3 loads 2–3 active ODB workspaces (~2 GB each); Gunicorn workers share static numpy indices via copy-on-write fork.
-- **No result caching in L3:** Reads directly from L1 HDF5 each request.
+- **Result caching in L3 (per worker LRU):** frame-scalars 归一化前的 scalar_vertex 与图例范围按 (结果文件 mtime+size, instance, 帧, 分量, 渲染参数) 做进程内 LRU 缓存（`APP_SCALAR_CACHE_MB`，默认 512MB，0=关闭）；结果文件被重写即自动失效。set 过滤 / override 归一化不缓存，仍按请求执行。
 
 ## Model Update Service（模型修正主线）
 

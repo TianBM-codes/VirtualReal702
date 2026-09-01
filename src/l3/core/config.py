@@ -83,6 +83,12 @@ class Settings:
         # Compression: APP_ENABLE_GZIP=1 — wrap all responses with HTTP gzip
         self.enable_gzip = _get(cfg, "APP_ENABLE_GZIP", "0") == "1"
 
+        # Result-scalar LRU cache cap (MB, per worker process). frame-scalars /
+        # frame-scalar-range cache computed per-vertex scalars and legend ranges
+        # keyed by the result file's (mtime, size), so a rewritten result file
+        # invalidates automatically. 0 = disable result caching entirely.
+        self.scalar_cache_mb = max(0, int(_get(cfg, "APP_SCALAR_CACHE_MB", "512")))
+
         # Embedded runner: run L1+L2 job pipeline as a daemon thread inside
         # the web process.  Default: ON on Linux/macOS, OFF on Windows.
         # On Windows, numpy/MKL (Intel Fortran runtime) conflicts with
@@ -123,6 +129,7 @@ def log_startup_config() -> None:
         f"  max_loaded_projects: {settings.max_loaded_projects}   (LRU cap)",
         f"  log_level         : {settings.log_level}",
         f"  enable_gzip       : {settings.enable_gzip}",
+        f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (0 = off)",
     ]
     if settings.odb_workspace:
         lines.append(f"  [DEV] odb_workspace: {settings.odb_workspace}")

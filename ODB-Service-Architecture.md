@@ -144,7 +144,9 @@
 - **pick 查询**：`render_face_idx → source_elem_row` → L1 element 信息
 - **用户集合**：`user_sets + user_set_instances` 两表，按 instance 分片存储 BLOB（zlib 压缩 int32），支持跨 Instance 集合，避免 HDF5 多进程写冲突
 
-**明确不做**：服务端三角化 / 几何计算 / 渲染 / 缓存 HDF5 结果文件
+**明确不做**：服务端三角化 / 几何计算 / 渲染
+
+**结果缓存（进程内 LRU）**：frame-scalars 归一化前的 scalar_vertex 与图例范围按（结果文件 mtime+size、instance、帧、分量、渲染参数）缓存，上限 `APP_SCALAR_CACHE_MB`（默认 512MB/worker，0=关闭）；结果文件被重写（外部字段/result_group 重新解析）即签名变化、自动失效
 
 ---
 

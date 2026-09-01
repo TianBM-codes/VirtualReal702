@@ -9,11 +9,14 @@ import math
 import os
 import re
 import json
+import threading
+from collections import OrderedDict
 from typing import Dict, Literal, Optional, Tuple
 
 import h5py
 import numpy as np
 
+from ..core.config import settings
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.colormap import apply_jet, apply_jet_with_neutral
@@ -23,6 +26,90 @@ from src.l1.manifest_schema import canon_instance
 logger = logging.getLogger(__name__)
 
 Component = Literal["U1", "U2", "U3"]
+
+
+# ─── Result caches (per worker process) ──────────────────────────────────────
+# 大模型下 frame-scalars / frame-scalar-range 的重计算结果缓存：
+#   _VERTEX_CACHE: frame_scalars 归一化前的 scalar_vertex 大数组，按总字节数 LRU
+#                  淘汰（上限 APP_SCALAR_CACHE_MB，默认 512MB，0 = 全部关闭）。
+#   _RANGE_CACHE:  图例范围等小结果（(min,max) 元组），按条数 LRU 淘汰。
+# 所有 key 都含结果文件的 (mtime_ns, size)：文件被重写（外部字段重新导入、
+# result_group 重新解析）后签名变化，旧条目自然失效并被 LRU 挤出。
+# 缓存是进程内的（gunicorn 多 worker 各一份），读写加锁保证线程安全。
+# 缓存中的数组是共享对象：写入前置为只读，下游只允许整体重新赋值。
+
+_VERTEX_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_VERTEX_CACHE_BYTES = 0
+_RANGE_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+_RANGE_CACHE_MAX = 4096
+_CACHE_LOCK = threading.Lock()
+_CACHE_MISS = object()
+
+
+def _result_h5_sig(h5_path: str) -> Optional[Tuple[int, int]]:
+    """结果文件的 (mtime_ns, size) 签名；文件不可 stat 时返回 None（不缓存）。"""
+    try:
+        st = os.stat(h5_path)
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
+
+
+def _vertex_cache_cap_bytes() -> int:
+    return settings.scalar_cache_mb * 1024 * 1024
+
+
+def _vertex_cache_get(key: tuple):
+    with _CACHE_LOCK:
+        item = _VERTEX_CACHE.get(key)
+        if item is not None:
+            _VERTEX_CACHE.move_to_end(key)
+        return item
+
+
+def _vertex_cache_put(key: tuple, value: tuple) -> None:
+    global _VERTEX_CACHE_BYTES
+    cap = _vertex_cache_cap_bytes()
+    nbytes = int(value[0].nbytes)
+    if cap <= 0 or nbytes > cap:
+        return
+    with _CACHE_LOCK:
+        old = _VERTEX_CACHE.pop(key, None)
+        if old is not None:
+            _VERTEX_CACHE_BYTES -= int(old[0].nbytes)
+        _VERTEX_CACHE[key] = value
+        _VERTEX_CACHE_BYTES += nbytes
+        while _VERTEX_CACHE_BYTES > cap and _VERTEX_CACHE:
+            _, evicted = _VERTEX_CACHE.popitem(last=False)
+            _VERTEX_CACHE_BYTES -= int(evicted[0].nbytes)
+
+
+def _range_cache_get(key: tuple):
+    """命中返回缓存值（可能是 None），未命中返回 _CACHE_MISS。"""
+    with _CACHE_LOCK:
+        if key in _RANGE_CACHE:
+            _RANGE_CACHE.move_to_end(key)
+            return _RANGE_CACHE[key]
+        return _CACHE_MISS
+
+
+def _range_cache_put(key: tuple, value) -> None:
+    if _vertex_cache_cap_bytes() <= 0:   # APP_SCALAR_CACHE_MB=0 关闭全部结果缓存
+        return
+    with _CACHE_LOCK:
+        _RANGE_CACHE[key] = value
+        _RANGE_CACHE.move_to_end(key)
+        while len(_RANGE_CACHE) > _RANGE_CACHE_MAX:
+            _RANGE_CACHE.popitem(last=False)
+
+
+def clear_result_caches() -> None:
+    """清空结果缓存（测试与运维用）。"""
+    global _VERTEX_CACHE_BYTES
+    with _CACHE_LOCK:
+        _VERTEX_CACHE.clear()
+        _RANGE_CACHE.clear()
+        _VERTEX_CACHE_BYTES = 0
 
 
 # ─── Generic component extraction ────────────────────────────────────────────
@@ -714,6 +801,46 @@ def compute_scalar_range(
     _manifest = ManifestRepo(idx.workspace)
     geom_h5_path = _manifest.get_geom_path(instance)
 
+    # 无 set 的范围只由结果文件版本 + (instance, 帧, 分量, 阈值) 决定，整体缓存；
+    # 前端逐帧/切分量反复询问范围时不再重读 H5。
+    h5_sig = _result_h5_sig(h5_path)
+    range_key = (
+        "scalar_range", odb_id, instance, h5_path, h5_sig, int(frame_idx),
+        None if component_idx is None else int(component_idx),
+        float(average_threshold),
+    )
+    if h5_sig is not None:
+        hit = _range_cache_get(range_key)
+        if hit is not _CACHE_MISS:
+            return hit
+
+    result_range = _scalar_range_from_h5(
+        h5_path=h5_path,
+        instance=instance,
+        frame_idx=frame_idx,
+        component_idx=component_idx,
+        src_etype=src_etype,
+        src_elem_row=src_elem_row,
+        geom_h5_path=geom_h5_path,
+        average_threshold=average_threshold,
+    )
+    if h5_sig is not None:
+        _range_cache_put(range_key, result_range)
+    return result_range
+
+
+def _scalar_range_from_h5(
+    *,
+    h5_path: str,
+    instance: str,
+    frame_idx: int,
+    component_idx: Optional[int],
+    src_etype: Optional[np.ndarray],
+    src_elem_row: Optional[np.ndarray],
+    geom_h5_path: Optional[str],
+    average_threshold: float,
+) -> Optional[Tuple[float, float]]:
+    """compute_scalar_range 无 set 路径的计算主体（原 with 块原样搬出以便缓存）。"""
     with h5py.File(h5_path, "r") as f:
 
         # ── NODAL ────────────────────────────────────────────────────────────
@@ -864,123 +991,147 @@ def frame_scalars(
     result_position = "NODAL"
     global_range = None   # (val_min, val_max) from full model; set per code-path below
 
-    with h5py.File(h5_path, "r") as f:
+    # 归一化前的 scalar_vertex 只由 (结果文件版本, instance, 帧, 分量, 渲染参数)
+    # 决定，与 set 过滤 / override 无关 → 在这里缓存，命中时跳过整个 H5 读取与
+    # 条件平均；set 过滤和归一化仍在缓存之后按本次请求参数执行。
+    h5_sig = _result_h5_sig(h5_path)
+    fa_cache_key = None if feature_angle is None else round(float(feature_angle), 4)
+    vertex_key = (
+        "frame_scalars", odb_id, instance, h5_path, h5_sig, int(frame_idx),
+        None if component_idx is None else int(component_idx),
+        effective_render_mode, fa_cache_key, float(average_threshold),
+        bool(use_geometry_split),
+    )
+    cached = _vertex_cache_get(vertex_key) if h5_sig is not None else None
+    if cached is not None:
+        scalar_vertex, global_range, result_position, num_frames = cached
+    else:
+        with h5py.File(h5_path, "r") as f:
 
-        # ── NODAL ────────────────────────────────────────────────────────────
-        result = _scalar_nodal_by_idx(f, instance, frame_idx, component_idx)
-        if result is not None:
-            scalar_node, num_frames = result
-            scalar_node = _expand_sparse_nodal_to_geometry_rows(
-                f=f,
-                instance=instance,
-                scalar_node=scalar_node,
-                workspace=idx.workspace,
-            )
-            result_position = "NODAL"
+            # ── NODAL ────────────────────────────────────────────────────────────
+            result = _scalar_nodal_by_idx(f, instance, frame_idx, component_idx)
+            if result is not None:
+                scalar_node, num_frames = result
+                scalar_node = _expand_sparse_nodal_to_geometry_rows(
+                    f=f,
+                    instance=instance,
+                    scalar_node=scalar_node,
+                    workspace=idx.workspace,
+                )
+                result_position = "NODAL"
 
-            # Extend sparse NODAL fields so indexing always succeeds
-            max_node_row = int(src_node_rows.max()) if src_node_rows.size else 0
-            if max_node_row >= len(scalar_node):
-                extended = np.full(max_node_row + 1, np.nan, dtype=np.float32)
-                extended[:len(scalar_node)] = scalar_node
-                scalar_node = extended
+                # Extend sparse NODAL fields so indexing always succeeds
+                max_node_row = int(src_node_rows.max()) if src_node_rows.size else 0
+                if max_node_row >= len(scalar_node):
+                    extended = np.full(max_node_row + 1, np.nan, dtype=np.float32)
+                    extended[:len(scalar_node)] = scalar_node
+                    scalar_node = extended
 
-            # Global range from ALL nodes (nanmin/nanmax ignores the NaN fill above)
-            finite_nodes = scalar_node[np.isfinite(scalar_node)]
-            if finite_nodes.size > 0:
-                global_range = (float(finite_nodes.min()), float(finite_nodes.max()))
+                # Global range from ALL nodes (nanmin/nanmax ignores the NaN fill above)
+                finite_nodes = scalar_node[np.isfinite(scalar_node)]
+                if finite_nodes.size > 0:
+                    global_range = (float(finite_nodes.min()), float(finite_nodes.max()))
 
-            if effective_render_mode == "flat" and src_elem_row is not None:
-                # Per-element average of node values
-                face_node_vals = scalar_node[src_node_rows]   # [Nt, 3]
-                face_vals = face_node_vals.mean(axis=1)        # [Nt]
-                if src_etype is not None:
-                    _, et_idx = np.unique(src_etype, return_inverse=True)
-                    max_er = int(src_elem_row.max()) + 1
-                    composite = et_idx.astype(np.int64) * max_er + src_elem_row.astype(np.int64)
+                if effective_render_mode == "flat" and src_elem_row is not None:
+                    # Per-element average of node values
+                    face_node_vals = scalar_node[src_node_rows]   # [Nt, 3]
+                    face_vals = face_node_vals.mean(axis=1)        # [Nt]
+                    if src_etype is not None:
+                        _, et_idx = np.unique(src_etype, return_inverse=True)
+                        max_er = int(src_elem_row.max()) + 1
+                        composite = et_idx.astype(np.int64) * max_er + src_elem_row.astype(np.int64)
+                    else:
+                        composite = src_elem_row.astype(np.int64)
+                    _, inverse = np.unique(composite, return_inverse=True)
+                    n_groups = int(inverse.max()) + 1
+                    elem_sum = np.zeros(n_groups, dtype=np.float64)
+                    np.add.at(elem_sum, inverse, face_vals)
+                    elem_cnt = np.bincount(inverse, minlength=n_groups).astype(np.float64)
+                    elem_mean = (elem_sum / np.where(elem_cnt > 0, elem_cnt, 1)).astype(np.float32)
+                    if vtx_ti is not None:
+                        scalar_vertex = elem_mean[inverse[vtx_ti]]  # [Nv] indexed
+                    else:
+                        scalar_vertex = np.repeat(elem_mean[inverse], 3)  # [Nt*3] soup
+                elif vtx_nr is not None:
+                    scalar_vertex = scalar_node[vtx_nr]            # [Nv] indexed smooth
                 else:
-                    composite = src_elem_row.astype(np.int64)
-                _, inverse = np.unique(composite, return_inverse=True)
-                n_groups = int(inverse.max()) + 1
-                elem_sum = np.zeros(n_groups, dtype=np.float64)
-                np.add.at(elem_sum, inverse, face_vals)
-                elem_cnt = np.bincount(inverse, minlength=n_groups).astype(np.float64)
-                elem_mean = (elem_sum / np.where(elem_cnt > 0, elem_cnt, 1)).astype(np.float32)
-                if vtx_ti is not None:
-                    scalar_vertex = elem_mean[inverse[vtx_ti]]  # [Nv] indexed
-                else:
-                    scalar_vertex = np.repeat(elem_mean[inverse], 3)  # [Nt*3] soup
-            elif vtx_nr is not None:
-                scalar_vertex = scalar_node[vtx_nr]            # [Nv] indexed smooth
-            else:
-                # soup smooth：稀疏场对"部分角点无数据"的三角形整体置灰，
-                # 避免接触面颜色沿共享节点溢出到侧面（global_range 已在上面
-                # 按节点级算好，掩蔽不影响图例）。
-                scalar_vertex = _mask_partial_nan_triangles_soup(
-                    scalar_node[src_node_rows.ravel()])         # [Nt*3] soup smooth
+                    # soup smooth：稀疏场对"部分角点无数据"的三角形整体置灰，
+                    # 避免接触面颜色沿共享节点溢出到侧面（global_range 已在上面
+                    # 按节点级算好，掩蔽不影响图例）。
+                    scalar_vertex = _mask_partial_nan_triangles_soup(
+                        scalar_node[src_node_rows.ravel()])         # [Nt*3] soup smooth
 
-        # ── ELEMENT_NODAL (per-local-node with domain averaging) ─────────
-        if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
-            local_node_idx = idx.source_local_node_idx.get(instance)
-            render_idx     = idx.render_indices.get(instance)
-            avd            = idx.averaging_data.get(instance)
+            # ── ELEMENT_NODAL (per-local-node with domain averaging) ─────────
+            if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
+                local_node_idx = idx.source_local_node_idx.get(instance)
+                render_idx     = idx.render_indices.get(instance)
+                avd            = idx.averaging_data.get(instance)
 
-            if (effective_render_mode != "flat"
-                    and local_node_idx is not None and render_idx is not None
-                    and avd is not None and vtx_nr is not None):
-                fa = feature_angle if use_geometry_split else None
-                domain_id = _get_domain_ids(idx, instance, fa)
-                if domain_id is not None:
-                    en_result = _en_per_vertex_averaged(
-                        f, instance, frame_idx, component_idx,
+                if (effective_render_mode != "flat"
+                        and local_node_idx is not None and render_idx is not None
+                        and avd is not None and vtx_nr is not None):
+                    fa = feature_angle if use_geometry_split else None
+                    domain_id = _get_domain_ids(idx, instance, fa)
+                    if domain_id is not None:
+                        en_result = _en_per_vertex_averaged(
+                            f, instance, frame_idx, component_idx,
+                            src_etype, src_elem_row,
+                            local_node_idx, vtx_nr, render_idx,
+                            domain_id,
+                            avd["elem_etype"], avd["elem_row"],
+                            average_threshold=average_threshold,
+                        )
+                        if en_result is not None:
+                            scalar_vertex, num_frames, global_range = en_result
+                            result_position = "ELEMENT_NODAL"
+
+                # Flat fallback if averaging data not available
+                if scalar_vertex is None:
+                    result = _scalar_elem_pos_by_idx(
+                        f, "ELEMENT_NODAL", instance, frame_idx, component_idx,
                         src_etype, src_elem_row,
-                        local_node_idx, vtx_nr, render_idx,
-                        domain_id,
-                        avd["elem_etype"], avd["elem_row"],
-                        average_threshold=average_threshold,
                     )
-                    if en_result is not None:
-                        scalar_vertex, num_frames, global_range = en_result
-                        result_position = "ELEMENT_NODAL"
+                    if result is not None:
+                        scalar_face, num_frames, global_range = result
+                        result_position = "ELEMENT_NODAL_FLAT"
+                        if vtx_ti is not None:
+                            scalar_vertex = scalar_face[vtx_ti]     # [Nv] indexed
+                        else:
+                            scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
-            # Flat fallback if averaging data not available
-            if scalar_vertex is None:
+            # ── All-element global range for ELEMENT_NODAL paths ────────────
+            # Override surface-only range with full-model averaged range using
+            # section_id from geometry H5 (all elements including interior).
+            if result_position.startswith("ELEMENT_NODAL") and geom_h5_path is not None:
+                all_range = _compute_en_global_range(
+                    f, geom_h5_path, instance, frame_idx, component_idx,
+                    average_threshold,
+                )
+                if all_range is not None:
+                    global_range = all_range
+
+            # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
+            if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
                 result = _scalar_elem_pos_by_idx(
-                    f, "ELEMENT_NODAL", instance, frame_idx, component_idx,
+                    f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
                     src_etype, src_elem_row,
                 )
                 if result is not None:
                     scalar_face, num_frames, global_range = result
-                    result_position = "ELEMENT_NODAL_FLAT"
+                    result_position = "INTEGRATION_POINT_FLAT"
                     if vtx_ti is not None:
-                        scalar_vertex = scalar_face[vtx_ti]     # [Nv] indexed
+                        scalar_vertex = scalar_face[vtx_ti]         # [Nv] indexed
                     else:
                         scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
-        # ── All-element global range for ELEMENT_NODAL paths ────────────
-        # Override surface-only range with full-model averaged range using
-        # section_id from geometry H5 (all elements including interior).
-        if result_position.startswith("ELEMENT_NODAL") and geom_h5_path is not None:
-            all_range = _compute_en_global_range(
-                f, geom_h5_path, instance, frame_idx, component_idx,
-                average_threshold,
+        if scalar_vertex is not None and h5_sig is not None:
+            # 缓存的数组会被多个请求共享：置为只读，下游只允许整体重新赋值
+            # （set 过滤 / 归一化都是产生新数组，不做原地修改）。
+            scalar_vertex.setflags(write=False)
+            _vertex_cache_put(
+                vertex_key,
+                (scalar_vertex, global_range, result_position, num_frames),
             )
-            if all_range is not None:
-                global_range = all_range
-
-        # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
-        if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
-            result = _scalar_elem_pos_by_idx(
-                f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
-                src_etype, src_elem_row,
-            )
-            if result is not None:
-                scalar_face, num_frames, global_range = result
-                result_position = "INTEGRATION_POINT_FLAT"
-                if vtx_ti is not None:
-                    scalar_vertex = scalar_face[vtx_ti]         # [Nv] indexed
-                else:
-                    scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
     if scalar_vertex is None:
         logger.warning(
@@ -1403,6 +1554,39 @@ def _load_full_conn_rows(geom_f, geom_h5_path: str, etype_key: str):
 
 
 def _compute_en_global_range(
+    result_h5,
+    geom_h5_path: str,
+    instance: str,
+    frame_idx: int,
+    component_idx: Optional[int],
+    average_threshold: float = 0.75,
+) -> Optional[Tuple[float, float]]:
+    """
+    Cached front for _compute_en_global_range_uncached: the full-model averaged
+    range re-reads the whole geometry + ELEMENT_NODAL datasets, yet only depends
+    on the result file version and a handful of parameters — ideal cache food.
+    """
+    h5_path = result_h5.filename
+    sig = _result_h5_sig(h5_path)
+    key = (
+        "en_range", h5_path, sig, geom_h5_path, instance, int(frame_idx),
+        None if component_idx is None else int(component_idx),
+        float(average_threshold),
+    )
+    if sig is not None:
+        hit = _range_cache_get(key)
+        if hit is not _CACHE_MISS:
+            return hit
+    result = _compute_en_global_range_uncached(
+        result_h5, geom_h5_path, instance, frame_idx, component_idx,
+        average_threshold,
+    )
+    if sig is not None:
+        _range_cache_put(key, result)
+    return result
+
+
+def _compute_en_global_range_uncached(
     result_h5,
     geom_h5_path: str,
     instance: str,
