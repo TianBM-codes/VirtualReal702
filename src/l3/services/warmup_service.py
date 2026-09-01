@@ -11,7 +11,8 @@
   3. 手动 POST /api/odb/{odb_id}/results/warmup。
 
 预热直接调 compute_scalar_range / frame_scalars，算完自然写入内存 + 磁盘
-缓存（见 result_service 的缓存层）。已缓存的组合命中后立即返回，所以预热
+缓存（见 result_service 的缓存层）；U 场再顺带预热变形家族的
+deform-suggest-scale 统计与各 instance 第 0 帧顶点位移向量。已缓存的组合命中后立即返回，所以预热
 是幂等的，重复触发只补算新增的字段。整个过程单线程串行、daemon 线程执行，
 失败只记日志、不影响正常请求。
 """
@@ -22,7 +23,12 @@ from typing import Dict, Optional, Set
 
 from ..core.state import OdbRegistry, registry as _global_registry
 from ..infra.manifest_repo import ManifestRepo
-from .result_service import compute_scalar_range, frame_scalars
+from .result_service import (
+    compute_scalar_range,
+    deform_scale_stats,
+    frame_scalars,
+    frame_vertex_displacements,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +89,36 @@ def warm_odb_sync(odb_id: str, reason: str = "",
             except Exception:
                 # 该 instance 没有这个字段/位置数据是常态，跳过即可
                 n_skip += 1
+    # 变形家族顺带预热（U 场第 0 帧）：deform-suggest-scale 统计 + 每 instance
+    # 顶点位移向量。deformed-positions 的整包按 scale 进缓存键、前端实际 scale
+    # 不可预知 → 不预热，留给首次请求填。
+    n_deform = 0
+    for result_group, step, field in targets:
+        if field != "U":
+            continue
+        try:
+            deform_scale_stats(reg, odb_id, step, 0, result_group)
+            n_deform += 1
+        except Exception:
+            pass
+        for instance in instances:
+            try:
+                frame_vertex_displacements(
+                    registry=reg, odb_id=odb_id, instance=instance,
+                    step=step, frame_idx=0, result_group=result_group,
+                )
+                n_deform += 1
+            except Exception:
+                # 该 instance 无 vtx_node_row / 无 U 数据是常态，跳过
+                pass
     _warmed_targets[odb_id] = frozenset(targets)
 
     dt = time.time() - t0
-    logger.info("Warmup[%s]%s: %d combo(s) warmed, %d skipped, %.1fs",
-                odb_id, f" ({reason})" if reason else "", n_ok, n_skip, dt)
+    logger.info("Warmup[%s]%s: %d combo(s) warmed, %d skipped, %d deform, %.1fs",
+                odb_id, f" ({reason})" if reason else "", n_ok, n_skip, n_deform, dt)
     return {"odb_id": odb_id, "status": "done",
-            "warmed": n_ok, "skipped": n_skip, "seconds": round(dt, 1)}
+            "warmed": n_ok, "skipped": n_skip,
+            "deform_warmed": n_deform, "seconds": round(dt, 1)}
 
 
 def warm_odb_async(odb_id: str, reason: str = "",

@@ -146,7 +146,7 @@
 
 **明确不做**：服务端三角化 / 几何计算 / 渲染
 
-**结果缓存（两级 + 预热）**：frame-scalars 归一化前的 scalar_vertex 与图例范围按（结果文件 mtime+size、instance、帧、分量、渲染参数）缓存——进程内 LRU（`APP_SCALAR_CACHE_MB`，默认 512MB/worker）+ 工作区磁盘 `<workspace>/l3_cache/`（`APP_SCALAR_DISK_CACHE_MB`，默认 2048MB/工作区，原子写、按 mtime LRU 淘汰，重启不丢、多 worker 共享；此目录是"L3 只写 manifest.db"约定的唯一例外，随工作区删除）。结果文件被重写（外部字段/result_group 重新解析）即签名变化、自动失效。模型加载完成 / poll 发现新 result_group 就绪时，后台预热第 0 帧默认视图（每 result_group×step×field×instance，`APP_WARMUP=0` 关闭自动，手动 `POST /api/odb/{odb_id}/results/warmup`）
+**结果缓存（两级 + 预热）**：frame-scalars 归一化前的 scalar_vertex 与图例范围按（结果文件 mtime+size、instance、帧、分量、渲染参数）缓存——进程内 LRU（`APP_SCALAR_CACHE_MB`，默认 512MB/worker）+ 工作区磁盘 `<workspace>/l3_cache/`（`APP_SCALAR_DISK_CACHE_MB`，默认 2048MB/工作区，原子写、按 mtime LRU 淘汰，重启不丢、多 worker 共享；此目录是"L3 只写 manifest.db"约定的唯一例外，随工作区删除）。结果文件被重写（外部字段/result_group 重新解析）即签名变化、自动失效。变形/动画家族复用同一套设施：deformed-positions 的 (positions, normals, aux) 整包按（U 文件签名、instance、帧、scale）缓存，顶点位移向量按（U 文件签名、instance、帧）缓存（vertex-displacements / modal-shape / modal-animation 共用），deform-suggest-scale 统计走小结果缓存；`render/positions` 常驻 ModelIndex（CoW 共享），不再逐请求读盘。模型加载完成 / poll 发现新 result_group 就绪时，后台预热第 0 帧默认视图（每 result_group×step×field×instance，`APP_WARMUP=0` 关闭自动，手动 `POST /api/odb/{odb_id}/results/warmup`）+ U 场的 suggest-scale 统计与各 instance 第 0 帧位移向量
 
 ---
 

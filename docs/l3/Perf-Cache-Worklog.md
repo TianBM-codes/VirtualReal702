@@ -1,14 +1,14 @@
 # frame-scalars / 变形接口性能优化工作日志与待办
 
-> 更新时间：2026-09-01。本文档是跨对话的交接文档：记录性能优化主线已完成的三步、
-> 已拍板待实施的下一步（变形家族缓存），以及实现约定。新对话从"待办"一节接续。
+> 更新时间：2026-09-02。本文档是跨对话的交接文档：性能优化主线四步全部完成
+> （最后一步变形家族缓存已实现，待开发者实测），实现约定与遗留方向见文末。
 
 ## 背景
 
 用户模型 700~800 万面片（单 instance 为主），S 场 `frame-scalars` 原耗时约 2 分钟。
 逐步优化，**全部限定在 `src/l3` 内，前端零改动**。
 
-## 已完成（三步）
+## 已完成（四步）
 
 ### 第 1 步：ELEMENT_NODAL 条件平均向量化（已合 main，commit 0901fc6）
 
@@ -49,50 +49,53 @@
   `curl -X POST http://10.66.66.2:5000/api/odb/<模型id>/results/warmup`。
 - 回归测试：`tests/test_l3_result_scalar_cache.py`、`tests/test_l3_disk_cache_warmup.py`。
 
-### 测试状态
-
-- 第 1 步已实测通过（2min→21.36s）。第 2、3 步**待开发者在分支上实测**：
-  ① 冷启动首次显示时间；② 同帧二次请求时间；③ 重启服务后首次时间。
-  通过后分支合 main。
-
-## 已拍板待办：变形/动画家族缓存（下一个对话从这里开始）
+### 第 4 步：变形/动画家族缓存（同分支，2026-09-02）
 
 对 `src/l3` 全部接口的缓存评估结论：值得做的集中在变形家族，其余不动
 （color-code 已有 legend_scan_cache；render-buffers/feature-edges 每模型只拉一次；
 pick/node-time-value 读小切片；node-table/raw-values 低频；frame-colors 是 legacy）。
+全部复用第 2 步的缓存设施，实现内容：
 
-**继续在 `perf/frame-scalars-cache` 分支上做**，复用第 2 步的缓存设施：
+1. **`render/positions` / `render/indices` 常驻 ModelIndex**：
+   `core/state.py` 新增 `render_positions` dict（float32 连续、只读，CoW 共享），
+   `load_l2_render_data` 加载；`result_service.py` 新增 `_get_render_positions` /
+   `_get_render_indices`（常驻优先，缺失回退读盘并回填——测试注入的 idx 也走通）。
+   `_deform_surface_from_disp` 与 `_load_disp_vertex` 改为取内存。
+   `api/routes/geometry.py` 的低频读盘处按拍板**未改**。
 
-1. **`render/positions` 常驻 ModelIndex（补漏，最优先）**
-   `deformed-positions` / `modal-shape` / `modal-animation` 每次请求都从
-   `l2/render/<inst>_render.h5` 全量读 `render/positions`（[Nv,3]，大模型几十上百 MB）
-   —— 见 `result_service.py` 的 `_deform_surface_from_disp`（≈2049 行）与
-   `_load_disp_vertex`（≈2345 行）。而 `render/indices` 早已常驻
-   （`core/state.py` `load_l2_render_data` ≈114 行）。把 positions 同样加载进
-   ModelIndex（新 dict 字段，CoW 共享），两处读盘改为取内存。
-   注意：`api/routes/geometry.py` 里多处也读 positions（render-buffers 等），那些是
-   每模型一次的低频接口，**不改**，避免扩散。
+2. **deformed-positions 整包缓存**：`frame_deformed_with_aux` 按
+   (U 文件签名, instance, 帧, scale) 缓存 (positions, normals, aux_sections)，
+   内存字节 LRU + 磁盘 npz（aux 以 aux_names + aux_i 键存取，顺序保持）。
+   `frame_deformed_positions`（deformed-normals 端点）改为委托它共享缓存。
+   法线聚合 `np.add.at` → 按 (角, 分量) 的 `np.bincount`（9 次 bincount，
+   结果与旧实现逐位一致，有对拍测试）。
 
-2. **deformed-positions 每帧结果缓存**
-   按 (U 结果文件签名, instance, frame, scale) 缓存最终 (positions, normals)，
-   进内存字节 LRU + 磁盘层（同 scalar_vertex 模式）。动画循环第二圈起全命中。
-   法线的 `np.add.at`（`_compute_vertex_normals` ≈2017 行）在 8M 三角形上是秒级
-   慢操作，可顺手换 `np.bincount` 按分量聚合（向量化优化，非缓存）。
-   aux 几何（line/point/coupling sections）也在同一响应里，一起进缓存值。
+3. **deform-suggest-scale 统计缓存**：`deform_scale_stats` 返回的小 dict 按
+   (U 签名, step, 帧, result_group) 进 `_RANGE_CACHE` + 通用 JSON 磁盘层
+   （`_json_disk_get/put`，`_range_disk_*` 重构为其薄封装）。
 
-3. **deform-suggest-scale 结果缓存（收益/成本比最高）**
-   `deform_scale_stats`（≈2273 行）为算一个标量把该帧所有 instance 的整块 U 读盘。
-   按 (U 签名, step, frame, result_group) 缓存返回的小 dict，进 `_RANGE_CACHE`
-   同款小结果缓存 + JSON 磁盘层。
+4. **顶点位移向量缓存**：`_cached_disp_vertex` 按 (U 签名, instance, 帧) 缓存
+   [Nv,3]，vertex-displacements / modal-shape / modal-animation 三端点共用；
+   modal-animation 的多帧 bytes 按拍板**不缓存**（sin 合成在缓存之上现算）。
 
-4. **顺带：vertex-displacements / modal-shape 的 [Nv,3] 位移向量缓存**
-   键 (U 签名, instance, frame)。modal-animation 的整包多帧 bytes **不缓存**
-   （n_frames×Nv×3×4 可达几百 MB），缓存位移向量后 sin 合成本来就快。
+5. **预热扩展**：`warm_odb_sync` 对 U 场顺带预算第 0 帧 suggest-scale 统计 +
+   各 instance 位移向量（报告新增 `deform_warmed` 字段）；deformed-positions
+   按 scale 进键、前端 scale 不可预知，按拍板**不预热**，留给首次请求填。
 
-5. **预热范围顺带扩一项**：`warmup_service` 把第 0 帧的 deformed-positions
-   （scale 用 `suggest_deform_scale` 的建议值？——注意 scale 进缓存键，前端实际
-   传什么 scale 要先确认，不确定就只预热 ③ 的 stats 和 ④ 的位移向量，
-   ② 的按 scale 键缓存留给首次请求填）。
+基础设施改动：内存 LRU 的字节统计泛化为 `_value_nbytes`（值可为数组或嵌套
+tuple/list，兼容旧 scalar 条目）；新增通用 `_npz_disk_read/write`（与 scalar_vertex
+共用 `scalars/` 目录和同一份容量淘汰）。缓存数组一律 `setflags(write=False)`。
+
+- 回归测试：`tests/test_l3_deform_cache.py`（内存/磁盘两层命中、scale 进键、
+  重写失效、modal 家族共享、stats 缓存、法线对拍、预热覆盖、0=关）。
+- 本机 scratchpad 等价脚本已全部通过（含 frame-scalars 旧路径回归）。
+
+### 测试状态
+
+- 第 1 步已实测通过（2min→21.36s）。第 2、3、4 步**待开发者在分支上实测**：
+  ① 冷启动首次显示时间；② 同帧二次请求时间；③ 重启服务后首次时间；
+  ④ 变形动画循环第二圈的帧耗时、deform-suggest-scale 二次请求。
+  通过后分支合 main。
 
 ## 实现约定（沿用）
 

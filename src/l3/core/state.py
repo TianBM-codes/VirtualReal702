@@ -75,6 +75,10 @@ class ModelIndex:
         self.vtx_tri_idx:     Dict[str, np.ndarray] = {}
         # render_indices [Nt, 3] int32: vertex indices per triangle
         self.render_indices:  Dict[str, np.ndarray] = {}
+        # render_positions [Nv, 3] float32: undeformed vertex buffer, resident
+        # for the deform family (deformed-positions / modal-shape / modal-animation)
+        # which otherwise re-reads tens~hundreds of MB from render.h5 per frame.
+        self.render_positions: Dict[str, np.ndarray] = {}
 
         # source_local_node_idx [Nt, 3] int16: local node index within the source
         # element's conn array for each triangle corner. Used for ELEMENT_NODAL lookup.
@@ -136,6 +140,11 @@ class ModelIndex:
                         self.vtx_tri_idx[inst_name]  = f["render/vtx_tri_idx"][:]
                     if "render/indices" in f:
                         self.render_indices[inst_name] = f["render/indices"][:]
+                    if "render/positions" in f:
+                        pos = np.ascontiguousarray(
+                            f["render/positions"][:], dtype=np.float32)
+                        pos.setflags(write=False)
+                        self.render_positions[inst_name] = pos
                     if "render/source_local_node_idx" in f:
                         self.source_local_node_idx[inst_name] = \
                             f["render/source_local_node_idx"][:]
