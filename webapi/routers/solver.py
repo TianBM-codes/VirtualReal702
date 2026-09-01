@@ -49,6 +49,7 @@ from services.model_update.analysis.inp_service import (
 )
 from src.l3.core.config import settings
 from src.l3.core.errors import AppError, ValidationError
+from src.l3.infra.registry_repo import RegistryRepo
 
 from ..background_jobs import get_background_task, submit_background_task
 from ..common import error_response, server_error, success_response
@@ -309,13 +310,73 @@ def _resolve_sol200_input_bdf(
     explicit_path: Optional[str],
     file_name: Optional[str],
 ) -> str:
-    return _resolve_project_local_input_with_fallback(
-        project_id=project_id,
-        explicit_path=explicit_path,
-        file_name=file_name,
-        field_name="input_bdf",
-        fallback_category_parts=("solver", "nastran_sol103"),
-    )
+    try:
+        return _resolve_project_local_input_with_fallback(
+            project_id=project_id,
+            explicit_path=explicit_path,
+            file_name=file_name,
+            field_name="input_bdf",
+            fallback_category_parts=("solver", "nastran_sol103"),
+        )
+    except AppError as exc:
+        translated = _translate_project_source_input_bdf(
+            project_id=project_id,
+            explicit_path=explicit_path,
+            file_name=file_name,
+        )
+        if translated:
+            return translated
+        raise exc
+
+
+def _translate_project_source_input_bdf(
+    *,
+    project_id: Optional[int],
+    explicit_path: Optional[str],
+    file_name: Optional[str],
+) -> Optional[str]:
+    if project_id is None:
+        return None
+
+    raw = str(explicit_path or "").strip() or str(file_name or "").strip()
+    if not raw:
+        return None
+
+    try:
+        repo = RegistryRepo(settings.registry_db_path)
+        proj = repo.get_project(str(int(project_id)))
+    except Exception:
+        return None
+    if proj is None:
+        return None
+
+    runtime_path = str(proj["inp_path"] or "").strip()
+    runtime_file = str(proj["source_file"] or "").strip()
+    original_path = str(proj["original_inp_path"] or "").strip() if "original_inp_path" in proj.keys() else ""
+    original_file = str(proj["original_source_file"] or "").strip() if "original_source_file" in proj.keys() else ""
+    workspace = repo.resolve_workspace(proj["workspace"], settings.data_root)
+
+    candidate_paths = []
+    if runtime_path:
+        candidate_paths.append(runtime_path)
+    if runtime_file:
+        candidate_paths.append(str(Path(workspace) / runtime_file))
+
+    normalized_raw = str(Path(raw).expanduser())
+    raw_name = Path(normalized_raw).name
+
+    matches_original_path = bool(original_path) and normalized_raw == original_path
+    matches_original_file = bool(original_file) and raw_name == original_file
+    matches_runtime_file = bool(runtime_file) and raw_name == runtime_file
+
+    if not (matches_original_path or matches_original_file or matches_runtime_file):
+        return None
+
+    for candidate in candidate_paths:
+        candidate_path = Path(candidate).expanduser().resolve()
+        if candidate_path.exists() and candidate_path.is_file():
+            return str(candidate_path)
+    return None
 
 def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
     input_bdf = _resolve_project_local_input(

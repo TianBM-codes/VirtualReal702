@@ -1,4 +1,3 @@
-import csv
 import json
 import os
 import re
@@ -31,6 +30,33 @@ from .project_path_service import resolve_project_cal_subdir, resolve_project_wo
 from .project_status_service import update_work_condition_project_status
 from . import sensitivity_service as _sens
 from . import solver_service as _solver
+from .bayesian_artifact_service import (
+    _iteration_dir,
+    _save_csv_rows,
+    _save_json,
+    _save_matrix_txt,
+    _save_vector_txt,
+)
+from .bayesian_math_service import (
+    _expand_scatter_vector,
+    _parameter_values_from_inp,
+    _read_text_matrix,
+    _read_text_row_vector,
+    _build_normalized_gain_matrix,
+    bayesian_update_normalized,
+    build_normalized_residual,
+    update_parameter_section_values,
+)
+from .bayesian_modal_service import (
+    _apply_physical_parameter_value_floor,
+    _build_sol200_parameter_rows,
+    _build_sol200_response_rows,
+    _extract_modal_mode_vectors_from_op2,
+    _extract_modal_response_values_by_semantics,
+    _extract_modal_response_values_from_op2,
+    _resolve_solver_op2_path,
+    _run_sol103_modal_response_values,
+)
 
 _PARAMETER_ASSIGNMENT_RE = re.compile(r"^\s*([^=\s,]+)\s*=\s*(.+?)\s*$")
 _INCLUDE_INPUT_RE = re.compile(r"^\s*\*INCLUDE\s*,\s*INPUT\s*=\s*(.+?)\s*$", re.IGNORECASE)
@@ -568,40 +594,6 @@ def _resolve_scatter_vector(
     )
 
 
-def _save_json(path: Path, payload: Any) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_clone_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
-    return str(path.resolve())
-
-
-def _save_vector_txt(path: Path, values: Sequence[float]) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savetxt(str(path), np.asarray(values, dtype=np.float64).reshape(1, -1), fmt="%.12g")
-    return str(path.resolve())
-
-
-def _save_matrix_txt(path: Path, matrix: Sequence[Sequence[float]]) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savetxt(str(path), np.asarray(matrix, dtype=np.float64), fmt="%.12g")
-    return str(path.resolve())
-
-
-def _save_csv_rows(path: Path, fieldnames: Sequence[str], rows: Sequence[dict]) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=[str(item) for item in fieldnames])
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({str(field): _clone_jsonable(dict(row).get(field)) for field in fieldnames})
-    return str(path.resolve())
-
-
-def _iteration_dir(root_dir: Path, iteration: int) -> Path:
-    path = (root_dir / f"iteration_{int(iteration):03d}").resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
     iteration_dir = _iteration_dir(root_dir, int(iteration_result["iteration"]))
     files = {
@@ -620,6 +612,11 @@ def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
             iteration_result.get("parameter_element_mapping", []),
         ),
     }
+    if iteration_result.get("parameter_changes") is not None:
+        files["parameter_changes_json"] = _save_json(
+            iteration_dir / "parameter_changes.json",
+            iteration_result.get("parameter_changes", []),
+        )
     if iteration_result.get("response_values_before_update") is not None:
         files["response_values_before_update_txt"] = _save_vector_txt(
             iteration_dir / "response_values_before_update.txt",
@@ -628,6 +625,20 @@ def _save_iteration_artifacts(root_dir: Path, iteration_result: dict) -> dict:
     if iteration_result.get("updated_bdf"):
         files["updated_bdf"] = str(iteration_result["updated_bdf"])
     return {"iteration_dir": str(iteration_dir), "files": files}
+
+
+def _short_iteration_file_path(
+    iteration_dir: Path,
+    *,
+    iteration_no: int,
+    role: str,
+    suffix: str = ".bdf",
+) -> Path:
+    safe_role = "".join(ch for ch in str(role or "").strip().lower() if ch.isalnum() or ch in {"_", "-"}) or "file"
+    resolved_suffix = str(suffix or "").strip() or ".dat"
+    if not resolved_suffix.startswith("."):
+        resolved_suffix = f".{resolved_suffix}"
+    return (iteration_dir / f"iter_{int(iteration_no):03d}_{safe_role}{resolved_suffix}").resolve()
 
 
 def _normalize_batch_no(batch_no: Optional[int]) -> int:
@@ -640,6 +651,72 @@ def _normalize_batch_no(batch_no: Optional[int]) -> int:
 def _truncate_tracking_name(value: Optional[str], *, default: str, max_length: int = 100) -> str:
     text = str(value or default).strip()
     return (text or default)[: int(max_length)]
+
+
+def _build_parameter_change_rows(
+        *,
+        parameter_columns: Sequence[dict],
+        previous_values: Sequence[float],
+        updated_values: Sequence[float],
+        initial_values: Optional[Sequence[float]] = None,
+) -> list[dict]:
+    previous_arr = np.asarray(previous_values, dtype=np.float64).reshape(-1)
+    updated_arr = np.asarray(updated_values, dtype=np.float64).reshape(-1)
+    if previous_arr.shape != updated_arr.shape:
+        raise ValidationError(
+            "previous_values and updated_values must have the same shape",
+            {
+                "previous_shape": list(previous_arr.shape),
+                "updated_shape": list(updated_arr.shape),
+            },
+        )
+    if len(parameter_columns or []) != int(previous_arr.size):
+        raise ValidationError(
+            "parameter column count does not match parameter values",
+            {
+                "parameter_count": len(parameter_columns or []),
+                "value_count": int(previous_arr.size),
+            },
+        )
+    if initial_values is None:
+        initial_arr = previous_arr.copy()
+    else:
+        initial_arr = np.asarray(initial_values, dtype=np.float64).reshape(-1)
+        if initial_arr.shape != previous_arr.shape:
+            raise ValidationError(
+                "initial_values shape does not match parameter values",
+                {
+                    "initial_shape": list(initial_arr.shape),
+                    "value_shape": list(previous_arr.shape),
+                },
+            )
+
+    rows: list[dict] = []
+    for index, column in enumerate(parameter_columns or []):
+        previous_value = float(previous_arr[index])
+        updated_value = float(updated_arr[index])
+        initial_value = float(initial_arr[index])
+        rows.append(
+            {
+                "parameter_name": str(column.get("parameter_name") or f"parameter_{index + 1}"),
+                "scope": _parameter_scope_value(dict(column)),
+                "previous_value": previous_value,
+                "updated_value": updated_value,
+                "delta_value": float(updated_value - previous_value),
+                "step_relative_delta_percent": _resolve_cloud_scalar_percent_value(
+                    updated_value=updated_value,
+                    baseline_value=previous_value,
+                ),
+                "total_relative_delta_percent": _resolve_cloud_scalar_percent_value(
+                    updated_value=updated_value,
+                    baseline_value=initial_value,
+                ),
+                "initial_value": initial_value,
+                "lower_bound": None if column.get("lower_bound") is None else float(column.get("lower_bound")),
+                "upper_bound": None if column.get("upper_bound") is None else float(column.get("upper_bound")),
+            }
+        )
+    return rows
 
 
 def _response_tracking_name(row_meta: dict, index: int) -> str:
@@ -780,6 +857,17 @@ def _evaluate_exit_condition(
         "mean_abs_response_diff_percent": mean_abs_diff,
         "converged": bool(diffs) and all(float(item) <= threshold for item in diffs),
     }
+
+
+def _max_abs_modal_response_diff_percent(
+    response_values: Sequence[float],
+    target_values: Sequence[float],
+) -> float:
+    diffs = [
+        abs(_response_difference_percent_for_exit(float(calculated), float(target)))
+        for calculated, target in zip(response_values, target_values)
+    ]
+    return float(max(diffs)) if diffs else 0.0
 
 
 def _group_history_rows(rows: Sequence[dict], name_key: str, value_key: str) -> Dict[str, List[Tuple[int, float]]]:
@@ -1087,6 +1175,7 @@ def _save_bayesian_history_artifacts(
 
     response_history_rows: List[dict] = []
     iteration_summary_rows: List[dict] = []
+    parameter_change_rows: List[dict] = []
     for iteration_result in rows:
         iteration_no = int(iteration_result["iteration"])
         metrics = dict(iteration_result.get("metrics") or _build_iteration_metrics(
@@ -1109,6 +1198,20 @@ def _save_bayesian_history_artifacts(
                     "calculated_value": calculated,
                     "target_value": target,
                     "response_diff_percent": diff,
+                }
+            )
+
+        for change_row in iteration_result.get("parameter_changes") or []:
+            parameter_change_rows.append(
+                {
+                    "iteration": iteration_no,
+                    "parameter_name": str(change_row.get("parameter_name") or ""),
+                    "scope": str(change_row.get("scope") or ""),
+                    "previous_value": float(change_row.get("previous_value") or 0.0),
+                    "updated_value": float(change_row.get("updated_value") or 0.0),
+                    "delta_value": float(change_row.get("delta_value") or 0.0),
+                    "step_relative_delta_percent": float(change_row.get("step_relative_delta_percent") or 0.0),
+                    "total_relative_delta_percent": float(change_row.get("total_relative_delta_percent") or 0.0),
                 }
             )
 
@@ -1148,6 +1251,20 @@ def _save_bayesian_history_artifacts(
             history_dir / "parameter_history.csv",
             ("iteration", "parameter_name", "value"),
             parameter_history_rows,
+        ),
+        "parameter_change_history_csv": _save_csv_rows(
+            history_dir / "parameter_change_history.csv",
+            (
+                "iteration",
+                "parameter_name",
+                "scope",
+                "previous_value",
+                "updated_value",
+                "delta_value",
+                "step_relative_delta_percent",
+                "total_relative_delta_percent",
+            ),
+            parameter_change_rows,
         ),
         "response_history_csv": _save_csv_rows(
             history_dir / "response_history.csv",
@@ -1581,179 +1698,6 @@ def _resolve_cloud_scalar_percent_value(
     return ((float(updated_value) - baseline) / baseline) * 100.0
 
 
-def _extract_modal_response_values_from_op2(
-        *,
-        op2_path: str,
-        response_rows: Sequence[dict],
-        source_label: str = "modal",
-) -> np.ndarray:
-    from services.model_update.importers.op2_service import _extract_mode_frequency, _read_op2
-
-    resolved_op2 = _solver._abs_file(op2_path, "op2_path")
-    op2 = _read_op2(str(resolved_op2))
-    eigenvectors = getattr(op2, "eigenvectors", {}) or {}
-    if not eigenvectors:
-        raise ValidationError(
-            f"modal eigenvectors were not found in the {source_label} OP2 result",
-            {"op2_path": str(resolved_op2), "source_label": source_label},
-        )
-    first_subcase_id = sorted(int(key) for key in eigenvectors.keys())[0]
-    eigen_data = eigenvectors[first_subcase_id]
-    modes_array = np.asarray(getattr(eigen_data, "modes", []), dtype=np.int64)
-    if modes_array.size == 0:
-        raise ValidationError(
-            f"modal mode numbers were not found in the {source_label} OP2 result",
-            {"op2_path": str(resolved_op2), "subcase_id": first_subcase_id, "source_label": source_label},
-        )
-    response_values: List[float] = []
-    missing_modes: List[int] = []
-    for row in response_rows or []:
-        mode_number = row.get("mode_number")
-        if mode_number is None:
-            raise ValidationError(
-                "mode_number is required for modal Bayesian responses",
-                {"response_row": dict(row or {}), "source_label": source_label},
-            )
-        found = np.where(modes_array == int(mode_number))[0]
-        if len(found) == 0:
-            missing_modes.append(int(mode_number))
-            continue
-        mode_index = int(found[0])
-        frequency, _eigenvalue, warnings = _extract_mode_frequency(eigen_data, mode_index)
-        if warnings:
-            raise ValidationError(
-                f"failed to resolve modal frequency from the {source_label} OP2 result",
-                {
-                    "op2_path": str(resolved_op2),
-                    "subcase_id": first_subcase_id,
-                    "mode_number": int(mode_number),
-                    "warnings": warnings,
-                    "source_label": source_label,
-                },
-            )
-        response_values.append(float(frequency))
-    if missing_modes:
-        raise ValidationError(
-            f"some requested modal frequency responses were not found in the {source_label} OP2 result",
-            {
-                "op2_path": str(resolved_op2),
-                "subcase_id": first_subcase_id,
-                "missing_mode_numbers": missing_modes,
-                "source_label": source_label,
-            },
-        )
-    return np.asarray(response_values, dtype=np.float64)
-
-
-def _resolve_solver_op2_path(solver_payload: Dict[str, Any], *, source_label: str) -> str:
-    solver = dict(solver_payload.get("solver") or {})
-    if not bool(solver.get("ok", False)):
-        raise ValidationError(
-            f"{source_label} solve failed",
-            {"source_label": source_label, "solver": solver},
-        )
-    summary = dict(solver.get("artifacts_summary") or {})
-    for path_text in list(summary.get("op2_files") or []):
-        text = str(path_text or "").strip()
-        if not text:
-            continue
-        path = Path(text).expanduser().resolve()
-        if path.exists() and path.is_file():
-            return str(path)
-    raise ValidationError(
-        f"{source_label} solve did not produce an OP2 file",
-        {
-            "source_label": source_label,
-            "artifacts_summary": summary,
-            "warnings": solver_payload.get("warnings") or [],
-        },
-    )
-
-
-def _run_sol103_modal_response_values(
-        *,
-        input_bdf: str,
-        response_rows: Sequence[dict],
-        output_bdf: str,
-        settings: Optional[Dict[str, Any]] = None,
-        nastran: Optional[str] = None,
-        timeout_sec: Optional[int] = None,
-        extra_args: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    from services.model_update.analysis.solver_service import run_nastran_sol103_job
-
-    sol103_payload = run_nastran_sol103_job(
-        input_bdf=input_bdf,
-        output_bdf=output_bdf,
-        settings=dict(settings or {}),
-        nastran=nastran,
-        run_solver=True,
-        timeout_sec=timeout_sec,
-        extra_args=list(extra_args or []),
-    )
-    op2_path = _resolve_solver_op2_path(sol103_payload, source_label="SOL103 modal")
-    response_values = _extract_modal_response_values_from_op2(
-        op2_path=op2_path,
-        response_rows=response_rows,
-        source_label="SOL103 modal",
-    )
-    return {
-        "solver_payload": sol103_payload,
-        "op2_path": op2_path,
-        "response_values": response_values,
-    }
-
-
-def _build_sol200_parameter_rows(parameter_columns: Sequence[dict], parameter_values: Sequence[float]) -> List[dict]:
-    rows: List[dict] = []
-    values = list(parameter_values) if parameter_values is not None else []
-    for index, raw_row in enumerate(parameter_columns or []):
-        row = dict(raw_row or {})
-        resolved_name = str(
-            row.get("parameter_name")
-            or row.get("param_name")
-            or row.get("field")
-            or f"parameter_{index + 1}"
-        ).strip() or f"parameter_{index + 1}"
-        resolved_type = str(row.get("param_type") or row.get("parameter_type") or row.get("type") or "").upper()
-        row["parameter_name"] = resolved_name
-        row["name"] = resolved_name
-        row["parameter_type"] = resolved_type
-        row["type"] = resolved_type
-        row["initial"] = float(values[index])
-        if row.get("lower_bound") is not None:
-            row["lower"] = float(row["lower_bound"])
-        elif row.get("lower") is not None:
-            row["lower"] = float(row["lower"])
-        if row.get("upper_bound") is not None:
-            row["upper"] = float(row["upper_bound"])
-        elif row.get("upper") is not None:
-            row["upper"] = float(row["upper"])
-        rows.append(row)
-    return rows
-
-
-def _build_sol200_response_rows(response_rows: Sequence[dict]) -> List[dict]:
-    rows: List[dict] = []
-    for index, raw_row in enumerate(response_rows or [], start=1):
-        row = dict(raw_row or {})
-        response_type = str(row.get("response_type") or row.get("type") or "").upper()
-        mode_number = row.get("mode_number")
-        if response_type not in {"FREQ", "MODAL_FREQUENCY"} or mode_number is None:
-            raise ValidationError(
-                "SOL200 modal Bayesian only supports modal frequency responses",
-                {"response_row": row, "index": index},
-            )
-        rows.append(
-            {
-                "name": str(row.get("response_name") or f"FREQ_MODE_{int(mode_number)}").strip(),
-                "type": "FREQ",
-                "mode_number": int(mode_number),
-            }
-        )
-    return rows
-
-
 def _build_sol200_final_parameter_cloud_request(
         *,
         batch_no: int,
@@ -1775,7 +1719,11 @@ def _build_sol200_final_parameter_cloud_request(
             {"parameter_count": len(parameter_columns or []), "mapping_count": len(parameter_mappings or [])},
         )
 
-    per_instance_labels: Dict[str, Dict[int, float]] = {}
+    components = [
+        str(column.get("parameter_name") or column.get("field") or f"parameter_{index + 1}")
+        for index, column in enumerate(parameter_columns or [])
+    ]
+    per_instance_labels: Dict[str, Dict[int, List[float]]] = {}
     instance_counts: Dict[str, int] = {}
 
     for index, raw_mapping in enumerate(parameter_mappings or []):
@@ -1799,19 +1747,11 @@ def _build_sol200_final_parameter_cloud_request(
             label_map = per_instance_labels.setdefault(instance_name, {})
             for label in labels or []:
                 element_label = int(label)
-                existing_value = label_map.get(element_label)
-                if existing_value is not None:
-                    raise ValidationError(
-                        "parameter relative delta cloud export found duplicate element assignments",
-                        {
-                            "batch_no": int(batch_no),
-                            "instance_name": instance_name,
-                            "element_label": element_label,
-                            "existing_value": existing_value,
-                            "new_value": scalar_value,
-                        },
-                    )
-                label_map[element_label] = float(scalar_value)
+                values = label_map.setdefault(
+                    element_label,
+                    [float("nan")] * len(components),
+                )
+                values[index] = float(scalar_value)
 
     if not per_instance_labels:
         raise ValidationError("no element targets were resolved for SOL200 parameter cloud export")
@@ -1823,8 +1763,8 @@ def _build_sol200_final_parameter_cloud_request(
             "frame_value": 1.0,
             "description": "Final Relative Delta Percent",
             "data": [
-                {"label": int(label), "values": [float(value)]}
-                for label, value in sorted(label_map.items())
+                {"label": int(label), "values": values}
+                for label, values in sorted(label_map.items())
             ],
         }
         instances_payload.append({"instance": instance_name, "frames": [frame_entry]})
@@ -1833,7 +1773,7 @@ def _build_sol200_final_parameter_cloud_request(
     request_body = {
         "step_name": resolved_step_name,
         "field_name": resolved_field_name,
-        "components": ["RELATIVE_DELTA_PERCENT"],
+        "components": components,
         "result_group": resolved_result_group,
         "type": "element",
         "instances": instances_payload,
@@ -1852,7 +1792,7 @@ def _build_sol200_final_parameter_cloud_request(
                 "description": "Final Relative Delta Percent",
             }
         ],
-        "components": ["RELATIVE_DELTA_PERCENT"],
+        "components": components,
         "instances": [str(item["instance"]) for item in instances_payload],
         "instance_element_counts": {name: int(count) for name, count in sorted(instance_counts.items())},
     }
@@ -1996,10 +1936,17 @@ def _build_bayesian_cloud_request(
         str(column.get("parameter_name") or column.get("field") or f"parameter_{index + 1}")
         for index, column in enumerate(parameter_columns)
     ]
-    baseline_values = {
-        components[index]: float(column.get("parameter_value") or 0.0)
-        for index, column in enumerate(parameter_columns)
-    }
+    baseline_source = list(first_iteration.get("parameter_values") or [])
+    if len(baseline_source) == len(components):
+        baseline_values = {
+            components[index]: float(baseline_source[index])
+            for index in range(len(components))
+        }
+    else:
+        baseline_values = {
+            components[index]: float(column.get("parameter_value") or 0.0)
+            for index, column in enumerate(parameter_columns)
+        }
 
     instances_payload: List[dict] = []
     instance_frames: Dict[str, List[dict]] = {}
@@ -3433,10 +3380,29 @@ def _build_modal_response_payload(
         matching_method: str,
 ) -> dict:
     stored_rows = [dict(item or {}) for item in (stored_response_rows or [])]
+    catalog_payload = _inp.get_fe_response_catalog(int(project_id))
+    catalog_by_name = {
+        str(row.get("response_name") or "").strip(): dict(row)
+        for row in (catalog_payload.get("responses") or [])
+        if str(row.get("response_name") or "").strip()
+    }
     has_frequency_rows = any(
         str(item.get("response_type") or item.get("type") or "").upper() in {"FREQ", "MODAL_FREQUENCY"}
         for item in stored_rows
     )
+    needs_modal_match = False
+    if has_frequency_rows:
+        for raw_row in stored_rows:
+            response_type = str(raw_row.get("response_type") or raw_row.get("type") or "").upper()
+            if response_type not in {"FREQ", "MODAL_FREQUENCY"}:
+                continue
+            response_name = str(raw_row.get("response_name") or "").strip()
+            catalog_row = dict(catalog_by_name.get(response_name) or {})
+            catalog_target_value = _resolve_modal_frequency_target_from_catalog(catalog_row)
+            catalog_extra = dict(catalog_row.get("extra_json") or {})
+            if catalog_target_value is None or catalog_extra.get("freq_fem") is None:
+                needs_modal_match = True
+                break
     matched_payload = (
         _inp.match_modal_modes(
             int(project_id),
@@ -3444,7 +3410,7 @@ def _build_modal_response_payload(
             max_freq_error_ratio=max_freq_error_ratio,
             method=str(matching_method or "greedy"),
         )
-        if has_frequency_rows
+        if needs_modal_match
         else {"rows": []}
     )
     matched_rows = list(matched_payload.get("rows") or [])
@@ -3452,12 +3418,6 @@ def _build_modal_response_payload(
         int(row["fem_mode_no"]): dict(row)
         for row in matched_rows
         if row.get("fem_mode_no") is not None
-    }
-    catalog_payload = _inp.get_fe_response_catalog(int(project_id))
-    catalog_by_name = {
-        str(row.get("response_name") or "").strip(): dict(row)
-        for row in (catalog_payload.get("responses") or [])
-        if str(row.get("response_name") or "").strip()
     }
 
     selected_indexes: List[int] = []
@@ -3901,6 +3861,15 @@ def _update_bdf_parameter_values(
     model = BDF(debug=False)
     model.read_bdf(str(input_path), xref=False)
 
+    def _positive_floor(item: dict, requested_value: float) -> float:
+        baseline = item.get("parameter_value", item.get("initial_value", item.get("initial")))
+        try:
+            baseline_value = abs(float(baseline))
+        except Exception:
+            baseline_value = 0.0
+        floor_value = max(baseline_value * 1.0e-6, 1.0e-12)
+        return max(float(requested_value), float(floor_value))
+
     updated_rows = []
     missing_rows = []
     for index, row in enumerate(parameter_columns or []):
@@ -3914,6 +3883,8 @@ def _update_bdf_parameter_values(
         parameter_type = str(item.get("param_type") or item.get("parameter_type") or item.get("type") or "").upper()
 
         value = float(updated_parameter_values[index])
+        if parameter_type in {"E", "RHO", "H", "T"} and value <= 0.0:
+            value = _positive_floor(item, value)
         if parameter_type in {"E", "RHO"}:
             material_id = item.get("material_id")
             if material_id is None:
@@ -4047,7 +4018,7 @@ def _persist_model_update_modal_results(
                     row.get("response_name"),
                     row.get("response_type"),
                     int(row["fem_mode_no"]),
-                    int(row["test_mode_no"]),
+                    None if row.get("test_mode_no") is None else int(row["test_mode_no"]),
                     float(row["freq_fem_initial"]),
                     float(row["freq_fem_updated"]),
                     float(row["freq_test"]),
@@ -4058,17 +4029,34 @@ def _persist_model_update_modal_results(
                 ),
             )
             if len(preview) < 20:
-                preview.append(
-                    {
-                        "response_name": row.get("response_name"),
-                        "fem_mode_no": int(row["fem_mode_no"]),
-                        "test_mode_no": int(row["test_mode_no"]),
-                        "freq_fem_initial": float(row["freq_fem_initial"]),
-                        "freq_fem_updated": float(row["freq_fem_updated"]),
-                        "freq_test": float(row["freq_test"]),
-                        "updated_relative_error": row.get("updated_relative_error"),
-                    }
-                )
+                preview_row = {
+                    "response_name": row.get("response_name"),
+                    "response_type": row.get("response_type"),
+                    "fem_mode_no": int(row["fem_mode_no"]),
+                    "test_mode_no": (
+                        None if row.get("test_mode_no") is None else int(row["test_mode_no"])
+                    ),
+                    "updated_relative_error": row.get("updated_relative_error"),
+                }
+                if str(row.get("response_type") or "").upper() == "MODAL_MAC":
+                    preview_row.update(
+                        {
+                            "mac_initial": float(row["freq_fem_initial"]),
+                            "mac_updated": float(row["freq_fem_updated"]),
+                            "mac_target": float(row["freq_test"]),
+                            "value_semantics": "mac",
+                        }
+                    )
+                else:
+                    preview_row.update(
+                        {
+                            "frequency_initial": float(row["freq_fem_initial"]),
+                            "frequency_updated": float(row["freq_fem_updated"]),
+                            "frequency_target": float(row["freq_test"]),
+                            "value_semantics": "frequency",
+                        }
+                    )
+                preview.append(preview_row)
         conn.commit()
         return {
             "project_id": int(project_id),
@@ -4092,6 +4080,22 @@ def _persist_final_iteration_modal_outputs(
         initial_response_values: Sequence[float],
         updated_response_values: Sequence[float],
 ) -> dict:
+    def _semantic_modal_fields(*, response_type: str, initial_value: float, updated_value: float, target_value: float) -> dict:
+        resolved_type = str(response_type or "").upper()
+        if resolved_type == "MODAL_MAC":
+            return {
+                "mac_initial": float(initial_value),
+                "mac_updated": float(updated_value),
+                "mac_target": float(target_value),
+                "value_semantics": "mac",
+            }
+        return {
+            "frequency_initial": float(initial_value),
+            "frequency_updated": float(updated_value),
+            "frequency_target": float(target_value),
+            "value_semantics": "frequency",
+        }
+
     modal_rows = []
     for index, row_meta in enumerate(response_rows or []):
         row = dict(row_meta or {})
@@ -4099,12 +4103,13 @@ def _persist_final_iteration_modal_outputs(
         updated_value = float(updated_response_values[index])
         target_value = float(row.get("target_value"))
         response_type = str(row.get("response_type") or "FREQ").upper()
+        resolved_test_mode_no = 0 if row.get("test_mode_no") is None else int(row["test_mode_no"])
         modal_rows.append(
             {
                 "response_name": str(row.get("response_name") or f"response_{index + 1}"),
                 "response_type": response_type,
                 "fem_mode_no": int(row["fem_mode_no"]),
-                "test_mode_no": int(row["test_mode_no"]),
+                "test_mode_no": resolved_test_mode_no,
                 "freq_fem_initial": initial_value,
                 "freq_fem_updated": updated_value,
                 "freq_test": target_value,
@@ -4121,7 +4126,19 @@ def _persist_final_iteration_modal_outputs(
                     "freq_error_ratio_before_update": row.get("freq_error_ratio"),
                     "target_value": target_value,
                     "response_type": response_type,
+                    **_semantic_modal_fields(
+                        response_type=response_type,
+                        initial_value=initial_value,
+                        updated_value=updated_value,
+                        target_value=target_value,
+                    ),
                 },
+                **_semantic_modal_fields(
+                    response_type=response_type,
+                    initial_value=initial_value,
+                    updated_value=updated_value,
+                    target_value=target_value,
+                ),
             }
         )
     stored_result = _persist_model_update_modal_results(
@@ -4248,6 +4265,7 @@ def run_bayesian_update_workflow(
         iteration_results = []
         stopped_early = False
         last_resolved_workspace: Optional[str] = None
+        initial_parameter_values: Optional[np.ndarray] = None
         cloud_export_odb_id = str(odb_id or "").strip() or None
         cloud_export_base_url = base_url
         next_source = {
@@ -4323,6 +4341,8 @@ def run_bayesian_update_workflow(
             response_rows = list(matrix_payload["response_rows"])
             S_norm = np.asarray(matrix_payload["matrix"], dtype=np.float64)
             p_current = np.asarray(matrix_payload["parameter_values"], dtype=np.float64)
+            if initial_parameter_values is None:
+                initial_parameter_values = p_current.copy()
             r_model = np.asarray(matrix_payload["response_values"], dtype=np.float64)
             resolved_target_input = target_responses
             if resolved_target_input is None:
@@ -4406,8 +4426,16 @@ def run_bayesian_update_workflow(
             parameter_element_mapping = []
             for col_idx, column in enumerate(parameter_columns):
                 mapping_entry = _clone_jsonable(column.get("element_mapping") or {})
+                mapping_entry["parameter_value"] = float(matrix_payload["parameter_values"][col_idx])
+                mapping_entry["baseline_parameter_value"] = float(initial_parameter_values[col_idx])
                 mapping_entry["updated_parameter_value"] = float(update_payload["p_new"][col_idx])
                 parameter_element_mapping.append(mapping_entry)
+            parameter_changes = _build_parameter_change_rows(
+                parameter_columns=parameter_columns,
+                previous_values=matrix_payload["parameter_values"],
+                updated_values=update_payload["p_new"],
+                initial_values=initial_parameter_values,
+            )
 
             next_inp = _copy_iteration_input(
                 str(current_inp),
@@ -4444,6 +4472,7 @@ def run_bayesian_update_workflow(
                 "response_scatter": r_scatter.tolist(),
                 "parameter_columns": parameter_columns,
                 "parameter_element_mapping": parameter_element_mapping,
+                "parameter_changes": parameter_changes,
                 "response_rows": response_rows,
                 "bayesian": _clone_jsonable(update_payload),
                 "metrics": _clone_jsonable(iteration_metrics),
@@ -4792,6 +4821,10 @@ def run_modal_frequency_bayesian_update_workflow(
                 p_ref=current_parameter_values,
             )
 
+            update_payload["p_new"] = _apply_physical_parameter_value_floor(
+                parameter_columns,
+                update_payload["p_new"],
+            )
             updated_response_values = _predict_updated_response_values(
                 response_values=current_response_values,
                 parameter_values=current_parameter_values,
@@ -4978,6 +5011,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         cloud_result_group: Optional[str] = None,
         cloud_step_name: str = "BayesianUpdate",
         cloud_field_name: str = "PARAMETER_RELATIVE_DELTA_PERCENT",
+        cloud_value_mode: str = "relative_delta_percent",
         progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     from services.model_update.analysis.nastran_sol200_service import run_sol200_and_store_workflow
@@ -5056,17 +5090,34 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
     )
     # update_source_bdf_path:
     # the actual writable/updateable model used by Bayesian iterations.
-    # Prefer the original/source BDF recorded in SOL200 metadata so the
-    # initial SOL103 modal run starts from the user's real structural model
-    # instead of a generated SOL200 deck that may contain local INCLUDE files.
-    # Fall back to the localized source BDF only when the metadata does not
-    # preserve the original path.
-    update_source_bdf_path = (
-        _normalize_optional_path(input_bdf)
-        or _normalize_optional_path(metadata_source_bdf)
-        or _normalize_optional_path(metadata_localized_bdf)
-        or _normalize_optional_path(source.get("bdf_path"))
+    # Manual mixed property/material parameters may already have been
+    # localized into a writable source model where each property owns its own
+    # material copy. In that case, subsequent Bayesian write-back must keep
+    # using the localized source BDF; falling back to the original model would
+    # collapse those cloned ids and make parameter write-back fail.
+    needs_localized_update_source = any(
+        item.get("source_property_id") is not None or item.get("source_material_id") is not None
+        for item in (current_parameter_columns or [])
     )
+    if needs_localized_update_source:
+        update_source_bdf_path = (
+            _normalize_optional_path(metadata_localized_bdf)
+            or _normalize_optional_path(input_bdf)
+            or _normalize_optional_path(metadata_source_bdf)
+            or _normalize_optional_path(source.get("bdf_path"))
+        )
+    else:
+        # Prefer the original/source BDF recorded in SOL200 metadata so the
+        # initial SOL103 modal run starts from the user's real structural model
+        # instead of a generated SOL200 deck that may contain local INCLUDE files.
+        # Fall back to the localized source BDF only when the metadata does not
+        # preserve the original path.
+        update_source_bdf_path = (
+            _normalize_optional_path(input_bdf)
+            or _normalize_optional_path(metadata_source_bdf)
+            or _normalize_optional_path(metadata_localized_bdf)
+            or _normalize_optional_path(source.get("bdf_path"))
+        )
     if not update_source_bdf_path:
         raise ValidationError(
             "SOL200 Bayesian update requires an input_bdf or a stored sensitivity source bdf_path",
@@ -5126,6 +5177,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             input_bdf=str(update_source_bdf_path),
             response_rows=response_rows,
             output_bdf=str(root_dir / f"{input_base_stem}_initial_sol103.bdf"),
+            project_id=int(project_id),
             settings=sol103_settings,
             nastran=nastran,
             timeout_sec=timeout_sec,
@@ -5180,6 +5232,8 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         final_sensitivity_payload = stored_payload
         final_output_bdf = None
         cloud_export_base_url: Optional[str] = None
+        modal_backtrack_max_attempts = 6
+        modal_backtrack_shrink = 0.5
 
         for iteration_index in range(int(iterations)):
             if progress_callback is not None:
@@ -5191,40 +5245,102 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                     }
                 )
 
-            update_payload = bayesian_update_normalized(
-                p_current=current_parameter_values,
-                r_model=current_response_values,
-                r_target=target_response_values,
-                S_norm=normalized_matrix,
-                p_scatter=p_scatter,
-                r_scatter=r_scatter,
-                damping=damping,
-                step_scale=float(step_scale),
-                lower_bound=lower_bound_values,
-                upper_bound=upper_bound_values,
-                p_ref=current_parameter_values,
+            iteration_no = iteration_index + 1
+            iteration_dir = _iteration_dir(root_dir, iteration_no)
+            updated_bdf_path = _short_iteration_file_path(
+                iteration_dir,
+                iteration_no=iteration_no,
+                role="updated_input",
+                suffix=".bdf",
             )
+            sol103_output_bdf = _short_iteration_file_path(
+                iteration_dir,
+                iteration_no=iteration_no,
+                role="sol103",
+                suffix=".bdf",
+            )
+            objective_before = _max_abs_modal_response_diff_percent(
+                current_response_values.tolist(),
+                target_response_values.tolist(),
+            )
+            trial_step_scale = float(step_scale)
+            chosen_attempt = 1
+            chosen_objective_after: Optional[float] = None
+            backtracking_preview: List[dict] = []
+            modal_run = None
+            updated_bdf_result = None
+            update_payload = None
+            updated_response_values = None
+            for attempt_index in range(modal_backtrack_max_attempts):
+                chosen_attempt = int(attempt_index) + 1
+                update_payload = bayesian_update_normalized(
+                    p_current=current_parameter_values,
+                    r_model=current_response_values,
+                    r_target=target_response_values,
+                    S_norm=normalized_matrix,
+                    p_scatter=p_scatter,
+                    r_scatter=r_scatter,
+                    damping=damping,
+                    step_scale=float(trial_step_scale),
+                    lower_bound=lower_bound_values,
+                    upper_bound=upper_bound_values,
+                    p_ref=current_parameter_values,
+                )
+                update_payload["p_new"] = _apply_physical_parameter_value_floor(
+                    current_parameter_columns,
+                    update_payload["p_new"],
+                )
+                updated_bdf_result = _update_bdf_parameter_values(
+                    input_bdf=current_bdf_path,
+                    parameter_columns=current_parameter_columns,
+                    updated_parameter_values=update_payload["p_new"],
+                    output_bdf=str(updated_bdf_path),
+                )
+                modal_run = _run_sol103_modal_response_values(
+                    input_bdf=str(updated_bdf_path),
+                    response_rows=response_rows,
+                    output_bdf=str(sol103_output_bdf),
+                    project_id=int(project_id),
+                    settings=sol103_settings,
+                    nastran=nastran,
+                    timeout_sec=timeout_sec,
+                    extra_args=extra_args,
+                )
+                updated_response_values = np.asarray(modal_run["response_values"], dtype=np.float64)
+                chosen_objective_after = _max_abs_modal_response_diff_percent(
+                    updated_response_values.tolist(),
+                    target_response_values.tolist(),
+                )
+                backtracking_preview.append(
+                    {
+                        "attempt": chosen_attempt,
+                        "step_scale": float(trial_step_scale),
+                        "objective_before": float(objective_before),
+                        "objective_after": float(chosen_objective_after),
+                        "accepted": bool(chosen_objective_after <= objective_before),
+                    }
+                )
+                if chosen_objective_after <= objective_before or chosen_attempt >= modal_backtrack_max_attempts:
+                    break
+                trial_step_scale *= float(modal_backtrack_shrink)
+            if update_payload is None or modal_run is None or updated_response_values is None:
+                raise ValidationError(
+                    "modal Bayesian backtracking did not produce a valid trial result",
+                    {"project_id": int(project_id), "iteration": int(iteration_index) + 1},
+                )
+            update_payload["effective_step_scale"] = float(trial_step_scale)
+            update_payload["backtracking_attempt"] = int(chosen_attempt)
+            update_payload["backtracking_preview"] = backtracking_preview
+            update_payload["objective_before"] = float(objective_before)
+            update_payload["objective_after"] = float(chosen_objective_after if chosen_objective_after is not None else objective_before)
 
-            iteration_dir = _iteration_dir(root_dir, iteration_index + 1)
-            updated_bdf_path = iteration_dir / Path(current_bdf_path).name
-            updated_bdf_result = _update_bdf_parameter_values(
-                input_bdf=current_bdf_path,
-                parameter_columns=current_parameter_columns,
-                updated_parameter_values=update_payload["p_new"],
-                output_bdf=str(updated_bdf_path),
+            sol200_output_bdf = _short_iteration_file_path(
+                iteration_dir,
+                iteration_no=iteration_no,
+                role="sol200",
+                suffix=".bdf",
             )
-            sol103_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol103_iter{iteration_index + 1}.bdf"
-            modal_run = _run_sol103_modal_response_values(
-                input_bdf=str(updated_bdf_path),
-                response_rows=response_rows,
-                output_bdf=str(sol103_output_bdf),
-                settings=sol103_settings,
-                nastran=nastran,
-                timeout_sec=timeout_sec,
-                extra_args=extra_args,
-            )
-            sol200_output_bdf = iteration_dir / f"{updated_bdf_path.stem}_sol200_iter{iteration_index + 1}.bdf"
-            sensitivity_run_no = f"{resolved_batch_no}_iter_{iteration_index + 1}"
+            sensitivity_run_no = f"{resolved_batch_no}_iter_{iteration_no}"
             has_modal_mac = any(
                 str(item.get("response_type") or item.get("type") or "").strip().upper() == "MODAL_MAC"
                 for item in (response_rows or [])
@@ -5235,7 +5351,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 rerun_payload = run_sol200_modal_mac_and_store_workflow(
                     project_id=int(project_id),
                     batch_no=str(sensitivity_run_no),
-                    case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
+                    case_name=f"sol200_modal_bayesian_iter_{iteration_no}",
                     input_bdf=str(updated_bdf_path),
                     output_bdf=str(sol200_output_bdf),
                     parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
@@ -5265,7 +5381,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 rerun_payload = run_sol200_and_store_workflow(
                     project_id=int(project_id),
                     batch_no=str(sensitivity_run_no),
-                    case_name=f"sol200_modal_bayesian_iter_{iteration_index + 1}",
+                    case_name=f"sol200_modal_bayesian_iter_{iteration_no}",
                     input_bdf=str(updated_bdf_path),
                     output_bdf=str(sol200_output_bdf),
                     parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
@@ -5282,7 +5398,6 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 project_id=int(project_id),
                 batch_no=str(sensitivity_run_no),
             )
-            updated_response_values = np.asarray(modal_run["response_values"], dtype=np.float64)
             rerun_matrix = rerun_stored_payload.get("matrix")
             if rerun_matrix is None:
                 normalized_matrix = np.asarray([], dtype=np.float64)
@@ -5298,15 +5413,36 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                     parameter_values=np.asarray(update_payload["p_new"], dtype=np.float64),
                 )
             rerun_parameter_columns = _normalize_modal_parameter_columns(rerun_stored_payload.get("parameter_columns") or [])
+            rerun_localized_bdf = _normalize_optional_path(
+                ((rerun_payload.get("run") or {}).get("generated_files") or {}).get("localized_input_bdf")
+            )
+            if not rerun_localized_bdf:
+                rerun_metadata_path = _normalize_optional_path(
+                    ((rerun_payload.get("run") or {}).get("generated_files") or {}).get("metadata_json")
+                )
+                if rerun_metadata_path and Path(rerun_metadata_path).exists():
+                    try:
+                        rerun_metadata = json.loads(Path(rerun_metadata_path).read_text(encoding="utf-8"))
+                        rerun_localized_bdf = _normalize_optional_path(rerun_metadata.get("localized_input_bdf"))
+                    except Exception:
+                        rerun_localized_bdf = None
             # Iteration history only needs a stable scope key for parameter-to-
             # element previews. Nastran-only projects may not have an L3
             # manifest workspace yet, so avoid forcing manifest.db here.
             workspace_path = os.path.abspath(resolve_project_workspace(int(project_id)))
-            parameter_mappings = _build_op2_parameter_columns_with_mappings(
-                workspace=workspace_path,
-                bdf_path=str(updated_bdf_path),
-                parameter_columns=rerun_parameter_columns,
-            )
+            parameter_mapping_warning = None
+            try:
+                parameter_mappings = _build_op2_parameter_columns_with_mappings(
+                    workspace=workspace_path,
+                    bdf_path=str(updated_bdf_path),
+                    parameter_columns=rerun_parameter_columns,
+                )
+            except Exception as exc:
+                parameter_mappings = []
+                parameter_mapping_warning = {
+                    "code": "PARAMETER_MAPPING_SKIPPED",
+                    "message": str(exc),
+                }
 
             iteration_metrics = _build_iteration_metrics(
                 response_values=updated_response_values.tolist(),
@@ -5320,7 +5456,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 exit_diff_percent=exit_diff_percent,
             )
             iteration_result = {
-                "iteration": iteration_index + 1,
+                "iteration": iteration_no,
                 "analysis_run_id": rerun_stored_payload.get("analysis_run_id"),
                 "input_bdf": str(current_bdf_path) if save_results else None,
                 "sensitivity_batch_no": str(sensitivity_run_no),
@@ -5334,11 +5470,18 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 "parameter_element_mapping": [
                     {
                         **dict(item),
+                        "parameter_value": float(current_parameter_values[index]),
+                        "baseline_parameter_value": float(initial_parameter_values[index]),
                         "updated_parameter_value": float(update_payload["p_new"][index]),
-                        "parameter_value": float(initial_parameter_values[index]),
                     }
                     for index, item in enumerate(parameter_mappings)
                 ],
+                "parameter_changes": _build_parameter_change_rows(
+                    parameter_columns=rerun_parameter_columns,
+                    previous_values=current_parameter_values.tolist(),
+                    updated_values=update_payload["p_new"],
+                    initial_values=initial_parameter_values.tolist(),
+                ),
                 "response_rows": response_rows,
                 "sensitivity_matrix": normalized_matrix.tolist(),
                 "bayesian": _clone_jsonable(update_payload),
@@ -5349,6 +5492,8 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 "modal_solver": modal_run["solver_payload"] if save_results else None,
                 "solver": rerun_payload if save_results else None,
             }
+            if parameter_mapping_warning is not None:
+                iteration_result["parameter_mapping_warning"] = parameter_mapping_warning
             if save_results:
                 iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)
             iteration_results.append(iteration_result)
@@ -5368,8 +5513,21 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             current_parameter_values = np.asarray(update_payload["p_new"], dtype=np.float64)
             current_parameter_columns = rerun_parameter_columns
             current_response_values = np.asarray(updated_response_values, dtype=np.float64)
-            current_bdf_path = str(updated_bdf_path)
-            final_output_bdf = str(updated_bdf_path) if save_results else None
+            compact_next_bdf_path = rerun_localized_bdf or str(updated_bdf_path)
+            if rerun_localized_bdf:
+                compact_localized_bdf = _short_iteration_file_path(
+                    iteration_dir,
+                    iteration_no=iteration_no,
+                    role="localized_source",
+                    suffix=".bdf",
+                )
+                source_localized = Path(rerun_localized_bdf)
+                target_localized = Path(compact_localized_bdf)
+                if source_localized.resolve() != target_localized.resolve():
+                    shutil.copyfile(str(source_localized), str(target_localized))
+                compact_next_bdf_path = str(target_localized)
+            current_bdf_path = str(compact_next_bdf_path)
+            final_output_bdf = str(compact_next_bdf_path) if save_results else None
             final_sensitivity_payload = rerun_stored_payload
             cloud_export_base_url = cloud_export_base_url or None
             stopped_early = bool(exit_check and exit_check.get("converged"))
@@ -5397,33 +5555,34 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         cloud_result = None
         cloud_result_warning = None
         if write_cloud_result:
-            workspace_path = _sens._workspace_path(resolve_project_workspace(int(project_id)))
-            resolved_cloud_odb_id = _resolve_loaded_odb_id_for_workspace(workspace_path)
-            if not resolved_cloud_odb_id:
+            workspace_path = os.path.abspath(resolve_project_workspace(int(project_id)))
+            if not _workspace_has_manifest(workspace_path):
                 cloud_result_warning = {
                     "code": "BAYESIAN_CLOUD_EXPORT_SKIPPED",
-                    "message": "project workspace is not loaded in the L3 registry; skipped final cloud export",
+                    "message": "project workspace has no manifest.db; skipped final cloud export",
                     "project_id": int(project_id),
                     "workspace": workspace_path,
                 }
             else:
-                parameter_mappings = _build_op2_parameter_columns_with_mappings(
-                    workspace=workspace_path,
-                    bdf_path=str(current_bdf_path),
-                    parameter_columns=current_parameter_columns,
-                )
-                cloud_result = _write_sol200_final_parameter_cloud_result(
-                    odb_id=resolved_cloud_odb_id,
-                    base_url=cloud_export_base_url,
-                    batch_no=resolved_batch_no,
-                    parameter_columns=current_parameter_columns,
-                    parameter_mappings=parameter_mappings,
-                    initial_parameter_values=initial_parameter_values.tolist(),
-                    final_parameter_values=current_parameter_values.tolist(),
-                    result_group=cloud_result_group,
-                    step_name=cloud_step_name,
-                    field_name=cloud_field_name,
-                )
+                resolved_cloud_odb_id = _resolve_loaded_odb_id_for_workspace(workspace_path)
+                if not resolved_cloud_odb_id:
+                    cloud_result_warning = {
+                        "code": "BAYESIAN_CLOUD_EXPORT_SKIPPED",
+                        "message": "project workspace is not loaded in the L3 registry; skipped final cloud export",
+                        "project_id": int(project_id),
+                        "workspace": workspace_path,
+                    }
+                else:
+                    cloud_result = _write_bayesian_cloud_result(
+                        odb_id=resolved_cloud_odb_id,
+                        base_url=cloud_export_base_url,
+                        batch_no=resolved_batch_no,
+                        iteration_results=iteration_results,
+                        result_group=cloud_result_group,
+                        step_name=cloud_step_name,
+                        field_name=cloud_field_name,
+                        value_mode=cloud_value_mode,
+                    )
 
         matched_payload = modal_payload.get("matched_payload") or {}
         try:

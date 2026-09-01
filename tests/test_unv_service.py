@@ -356,6 +356,14 @@ class _QueryCursor:
     def fetchall(self):
         sql = self.last_sql
         params = self.last_params
+        if "FROM t_mt_py_test_modal_frequency" in sql:
+            return [
+                (
+                    1,
+                    12.5,
+                    '{"1001": {"real": [0.1, 0.2, 0.3], "imag": [0.0, 0.0, 0.0]}, "1002": {"real": [0.4, 0.5, 0.6], "imag": [0.0, 0.0, 0.0]}}',
+                )
+            ]
         if "FROM t_mt_py_test_node" in sql and "ORDER BY nid" in sql:
             return list(self.test_node_rows)
         if "FROM t_mt_measuring_point_info" in sql and "ORDER BY id" in sql:
@@ -532,4 +540,28 @@ def test_get_deform_sensor_positions_scales_static_displacement(monkeypatch):
 
     assert result == [
         {"sensor_label": "WY1", "sensor_type": "位移", "sensor_pos": [2.0, 1.5, 5.0]},
+    ]
+
+
+def test_get_sensor_positions_filters_nodes_without_modal_results(monkeypatch):
+    class _SparseCursor(_QueryCursor):
+        def fetchall(self):
+            if "FROM t_mt_py_test_modal_frequency" in self.last_sql:
+                return [(1, 12.5, '{"1001": {"real": [0.1, 0.2, 0.3], "imag": [0.0, 0.0, 0.0]}}')]
+            return super().fetchall()
+
+    class _SparseConnection:
+        def cursor(self, dictionary=False):
+            return _SparseCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(unv_service, "get_connection", lambda: _SparseConnection())
+    monkeypatch.setattr(unv_service, "get_test_data_mode", lambda project_id, cursor=None: "modal_unv")
+
+    result = unv_service.get_sensor_positions(101)
+
+    assert result == [
+        {"sensor_label": "1001", "sensor_type": "浣嶇Щ", "sensor_pos": [1.0, 2.0, 3.0]},
     ]

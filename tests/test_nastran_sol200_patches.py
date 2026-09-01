@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 from src.l3.core.errors import ValidationError
 from services.model_update.analysis.nastran_sol200_service import (
@@ -649,3 +650,39 @@ def test_sol200_sync_generate_run_and_store_kwargs_defaults_output_name(monkeypa
     assert kwargs["output_bdf"] == str(output_bdf)
     assert kwargs["settings"]["sol200.deck_mode"] == "include"
     assert kwargs["settings"]["sol200.sensitivity_csv"] is True
+
+
+def test_resolve_sol200_input_bdf_translates_original_project_source_name(monkeypatch, tmp_path):
+    runtime_bdf = tmp_path / "project_bdf_abcd1234.bdf"
+    runtime_bdf.write_text("CEND\nBEGIN BULK\nENDDATA\n", encoding="utf-8")
+
+    class _FakeRepo:
+        def __init__(self, db_path):
+            self.db_path = db_path
+
+        def get_project(self, project_id):
+            return {
+                "workspace": str(tmp_path),
+                "inp_path": str(runtime_bdf),
+                "source_file": runtime_bdf.name,
+                "original_inp_path": str(tmp_path / "车门模型.bdf"),
+                "original_source_file": "车门模型.bdf",
+            }
+
+        def resolve_workspace(self, stored, data_root):
+            return str(tmp_path)
+
+    monkeypatch.setattr(
+        solver_router,
+        "_resolve_project_local_input_with_fallback",
+        lambda **kwargs: (_ for _ in ()).throw(ValidationError("input_bdf not found")),
+    )
+    monkeypatch.setattr(solver_router, "RegistryRepo", _FakeRepo)
+
+    resolved = solver_router._resolve_sol200_input_bdf(
+        project_id=20,
+        explicit_path=str(tmp_path / "车门模型.bdf"),
+        file_name=None,
+    )
+
+    assert resolved == str(runtime_bdf.resolve())

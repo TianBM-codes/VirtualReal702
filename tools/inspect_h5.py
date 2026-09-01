@@ -45,6 +45,34 @@ def _visit(name, obj, *, preview_limit: int):
     print(f"{indent}[DATASET] {label} {json.dumps(info, ensure_ascii=False)}")
 
 
+def visit_min_max(name, obj):
+    if not isinstance(obj, h5py.Dataset):
+        return
+    a = np.asarray(obj[()])
+    if not np.issubdtype(a.dtype, np.number):
+        return
+    f = a[np.isfinite(a)]
+    print(name, "shape=", a.shape, "nonzero=", np.count_nonzero(f),
+          "min=", f.min() if f.size else None,
+          "max=", f.max() if f.size else None)
+
+
+def visit_components(name, obj):
+    if not isinstance(obj, h5py.Dataset) or name.split("/")[-1] != "data":
+        return
+    a = np.asarray(obj[()])
+    comps = json.loads(obj.parent.attrs.get("components", "[]"))
+    print("\n", name, "shape=", a.shape, "components=", comps)
+    b = a.reshape(-1, a.shape[-1]) if a.ndim >= 2 else a.reshape(-1, 1)
+    for i in range(b.shape[1]):
+        x = b[:, i]
+        x = x[np.isfinite(x)]
+        cname = comps[i] if i < len(comps) else str(i)
+        print(i, cname, "nonzero=", np.count_nonzero(x),
+              "min=", x.min() if x.size else None,
+              "max=", x.max() if x.size else None)
+
+
 def main():
     parser = argparse.ArgumentParser(description="查看 HDF5 文件结构和数据预览")
     parser.add_argument("path", help="H5 文件路径")
@@ -59,7 +87,9 @@ def main():
     with h5py.File(file_path, "r") as h5:
         _visit("", h5, preview_limit=args.preview)
         h5.visititems(lambda name, obj: _visit(name, obj, preview_limit=args.preview))
-
+        h5.visititems(visit_min_max)
+        h5.visititems(visit_components)
+        
 
 if __name__ == "__main__":
     main()

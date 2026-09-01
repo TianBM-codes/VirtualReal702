@@ -2,6 +2,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from uuid import uuid4
 
 from pyNastran.converters.format_converter import process_ugrid
 
@@ -88,6 +89,7 @@ def _now_iso() -> str:
 async def log_request_timing(request: Request, call_next):
     start_perf = time.perf_counter()
     start_iso = _now_iso()
+    request_id = uuid4().hex[:12]
 
     # 读取 body 并回填，让下游路由仍能正常读取
     raw_body = await request.body()
@@ -102,8 +104,11 @@ async def log_request_timing(request: Request, call_next):
     except Exception:
         body_text = f"<binary {len(raw_body)} bytes>"
 
+    # Log receipt immediately so we still know what reached the server
+    # even if downstream code crashes before a normal response is built.
     request_info = {
         "event": "request_start",
+        "request_id": request_id,
         "time": start_iso,
         "method": request.method,
         "path": request.url.path,
@@ -120,6 +125,7 @@ async def log_request_timing(request: Request, call_next):
         elapsed_ms = round((time.perf_counter() - start_perf) * 1000.0, 3)
         error_info = {
             "event": "request_error",
+            "request_id": request_id,
             "start_time": start_iso,
             "end_time": end_iso,
             "elapsed_ms": elapsed_ms,
@@ -128,6 +134,7 @@ async def log_request_timing(request: Request, call_next):
             "query": str(request.url.query or ""),
             "client_ip": request.client.host if request.client else None,
             "error": repr(exc),
+            "body": body_text,
         }
         print("[HTTP Timing] " + json.dumps(error_info, ensure_ascii=False, default=str))
         raise
@@ -137,6 +144,7 @@ async def log_request_timing(request: Request, call_next):
     response.headers["X-Elapsed-Time-Ms"] = str(elapsed_ms)
     response_info = {
         "event": "request_end",
+        "request_id": request_id,
         "start_time": start_iso,
         "end_time": end_iso,
         "elapsed_ms": elapsed_ms,
@@ -145,6 +153,7 @@ async def log_request_timing(request: Request, call_next):
         "query": str(request.url.query or ""),
         "client_ip": request.client.host if request.client else None,
         "status_code": response.status_code,
+        "body": body_text,
     }
     print("[HTTP Timing] " + json.dumps(response_info, ensure_ascii=False, default=str))
     return response

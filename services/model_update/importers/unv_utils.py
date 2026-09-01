@@ -26,6 +26,13 @@ def detect_unv_encoding(filename: str, sample_size: int = 512 * 1024) -> str:
     if raw.startswith(b"\xfe\xff"):
         return "utf-16-be"
 
+    for encoding in ("utf-8", "gb18030", "gbk", "cp936"):
+        try:
+            raw.decode(encoding)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+
     best = from_bytes(raw).best()
     if best is not None and best.encoding:
         return str(best.encoding)

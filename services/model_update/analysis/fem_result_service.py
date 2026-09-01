@@ -1,6 +1,7 @@
 """FEM modal/static result import helpers."""
 
 import os
+import re
 
 import numpy as np
 
@@ -13,6 +14,10 @@ from .fem_modal_bundle_service import (
     save_fem_modal_manifest,
 )
 from .project_path_service import resolve_project_cal_subdir
+
+
+_STATIC_OP2_SUBCASE_PATTERN = re.compile(r"^SUBCASE_\d+$", re.IGNORECASE)
+
 
 def _load_modal_payload(file_path=None, modes=None) -> List[dict]:
     if file_path:
@@ -413,6 +418,36 @@ def _resolve_project_result_workspace(project_id: int, result_group: str) -> Tup
     workspace = repo.resolve_workspace(str(project_row["workspace"]), settings.data_root)
     workspace_abs = _sens._workspace_path(workspace)
     return workspace_abs, dict(result_group_row)
+
+
+def _list_multi_subcase_static_steps(*, project_id: int, result_group: str) -> List[str]:
+    """Return static OP2 subcases only when the result group has more than one."""
+    workspace_abs, _ = _resolve_project_result_workspace(project_id, result_group)
+    conn = _sens._manifest_conn(workspace_abs)
+    try:
+        rg_clause, rg_params = _manifest_result_group_clause(result_group)
+        step_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT step_name, procedure
+                FROM steps
+                WHERE {rg_clause}
+                ORDER BY step_number, step_name
+                """,
+                rg_params,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    subcase_steps = [
+        str(row["step_name"])
+        for row in step_rows
+        if str(row.get("procedure") or "").upper() == "STATIC"
+        and _STATIC_OP2_SUBCASE_PATTERN.fullmatch(str(row.get("step_name") or ""))
+    ]
+    return subcase_steps if len(subcase_steps) > 1 else []
 
 
 def _collect_project_result_static_rows(
@@ -935,22 +970,40 @@ def import_fe_static_results_from_project_result(
             stage="project_result_store_started",
             percent=0,
         )
-        static_payload = _collect_project_result_static_rows(
-            project_id=int(project_id),
-            result_group=str(result_group),
-            step=step,
-            frame=frame,
-            instances=instances,
+        # An omitted step keeps legacy behavior except for static OP2 groups
+        # containing multiple SUBCASE_n results, which map to consecutive cases.
+        subcase_steps = (
+            _list_multi_subcase_static_steps(
+                project_id=int(project_id),
+                result_group=str(result_group),
+            )
+            if step is None
+            else []
         )
-        static_rows = _load_static_result_payload(
-            rows=[
-                {
-                    **row,
-                    "load_case_no": int(load_case_no),
-                }
-                for row in static_payload["rows"]
-            ]
+        import_targets = (
+            [(step_name, int(load_case_no) + index) for index, step_name in enumerate(subcase_steps)]
+            if subcase_steps
+            else [(step, int(load_case_no))]
         )
+        payloads = []
+        for target_step, target_load_case_no in import_targets:
+            static_payload = _collect_project_result_static_rows(
+                project_id=int(project_id),
+                result_group=str(result_group),
+                step=target_step,
+                frame=frame,
+                instances=instances,
+            )
+            static_rows = _load_static_result_payload(
+                rows=[
+                    {
+                        **row,
+                        "load_case_no": target_load_case_no,
+                    }
+                    for row in static_payload["rows"]
+                ]
+            )
+            payloads.append((static_payload, static_rows, target_load_case_no))
         if overwrite:
             log_project_info(
                 int(project_id),
@@ -958,27 +1011,58 @@ def import_fe_static_results_from_project_result(
                 stage="project_result_store_overwrite",
                 percent=15,
             )
-            cursor.execute(
-                "DELETE FROM t_mt_py_fem_static_result WHERE pid = %s AND load_case_no = %s",
-                (int(project_id), int(load_case_no)),
-            )
-        result = _persist_fe_static_results(
-            cursor,
-            project_id=int(project_id),
-            static_rows=static_rows,
-            load_case_no=int(load_case_no),
-        )
+            for _, _, target_load_case_no in payloads:
+                cursor.execute(
+                    "DELETE FROM t_mt_py_fem_static_result WHERE pid = %s AND load_case_no = %s",
+                    (int(project_id), target_load_case_no),
+                )
+
+        persisted_results = []
+        for static_payload, static_rows, target_load_case_no in payloads:
+            persisted_results.append((
+                static_payload,
+                target_load_case_no,
+                _persist_fe_static_results(
+                    cursor,
+                    project_id=int(project_id),
+                    static_rows=static_rows,
+                    load_case_no=target_load_case_no,
+                ),
+            ))
         conn.commit()
+        first_payload = persisted_results[0][0]
+        result = {
+            "project_id": int(project_id),
+            "load_case_nos": [item[1] for item in persisted_results],
+            "row_count": sum(int(item[2]["row_count"]) for item in persisted_results),
+            "source_file_path": None,
+            "rows_preview": [
+                row
+                for _, _, persisted in persisted_results
+                for row in persisted["rows_preview"]
+            ][:20],
+        }
         result.update(
             {
                 "result_group": str(result_group),
-                "workspace": static_payload["workspace"],
-                "step_name": static_payload["step_name"],
-                "frame_idx": int(static_payload["frame_idx"]),
-                "instances": list(static_payload["instances"]),
+                "workspace": first_payload["workspace"],
+                "step_name": first_payload["step_name"],
+                "frame_idx": int(first_payload["frame_idx"]),
+                "instances": list(first_payload["instances"]),
                 "overwrite": bool(overwrite),
             }
         )
+        if subcase_steps:
+            result["subcases"] = [
+                {
+                    "step_name": static_payload["step_name"],
+                    "load_case_no": target_load_case_no,
+                    "frame_idx": int(static_payload["frame_idx"]),
+                    "instances": list(static_payload["instances"]),
+                    "row_count": int(persisted["row_count"]),
+                }
+                for static_payload, target_load_case_no, persisted in persisted_results
+            ]
         log_project_step(
             int(project_id),
             f"结果组静力结果入库完成，结果组 {result_group}，记录 {int(result['row_count'])} 条",

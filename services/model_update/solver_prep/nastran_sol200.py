@@ -24,6 +24,23 @@ SKIP_SOL200_PARAM_NAMES = {
 }
 
 
+def _normalize_sol200_parameter_type(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    mapping = {
+        "T": "H",
+        "H": "H",
+        "E": "E",
+        "RHO": "RHO",
+    }
+    resolved = mapping.get(token)
+    if not resolved:
+        raise ValidationError(
+            "unsupported SOL200 parameter type",
+            {"supported_types": ["H", "T", "E", "RHO"], "parameter_type": token},
+        )
+    return resolved
+
+
 def _normalize_sol200_settings(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     resolved = dict(settings or {})
     if resolved.get("dynamic.norm") in (None, ""):
@@ -196,7 +213,7 @@ def _normalize_sol200_response_label(name: object, *, fallback_prefix: str, inde
 
 
 def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> List[str]:
-    ptype = str(parameter.get("type") or "").upper()
+    ptype = _normalize_sol200_parameter_type(parameter.get("type"))
     if ptype == "H":
         property_id = parameter.get("property_id")
         if property_id is None:
@@ -241,7 +258,7 @@ def _build_parameter_relation_lines(index: int, parameter: Dict[str, Any]) -> Li
         ]
     raise ValidationError(
         "unsupported SOL200 parameter type",
-        {"supported_types": ["H", "E", "RHO"], "parameter_type": ptype},
+        {"supported_types": ["H", "T", "E", "RHO"], "parameter_type": ptype},
     )
 
 

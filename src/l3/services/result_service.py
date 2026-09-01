@@ -1068,7 +1068,7 @@ def frame_scalars(
 
     span = val_max - val_min
     has_data = np.isfinite(scalar_vertex)
-    if span < 1e-12:
+    if span < 1e-30:
         u_per_vertex = np.where(has_data, 0.0, np.nan).astype(np.float32)
     else:
         u_per_vertex = np.where(

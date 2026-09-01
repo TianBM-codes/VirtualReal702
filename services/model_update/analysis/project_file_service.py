@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 from typing import Optional, Sequence
 
+from src.l3.core.config import settings
 from src.l3.core.errors import NotFoundError, ValidationError
+from src.l3.infra.registry_repo import RegistryRepo
 
 from .project_path_service import resolve_project_cal_subdir, resolve_project_workspace
 
@@ -37,6 +39,46 @@ def resolve_project_cal_root(project_id: int, *parts: Optional[str]) -> Path:
     return Path(resolve_project_cal_subdir(int(project_id), *_clean_parts(parts))).expanduser().resolve()
 
 
+def _translate_project_source_reference(project_id: int, raw: str) -> Optional[Path]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+
+    try:
+        repo = RegistryRepo(settings.registry_db_path)
+        proj = repo.get_project(str(int(project_id)))
+    except Exception:
+        return None
+    if proj is None:
+        return None
+
+    runtime_path = str(proj["inp_path"] or "").strip()
+    runtime_file = str(proj["source_file"] or "").strip()
+    original_path = str(proj["original_inp_path"] or "").strip() if "original_inp_path" in proj.keys() else ""
+    original_file = str(proj["original_source_file"] or "").strip() if "original_source_file" in proj.keys() else ""
+    workspace = Path(repo.resolve_workspace(proj["workspace"], settings.data_root)).expanduser().resolve()
+
+    normalized_input = str(Path(text).expanduser())
+    input_name = Path(normalized_input).name
+
+    matches_original_path = bool(original_path) and normalized_input == original_path
+    matches_original_file = bool(original_file) and input_name == original_file
+    matches_runtime_file = bool(runtime_file) and input_name == runtime_file
+    if not (matches_original_path or matches_original_file or matches_runtime_file):
+        return None
+
+    candidates = []
+    if runtime_path:
+        candidates.append(Path(runtime_path).expanduser().resolve())
+    if runtime_file:
+        candidates.append((workspace / runtime_file).resolve())
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def resolve_project_existing_file(project_id: int, path_or_name: str, field_name: str) -> Path:
     raw = str(path_or_name or "").strip()
     if not raw:
@@ -58,6 +100,9 @@ def resolve_project_existing_file(project_id: int, path_or_name: str, field_name
         )
 
     if not resolved.exists():
+        translated = _translate_project_source_reference(int(project_id), raw)
+        if translated is not None:
+            return translated
         raise NotFoundError(field_name, {"project_id": int(project_id), field_name: str(resolved)})
     if not resolved.is_file():
         raise ValidationError(

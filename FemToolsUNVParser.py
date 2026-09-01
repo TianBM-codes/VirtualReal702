@@ -48,6 +48,17 @@ def _to_unv_float(text: str) -> float:
     return float(str(text).replace("D", "E").replace("d", "E"))
 
 
+def _read_unv_lines(filename: str) -> List[str]:
+    with open(filename, "rb") as f:
+        raw = f.read()
+    for encoding in ("utf-8", "gb18030", "latin-1"):
+        try:
+            return raw.decode(encoding).splitlines(keepends=True)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+
+
 def _identity_coordinate_system():
     return {
         "label": 0,
@@ -333,8 +344,7 @@ def parse_unv(filename: str):
       modes: List[dict]              # 每个 dict 表示一个模态
     """
     message = {}
-    with open(filename, "r") as f:
-        lines = f.readlines()
+    lines = _read_unv_lines(filename)
 
     lines_count = len(lines)
     i = 0
@@ -846,7 +856,8 @@ def parse_unv(filename: str):
                 mode_info["eigenvalue_Re"] = eig_real
                 mode_info["eigenvalue_Im"] = eig_imag
 
-            modes.append(mode_info)
+            if displacements:
+                modes.append(mode_info)
 
         else:
             while i < lines_count and lines[i].strip() != "-1":

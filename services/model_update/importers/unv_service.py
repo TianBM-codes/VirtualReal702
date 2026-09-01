@@ -1,4 +1,5 @@
 import json
+import math
 
 import meshio
 import numpy as np
@@ -43,6 +44,94 @@ def _safe_int(value):
     if value is None:
         return None
     return int(_to_builtin(value))
+
+
+def _json_nan():
+    return float("nan")
+
+
+def _load_modal_shape_rows(cursor, project_id):
+    cursor.execute(
+        """
+        SELECT f.mode_no, f.frequency, s.modal_shape
+        FROM t_mt_py_test_modal_frequency f
+        LEFT JOIN t_mt_py_test_modal_shape s
+          ON f.pid = s.pid AND f.mode_no = s.mode_no
+        WHERE f.pid = %s
+        ORDER BY f.mode_no
+        """,
+        (project_id,),
+    )
+    rows = []
+    for iter_shape in cursor.fetchall():
+        mode_no, frequency, modal_shape = iter_shape['mode_no'], iter_shape['frequency'], iter_shape['modal_shape']
+        parsed_shape = {}
+        if modal_shape:
+            loaded = json.loads(modal_shape)
+            if isinstance(loaded, dict):
+                parsed_shape = loaded
+        rows.append(
+            {
+                "mode_no": _safe_int(mode_no),
+                "frequency": frequency,
+                "shape": parsed_shape,
+            }
+        )
+    return rows
+
+
+def _collect_modal_node_ids(modal_rows):
+    node_ids = set()
+    for row in modal_rows:
+        for node_id, value in (row.get("shape") or {}).items():
+            if value is None:
+                continue
+            try:
+                node_ids.add(int(node_id))
+            except (TypeError, ValueError):
+                continue
+    return node_ids
+
+
+def _filter_test_mesh(nodes, elements, valid_node_ids):
+    filtered_nodes = [row for row in nodes if _safe_int(row[0]) in valid_node_ids]
+    if not filtered_nodes:
+        return np.array([], dtype=int), [], []
+
+    node_ids = np.array(filtered_nodes, dtype=int)[:, 0].flatten()
+    node2idx = {int(nd): ii for ii, nd in enumerate(node_ids)}
+    node_coords = np.array(filtered_nodes, dtype=float)[:, 1:].flatten().tolist()
+
+    filtered_elements = []
+    for point1, point2 in elements:
+        p1 = _safe_int(point1)
+        p2 = _safe_int(point2)
+        if p1 in node2idx and p2 in node2idx:
+            filtered_elements.extend([node2idx[p1], node2idx[p2]])
+    return node_ids, node_coords, filtered_elements
+
+
+def _scaled_triplet_or_nan(node_data, scale):
+    if not isinstance(node_data, dict):
+        return [_json_nan(), _json_nan(), _json_nan()], [_json_nan(), _json_nan(), _json_nan()]
+
+    real_part = list(_to_builtin(node_data.get("real") or []))
+    imag_part = list(_to_builtin(node_data.get("imag") or []))
+    while len(real_part) < 3:
+        real_part.append(_json_nan())
+    while len(imag_part) < 3:
+        imag_part.append(_json_nan())
+
+    scaled_real = []
+    scaled_imag = []
+    for idx in range(3):
+        real_value = real_part[idx]
+        imag_value = imag_part[idx]
+        real_value = float(real_value) if real_value is not None else _json_nan()
+        imag_value = float(imag_value) if imag_value is not None else _json_nan()
+        scaled_real.append(real_value * scale if not math.isnan(real_value) else _json_nan())
+        scaled_imag.append(imag_value * scale if not math.isnan(imag_value) else _json_nan())
+    return scaled_real, scaled_imag
 
 
 def _resolve_import_file_id(project_id, file_id):
@@ -631,74 +720,56 @@ def get_modal_shape(project_id):
     try:
         display_scales = get_test_display_scale_factors(int(project_id), cursor=cursor)
         modal_scale = float(display_scales["dynamic"])
-        node_sql = """
-                    SELECT nid, x, y, z
-                    FROM t_mt_py_test_node
-                    WHERE pid = %s
-                    ORDER BY nid
-                    """
-        ele_sql = """
-                    SELECT point1,point2
-                    FROM t_mt_py_test_element
-                    WHERE pid = %s
-                    ORDER BY element_no
-                    """
-        freq_sql = """
-                   SELECT f.mode_no, f.frequency,
-                   s.modal_shape
-                   FROM t_mt_py_test_modal_frequency f
-                   LEFT JOIN t_mt_py_test_modal_shape s
-                   ON f.pid = s.pid AND f.mode_no = s.mode_no
-                   WHERE f.pid = %s
-                   ORDER BY f.mode_no
-                   """
-        """
-        读取节点结果
-        """
-        cursor.execute(node_sql, (project_id,))
+
+        cursor.execute(
+            """
+            SELECT nid, x, y, z
+            FROM t_mt_py_test_node
+            WHERE pid = %s
+            ORDER BY nid
+            """,
+            (project_id,),
+        )
         nodes = cursor.fetchall()
 
-        node_ids = np.array(nodes, dtype=int)[:, 0].flatten()
-        node2idx = {}
-        for ii, nd in enumerate(node_ids):
-            node2idx[nd] = ii
-        node_coords = np.array(nodes, dtype=float)[:, 1:].flatten().tolist()
+        cursor.execute(
+            """
+            SELECT point1, point2
+            FROM t_mt_py_test_element
+            WHERE pid = %s
+            ORDER BY element_no
+            """,
+            (project_id,),
+        )
+        elements = cursor.fetchall()
 
-        """
-        读取单元信息
-        """
-        cursor.execute(ele_sql, (project_id,))
-        eles_fetchall = np.array(cursor.fetchall()).flatten()
-        eles = [node2idx[ii] for ii in eles_fetchall]
-
-        """
-        读取模态信息
-        """
-        cursor.execute(freq_sql, (project_id,))
-        modal = cursor.fetchall()
+        modal_rows = _load_modal_shape_rows(cursor, project_id)
+        valid_node_ids = _collect_modal_node_ids(modal_rows)
+        node_ids, node_coords, eles = _filter_test_mesh(nodes, elements, valid_node_ids)
 
         modal_shape = []
-        for iter_modal in modal:
-            shape = json.loads(iter_modal[2])
-            iter_modal_shape = []
+        for iter_modal in modal_rows:
+            shape = iter_modal["shape"]
             real_modal_shape = []
             imag_modal_shape = []
             for n_id in node_ids:
-                iter_modal_shape.extend(shape[str(n_id)])
-                real_modal_shape.extend([float(value) * modal_scale for value in shape[str(n_id)]['real']])
-                imag_modal_shape.extend([float(value) * modal_scale for value in shape[str(n_id)]['imag']])
-            modal_shape.append({"order": iter_modal[0], "frequency": f"{iter_modal[1]}", "unit": "Hz",
-                                "position": {"real": real_modal_shape, "imag": imag_modal_shape}})
+                dense_real, dense_imag = _scaled_triplet_or_nan(shape.get(str(int(n_id))), modal_scale)
+                real_modal_shape.extend(dense_real)
+                imag_modal_shape.extend(dense_imag)
+            modal_shape.append(
+                {
+                    "order": iter_modal["mode_no"],
+                    "frequency": f"{iter_modal['frequency']}",
+                    "unit": "Hz",
+                    "position": {"real": real_modal_shape, "imag": imag_modal_shape},
+                }
+            )
 
-        """
-        组装成json格式
-        """
-        res_json = {"points": {"ids": node_ids.tolist(),
-                               "position": node_coords,
-                               "ItemSize": 3},
-                    "elements": {"type": 2, "index": eles, "ItemSize": 2},
-                    "modal_shape": modal_shape}
-        return res_json
+        return {
+            "points": {"ids": node_ids.tolist(), "position": node_coords, "ItemSize": 3},
+            "elements": {"type": 2, "index": eles, "ItemSize": 2},
+            "modal_shape": modal_shape,
+        }
 
     except Exception:
         raise
@@ -767,6 +838,10 @@ def get_sensor_positions(project_id):
     try:
         test_data_mode = str(get_test_data_mode(int(project_id), cursor=cursor) or "").strip().lower()
         if test_data_mode == "modal_unv":
+            modal_rows = _load_modal_shape_rows(cursor, project_id)
+            valid_node_ids = _collect_modal_node_ids(modal_rows)
+            if not valid_node_ids:
+                return []
             cursor.execute(
                 """
                 SELECT CAST(nid AS CHAR) AS test_node_id, x AS x_position, y AS y_position, z AS z_position
@@ -776,7 +851,7 @@ def get_sensor_positions(project_id):
                 """,
                 (project_id,),
             )
-            rows = cursor.fetchall()
+            rows = [row for row in cursor.fetchall() if _safe_int(row["test_node_id"]) in valid_node_ids]
             return [_sensor_position_item_from_test_node(row) for row in rows]
 
         cursor.execute(
@@ -891,7 +966,7 @@ def dump_unv_modal_shapes_to_vtk(project_id, output_path):
         modal_shape = {}
         for iter_shape in res_json["modal_shape"]:
             name = f"{iter_shape['order']}_{iter_shape['frequency']}"
-            modal_pos = np.reshape(np.array(iter_shape["position"], dtype=float), (-1, 3)) - node_pos
+            modal_pos = np.reshape(np.array(iter_shape["position"]["real"], dtype=float), (-1, 3))
             modal_shape["unit"] = "Hz"
             modal_shape[name] = modal_pos
         meshio.write_points_cells(filename=output_path,
