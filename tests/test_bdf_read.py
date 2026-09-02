@@ -59,3 +59,39 @@ def test_read_bdf_safe_skips_invalid_prod_and_dependent_crod(tmp_path):
     assert 21 in model.elements
     assert len(model.read_bdf_safe_warnings) == 1
     assert "PID(s) 10" in model.read_bdf_safe_warnings[0]
+
+
+def test_read_bdf_safe_renumbers_duplicate_property_ids_by_type(tmp_path):
+    bdf_path = tmp_path / "duplicate_properties.bdf"
+    bdf_path.write_text(
+        "\n".join(
+            [
+                "SOL 103",
+                "CEND",
+                "BEGIN BULK",
+                "GRID,1,,0.,0.,0.",
+                "GRID,2,,1.,0.,0.",
+                "GRID,3,,1.,1.,0.",
+                "GRID,4,,0.,1.,0.",
+                "MAT1,1,210000.,,0.3",
+                "PSHELL,7,1,0.1",
+                "CQUAD4,100,7,1,2,3,4",
+                "PBAR,7,1,1.0",
+                "CBAR,200,7,1,2,0.,1.,0.",
+                "ENDDATA",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    model = read_bdf_safe(str(bdf_path), xref=False)
+
+    assert 7 in model.properties
+    assert model.properties[7].type == "PSHELL"
+    new_pids = [pid for pid, prop in model.properties.items() if prop.type == "PBAR"]
+    assert len(new_pids) == 1
+    assert new_pids[0] != 7
+    assert model.elements[100].pid == 7
+    assert model.elements[200].pid == new_pids[0]
+    assert "renumbered duplicate property PID(s) 7" in model.read_bdf_safe_warnings[0]

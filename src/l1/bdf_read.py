@@ -45,6 +45,27 @@ import sys
 _CANDIDATE_ENCODINGS = ('utf-8-sig', 'utf-8', 'gbk', 'latin-1')
 _PROD_FIELD_MISSING_A_RE = re.compile(r"\bA\s*=\s*None\b.*\bfield\s*#?3\b", re.IGNORECASE | re.DOTALL)
 
+_PROPERTY_TO_ELEMENTS = {
+    'PSHELL': {'CQUAD4', 'CQUADR', 'CQUAD8', 'CTRIA3', 'CTRIAR', 'CTRIA6'},
+    'PCOMP': {'CQUAD4', 'CQUADR', 'CQUAD8', 'CTRIA3', 'CTRIAR', 'CTRIA6'},
+    'PCOMPG': {'CQUAD4', 'CQUADR', 'CQUAD8', 'CTRIA3', 'CTRIAR', 'CTRIA6'},
+    'PSHEAR': {'CSHEAR'},
+    'PBAR': {'CBAR'},
+    'PBEAM': {'CBEAM'},
+    'PBEND': {'CBEND'},
+    'PBARL': {'CBAR'},
+    'PBEAML': {'CBEAM'},
+    'PROD': {'CROD'},
+    'PTUBE': {'CTUBE'},
+    'PBUSH': {'CBUSH'},
+    'PBUSH1D': {'CBUSH1D'},
+    'PELAS': {'CELAS1'},
+    'PDAMP': {'CDAMP1'},
+    'PMASS': {'CMASS1'},
+    'PSOLID': {'CHEXA', 'CPENTA', 'CTETRA'},
+}
+_PROPERTY_CARDS = set(_PROPERTY_TO_ELEMENTS)
+
 
 def detect_bdf_encoding(path):
     """探测 BDF 文件的真实文本编码，返回能完整解码它的第一个候选编码名。"""
@@ -86,6 +107,153 @@ def _split_bdf_fields(line):
     if ',' in text:
         return [field.strip() for field in text.split(',')]
     return text.split()
+
+
+def _sort_bdf_id_key(value):
+    return int(value) if str(value).isdigit() else str(value)
+
+
+def _line_newline(line):
+    stripped = line.rstrip('\r\n')
+    return line[len(stripped):] or '\n'
+
+
+def _format_free_card(fields, comment=''):
+    body = ','.join(str(field) for field in fields)
+    if comment:
+        body += ' $' + comment.strip()
+    return body
+
+
+def _is_duplicate_ids_error(exc):
+    return exc.__class__.__name__ == 'DuplicateIDsError'
+
+
+def _scan_duplicate_property_cleanup(path, encoding):
+    """Renumber duplicate property IDs by property card type and matching element type."""
+    with open(path, 'rb') as f:
+        text = f.read().decode(encoding, errors='replace')
+
+    raw_lines = text.splitlines(keepends=True)
+    parsed = []
+    property_entries = []
+    used_pids = set()
+
+    for lineno, line in enumerate(raw_lines, start=1):
+        base, _, comment = line.partition('$')
+        fields = _split_bdf_fields(line)
+        card = fields[0].upper().rstrip('*') if fields else ''
+        parsed.append({
+            'lineno': lineno,
+            'line': line,
+            'fields': fields,
+            'card': card,
+            'comment': comment.rstrip('\r\n'),
+        })
+        if card not in _PROPERTY_CARDS or len(fields) < 2:
+            continue
+        pid = fields[1]
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
+            continue
+        used_pids.add(pid_int)
+        property_entries.append({
+            'lineno': lineno,
+            'card': card,
+            'pid': pid_int,
+            'fields': fields,
+            'comment': comment.rstrip('\r\n'),
+        })
+
+    if not property_entries:
+        return None
+
+    next_pid = max(used_pids) + 1
+    seen_types_by_pid = {}
+    renumber_by_card_pid = {}
+    renumber_by_line = {}
+    duplicate_pids = set()
+    duplicate_types = []
+    skip_property_lines = set()
+
+    for entry in property_entries:
+        pid = entry['pid']
+        card = entry['card']
+        seen_types = seen_types_by_pid.setdefault(pid, set())
+        if not seen_types:
+            seen_types.add(card)
+            continue
+
+        duplicate_pids.add(pid)
+        if card in seen_types:
+            # Same property card type + same PID is genuinely ambiguous for elements.
+            # Keep the first definition so pyNastran can continue parsing.
+            skip_property_lines.add(entry['lineno'])
+            continue
+
+        while next_pid in used_pids:
+            next_pid += 1
+        new_pid = next_pid
+        next_pid += 1
+        used_pids.add(new_pid)
+        renumber_by_card_pid[(card, pid)] = new_pid
+        renumber_by_line[entry['lineno']] = new_pid
+        duplicate_types.append('{}:{}->{}'.format(card, pid, new_pid))
+        seen_types.add(card)
+
+    if not renumber_by_card_pid and not skip_property_lines:
+        return None
+
+    rewritten = {}
+    for item in parsed:
+        lineno = item['lineno']
+        fields = item['fields']
+        card = item['card']
+        if not fields:
+            continue
+        newline = _line_newline(item['line'])
+
+        if lineno in skip_property_lines:
+            stripped = item['line'].rstrip('\r\n')
+            rewritten[lineno] = '$ read_bdf_safe skipped duplicate property: ' + stripped + newline
+            continue
+
+        if card in _PROPERTY_CARDS and len(fields) >= 2:
+            try:
+                old_pid = int(fields[1])
+            except (TypeError, ValueError):
+                old_pid = None
+            if lineno in renumber_by_line:
+                new_fields = list(fields)
+                new_fields[1] = str(renumber_by_line[lineno])
+                rewritten[lineno] = _format_free_card(new_fields, item['comment']) + newline
+                continue
+
+        if len(fields) >= 3:
+            try:
+                elem_pid = int(fields[2])
+            except (TypeError, ValueError):
+                elem_pid = None
+            if elem_pid is not None:
+                for (prop_card, old_pid), new_pid in renumber_by_card_pid.items():
+                    if elem_pid == old_pid and card in _PROPERTY_TO_ELEMENTS.get(prop_card, ()):
+                        new_fields = list(fields)
+                        new_fields[2] = str(new_pid)
+                        rewritten[lineno] = _format_free_card(new_fields, item['comment']) + newline
+                        break
+
+    if not rewritten:
+        return None
+
+    return {
+        'text': text,
+        'raw_lines': raw_lines,
+        'rewritten': rewritten,
+        'duplicate_pids': sorted(duplicate_pids),
+        'renumbered': duplicate_types,
+        'skipped_same_type_count': len(skip_property_lines),
+    }
 
 
 def _scan_invalid_prod_cleanup(path, encoding):
@@ -159,6 +327,18 @@ def _write_cleanup_sidecar(path, encoding, cleanup):
                 f.write('$ read_bdf_safe skipped invalid card: ' + stripped + newline)
             else:
                 f.write(line)
+    return sidecar
+
+
+def _write_duplicate_property_sidecar(path, encoding, cleanup):
+    """Write a temporary BDF with duplicate property IDs made pyNastran-unique."""
+    d, base = os.path.split(os.path.abspath(path))
+    root, ext = os.path.splitext(base)
+    sidecar = os.path.join(d, root + '.pyn_propids' + (ext or '.bdf'))
+
+    with open(sidecar, 'w', encoding=encoding, newline='') as f:
+        for lineno, line in enumerate(cleanup['raw_lines'], start=1):
+            f.write(cleanup['rewritten'].get(lineno, line))
     return sidecar
 
 
@@ -251,6 +431,40 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
             len(cleanup['dependent_crod_eids']),
             os.path.basename(bdf_filename),
         )
+        sys.stderr.write(warning + '\n')
+
+        m2 = BDF(debug=debug)
+        if disable_cards:
+            m2.disable_cards(list(disable_cards))
+        _record_warning(m2, warning)
+        try:
+            m2.read_bdf(sidecar, xref=xref, punch=punch, encoding=enc, **read_kwargs)
+            return m2
+        finally:
+            try:
+                os.remove(sidecar)
+            except OSError:
+                pass
+    except Exception as exc:
+        if not _is_duplicate_ids_error(exc):
+            raise
+
+        cleanup = _scan_duplicate_property_cleanup(bdf_filename, enc)
+        if not cleanup:
+            raise
+
+        sidecar = _write_duplicate_property_sidecar(bdf_filename, enc, cleanup)
+        details = ', '.join(cleanup['renumbered']) or 'none'
+        warning = (
+            'read_bdf_safe: renumbered duplicate property PID(s) {} ({})'
+        ).format(
+            ', '.join(str(pid) for pid in cleanup['duplicate_pids']),
+            details,
+        )
+        if cleanup['skipped_same_type_count']:
+            warning += '; skipped {} same-type duplicate property card(s)'.format(
+                cleanup['skipped_same_type_count'])
+        warning += ' while loading {}'.format(os.path.basename(bdf_filename))
         sys.stderr.write(warning + '\n')
 
         m2 = BDF(debug=debug)
