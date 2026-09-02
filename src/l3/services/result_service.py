@@ -9,7 +9,6 @@ import math
 import os
 import re
 import json
-from collections import defaultdict
 from typing import Dict, Literal, Optional, Tuple
 
 import h5py
@@ -1213,12 +1212,6 @@ def _en_per_vertex_averaged(
     Nv = len(vtx_node_row)
     Nt = len(src_elem_row)
 
-    # Build (etype_bytes, elem_row) → global_elem_idx
-    elem_to_gidx: Dict[tuple, int] = {
-        (avg_elem_etype[i].tobytes(), int(avg_elem_row[i])): i
-        for i in range(len(avg_elem_row))
-    }
-
     # Step 1: read raw EN scalars per etype → scalar_en_by_etype[etype_str] = [N_elem, n_local]
     scalar_en_by_etype: Dict[bytes, np.ndarray] = {}
     num_frames = None
@@ -1256,61 +1249,120 @@ def _en_per_vertex_averaged(
     if not scalar_en_by_etype or num_frames is None:
         return None
 
-    # Step 2: for each triangle corner, look up raw value → build domain samples
-    # domain_node_vals[did][node_row] = list of (tri_corner_flat_idx, raw_value)
-    # tri_corner_flat_idx = tri * 3 + corner; lets us scatter back to vertices
-    domain_node_vals: Dict[int, Dict[int, list]] = defaultdict(lambda: defaultdict(list))
+    # Step 2 (per etype): map (etype, elem_row) → unique-element idx (gidx) → domain,
+    # and gather each corner's raw value. Dense row→gidx lookup tables replace the
+    # old per-triangle Python dict lookups; bounds rules match the old loop
+    # (missing etype block or out-of-range er/li → no data for that corner).
+    tri_did    = np.full(Nt, -1, dtype=np.int64)   # domain id per triangle, -1 = none
+    corner_val = np.full((Nt, 3), np.nan, dtype=np.float32)
+    corner_ok  = np.zeros((Nt, 3), dtype=bool)
+    dom_len    = len(domain_id)
+
+    for etype_bytes in np.unique(src_etype):
+        tmask = src_etype == etype_bytes
+        er = src_elem_row[tmask].astype(np.int64)          # [k]
+
+        # row → gidx table for this etype (last entry wins, like the old dict);
+        # rows beyond the table or gidx ≥ len(domain_id) stay at did = -1.
+        gpos = np.where(avg_elem_etype == etype_bytes)[0]
+        if gpos.size and er.size and dom_len:
+            arow = avg_elem_row[gpos].astype(np.int64)
+            lut = np.full(int(arow.max()) + 2, -1, dtype=np.int64)
+            lut[arow] = gpos
+            gid = lut[np.minimum(er, lut.size - 1)]
+            safe = (gid >= 0) & (gid < dom_len)
+            did_e = np.full(er.shape, -1, dtype=np.int64)
+            did_e[safe] = domain_id[gid[safe]]
+            tri_did[tmask] = did_e
+
+        sc = scalar_en_by_etype.get(etype_bytes)
+        if sc is None or er.size == 0:
+            continue
+        li = src_local_node_idx[tmask].astype(np.int64)    # [k, 3]
+        ok = (er[:, None] < sc.shape[0]) & (li < sc.shape[1])
+        vals = sc[np.minimum(er, sc.shape[0] - 1)[:, None],
+                  np.minimum(li, sc.shape[1] - 1)]
+        vals[~ok] = np.nan
+        corner_val[tmask] = vals
+        corner_ok[tmask]  = ok
+
+    flat_vtx = render_indices.ravel()                        # [Nt*3]
+    flat_val = corner_val.reshape(-1)
+    flat_ok  = corner_ok.reshape(-1)
+    flat_did = np.repeat(tri_did, 3)
+
     # vtx_corner_val[vtx] = raw scalar for the specific (er, li) of that vertex
+    # (same val for same vertex regardless of tri, so duplicate writes are benign)
     vtx_corner_val = np.full(Nv, np.nan, dtype=np.float32)
+    vtx_corner_val[flat_vtx[flat_ok]] = flat_val[flat_ok]
 
-    for tri in range(Nt):
-        eb  = src_etype[tri]
-        er  = int(src_elem_row[tri])
-        sc  = scalar_en_by_etype.get(eb)
-        if sc is None:
-            continue
-        gidx = elem_to_gidx.get((eb.tobytes(), er))
-        did  = int(domain_id[gidx]) if (gidx is not None and gidx < len(domain_id)) else -1
-
-        for corner in range(3):
-            vtx = int(render_indices[tri, corner])
-            li  = int(src_local_node_idx[tri, corner])
-            if er >= sc.shape[0] or li >= sc.shape[1]:
-                continue
-            val = float(sc[er, li])
-            vtx_corner_val[vtx] = val          # same val for same vertex regardless of tri
-            if did >= 0:
-                nr = int(vtx_node_row[vtx])
-                domain_node_vals[did][nr].append(val)
-
-    # Step 3: per-domain 75% conditional averaging → node_row → averaged scalar
-    node_averaged: Dict[tuple, float] = {}   # (did, node_row) → value
-
-    for did, node_dict in domain_node_vals.items():
-        all_v = [v for lst in node_dict.values() for v in lst]
-        d_range = max(all_v) - min(all_v) if all_v else 0.0
-        for nr, lst in node_dict.items():
-            spread = max(lst) - min(lst)
-            if d_range < 1e-12 or spread <= average_threshold * d_range:
-                node_averaged[(did, nr)] = float(sum(lst) / len(lst))
-            # else: keep per-element original (handled via vtx_corner_val below)
-
-    # Step 4: assemble scalar_vertex
+    # Step 3: per-(domain, node_row) stats via sort + reduceat, then the 75%
+    # conditional-averaging rule (spread ≤ threshold × domain range → use mean).
     scalar_vertex = vtx_corner_val.copy()   # default: original per-elem values
+    nr_stride = int(vtx_node_row.max()) + 1 if Nv else 1
 
-    for tri in range(Nt):
-        eb   = src_etype[tri]
-        er   = int(src_elem_row[tri])
-        gidx = elem_to_gidx.get((eb.tobytes(), er))
-        did  = int(domain_id[gidx]) if (gidx is not None and gidx < len(domain_id)) else -1
-        if did < 0:
-            continue
-        for corner in range(3):
-            vtx = int(render_indices[tri, corner])
-            nr  = int(vtx_node_row[vtx])
-            avg = node_averaged.get((did, nr))
-            if avg is not None:
-                scalar_vertex[vtx] = avg
+    # Non-finite values (e.g. component out of range for one etype in a mixed
+    # solid/shell instance) render grey but must not poison domain statistics.
+    grp = flat_ok & (flat_did >= 0) & np.isfinite(flat_val)
+    if grp.any():
+        grp_idx = np.where(grp)[0]          # flat (tri*3+corner) position per sample
+        g_did = flat_did[grp_idx]
+        g_nr  = vtx_node_row[flat_vtx[grp_idx]].astype(np.int64)
+        g_val = flat_val[grp_idx].astype(np.float64)
+        g_key = g_did * nr_stride + g_nr    # sorts by (did, node_row)
+
+        order = np.argsort(g_key)
+        key_s = g_key[order]
+        did_s = g_did[order]
+        val_s = g_val[order]
+
+        new_node = np.concatenate([[True], key_s[1:] != key_s[:-1]])
+        starts   = np.where(new_node)[0]
+        node_did = did_s[starts]
+        node_min = np.minimum.reduceat(val_s, starts)
+        node_max = np.maximum.reduceat(val_s, starts)
+        node_cnt = np.diff(np.concatenate([starts, [len(key_s)]]))
+        node_mean   = np.add.reduceat(val_s, starts) / node_cnt
+        node_spread = node_max - node_min
+
+        # Domain raw range per node group. did_s is sorted (did-major key), so
+        # domains are contiguous and align with the node groups' did order.
+        dom_starts = np.where(np.concatenate([[True], did_s[1:] != did_s[:-1]]))[0]
+        dom_range  = (np.maximum.reduceat(val_s, dom_starts)
+                      - np.minimum.reduceat(val_s, dom_starts))
+        node_dom = np.cumsum(np.concatenate([[0], node_did[1:] != node_did[:-1]]))
+        node_dom_range = dom_range[node_dom]
+
+        do_avg = ((node_dom_range < 1e-12)
+                  | (node_spread <= average_threshold * node_dom_range))
+        node_mean32 = node_mean.astype(np.float32)
+
+        # Step 4: scatter averaged values back onto vertices in flat (tri, corner)
+        # order, like the old loop. Samples get their own group's value directly;
+        # the rare corners with a valid domain but no own data (missing etype block
+        # or out-of-range er/li) may still pick up a neighbour's averaged value —
+        # those few go through a binary search over the averaged group keys.
+        ent_grp = np.cumsum(new_node) - 1               # group id per sorted sample
+        ent_hit = np.zeros(flat_val.shape[0], dtype=bool)
+        ent_val = np.full(flat_val.shape[0], np.nan, dtype=np.float32)
+        orig_pos = grp_idx[order]
+        ent_hit[orig_pos] = do_avg[ent_grp]
+        ent_val[orig_pos] = np.where(do_avg[ent_grp], node_mean32[ent_grp], np.nan)
+
+        rest = (flat_did >= 0) & ~grp
+        if rest.any():
+            avg_keys = key_s[starts][do_avg]            # ascending
+            avg_vals = node_mean32[do_avg]
+            if avg_keys.size:
+                rest_idx = np.where(rest)[0]
+                r_key = (flat_did[rest_idx] * nr_stride
+                         + vtx_node_row[flat_vtx[rest_idx]].astype(np.int64))
+                p = np.minimum(np.searchsorted(avg_keys, r_key), avg_keys.size - 1)
+                hit = avg_keys[p] == r_key
+                ent_hit[rest_idx] = hit
+                ent_val[rest_idx[hit]] = avg_vals[p[hit]]
+
+        scalar_vertex[flat_vtx[ent_hit]] = ent_val[ent_hit]
 
     # Step 5: global range from surface post-averaged values only.
     # Abaqus legend = min/max of averaged nodal values on the visible surface.
