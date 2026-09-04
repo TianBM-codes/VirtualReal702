@@ -48,6 +48,7 @@ OP2_GEOM_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "op2_geom_pack.py"
 OP2_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "op2_pack.py"
 CDB_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "cdb_pack.py"
 RST_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "rst_pack.py"
+SIPESC_UNV_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "sipesc_unv_pack.py"
 INGEST_SCRIPT   = REPO_ROOT / "src" / "l2" / "ingest.py"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -1377,6 +1378,41 @@ def _run_rst_project(project_id: str, rst_path: str, workspace: str) -> bool:
     return True
 
 
+def _run_sipesc_unv_project(project_id: str, unv_path: str, workspace: str) -> bool:
+    """SIPESC UNV geometry: one default section group, then normal L2 ingest."""
+    if not unv_path or not os.path.exists(unv_path):
+        msg = "SIPESC UNV file not found: {}".format(unv_path)
+        _update_project_geom_status(project_id, "error", msg)
+        return False
+    _log_job(project_id, "step", f"{_kw('L1 解析')}：SIPESC UNV 几何提取启动",
+             stage="l1_sipesc_unv", percent=5)
+    rc1, tail1 = _run_streaming(
+        [sys.executable, str(SIPESC_UNV_PACK_SCRIPT), "--unv", unv_path,
+         "--workspace", workspace, "--mode", "geometry"],
+        project_id, "l1_sipesc_unv")
+    if rc1 != 0:
+        msg = "sipesc_unv geometry pack failed: " + tail1
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error", f"{_bad('SIPESC UNV 解析失败')}：{_esc(tail1[-500:])}",
+                 stage="l1_sipesc_unv")
+        return False
+    _log_elem_type_summary(project_id, workspace, "SIPESC_UNV", os.path.basename(unv_path), "l1_sipesc_unv")
+    _log_job(project_id, "step", f"{_kw('L2 预处理')}：SIPESC UNV 渲染数据生成",
+             stage="l2_ingest", percent=55)
+    rc2, tail2 = _run_streaming([sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
+                                 project_id, "l2_ingest")
+    if rc2 != 0:
+        msg = "ingest failed: " + tail2[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error", f"{_bad('L2 预处理失败')}：{_esc(tail2[-500:])}",
+                 stage="l2_ingest")
+        return False
+    _update_project_geom_status(project_id, "ready")
+    _log_job(project_id, "step", _good("SIPESC UNV 几何解析完成，已就绪"),
+             stage="l2_done", percent=100)
+    return True
+
+
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
     if source_type == "odb":
         return _run_odb_project(project_id, source_path, workspace)
@@ -1388,6 +1424,8 @@ def _run_project(project_id: str, source_path: str, source_type: str, workspace:
         return _run_cdb_project(project_id, source_path, workspace)
     if source_type == "rst":
         return _run_rst_project(project_id, source_path, workspace)
+    if source_type == "sipesc_unv":
+        return _run_sipesc_unv_project(project_id, source_path, workspace)
     return _run_geom_project(project_id, source_path, workspace)
 
 
@@ -1635,6 +1673,32 @@ def _run_result_group(project_id: str, result_group: str,
     if source_path.lower().endswith(".op2"):
         return _run_op2_result_group(project_id, result_group, source_path, workspace,
                                      parse_options_json=parse_options_json)
+
+    if source_path.lower().endswith(".unv"):
+        parse_opts = {}
+        if parse_options_json:
+            try:
+                parse_opts = json.loads(parse_options_json)
+            except Exception:
+                pass
+        display_name = parse_opts.get("display_name", result_group)
+        _log_job(project_id, "step", f"[{_kw(result_group)}] SIPESC UNV 结果解析：U + Mises",
+                 stage="rg_sipesc_unv")
+        rc, tail = _run_streaming(
+            [sys.executable, str(SIPESC_UNV_PACK_SCRIPT), "--unv", source_path,
+             "--workspace", workspace, "--mode", "results", "--result-group", result_group,
+             "--display-name", display_name],
+            project_id, "rg_sipesc_unv")
+        if rc != 0:
+            msg = "sipesc_unv result pack failed: " + tail
+            _update_result_group_status(project_id, result_group, "error", msg)
+            _log_job(project_id, "error", f"[{_kw(result_group)}] {_bad('SIPESC UNV 结果解析失败')}：{_esc(tail[-500:])}",
+                     stage="rg_sipesc_unv")
+            return False
+        _update_result_group_status(project_id, result_group, "ready")
+        _log_job(project_id, "step", f"[{_kw(result_group)}] {_good('SIPESC UNV 结果组解析完成，已就绪')}",
+                 stage="rg_done")
+        return True
 
     parse_opts = {}
     if parse_options_json:

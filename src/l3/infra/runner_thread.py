@@ -36,6 +36,9 @@ _REPO_ROOT    = Path(__file__).resolve().parent.parent.parent.parent
 _DUMP_SCRIPT  = _REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
 _PACK_SCRIPT  = _REPO_ROOT / "src" / "l1" / "l1_pack.py"
 _INP_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "inp_pack.py"
+_BDF_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "bdf_pack.py"
+_CDB_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "cdb_pack.py"
+_SIPESC_UNV_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "sipesc_unv_pack.py"
 _INGEST_SCRIPT = _REPO_ROOT / "src" / "l2" / "ingest.py"
 
 _LOCK_TTL    = 30   # seconds — steal lock if heartbeat is older than this
@@ -619,6 +622,33 @@ class EmbeddedRunner:
                      source_type: str, workspace: str) -> bool:
         if source_type == "odb":
             return self._run_odb_project(project_id, source_path, workspace)
+        if source_type in ("bdf", "cdb", "sipesc_unv"):
+            if source_type == "bdf":
+                script, arg, stage = _BDF_PACK_SCRIPT, "--bdf", "bdf_geometry"
+            elif source_type == "cdb":
+                script, arg, stage = _CDB_PACK_SCRIPT, "--cdb", "cdb_geometry"
+            else:
+                script, arg, stage = _SIPESC_UNV_PACK_SCRIPT, "--unv", "sipesc_unv_geometry"
+            cmd = [sys.executable, str(script), arg, source_path, "--workspace", workspace]
+            if source_type == "sipesc_unv":
+                cmd.extend(["--mode", "geometry"])
+            rc, tail = self._run_streaming(
+                cmd, project_id, stage)
+            if rc != 0:
+                self._update_project_geom_status(
+                    project_id, "error", source_type + " geometry pack failed: " + tail)
+                return False
+            ret = subprocess.run(
+                [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
+                capture_output=True, encoding="utf-8", errors="replace",
+            )
+            if ret.returncode != 0:
+                self._update_project_geom_status(
+                    project_id, "error", "ingest failed: " + ret.stderr[-2000:])
+                return False
+            self._update_project_geom_status(project_id, "ready")
+            logger.info("[%s] %s geometry ready", project_id, source_type)
+            return True
         return self._run_geom_project(project_id, source_path, workspace)
 
     # ── Result group pipeline ─────────────────────────────────────────────────
@@ -720,6 +750,22 @@ class EmbeddedRunner:
         check_mode = parse_opts.get("consistency_check", "count-only")
         display_name = parse_opts.get("display_name", result_group)
         source_file = os.path.basename(source_path)
+
+        # SIPESC UNV is not an ODB and therefore has no Abaqus check.json.
+        # Its parser performs a non-blocking node-label match against geometry.
+        if source_path.lower().endswith(".unv"):
+            rc, tail = self._run_streaming(
+                [sys.executable, str(_SIPESC_UNV_PACK_SCRIPT), "--unv", source_path,
+                 "--workspace", workspace, "--mode", "results",
+                 "--result-group", result_group, "--display-name", display_name],
+                label, "sipesc_unv_results")
+            if rc != 0:
+                self._update_result_group_status(
+                    project_id, result_group, "error", "sipesc_unv result pack failed: " + tail)
+                return False
+            self._update_result_group_status(project_id, result_group, "ready")
+            logger.info("[%s] SIPESC UNV result group ready", label)
+            return True
 
         # ── Step 1: preflight consistency check ──────────────────────────────
         logger.info("[%s] preflight (%s)", label, check_mode)

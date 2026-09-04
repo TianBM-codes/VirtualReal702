@@ -438,12 +438,12 @@ def _build_project_result_catalog(proj, repo) -> dict:
 
 
 def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str:
-    allowed = {"inp", "odb", "bdf", "op2", "cdb", "rst"}
+    allowed = {"inp", "odb", "bdf", "op2", "cdb", "rst", "sipesc_unv"}
     if explicit is not None:
         source_type = explicit.strip().lower()
         if source_type not in allowed:
             raise ValidationError(
-                "source_type must be one of: inp, odb, bdf, op2, cdb, rst",
+                "source_type must be one of: inp, odb, bdf, op2, cdb, rst, sipesc_unv",
                 {"source_type": explicit},
             )
     else:
@@ -464,6 +464,8 @@ def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str
         inferred = "cdb"
     elif suffix == ".rst":
         inferred = "rst"
+    elif suffix == ".unv":
+        inferred = "sipesc_unv"
 
     if source_type is None:
         if inferred is None:
