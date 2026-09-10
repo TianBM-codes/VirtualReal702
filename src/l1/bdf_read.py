@@ -391,6 +391,41 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
         warnings.append(message)
         target_model.read_bdf_safe_warnings = warnings
 
+    def _read_with_duplicate_property_cleanup(cleanup_source, cleanup_encoding,
+                                             read_encoding, display_filename):
+        cleanup = _scan_duplicate_property_cleanup(cleanup_source, cleanup_encoding)
+        if not cleanup:
+            return None
+
+        prop_sidecar = _write_duplicate_property_sidecar(
+            cleanup_source, cleanup_encoding, cleanup)
+        details = ', '.join(cleanup['renumbered']) or 'none'
+        warning = (
+            'read_bdf_safe: renumbered duplicate property PID(s) {} ({})'
+        ).format(
+            ', '.join(str(pid) for pid in cleanup['duplicate_pids']),
+            details,
+        )
+        if cleanup['skipped_same_type_count']:
+            warning += '; skipped {} same-type duplicate property card(s)'.format(
+                cleanup['skipped_same_type_count'])
+        warning += ' while loading {}'.format(os.path.basename(display_filename))
+        sys.stderr.write(warning + '\n')
+
+        m_retry = BDF(debug=debug)
+        if disable_cards:
+            m_retry.disable_cards(list(disable_cards))
+        _record_warning(m_retry, warning)
+        try:
+            m_retry.read_bdf(prop_sidecar, xref=xref, punch=punch,
+                             encoding=read_encoding, **read_kwargs)
+            return m_retry
+        finally:
+            try:
+                os.remove(prop_sidecar)
+            except OSError:
+                pass
+
     m = _new_model()
     try:
         m.read_bdf(bdf_filename, xref=xref, punch=punch, encoding=enc, **read_kwargs)
@@ -407,7 +442,16 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
         if disable_cards:
             m2.disable_cards(list(disable_cards))
         try:
-            m2.read_bdf(sidecar, xref=xref, punch=punch, encoding='utf-8', **read_kwargs)
+            try:
+                m2.read_bdf(sidecar, xref=xref, punch=punch, encoding='utf-8', **read_kwargs)
+            except Exception as exc:
+                if not _is_duplicate_ids_error(exc):
+                    raise
+                m3 = _read_with_duplicate_property_cleanup(
+                    sidecar, 'utf-8', 'utf-8', bdf_filename)
+                if m3 is None:
+                    raise
+                return m3
             return m2
         finally:
             try:
@@ -449,33 +493,8 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
         if not _is_duplicate_ids_error(exc):
             raise
 
-        cleanup = _scan_duplicate_property_cleanup(bdf_filename, enc)
-        if not cleanup:
+        m2 = _read_with_duplicate_property_cleanup(
+            bdf_filename, enc, enc, bdf_filename)
+        if m2 is None:
             raise
-
-        sidecar = _write_duplicate_property_sidecar(bdf_filename, enc, cleanup)
-        details = ', '.join(cleanup['renumbered']) or 'none'
-        warning = (
-            'read_bdf_safe: renumbered duplicate property PID(s) {} ({})'
-        ).format(
-            ', '.join(str(pid) for pid in cleanup['duplicate_pids']),
-            details,
-        )
-        if cleanup['skipped_same_type_count']:
-            warning += '; skipped {} same-type duplicate property card(s)'.format(
-                cleanup['skipped_same_type_count'])
-        warning += ' while loading {}'.format(os.path.basename(bdf_filename))
-        sys.stderr.write(warning + '\n')
-
-        m2 = BDF(debug=debug)
-        if disable_cards:
-            m2.disable_cards(list(disable_cards))
-        _record_warning(m2, warning)
-        try:
-            m2.read_bdf(sidecar, xref=xref, punch=punch, encoding=enc, **read_kwargs)
-            return m2
-        finally:
-            try:
-                os.remove(sidecar)
-            except OSError:
-                pass
+        return m2
