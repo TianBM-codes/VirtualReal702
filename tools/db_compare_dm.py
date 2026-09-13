@@ -119,11 +119,28 @@ def _fetchall(cursor, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any,
     return [tuple(row) for row in rows]
 
 
+def _resolve_dm_table(cursor, schema: str, table: str) -> tuple[str, str] | None:
+    rows = _fetchall(
+        cursor,
+        """
+        SELECT OWNER, TABLE_NAME
+        FROM ALL_TABLES
+        WHERE UPPER(OWNER) = UPPER(?) AND UPPER(TABLE_NAME) = UPPER(?)
+        """,
+        (schema, table),
+    )
+    if not rows:
+        return None
+    return str(rows[0][0]), str(rows[0][1])
+
+
 def _snapshot_table(conn, schema: str, table: str) -> dict[str, Any]:
     cursor = conn.cursor()
     try:
-        schema_u = schema.upper()
-        table_u = table.upper()
+        resolved = _resolve_dm_table(cursor, schema, table)
+        if resolved is None:
+            return {"exists": False}
+        schema_name, table_name = resolved
         columns = _fetchall(
             cursor,
             """
@@ -132,14 +149,14 @@ def _snapshot_table(conn, schema: str, table: str) -> dict[str, Any]:
             WHERE OWNER = ? AND TABLE_NAME = ?
             ORDER BY COLUMN_ID
             """,
-            (schema_u, table_u),
+            (schema_name, table_name),
         )
         if not columns:
             return {"exists": False}
 
         column_names = [str(row[0]) for row in columns]
-        quoted_table = f'"{schema_u}"."{table_u}"'
-        quoted_cols = ", ".join(f'"{name.upper()}"' for name in column_names)
+        quoted_table = f'"{schema_name}"."{table_name}"'
+        quoted_cols = ", ".join(f'"{name}"' for name in column_names)
 
         cursor.execute(f"SELECT COUNT(*) FROM {quoted_table}")
         row_count = int(cursor.fetchone()[0])

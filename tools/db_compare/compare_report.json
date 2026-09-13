@@ -1,0 +1,132 @@
+{
+  "left": "tools\\db_compare\\mysql_snapshot.json",
+  "right": "D:\\WorkSpace\\OtherProjects\\VirtualReal702\\tools\\db_compare\\dm_snapshot.json",
+  "table_count": 63,
+  "mismatch_count": 18,
+  "mismatches": [
+    {
+      "table": "t_mt_py_console_log",
+      "issues": [
+        "row_count differs: 299 != 297",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_bayesian_iteration_metric",
+      "issues": [
+        "row_count differs: 4 != 30",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_dof_match",
+      "issues": [
+        "row_count differs: 1040 != 1227",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_dynamic_response_catalog",
+      "issues": [
+        "row_count differs: 214 != 218",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_modal_correlation",
+      "issues": [
+        "row_count differs: 619 != 823",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_model_update_modal_result",
+      "issues": [
+        "row_count differs: 3 != 17",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_node_match",
+      "issues": [
+        "row_count differs: 420 != 495",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_node_octree_cache",
+      "issues": [
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_node_pairs",
+      "issues": [
+        "row_count differs: 420 != 495",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_parameter_variation",
+      "issues": [
+        "row_count differs: 159 != 336",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_quantity_set_capability",
+      "issues": [
+        "row_count differs: 854 != 112",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_relevance_tracking",
+      "issues": [
+        "row_count differs: 20 != 60",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_response_difference",
+      "issues": [
+        "row_count differs: 14 != 54",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_selected_parameter",
+      "issues": [
+        "row_count differs: 96 != 88",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_static_shape_pairs",
+      "issues": [
+        "row_count differs: 5 != 6",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_tracking_iteration",
+      "issues": [
+        "row_count differs: 3 != 12",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_fem_tracking_value",
+      "issues": [
+        "row_count differs: 1071 != 1579",
+        "row_hash differs"
+      ]
+    },
+    {
+      "table": "t_mt_py_project_config",
+      "issues": [
+        "row_hash differs"
+      ]
+    }
+  ]
+}
