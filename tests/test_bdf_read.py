@@ -144,3 +144,39 @@ def test_read_bdf_safe_renumbers_duplicate_property_ids_after_ascii_retry(tmp_pa
     assert len(new_pids) == 1
     assert model.elements[200].pid == new_pids[0]
     assert "renumbered duplicate property PID(s) 7" in model.read_bdf_safe_warnings[0]
+
+
+def test_read_bdf_safe_preserves_fixed_width_cbar_when_renumbering_pid(tmp_path):
+    def fixed(*fields):
+        return "".join(str(field).ljust(8) if i == 0 else str(field).rjust(8)
+                       for i, field in enumerate(fields)).rstrip()
+
+    bdf_path = tmp_path / "duplicate_fixed_cbar.bdf"
+    bdf_path.write_text(
+        "\n".join(
+            [
+                "SOL 103",
+                "CEND",
+                "BEGIN BULK",
+                fixed("GRID", 1, "", 0.0, 0.0, 0.0),
+                fixed("GRID", 2, "", 1.0, 0.0, 0.0),
+                fixed("GRID", 3, "", 1.0, 1.0, 0.0),
+                fixed("GRID", 4, "", 0.0, 1.0, 0.0),
+                fixed("MAT1", 1, 210000.0, "", 0.3),
+                fixed("PSHELL", 7, 1, 0.1),
+                fixed("CQUAD4", 100, 7, 1, 2, 3, 4),
+                fixed("PBAR", 7, 1, 1.0),
+                fixed("CBAR", 200, 7, 1, 2, ".64", ".3711-8", "-1.0"),
+                "ENDDATA",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    model = read_bdf_safe(str(bdf_path), xref=False)
+
+    new_pids = [pid for pid, prop in model.properties.items() if prop.type == "PBAR"]
+    assert len(new_pids) == 1
+    assert model.elements[200].pid == new_pids[0]
+    assert list(model.elements[200].x) == [0.64, 0.3711e-8, -1.0]

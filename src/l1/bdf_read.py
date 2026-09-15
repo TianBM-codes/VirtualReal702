@@ -106,7 +106,10 @@ def _split_bdf_fields(line):
         return []
     if ',' in text:
         return [field.strip() for field in text.split(',')]
-    return text.split()
+    fields = [text[i:i + 8].strip() for i in range(0, len(text), 8)]
+    while fields and fields[-1] == '':
+        fields.pop()
+    return fields
 
 
 def _sort_bdf_id_key(value):
@@ -123,6 +126,38 @@ def _format_free_card(fields, comment=''):
     if comment:
         body += ' $' + comment.strip()
     return body
+
+
+def _rewrite_bdf_field(line, field_index, value):
+    """Rewrite one field while preserving free/fixed-card layout when practical."""
+    stripped = line.rstrip('\r\n')
+    newline = line[len(stripped):] or '\n'
+    body, marker, comment = stripped.partition('$')
+    value = str(value)
+
+    if ',' in body:
+        fields = [field.strip() for field in body.split(',')]
+        while len(fields) <= field_index:
+            fields.append('')
+        fields[field_index] = value
+        rewritten = ','.join(fields)
+    else:
+        width = 16 if body[:8].rstrip().endswith('*') else 8
+        if len(value) > width:
+            fields = _split_bdf_fields(body)
+            while len(fields) <= field_index:
+                fields.append('')
+            fields[field_index] = value
+            rewritten = _format_free_card(fields)
+        else:
+            start = 8 + (field_index - 1) * width if width == 16 and field_index > 0 else field_index * width
+            end = start + width
+            padded = body.ljust(end)
+            rewritten = padded[:start] + value.rjust(width) + padded[end:]
+
+    if marker:
+        rewritten += '$' + comment
+    return rewritten + newline
 
 
 def _is_duplicate_ids_error(exc):
@@ -225,9 +260,8 @@ def _scan_duplicate_property_cleanup(path, encoding):
             except (TypeError, ValueError):
                 old_pid = None
             if lineno in renumber_by_line:
-                new_fields = list(fields)
-                new_fields[1] = str(renumber_by_line[lineno])
-                rewritten[lineno] = _format_free_card(new_fields, item['comment']) + newline
+                rewritten[lineno] = _rewrite_bdf_field(
+                    item['line'], 1, renumber_by_line[lineno])
                 continue
 
         if len(fields) >= 3:
@@ -238,9 +272,8 @@ def _scan_duplicate_property_cleanup(path, encoding):
             if elem_pid is not None:
                 for (prop_card, old_pid), new_pid in renumber_by_card_pid.items():
                     if elem_pid == old_pid and card in _PROPERTY_TO_ELEMENTS.get(prop_card, ()):
-                        new_fields = list(fields)
-                        new_fields[2] = str(new_pid)
-                        rewritten[lineno] = _format_free_card(new_fields, item['comment']) + newline
+                        rewritten[lineno] = _rewrite_bdf_field(
+                            item['line'], 2, new_pid)
                         break
 
     if not rewritten:
