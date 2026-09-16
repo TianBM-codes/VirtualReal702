@@ -5,10 +5,12 @@ Frame-color / frame-scalar computation:
 Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT
 """
 import logging
+import hashlib
 import math
 import os
 import re
 import json
+from collections import OrderedDict
 from typing import Dict, Literal, Optional, Tuple
 
 import h5py
@@ -23,6 +25,7 @@ from src.l1.manifest_schema import canon_instance
 logger = logging.getLogger(__name__)
 
 Component = Literal["U1", "U2", "U3"]
+_RENDER_ARRAY_CACHE: "OrderedDict[tuple, tuple[np.ndarray, Optional[np.ndarray]]]" = OrderedDict()
 
 
 # ─── Generic component extraction ────────────────────────────────────────────
@@ -1596,6 +1599,18 @@ def _load_raw_node_displacements(
             {"step": step, "field": "U"},
         )
 
+    cache_path = _raw_displacement_cache_path(
+        idx,
+        instance=instance,
+        step=step,
+        frame_idx=frame_idx,
+        result_group=result_group,
+        h5_path=h5_path,
+    )
+    cached = _load_cached_array(cache_path, dtype=np.float32, ndim=2, width=3)
+    if cached is not None:
+        return cached, idx
+
     with h5py.File(h5_path, "r") as f:
         ds_path = f"/NODAL/{instance}/data"
         if ds_path not in f:
@@ -1618,7 +1633,88 @@ def _load_raw_node_displacements(
             {"instance": instance},
         )
 
+    _store_cached_array(cache_path, disp_node)
     return disp_node, idx
+
+
+def _raw_displacement_cache_path(idx, *, instance: str, step: str, frame_idx: int,
+                                 result_group: Optional[str], h5_path: str) -> str:
+    parts = {
+        "kind": "raw_node_displacement_v1",
+        "instance": str(instance),
+        "step": str(step),
+        "frame_idx": int(frame_idx),
+        "result_group": result_group,
+        "result_path": os.path.abspath(h5_path),
+        "result_size": os.path.getsize(h5_path) if os.path.exists(h5_path) else None,
+        "result_mtime": os.path.getmtime(h5_path) if os.path.exists(h5_path) else None,
+    }
+    raw = json.dumps(parts, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()
+    cache_dir = os.path.join(idx.workspace, "l3_cache", "raw_displacements")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{digest}.npy")
+
+
+def _load_render_positions_indices(render_h5: str) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    """
+    Read immutable render positions/indices with a tiny process-local LRU.
+
+    Deformed result requests repeatedly need the same render arrays.  Avoiding
+    repeated HDF5 reads matters once normals are cached and the hot path becomes
+    memory movement rather than computation.
+    """
+    max_items = max(0, int(os.getenv("APP_L3_RENDER_ARRAY_CACHE_MAX", "4")))
+    stat = os.stat(render_h5)
+    key = (os.path.abspath(render_h5), stat.st_size, stat.st_mtime_ns)
+    if max_items:
+        cached = _RENDER_ARRAY_CACHE.get(key)
+        if cached is not None:
+            _RENDER_ARRAY_CACHE.move_to_end(key)
+            return cached
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
+        indices = (
+            np.ascontiguousarray(f["render/indices"][:], dtype=np.int32)
+            if "render/indices" in f
+            else None
+        )
+
+    value = (positions, indices)
+    if max_items:
+        _RENDER_ARRAY_CACHE[key] = value
+        _RENDER_ARRAY_CACHE.move_to_end(key)
+        while len(_RENDER_ARRAY_CACHE) > max_items:
+            _RENDER_ARRAY_CACHE.popitem(last=False)
+    return value
+
+
+def _load_cached_array(path: Optional[str], *, dtype, ndim: int, width: Optional[int] = None) -> Optional[np.ndarray]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        arr = np.load(path, mmap_mode=None)
+        if arr.dtype != dtype or arr.ndim != ndim:
+            return None
+        if width is not None and (arr.shape[-1] if arr.ndim else None) != width:
+            return None
+        return np.ascontiguousarray(arr)
+    except Exception:
+        logger.exception("failed to load L3 array cache: %s", path)
+        return None
+
+
+def _store_cached_array(path: Optional[str], arr: np.ndarray) -> None:
+    if not path:
+        return
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "wb") as fp:
+            np.save(fp, np.ascontiguousarray(arr), allow_pickle=False)
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("failed to store L3 array cache: %s", path)
 
 
 def _disp_at_rows(disp_node: np.ndarray, rows: np.ndarray) -> np.ndarray:
@@ -1687,7 +1783,93 @@ def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.nd
     return (normals / lengths).astype(np.float32)
 
 
-def _deform_surface_from_disp(idx, instance, disp_node, scale):
+def _compute_vertex_normals_vtk(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Compute point normals via VTK/PyVista, falling back to caller on import/runtime errors."""
+    import pyvista as pv
+
+    n_faces = int(indices.shape[0])
+    faces = np.empty((n_faces, 4), dtype=np.int64)
+    faces[:, 0] = 3
+    faces[:, 1:] = indices.astype(np.int64, copy=False)
+    mesh = pv.PolyData(np.ascontiguousarray(positions, dtype=np.float32), faces.ravel())
+    mesh = mesh.compute_normals(
+        point_normals=True,
+        cell_normals=False,
+        split_vertices=False,
+        auto_orient_normals=False,
+        consistent_normals=False,
+        inplace=False,
+    )
+    return np.ascontiguousarray(mesh.point_data["Normals"], dtype=np.float32)
+
+
+def _compute_vertex_normals_fast(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    backend = os.getenv("APP_L3_NORMAL_BACKEND", "pyvista").strip().lower()
+    if backend in ("pyvista", "vtk"):
+        try:
+            return _compute_vertex_normals_vtk(positions, indices)
+        except Exception:
+            logger.exception("VTK/PyVista normal computation failed; falling back to NumPy")
+    return _compute_vertex_normals(positions, indices)
+
+
+def _deformed_normal_cache_path(idx, instance: str, positions: np.ndarray,
+                                indices: np.ndarray, render_h5: str,
+                                cache_context: Optional[dict]) -> Optional[str]:
+    if not cache_context:
+        return None
+    step = str(cache_context.get("step") or "")
+    frame_idx = int(cache_context.get("frame_idx") or 0)
+    scale = float(cache_context.get("scale") or 0.0)
+    result_group = cache_context.get("result_group")
+    try:
+        result_h5 = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
+    except Exception:
+        result_h5 = ""
+    parts = {
+        "kind": "deformed_normals_v1",
+        "instance": str(instance),
+        "step": step,
+        "frame_idx": frame_idx,
+        "scale": repr(scale),
+        "result_group": result_group,
+        "positions_shape": tuple(int(x) for x in positions.shape),
+        "indices_shape": tuple(int(x) for x in indices.shape),
+        "render_mtime_ns": os.path.getmtime(render_h5) if os.path.exists(render_h5) else None,
+        "result_mtime_ns": os.path.getmtime(result_h5) if result_h5 and os.path.exists(result_h5) else None,
+    }
+    raw = json.dumps(parts, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()
+    cache_dir = os.path.join(idx.workspace, "l3_cache", "deformed_normals")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{digest}.npy")
+
+
+def _load_cached_normals(path: Optional[str], expected_shape: tuple) -> Optional[np.ndarray]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        normals = np.load(path, mmap_mode=None)
+        if normals.shape == expected_shape and normals.dtype == np.float32:
+            return np.ascontiguousarray(normals)
+    except Exception:
+        logger.exception("failed to load deformed normal cache: %s", path)
+    return None
+
+
+def _store_cached_normals(path: Optional[str], normals: np.ndarray) -> None:
+    if not path:
+        return
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "wb") as fp:
+            np.save(fp, np.ascontiguousarray(normals, dtype=np.float32), allow_pickle=False)
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("failed to store deformed normal cache: %s", path)
+
+
+def _deform_surface_from_disp(idx, instance, disp_node, scale, cache_context: Optional[dict] = None):
     """
     Surface deformed positions + normals from a preloaded raw node displacement
     array (see _load_raw_node_displacements).  Factored out so callers that also
@@ -1709,14 +1891,19 @@ def _deform_surface_from_disp(idx, instance, disp_node, scale):
             {"instance": instance},
         )
 
-    with h5py.File(render_h5, "r") as f:
-        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
-        indices   = np.ascontiguousarray(f["render/indices"][:],   dtype=np.int32) \
-                    if "render/indices" in f else None
+    positions, indices = _load_render_positions_indices(render_h5)
 
     deformed = (positions + np.float32(scale) * disp_vertex).astype(np.float32)
-    normals  = _compute_vertex_normals(deformed, indices) if indices is not None \
-               else np.zeros_like(deformed)
+    if indices is not None:
+        cache_path = _deformed_normal_cache_path(
+            idx, instance, deformed, indices, render_h5, cache_context
+        )
+        normals = _load_cached_normals(cache_path, deformed.shape)
+        if normals is None:
+            normals = _compute_vertex_normals_fast(deformed, indices)
+            _store_cached_normals(cache_path, normals)
+    else:
+        normals = np.zeros_like(deformed)
     return deformed, normals
 
 
@@ -1780,7 +1967,18 @@ def frame_deformed_positions(
     disp_node, idx = _load_raw_node_displacements(
         registry, odb_id, instance, step, frame_idx, result_group
     )
-    return _deform_surface_from_disp(idx, instance, disp_node, scale)
+    return _deform_surface_from_disp(
+        idx,
+        instance,
+        disp_node,
+        scale,
+        {
+            "step": step,
+            "frame_idx": frame_idx,
+            "scale": scale,
+            "result_group": result_group,
+        },
+    )
 
 
 def frame_deformed_with_aux(
@@ -1802,7 +2000,18 @@ def frame_deformed_with_aux(
     disp_node, idx = _load_raw_node_displacements(
         registry, odb_id, instance, step, frame_idx, result_group
     )
-    positions, normals = _deform_surface_from_disp(idx, instance, disp_node, scale)
+    positions, normals = _deform_surface_from_disp(
+        idx,
+        instance,
+        disp_node,
+        scale,
+        {
+            "step": step,
+            "frame_idx": frame_idx,
+            "scale": scale,
+            "result_group": result_group,
+        },
+    )
     aux = _deform_aux_from_disp(idx, instance, disp_node, scale)
     return positions, normals, aux
 

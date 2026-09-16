@@ -9,6 +9,9 @@ GET /api/odb/{odb_id}/results/frame-scalars
 Pick 单面精确值复用已有 /query/pick 接口，无需重复实现。
 """
 import re
+import os
+import json
+import hashlib
 from typing import List, Literal, Optional
 
 import numpy as np
@@ -37,6 +40,128 @@ router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 Component = Literal["U1", "U2", "U3"]
 _FRAME_ALIAS_RE = re.compile(r"^(?P<field>.+)__FRAME_(?P<frame>\d+)$")
 _RAW_SENSITIVITY_GROUP_RE = re.compile(r"^sensitivity_batch_", re.IGNORECASE)
+
+
+def _deformed_payload_cache_info(
+    *,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int,
+    scale: float,
+    result_group: Optional[str],
+) -> tuple[Optional[str], Optional[int]]:
+    idx = registry.get(odb_id)
+    if idx is None:
+        return None, None
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        return None, None
+
+    try:
+        import h5py
+        with h5py.File(render_h5, "r") as f:
+            vertex_count = int(f["render/positions"].shape[0])
+    except Exception:
+        vertex_count = None
+
+    try:
+        result_h5 = ManifestRepo(idx.workspace).result_h5_abspath(step, "U", result_group)
+    except Exception:
+        result_h5 = ""
+
+    parts = {
+        "kind": "deformed_positions_payload_v1",
+        "odb_id": str(odb_id),
+        "instance": str(instance),
+        "step": str(step),
+        "frame": int(frame),
+        "scale": repr(float(scale)),
+        "result_group": result_group,
+        "render_size": os.path.getsize(render_h5),
+        "render_mtime": os.path.getmtime(render_h5),
+        "result_size": os.path.getsize(result_h5) if result_h5 and os.path.exists(result_h5) else None,
+        "result_mtime": os.path.getmtime(result_h5) if result_h5 and os.path.exists(result_h5) else None,
+    }
+    raw = json.dumps(parts, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()
+    cache_dir = os.path.join(idx.workspace, "l3_cache", "deformed_payloads")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{digest}.l3be"), vertex_count
+
+
+def _read_cached_payload(path: Optional[str]) -> Optional[bytes]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as fp:
+            return fp.read()
+    except Exception:
+        return None
+
+
+def _write_cached_payload(path: Optional[str], payload: bytes) -> None:
+    if not path:
+        return
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "wb") as fp:
+            fp.write(payload)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _modal_payload_cache_info(
+    *,
+    kind: str,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int,
+    result_group: Optional[str],
+    scale: Optional[float] = None,
+    n_frames: Optional[int] = None,
+) -> tuple[Optional[str], Optional[int]]:
+    idx = registry.get(odb_id)
+    if idx is None:
+        return None, None
+    try:
+        result_h5 = ManifestRepo(idx.workspace).result_h5_abspath(step, "U", result_group)
+    except Exception:
+        result_h5 = ""
+    if not result_h5 or not os.path.exists(result_h5):
+        return None, None
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+
+    vertex_count = None
+    try:
+        import h5py
+        with h5py.File(render_h5, "r") as f:
+            vertex_count = int(f["render/positions"].shape[0])
+    except Exception:
+        pass
+
+    parts = {
+        "kind": kind,
+        "odb_id": str(odb_id),
+        "instance": str(instance),
+        "step": str(step),
+        "frame": int(frame),
+        "result_group": result_group,
+        "scale": repr(float(scale)) if scale is not None else None,
+        "n_frames": int(n_frames) if n_frames is not None else None,
+        "render_size": os.path.getsize(render_h5) if os.path.exists(render_h5) else None,
+        "render_mtime": os.path.getmtime(render_h5) if os.path.exists(render_h5) else None,
+        "result_size": os.path.getsize(result_h5),
+        "result_mtime": os.path.getmtime(result_h5),
+    }
+    raw = json.dumps(parts, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()
+    cache_dir = os.path.join(idx.workspace, "l3_cache", "modal_payloads")
+    os.makedirs(cache_dir, exist_ok=True)
+    suffix = ".l3be" if kind == "modal_shape_payload_v1" else ".bin"
+    return os.path.join(cache_dir, f"{digest}{suffix}"), vertex_count
 
 
 def _normalize_step_token(value: Optional[str]) -> str:
@@ -481,6 +606,27 @@ async def get_deformed_positions(
     # Surface + line/point/coupling overlay in one call → single U read (matters
     # for large models / animation).  aux_sections is empty when the instance has
     # no line/point/coupling geometry or the surface H5 predates the node_rows change.
+    cache_path, cached_vertex_count = _deformed_payload_cache_info(
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame=frame,
+        scale=scale,
+        result_group=result_group,
+    )
+    cached_payload = _read_cached_payload(cache_path)
+    if cached_payload is not None:
+        return Response(
+            content=cached_payload,
+            media_type="application/octet-stream",
+            headers={
+                "X-Vertex-Count": str(cached_vertex_count if cached_vertex_count is not None else ""),
+                "X-Frame":        str(frame),
+                "X-Scale":        str(scale),
+                "X-Cache":        "hit",
+            },
+        )
+
     positions, normals, aux_sections = frame_deformed_with_aux(
         registry=registry,
         odb_id=odb_id,
@@ -498,6 +644,7 @@ async def get_deformed_positions(
     sections.extend(aux_sections)
 
     payload = l3be_build(sections)
+    _write_cached_payload(cache_path, payload)
     return Response(
         content=payload,
         media_type="application/octet-stream",
@@ -505,6 +652,7 @@ async def get_deformed_positions(
             "X-Vertex-Count": str(len(positions)),
             "X-Frame":        str(frame),
             "X-Scale":        str(scale),
+            "X-Cache":        "miss",
         },
     )
 
@@ -598,6 +746,26 @@ async def get_modal_shape(
     返回指定模态阶次的顶点位移向量 [Nv, 3] float32（L3BE binary）。
     供前端 GPU shader 模式：上传为 vertex attribute，由着色器做 sin 动画。
     """
+    cache_path, cached_vertex_count = _modal_payload_cache_info(
+        kind="modal_shape_payload_v1",
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame=frame,
+        result_group=result_group,
+    )
+    cached_payload = _read_cached_payload(cache_path)
+    if cached_payload is not None:
+        return Response(
+            content=cached_payload,
+            media_type="application/octet-stream",
+            headers={
+                "X-Vertex-Count": str(cached_vertex_count if cached_vertex_count is not None else ""),
+                "X-Frame": str(frame),
+                "X-Cache": "hit",
+            },
+        )
+
     disp = modal_shape_displacement(
         registry=registry,
         odb_id=odb_id,
@@ -607,10 +775,11 @@ async def get_modal_shape(
         result_group=result_group,
     )
     payload = l3be_build([("displacement", disp)])
+    _write_cached_payload(cache_path, payload)
     return Response(
         content=payload,
         media_type="application/octet-stream",
-        headers={"X-Vertex-Count": str(len(disp)), "X-Frame": str(frame)},
+        headers={"X-Vertex-Count": str(len(disp)), "X-Frame": str(frame), "X-Cache": "miss"},
     )
 
 
@@ -630,6 +799,29 @@ async def get_modal_animation(
     二进制格式：[n_frames uint32][n_verts uint32][n_frames × n_verts × 3 × float32]
     供前端预计算模式：收到后缓存，播放时只做 buffer 切换。
     """
+    cache_path, _cached_vertex_count = _modal_payload_cache_info(
+        kind="modal_animation_payload_v1",
+        odb_id=odb_id,
+        instance=instance,
+        step=step,
+        frame=frame,
+        result_group=result_group,
+        scale=scale,
+        n_frames=n_frames,
+    )
+    cached_payload = _read_cached_payload(cache_path)
+    if cached_payload is not None:
+        return Response(
+            content=cached_payload,
+            media_type="application/octet-stream",
+            headers={
+                "X-N-Frames": str(n_frames),
+                "X-Frame":    str(frame),
+                "X-Scale":    str(scale),
+                "X-Cache":    "hit",
+            },
+        )
+
     data = modal_animation_frames(
         registry=registry,
         odb_id=odb_id,
@@ -640,6 +832,7 @@ async def get_modal_animation(
         n_frames=n_frames,
         result_group=result_group,
     )
+    _write_cached_payload(cache_path, data)
     return Response(
         content=data,
         media_type="application/octet-stream",
@@ -647,6 +840,7 @@ async def get_modal_animation(
             "X-N-Frames": str(n_frames),
             "X-Frame":    str(frame),
             "X-Scale":    str(scale),
+            "X-Cache":    "miss",
         },
     )
 
