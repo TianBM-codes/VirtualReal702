@@ -1,0 +1,30 @@
+{
+  "versions": [
+    {
+      "name": "旧版",
+      "base_url": "http://127.0.0.1:5000",
+      "project_id": "90001",
+      "result_group": "modal_result"
+    },
+    {
+      "name": "新版",
+      "base_url": "http://127.0.0.1:5000",
+      "project_id": "90002",
+      "result_group": "modal_result"
+    }
+  ],
+  "sources": {
+    "bdf_path": "D:/models/test.bdf",
+    "op2_path": "D:/models/test.op2"
+  },
+  "benchmark": {
+    "repeat": 5,
+    "frame": 0,
+    "scale": 1.0,
+    "n_frames": 4,
+    "timeout_seconds": 1800,
+    "poll_seconds": 1.0,
+    "watch_timeout_seconds": 7200,
+    "output_dir": "benchmark_results"
+  }
+}
