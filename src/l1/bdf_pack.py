@@ -19,6 +19,7 @@ import os
 import sqlite3
 import sys
 import time
+import re
 
 import h5py
 import numpy as np
@@ -212,6 +213,234 @@ def str_ds(f, path, strings):
     for i, s in enumerate(strings):
         ds[i] = str(s)
     return ds
+
+
+_FAST_BDF_MIN_BYTES = int(os.getenv("APP_FAST_BDF_MIN_BYTES", str(100 * 1024 * 1024)))
+_FAST_BDF_MODE = os.getenv("APP_FAST_BDF", "auto").strip().lower()
+_FAST_SUPPORTED_ELEMS = {"CQUAD4", "CTRIA3"}
+_FAST_IGNORED_CARDS = {
+    "", "$", "SOL", "CEND", "BEGIN", "ENDDATA", "PARAM", "ECHO", "SUBCASE",
+    "SUBTITLE", "METHOD", "SPC", "SPC1", "SPCD", "SPCADD", "MPC", "MPCADD",
+    "LOAD", "DLOAD", "FORCE", "MOMENT", "GRAV", "EIGRL", "EIGR", "EIGB",
+    "VECTOR", "TITLE", "LABEL", "DISP", "STRESS", "STRAIN", "FORCE",
+    "OLOAD", "GPFORCE", "GROUNDCHECK", "AUTOSPC", "SET", "SET1", "SET3",
+}
+_FAST_FALLBACK_GEOM_CARDS = set(NASTRAN_TO_ABAQUS) - _FAST_SUPPORTED_ELEMS
+_BDF_FLOAT_EXP_RE = re.compile(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([+-]\d+)$")
+
+
+def _bdf_card_name(line):
+    text = line.split("$", 1)[0].strip()
+    if not text:
+        return ""
+    if "," in text:
+        return text.split(",", 1)[0].strip().upper().rstrip("*")
+    return text[:8].strip().upper().rstrip("*")
+
+
+def _bdf_fields(line):
+    text = line.split("$", 1)[0].rstrip("\r\n")
+    if not text.strip():
+        return []
+    if "," in text:
+        fields = [field.strip() for field in text.split(",")]
+    else:
+        fields = [text[i:i + 8].strip() for i in range(0, len(text), 8)]
+    while fields and fields[-1] == "":
+        fields.pop()
+    if fields:
+        fields[0] = fields[0].upper().rstrip("*")
+    return fields
+
+
+def _bdf_int(value, default=0):
+    text = str(value or "").strip()
+    if not text:
+        return default
+    return int(float(text))
+
+
+def _bdf_float(value, default=0.0):
+    text = str(value or "").strip()
+    if not text:
+        return default
+    text = text.replace("D", "E").replace("d", "E")
+    if "E" not in text and "e" not in text:
+        m = _BDF_FLOAT_EXP_RE.match(text)
+        if m:
+            text = m.group(1) + "E" + m.group(2)
+    return float(text)
+
+
+def _fast_inst_name_from_bdf(bdf_path):
+    return os.path.splitext(os.path.basename(bdf_path))[0].upper()
+
+
+def _fast_bdf_is_candidate(bdf_path):
+    if _FAST_BDF_MODE in {"0", "false", "off", "no"}:
+        return False, "disabled"
+    if _FAST_BDF_MODE in {"1", "true", "on", "yes", "force"}:
+        return True, "forced"
+    try:
+        size = os.path.getsize(bdf_path)
+    except OSError:
+        return False, "stat failed"
+    if size < _FAST_BDF_MIN_BYTES:
+        return False, "below threshold"
+    return True, "large BDF"
+
+
+def _scan_fast_bdf(path):
+    """Stream-read a simple BDF deck into numpy-friendly Python lists.
+
+    This intentionally covers the common large-deck geometry subset first:
+    GRID + CQUAD4/CTRIA3 + PSHELL/MAT1. If we see geometry that needs
+    pyNastran's full object model, the caller falls back to the legacy path.
+    """
+    nodes_l, xs, ys, zs = [], [], [], []
+    quads_l, quads_p, quads_g = [], [], []
+    tris_l, tris_p, tris_g = [], [], []
+    pshells = {}
+    mat1 = {}
+    counts = {}
+    all_cp_zero = True
+    all_cd_zero = True
+    unsupported_geom = {}
+    saw_long = False
+    saw_include = False
+    saw_coord = False
+
+    with open(path, "r", encoding="latin-1", errors="replace") as fh:
+        for raw in fh:
+            stripped = raw.lstrip()
+            if not stripped or stripped.startswith("$"):
+                continue
+            fields = _bdf_fields(raw)
+            if not fields:
+                continue
+            card = fields[0]
+            counts[card] = counts.get(card, 0) + 1
+
+            if "*" in raw[:8] and card in ({"GRID", "PSHELL"} | _FAST_SUPPORTED_ELEMS | _FAST_FALLBACK_GEOM_CARDS):
+                saw_long = True
+                break
+            if card == "INCLUDE":
+                saw_include = True
+                break
+            if card.startswith("CORD1") or card.startswith("CORD2") or card == "GRDSET":
+                saw_coord = True
+                break
+            if card in _FAST_FALLBACK_GEOM_CARDS:
+                unsupported_geom[card] = unsupported_geom.get(card, 0) + 1
+                break
+
+            try:
+                if card == "GRID":
+                    if len(fields) < 6:
+                        raise ValueError("GRID has fewer than 6 fields")
+                    cp = _bdf_int(fields[2], 0) if len(fields) > 2 else 0
+                    cd = _bdf_int(fields[6], 0) if len(fields) > 6 else 0
+                    if cp != 0:
+                        all_cp_zero = False
+                    if cd != 0:
+                        all_cd_zero = False
+                    nodes_l.append(_bdf_int(fields[1]))
+                    xs.append(_bdf_float(fields[3]))
+                    ys.append(_bdf_float(fields[4]))
+                    zs.append(_bdf_float(fields[5]))
+                elif card == "CQUAD4":
+                    if len(fields) < 7:
+                        raise ValueError("CQUAD4 has fewer than 7 fields")
+                    quads_l.append(_bdf_int(fields[1]))
+                    quads_p.append(_bdf_int(fields[2], -1))
+                    quads_g.append([
+                        _bdf_int(fields[3]),
+                        _bdf_int(fields[4]),
+                        _bdf_int(fields[5]),
+                        _bdf_int(fields[6]),
+                    ])
+                elif card == "CTRIA3":
+                    if len(fields) < 6:
+                        raise ValueError("CTRIA3 has fewer than 6 fields")
+                    tris_l.append(_bdf_int(fields[1]))
+                    tris_p.append(_bdf_int(fields[2], -1))
+                    tris_g.append([
+                        _bdf_int(fields[3]),
+                        _bdf_int(fields[4]),
+                        _bdf_int(fields[5]),
+                    ])
+                elif card == "PSHELL":
+                    if len(fields) >= 2:
+                        pid = _bdf_int(fields[1], -1)
+                        mid = _bdf_int(fields[2], -1) if len(fields) > 2 else -1
+                        thk = _bdf_float(fields[3], 0.0) if len(fields) > 3 else 0.0
+                        pshells[pid] = {"type": "SHELL", "mid": mid, "thickness": thk}
+                elif card == "MAT1":
+                    if len(fields) >= 2:
+                        mid = _bdf_int(fields[1], -1)
+                        e = _bdf_float(fields[2], 0.0) if len(fields) > 2 else 0.0
+                        g = _bdf_float(fields[3], 0.0) if len(fields) > 3 else 0.0
+                        nu = _bdf_float(fields[4], 0.0) if len(fields) > 4 else 0.0
+                        mat1[mid] = {"e": e, "g": g, "nu": nu}
+                elif card not in _FAST_IGNORED_CARDS:
+                    # Unknown non-geometry/control cards are harmless for the L1
+                    # geometry fast path; keep scanning so simple solver decks work.
+                    pass
+            except Exception as exc:
+                raise RuntimeError("fast BDF parse failed at card {}: {}".format(card, exc))
+
+    if saw_long:
+        return None, "long-field BDF card detected"
+    if saw_include:
+        return None, "INCLUDE card detected"
+    if saw_coord:
+        return None, "coordinate-system/default GRID card detected"
+    if unsupported_geom:
+        return None, "unsupported geometry card(s): {}".format(unsupported_geom)
+    if not all_cp_zero:
+        return None, "GRID CP != 0 detected"
+    if not nodes_l:
+        return None, "no GRID cards found"
+    if not quads_l and not tris_l:
+        return None, "no supported shell elements found"
+
+    node_labels = np.asarray(nodes_l, dtype=np.int32)
+    node_coords = np.column_stack((
+        np.asarray(xs, dtype=np.float64),
+        np.asarray(ys, dtype=np.float64),
+        np.asarray(zs, dtype=np.float64),
+    ))
+    order = np.argsort(node_labels, kind="stable")
+    node_labels = node_labels[order]
+    node_coords = node_coords[order]
+
+    groups = {}
+    if quads_l:
+        groups["S4R"] = {
+            "labels": np.asarray(quads_l, dtype=np.int32),
+            "pids": np.asarray(quads_p, dtype=np.int32),
+            "conn_gids": np.asarray(quads_g, dtype=np.int32),
+            "n_faces": 1,
+            "n_corner": 4,
+        }
+    if tris_l:
+        groups["S3"] = {
+            "labels": np.asarray(tris_l, dtype=np.int32),
+            "pids": np.asarray(tris_p, dtype=np.int32),
+            "conn_gids": np.asarray(tris_g, dtype=np.int32),
+            "n_faces": 1,
+            "n_corner": 3,
+        }
+
+    return {
+        "node_labels": node_labels,
+        "node_coords": node_coords,
+        "groups": groups,
+        "pshells": pshells,
+        "mat1": mat1,
+        "counts": counts,
+        "all_cd_zero": all_cd_zero,
+    }, None
 
 
 def init_manifest(workspace):
@@ -824,6 +1053,243 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
     db_conn.close()
 
 
+def _fast_section_meta(pid, pshells):
+    info = pshells.get(int(pid))
+    if info is None:
+        return "SHELL", None, ""
+    mid = info.get("mid", -1)
+    thk = info.get("thickness", None)
+    return info.get("type", "SHELL"), thk, ("" if mid in (None, -1) else str(mid))
+
+
+def _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=None):
+    part_name = inst_name
+    inst_safe = safe(inst_name)
+    node_labels = parsed["node_labels"]
+    node_coords = parsed["node_coords"]
+    etype_groups = parsed["groups"]
+    pshells = parsed["pshells"]
+    mat1 = parsed["mat1"]
+    N_nodes = len(node_labels)
+    print("  Fast path: {} nodes, {} etype group(s)".format(N_nodes, len(etype_groups)))
+
+    all_pids = sorted(set(
+        int(p)
+        for g in etype_groups.values()
+        for p in np.asarray(g["pids"], dtype=np.int32).tolist()
+        if int(p) != -1
+    ))
+    pid_to_sid = {pid: i for i, pid in enumerate(all_pids)}
+    section_names = [str(p) for p in all_pids]
+    sid_to_mat, sid_to_sty = {}, {}
+    pid_to_combo, combo_info = {}, {}
+    for pid in all_pids:
+        sid = pid_to_sid[pid]
+        sec_type, sec_thk, sec_mat = _fast_section_meta(pid, pshells)
+        sid_to_mat[sid] = sec_mat
+        sid_to_sty[sid] = sec_type
+        thk_key = (round(float(sec_thk), 6)
+                   if sec_thk is not None and np.isfinite(sec_thk) else None)
+        combo_key = (sec_type, thk_key)
+        pid_to_combo[pid] = combo_key
+        combo_info.setdefault(combo_key,
+                              {"type": sec_type, "thk": thk_key, "pid": pid})
+
+    for i, ck in enumerate(sorted(
+            combo_info, key=lambda c: (c[0], c[1] if c[1] is not None else -1.0))):
+        info = combo_info[ck]
+        info["label"] = _combo_label(info["type"], info["thk"], info["pid"])
+        info["eset"] = "SEC{}_ELEMS".format(i)
+
+    l1_dir = os.path.join(workspace, "l1")
+    geom_dir = os.path.join(l1_dir, "geometry")
+    sets_dir = os.path.join(l1_dir, "sets")
+    mkdirs(geom_dir)
+    mkdirs(sets_dir)
+    h5_rel = os.path.join("l1", "geometry", inst_safe + ".h5")
+    h5_abs = os.path.join(workspace, h5_rel)
+
+    print("  Writing geometry/{}.h5 ...".format(inst_safe))
+    t0 = time.time()
+    bbox_min_v = node_coords.min(axis=0).tolist()
+    bbox_max_v = node_coords.max(axis=0).tolist()
+    total_elem_count = sum(len(g["labels"]) for g in etype_groups.values())
+    etd_rows = []
+    combo_to_labels = {}
+    node_to_elem_parts = []
+
+    with h5py.File(h5_abs, "w") as f:
+        f.create_dataset("nodes/labels", data=node_labels)
+        f.create_dataset("nodes/coords", data=node_coords)
+        if section_names:
+            str_ds(f, "section_names", section_names)
+
+        for abaqus_name, g in etype_groups.items():
+            labels_arr = np.asarray(g["labels"], dtype=np.int32)
+            conn_gids = np.asarray(g["conn_gids"], dtype=np.int32)
+            pids_arr = np.asarray(g["pids"], dtype=np.int32)
+            n_corner = int(g["n_corner"])
+            n_faces_et = int(g["n_faces"])
+            conn_rows = np.searchsorted(node_labels, conn_gids).astype(np.int32)
+            valid = (
+                (conn_rows >= 0)
+                & (conn_rows < len(node_labels))
+                & (node_labels[np.clip(conn_rows, 0, len(node_labels) - 1)] == conn_gids)
+            )
+            valid_elem = np.all(valid, axis=1)
+            if not np.all(valid_elem):
+                dropped = int(np.count_nonzero(~valid_elem))
+                print("  WARNING: dropped {} {} element(s) with missing GRID".format(
+                    dropped, abaqus_name))
+                labels_arr = labels_arr[valid_elem]
+                conn_rows = conn_rows[valid_elem]
+                pids_arr = pids_arr[valid_elem]
+
+            sec_ids = np.array([pid_to_sid.get(int(p), -1) for p in pids_arr],
+                               dtype=np.int32)
+            face_def = FACE_DEFS.get(abaqus_name, [])
+            fei_list, fseq_list, fnc_list = [], [], []
+            for ei, row in enumerate(conn_rows):
+                for fi, face_local in enumerate(face_def):
+                    fei_list.append(ei)
+                    fseq_list.append(fi)
+                    fnc_list.append([int(row[k]) for k in face_local])
+
+            grp = f.require_group("elements/{}".format(abaqus_name))
+            grp.create_dataset("labels", data=labels_arr)
+            grp.create_dataset("conn", data=conn_rows)
+            grp.create_dataset("section_id", data=sec_ids)
+            if fei_list:
+                max_fn = max(len(r) for r in fnc_list)
+                fnc_padded = np.full((len(fnc_list), max_fn), -1, dtype=np.int32)
+                for _i, _r in enumerate(fnc_list):
+                    fnc_padded[_i, :len(_r)] = _r
+                grp.create_dataset("face_elem_idx",
+                                   data=np.asarray(fei_list, dtype=np.int32))
+                grp.create_dataset("face_seq",
+                                   data=np.asarray(fseq_list, dtype=np.int32))
+                grp.create_dataset("face_node_conn", data=fnc_padded)
+
+            mat_arr = np.array(
+                [sid_to_mat.get(int(s), "").encode("ascii")[:63] for s in sec_ids],
+                dtype="S64")
+            sec_arr = np.array(
+                [sid_to_sty.get(int(s), "").encode("ascii")[:15] for s in sec_ids],
+                dtype="S16")
+            grp.create_dataset("material_name", data=mat_arr)
+            grp.create_dataset("section_type", data=sec_arr)
+
+            if len(labels_arr):
+                node_to_elem_parts.append((
+                    conn_rows.reshape(-1).astype(np.int32, copy=False),
+                    np.repeat(labels_arr, conn_rows.shape[1]).astype(np.int32, copy=False),
+                ))
+            for lbl, pid in zip(labels_arr.tolist(), pids_arr.tolist()):
+                ck = pid_to_combo.get(int(pid))
+                if ck is not None:
+                    combo_to_labels.setdefault(ck, []).append(int(lbl))
+            etd_rows.append((inst_name, abaqus_name, len(labels_arr), 0,
+                             n_corner, n_faces_et))
+            print("    {}: {} elem(s)".format(abaqus_name, len(labels_arr)))
+
+        for ck in sorted(combo_info,
+                         key=lambda c: (c[0], c[1] if c[1] is not None else -1.0)):
+            if ck not in combo_to_labels:
+                continue
+            info = combo_info[ck]
+            sg = f.require_group("sections/{}".format(info["label"]))
+            sg.attrs["element_set"] = info["eset"]
+            sg.attrs["type"] = info["type"]
+            sg.attrs["thickness"] = (info["thk"] if info["thk"] is not None
+                                     else float("nan"))
+            sg.attrs["material_name"] = ""
+            f.create_dataset("instance_sets/element_sets/{}".format(info["eset"]),
+                             data=np.asarray(sorted(set(combo_to_labels[ck])),
+                                             dtype=np.int32))
+
+        for mid, mat in mat1.items():
+            mg = f.require_group("materials/{}".format(mid))
+            mg.attrs["type"] = "ISOTROPIC"
+            mg.create_dataset("elastic_table",
+                              data=np.asarray([[mat.get("e", 0.0),
+                                                mat.get("nu", 0.0)]],
+                                              dtype=np.float64))
+
+        csr = f.require_group("node_to_elements")
+        if node_to_elem_parts:
+            pairs_nr_arr = np.concatenate([p[0] for p in node_to_elem_parts])
+            pairs_el_arr = np.concatenate([p[1] for p in node_to_elem_parts])
+            order = np.argsort(pairs_nr_arr, kind="stable")
+            pairs_nr_arr = pairs_nr_arr[order]
+            pairs_el_arr = pairs_el_arr[order]
+            offsets = np.zeros(N_nodes + 1, dtype=np.int32)
+            np.add.at(offsets[1:], pairs_nr_arr, 1)
+            np.cumsum(offsets, out=offsets)
+            csr.create_dataset("offsets", data=offsets, compression="gzip")
+            csr.create_dataset("elem_label_data", data=pairs_el_arr, compression="gzip")
+        else:
+            csr.create_dataset("offsets", data=np.zeros(N_nodes + 1, dtype=np.int32))
+            csr.create_dataset("elem_label_data", data=np.array([], dtype=np.int32))
+
+    print("    done. ({})".format(_fmt_t(time.time() - t0)))
+    _refine_shell_sections(h5_abs)
+
+    print("  Writing assembly.h5 ...")
+    asm_path = os.path.join(l1_dir, "assembly.h5")
+    with h5py.File(asm_path, "w") as f:
+        grp = f.require_group("instances/{}".format(inst_name))
+        grp.create_dataset("transform", data=np.eye(4, dtype=np.float64))
+        grp.create_dataset("part_name", data=part_name.encode("utf-8"))
+    with h5py.File(os.path.join(sets_dir, "sets.h5"), "w") as _f:
+        pass
+
+    print("  Writing manifest.db ...")
+    db_conn = init_manifest(workspace)
+    db_conn.execute(
+        "INSERT OR REPLACE INTO instances VALUES (?,?,?,?,?,?,?,?)",
+        (inst_name, part_name, h5_rel, None,
+         N_nodes, total_elem_count,
+         json.dumps(bbox_min_v), json.dumps(bbox_max_v)),
+    )
+    for row in etd_rows:
+        db_conn.execute(
+            "INSERT OR REPLACE INTO element_type_dist VALUES (?,?,?,?,?,?)",
+            row,
+        )
+    if source_bdf_path:
+        db_conn.execute(
+            "INSERT OR REPLACE INTO l1_meta (key, value) VALUES ('source_bdf_path', ?)",
+            (os.path.abspath(source_bdf_path),),
+        )
+        db_conn.execute(
+            "INSERT OR REPLACE INTO l1_meta (key, value) VALUES ('bdf_fast_path', '1')",
+        )
+        db_conn.execute(
+            "INSERT OR REPLACE INTO l1_meta (key, value) VALUES ('bdf_all_cd_zero', ?)",
+            ("1" if parsed.get("all_cd_zero", False) else "0",),
+        )
+    db_conn.commit()
+    db_conn.close()
+
+
+def _try_fast_pack(bdf_path, workspace, inst_name):
+    candidate, reason = _fast_bdf_is_candidate(bdf_path)
+    if not candidate:
+        print("  Fast BDF path: skipped ({})".format(reason))
+        return False
+    print("  Fast BDF path: scanning ({}) ...".format(reason))
+    t0 = time.time()
+    parsed, fallback_reason = _scan_fast_bdf(bdf_path)
+    if parsed is None:
+        if _FAST_BDF_MODE == "force":
+            raise RuntimeError("fast BDF path forced but unavailable: {}".format(fallback_reason))
+        print("  Fast BDF path: fallback to pyNastran ({})".format(fallback_reason))
+        return False
+    print("  Fast BDF scan done. ({})".format(_fmt_t(time.time() - t0)))
+    _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=bdf_path)
+    return True
+
+
 
 def pack(bdf_path, workspace):
     from src.l1.bdf_read import read_bdf_safe
@@ -831,6 +1297,9 @@ def pack(bdf_path, workspace):
     bdf_basename = os.path.basename(bdf_path)
     inst_name = os.path.splitext(bdf_basename)[0].upper()
     print('BDF pack: {} → instance \'{}\''.format(bdf_basename, inst_name))
+    if _try_fast_pack(bdf_path, workspace, inst_name):
+        print('BDF pack complete. ({} total)'.format(_fmt_t(time.time() - t_total)))
+        return
     print('  Reading BDF ...')
     t0 = time.time()
     model = read_bdf_safe(bdf_path, xref=True)
