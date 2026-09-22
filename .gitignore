@@ -65,3 +65,4 @@ viewer/.npmrc
 
 verification_examples/
 packages/
+offline_packages/

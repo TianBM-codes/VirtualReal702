@@ -95,3 +95,88 @@ def test_read_bdf_safe_renumbers_duplicate_property_ids_by_type(tmp_path):
     assert model.elements[100].pid == 7
     assert model.elements[200].pid == new_pids[0]
     assert "renumbered duplicate property PID(s) 7" in model.read_bdf_safe_warnings[0]
+
+
+def test_read_bdf_safe_renumbers_duplicate_property_ids_after_ascii_retry(tmp_path, monkeypatch):
+    from pyNastran.bdf.bdf import BDF
+    from pyNastran.bdf.errors import DuplicateIDsError
+
+    bdf_path = tmp_path / "duplicate_properties_utf8.bdf"
+    bdf_path.write_text(
+        "\n".join(
+            [
+                "$ 中文注释 forces the ascii-sidecar retry path in this test",
+                "SOL 103",
+                "CEND",
+                "BEGIN BULK",
+                "GRID,1,,0.,0.,0.",
+                "GRID,2,,1.,0.,0.",
+                "GRID,3,,1.,1.,0.",
+                "GRID,4,,0.,1.,0.",
+                "MAT1,1,210000.,,0.3",
+                "PSHELL,7,1,0.1",
+                "CQUAD4,100,7,1,2,3,4",
+                "PBAR,7,1,1.0",
+                "CBAR,200,7,1,2,0.,1.,0.",
+                "ENDDATA",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    real_read_bdf = BDF.read_bdf
+
+    def fake_read_bdf(self, filename, *args, **kwargs):
+        filename = str(filename)
+        if filename.endswith("duplicate_properties_utf8.bdf"):
+            raise UnicodeError("simulated locale decode failure")
+        if filename.endswith(".pyn_ascii.bdf"):
+            raise DuplicateIDsError("simulated duplicate properties in ascii sidecar")
+        return real_read_bdf(self, filename, *args, **kwargs)
+
+    monkeypatch.setattr(BDF, "read_bdf", fake_read_bdf)
+
+    model = read_bdf_safe(str(bdf_path), xref=False)
+
+    assert model.properties[7].type == "PSHELL"
+    new_pids = [pid for pid, prop in model.properties.items() if prop.type == "PBAR"]
+    assert len(new_pids) == 1
+    assert model.elements[200].pid == new_pids[0]
+    assert "renumbered duplicate property PID(s) 7" in model.read_bdf_safe_warnings[0]
+
+
+def test_read_bdf_safe_preserves_fixed_width_cbar_when_renumbering_pid(tmp_path):
+    def fixed(*fields):
+        return "".join(str(field).ljust(8) if i == 0 else str(field).rjust(8)
+                       for i, field in enumerate(fields)).rstrip()
+
+    bdf_path = tmp_path / "duplicate_fixed_cbar.bdf"
+    bdf_path.write_text(
+        "\n".join(
+            [
+                "SOL 103",
+                "CEND",
+                "BEGIN BULK",
+                fixed("GRID", 1, "", 0.0, 0.0, 0.0),
+                fixed("GRID", 2, "", 1.0, 0.0, 0.0),
+                fixed("GRID", 3, "", 1.0, 1.0, 0.0),
+                fixed("GRID", 4, "", 0.0, 1.0, 0.0),
+                fixed("MAT1", 1, 210000.0, "", 0.3),
+                fixed("PSHELL", 7, 1, 0.1),
+                fixed("CQUAD4", 100, 7, 1, 2, 3, 4),
+                fixed("PBAR", 7, 1, 1.0),
+                fixed("CBAR", 200, 7, 1, 2, ".64", ".3711-8", "-1.0"),
+                "ENDDATA",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    model = read_bdf_safe(str(bdf_path), xref=False)
+
+    new_pids = [pid for pid, prop in model.properties.items() if prop.type == "PBAR"]
+    assert len(new_pids) == 1
+    assert model.elements[200].pid == new_pids[0]
+    assert list(model.elements[200].x) == [0.64, 0.3711e-8, -1.0]

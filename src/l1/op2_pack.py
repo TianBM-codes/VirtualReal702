@@ -206,6 +206,19 @@ def _lookup_source_bdf(db_conn):
     return None
 
 
+def _lookup_bdf_all_cd_zero(db_conn):
+    """Return True when bdf_pack recorded that every GRID outputs in CD=0."""
+    try:
+        row = db_conn.execute(
+            "SELECT value FROM l1_meta WHERE key='bdf_all_cd_zero'").fetchone()
+    except Exception:
+        return False
+    if not row:
+        return False
+    value = row[0] if not hasattr(row, 'keys') else row['value']
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def _build_coord_context(bdf_path):
     """
     Build the data needed to rotate nodal results from each node's output (CD)
@@ -618,11 +631,14 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
                   'if any node has CD != 0.')
 
     coord_ctx = None
-    try:
-        coord_ctx = _build_coord_context(bdf_path)
-    except Exception as exc:
-        print('    WARNING: CD transform setup failed ({}); '
-              'displacements left in nodal (CD) frame.'.format(exc))
+    if _lookup_bdf_all_cd_zero(db_conn):
+        print('    CD transform: manifest says all nodes CD=0 (global), skip BDF reread.')
+    else:
+        try:
+            coord_ctx = _build_coord_context(bdf_path)
+        except Exception as exc:
+            print('    WARNING: CD transform setup failed ({}); '
+                  'displacements left in nodal (CD) frame.'.format(exc))
     if coord_ctx is not None:
         n_rot_total = 0
         for sc_id, (result_obj, _is_modal) in subcases_to_process.items():

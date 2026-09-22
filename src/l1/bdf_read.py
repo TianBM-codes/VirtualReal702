@@ -106,7 +106,10 @@ def _split_bdf_fields(line):
         return []
     if ',' in text:
         return [field.strip() for field in text.split(',')]
-    return text.split()
+    fields = [text[i:i + 8].strip() for i in range(0, len(text), 8)]
+    while fields and fields[-1] == '':
+        fields.pop()
+    return fields
 
 
 def _sort_bdf_id_key(value):
@@ -123,6 +126,38 @@ def _format_free_card(fields, comment=''):
     if comment:
         body += ' $' + comment.strip()
     return body
+
+
+def _rewrite_bdf_field(line, field_index, value):
+    """Rewrite one field while preserving free/fixed-card layout when practical."""
+    stripped = line.rstrip('\r\n')
+    newline = line[len(stripped):] or '\n'
+    body, marker, comment = stripped.partition('$')
+    value = str(value)
+
+    if ',' in body:
+        fields = [field.strip() for field in body.split(',')]
+        while len(fields) <= field_index:
+            fields.append('')
+        fields[field_index] = value
+        rewritten = ','.join(fields)
+    else:
+        width = 16 if body[:8].rstrip().endswith('*') else 8
+        if len(value) > width:
+            fields = _split_bdf_fields(body)
+            while len(fields) <= field_index:
+                fields.append('')
+            fields[field_index] = value
+            rewritten = _format_free_card(fields)
+        else:
+            start = 8 + (field_index - 1) * width if width == 16 and field_index > 0 else field_index * width
+            end = start + width
+            padded = body.ljust(end)
+            rewritten = padded[:start] + value.rjust(width) + padded[end:]
+
+    if marker:
+        rewritten += '$' + comment
+    return rewritten + newline
 
 
 def _is_duplicate_ids_error(exc):
@@ -225,9 +260,8 @@ def _scan_duplicate_property_cleanup(path, encoding):
             except (TypeError, ValueError):
                 old_pid = None
             if lineno in renumber_by_line:
-                new_fields = list(fields)
-                new_fields[1] = str(renumber_by_line[lineno])
-                rewritten[lineno] = _format_free_card(new_fields, item['comment']) + newline
+                rewritten[lineno] = _rewrite_bdf_field(
+                    item['line'], 1, renumber_by_line[lineno])
                 continue
 
         if len(fields) >= 3:
@@ -238,9 +272,8 @@ def _scan_duplicate_property_cleanup(path, encoding):
             if elem_pid is not None:
                 for (prop_card, old_pid), new_pid in renumber_by_card_pid.items():
                     if elem_pid == old_pid and card in _PROPERTY_TO_ELEMENTS.get(prop_card, ()):
-                        new_fields = list(fields)
-                        new_fields[2] = str(new_pid)
-                        rewritten[lineno] = _format_free_card(new_fields, item['comment']) + newline
+                        rewritten[lineno] = _rewrite_bdf_field(
+                            item['line'], 2, new_pid)
                         break
 
     if not rewritten:
@@ -391,6 +424,41 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
         warnings.append(message)
         target_model.read_bdf_safe_warnings = warnings
 
+    def _read_with_duplicate_property_cleanup(cleanup_source, cleanup_encoding,
+                                             read_encoding, display_filename):
+        cleanup = _scan_duplicate_property_cleanup(cleanup_source, cleanup_encoding)
+        if not cleanup:
+            return None
+
+        prop_sidecar = _write_duplicate_property_sidecar(
+            cleanup_source, cleanup_encoding, cleanup)
+        details = ', '.join(cleanup['renumbered']) or 'none'
+        warning = (
+            'read_bdf_safe: renumbered duplicate property PID(s) {} ({})'
+        ).format(
+            ', '.join(str(pid) for pid in cleanup['duplicate_pids']),
+            details,
+        )
+        if cleanup['skipped_same_type_count']:
+            warning += '; skipped {} same-type duplicate property card(s)'.format(
+                cleanup['skipped_same_type_count'])
+        warning += ' while loading {}'.format(os.path.basename(display_filename))
+        sys.stderr.write(warning + '\n')
+
+        m_retry = BDF(debug=debug)
+        if disable_cards:
+            m_retry.disable_cards(list(disable_cards))
+        _record_warning(m_retry, warning)
+        try:
+            m_retry.read_bdf(prop_sidecar, xref=xref, punch=punch,
+                             encoding=read_encoding, **read_kwargs)
+            return m_retry
+        finally:
+            try:
+                os.remove(prop_sidecar)
+            except OSError:
+                pass
+
     m = _new_model()
     try:
         m.read_bdf(bdf_filename, xref=xref, punch=punch, encoding=enc, **read_kwargs)
@@ -407,7 +475,16 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
         if disable_cards:
             m2.disable_cards(list(disable_cards))
         try:
-            m2.read_bdf(sidecar, xref=xref, punch=punch, encoding='utf-8', **read_kwargs)
+            try:
+                m2.read_bdf(sidecar, xref=xref, punch=punch, encoding='utf-8', **read_kwargs)
+            except Exception as exc:
+                if not _is_duplicate_ids_error(exc):
+                    raise
+                m3 = _read_with_duplicate_property_cleanup(
+                    sidecar, 'utf-8', 'utf-8', bdf_filename)
+                if m3 is None:
+                    raise
+                return m3
             return m2
         finally:
             try:
@@ -449,33 +526,8 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
         if not _is_duplicate_ids_error(exc):
             raise
 
-        cleanup = _scan_duplicate_property_cleanup(bdf_filename, enc)
-        if not cleanup:
+        m2 = _read_with_duplicate_property_cleanup(
+            bdf_filename, enc, enc, bdf_filename)
+        if m2 is None:
             raise
-
-        sidecar = _write_duplicate_property_sidecar(bdf_filename, enc, cleanup)
-        details = ', '.join(cleanup['renumbered']) or 'none'
-        warning = (
-            'read_bdf_safe: renumbered duplicate property PID(s) {} ({})'
-        ).format(
-            ', '.join(str(pid) for pid in cleanup['duplicate_pids']),
-            details,
-        )
-        if cleanup['skipped_same_type_count']:
-            warning += '; skipped {} same-type duplicate property card(s)'.format(
-                cleanup['skipped_same_type_count'])
-        warning += ' while loading {}'.format(os.path.basename(bdf_filename))
-        sys.stderr.write(warning + '\n')
-
-        m2 = BDF(debug=debug)
-        if disable_cards:
-            m2.disable_cards(list(disable_cards))
-        _record_warning(m2, warning)
-        try:
-            m2.read_bdf(sidecar, xref=xref, punch=punch, encoding=enc, **read_kwargs)
-            return m2
-        finally:
-            try:
-                os.remove(sidecar)
-            except OSError:
-                pass
+        return m2

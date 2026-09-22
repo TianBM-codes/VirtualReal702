@@ -5,15 +5,19 @@ Frame-color / frame-scalar computation:
 Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT
 """
 import logging
+import hashlib
 import math
 import os
 import re
 import json
+import threading
+from collections import OrderedDict
 from typing import Dict, Literal, Optional, Tuple
 
 import h5py
 import numpy as np
 
+from ..core.config import settings
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.colormap import apply_jet, apply_jet_with_neutral
@@ -23,6 +27,355 @@ from src.l1.manifest_schema import canon_instance
 logger = logging.getLogger(__name__)
 
 Component = Literal["U1", "U2", "U3"]
+_RENDER_ARRAY_CACHE: "OrderedDict[tuple, tuple[np.ndarray, Optional[np.ndarray]]]" = OrderedDict()
+
+
+# ─── Result caches (per worker process) ──────────────────────────────────────
+# 大模型下 frame-scalars / frame-scalar-range / 变形家族的重计算结果缓存：
+#   _VERTEX_CACHE: 大数组值（frame_scalars 归一化前的 scalar_vertex、变形家族的
+#                  (positions, normals, aux) 整包与顶点位移向量），按总字节数 LRU
+#                  淘汰（上限 APP_SCALAR_CACHE_MB，默认 512MB，0 = 全部关闭）。
+#   _RANGE_CACHE:  图例范围 / deform-suggest-scale 统计等小结果，按条数 LRU 淘汰。
+# 所有 key 都含结果文件的 (mtime_ns, size)：文件被重写（外部字段重新导入、
+# result_group 重新解析）后签名变化，旧条目自然失效并被 LRU 挤出。
+# 缓存是进程内的（gunicorn 多 worker 各一份），读写加锁保证线程安全。
+# 缓存中的数组是共享对象：写入前置为只读，下游只允许整体重新赋值。
+
+_VERTEX_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+_VERTEX_CACHE_BYTES = 0
+_RANGE_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+_RANGE_CACHE_MAX = 4096
+_CACHE_LOCK = threading.Lock()
+_CACHE_MISS = object()
+
+
+def _result_h5_sig(h5_path: str) -> Optional[Tuple[int, int]]:
+    """结果文件的 (mtime_ns, size) 签名；文件不可 stat 时返回 None（不缓存）。"""
+    try:
+        st = os.stat(h5_path)
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
+
+
+def _vertex_cache_cap_bytes() -> int:
+    return settings.scalar_cache_mb * 1024 * 1024
+
+
+def _value_nbytes(value) -> int:
+    """缓存值中全部 ndarray 的总字节数（值可以是数组或嵌套 tuple/list）。"""
+    if isinstance(value, np.ndarray):
+        return int(value.nbytes)
+    if isinstance(value, (tuple, list)):
+        return sum(_value_nbytes(v) for v in value)
+    return 0
+
+
+def _vertex_cache_get(key: tuple):
+    with _CACHE_LOCK:
+        item = _VERTEX_CACHE.get(key)
+        if item is not None:
+            _VERTEX_CACHE.move_to_end(key)
+        return item
+
+
+def _vertex_cache_put(key: tuple, value) -> None:
+    global _VERTEX_CACHE_BYTES
+    cap = _vertex_cache_cap_bytes()
+    nbytes = _value_nbytes(value)
+    if cap <= 0 or nbytes > cap:
+        return
+    with _CACHE_LOCK:
+        old = _VERTEX_CACHE.pop(key, None)
+        if old is not None:
+            _VERTEX_CACHE_BYTES -= _value_nbytes(old)
+        _VERTEX_CACHE[key] = value
+        _VERTEX_CACHE_BYTES += nbytes
+        while _VERTEX_CACHE_BYTES > cap and _VERTEX_CACHE:
+            _, evicted = _VERTEX_CACHE.popitem(last=False)
+            _VERTEX_CACHE_BYTES -= _value_nbytes(evicted)
+
+
+def _range_cache_get(key: tuple):
+    """命中返回缓存值（可能是 None），未命中返回 _CACHE_MISS。"""
+    with _CACHE_LOCK:
+        if key in _RANGE_CACHE:
+            _RANGE_CACHE.move_to_end(key)
+            return _RANGE_CACHE[key]
+        return _CACHE_MISS
+
+
+def _range_cache_put(key: tuple, value) -> None:
+    if _vertex_cache_cap_bytes() <= 0:   # APP_SCALAR_CACHE_MB=0 关闭全部结果缓存
+        return
+    with _CACHE_LOCK:
+        _RANGE_CACHE[key] = value
+        _RANGE_CACHE.move_to_end(key)
+        while len(_RANGE_CACHE) > _RANGE_CACHE_MAX:
+            _RANGE_CACHE.popitem(last=False)
+
+
+def clear_result_caches() -> None:
+    """清空内存结果缓存（测试与运维用）。磁盘缓存不动，删工作区即删。"""
+    global _VERTEX_CACHE_BYTES
+    with _CACHE_LOCK:
+        _VERTEX_CACHE.clear()
+        _RANGE_CACHE.clear()
+        _VERTEX_CACHE_BYTES = 0
+
+
+# ─── Disk layer of the result cache (write-through, per workspace) ───────────
+# 同一模型的 L1 结果不可变 → 算过的 scalar_vertex / 图例范围落盘到
+# <workspace>/l3_cache/ 下（scalars/*.npz 大数组、ranges/*.json 小结果），
+# 重启后、以及 gunicorn 多 worker 之间都能直接复用。文件名 = 缓存 key 的
+# sha1（key 已含结果文件 mtime+size 签名，重写自动失效，旧文件被容量淘汰）。
+# 写入用 临时文件 + os.replace 原子改名，多进程并发写同一 key 也安全；
+# 这是 "L3 只写 manifest.db" 约定的唯一例外，目录随工作区删除一并清理。
+
+def _disk_cache_root(workspace: str) -> str:
+    return os.path.join(workspace, "l3_cache")
+
+
+def _disk_key_name(key: tuple) -> str:
+    return hashlib.sha1(repr(key).encode("utf-8")).hexdigest()
+
+
+def _evict_scalar_disk(scalars_dir: str, cap_bytes: int) -> None:
+    """按 mtime 从旧到新删除 .npz，直到目录总大小不超过 cap。"""
+    try:
+        entries = []
+        total = 0
+        with os.scandir(scalars_dir) as it:
+            for e in it:
+                if not e.name.endswith(".npz"):
+                    continue
+                st = e.stat()
+                entries.append((st.st_mtime_ns, st.st_size, e.path))
+                total += st.st_size
+        if total <= cap_bytes:
+            return
+        entries.sort()
+        for _, size, path in entries:
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+            total -= size
+            if total <= cap_bytes:
+                break
+    except OSError:
+        pass
+
+
+def _vertex_disk_get(workspace: str, key: tuple) -> Optional[tuple]:
+    if settings.scalar_cache_mb <= 0 or settings.scalar_disk_cache_mb <= 0:
+        return None
+    path = os.path.join(_disk_cache_root(workspace), "scalars",
+                        _disk_key_name(key) + ".npz")
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            scalar_vertex = z["scalar_vertex"]
+            gr = z["global_range"]
+            global_range = (float(gr[0]), float(gr[1])) if gr.size == 2 else None
+            result_position = bytes(z["result_position"][()]).decode("ascii")
+            nf = int(z["num_frames"][()])
+            num_frames = None if nf < 0 else nf
+    except FileNotFoundError:
+        return None
+    except Exception:
+        # 损坏/半截文件：删掉当没有
+        logger.warning("scalar disk cache: dropping unreadable entry %s", path)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    try:
+        os.utime(path)   # LRU 触碰
+    except OSError:
+        pass
+    scalar_vertex.setflags(write=False)
+    return scalar_vertex, global_range, result_position, num_frames
+
+
+def _vertex_disk_put(workspace: str, key: tuple, value: tuple) -> None:
+    if settings.scalar_cache_mb <= 0:
+        return
+    cap = settings.scalar_disk_cache_mb * 1024 * 1024
+    if cap <= 0:
+        return
+    scalar_vertex, global_range, result_position, num_frames = value
+    if int(scalar_vertex.nbytes) > cap:
+        return
+    scalars_dir = os.path.join(_disk_cache_root(workspace), "scalars")
+    path = os.path.join(scalars_dir, _disk_key_name(key) + ".npz")
+    if os.path.exists(path):
+        return
+    try:
+        os.makedirs(scalars_dir, exist_ok=True)
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "wb") as fh:
+            np.savez(
+                fh,
+                scalar_vertex=scalar_vertex,
+                global_range=(np.asarray(global_range, dtype=np.float64)
+                              if global_range is not None
+                              else np.zeros(0, dtype=np.float64)),
+                result_position=np.array(result_position.encode("ascii")),
+                num_frames=np.array(
+                    -1 if num_frames is None else int(num_frames), dtype=np.int64),
+            )
+        os.replace(tmp, path)
+    except OSError:
+        logger.warning("scalar disk cache: write failed for %s", path, exc_info=True)
+        return
+    _evict_scalar_disk(scalars_dir, cap)
+
+
+def _json_disk_get(workspace: str, key: tuple):
+    """通用小结果 JSON 磁盘层：命中返回值（可能是 None），未命中返回 _CACHE_MISS。"""
+    if settings.scalar_cache_mb <= 0 or settings.scalar_disk_cache_mb <= 0:
+        return _CACHE_MISS
+    path = os.path.join(_disk_cache_root(workspace), "ranges",
+                        _disk_key_name(key) + ".json")
+    try:
+        with open(path, "r", encoding="ascii") as fh:
+            return json.load(fh)["v"]
+    except FileNotFoundError:
+        return _CACHE_MISS
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return _CACHE_MISS
+
+
+def _json_disk_put(workspace: str, key: tuple, value) -> None:
+    """value 必须可 JSON 序列化。"""
+    if settings.scalar_cache_mb <= 0 or settings.scalar_disk_cache_mb <= 0:
+        return
+    ranges_dir = os.path.join(_disk_cache_root(workspace), "ranges")
+    path = os.path.join(ranges_dir, _disk_key_name(key) + ".json")
+    if os.path.exists(path):
+        return
+    try:
+        os.makedirs(ranges_dir, exist_ok=True)
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="ascii") as fh:
+            json.dump({"v": value}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _range_disk_get(workspace: str, key: tuple):
+    """命中返回缓存值（可能是 None），未命中返回 _CACHE_MISS。"""
+    v = _json_disk_get(workspace, key)
+    if v is _CACHE_MISS or v is None:
+        return v
+    return float(v[0]), float(v[1])
+
+
+def _range_disk_put(workspace: str, key: tuple, value) -> None:
+    _json_disk_put(
+        workspace, key,
+        None if value is None else [float(value[0]), float(value[1])],
+    )
+
+
+# ─── Generic npz disk entries (deform family) ────────────────────────────────
+# 变形家族（deformed-positions / vertex-displacements / modal-*）的大数组磁盘层。
+# 与 scalar_vertex 共用 scalars/ 目录和同一份容量淘汰（_evict_scalar_disk）。
+
+def _npz_disk_read(workspace: str, key: tuple) -> Optional[dict]:
+    """读通用 npz 条目 → {name: 只读数组}；未命中/损坏返回 None。"""
+    if settings.scalar_cache_mb <= 0 or settings.scalar_disk_cache_mb <= 0:
+        return None
+    path = os.path.join(_disk_cache_root(workspace), "scalars",
+                        _disk_key_name(key) + ".npz")
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            arrays = {name: z[name] for name in z.files}
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.warning("scalar disk cache: dropping unreadable entry %s", path)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    try:
+        os.utime(path)   # LRU 触碰
+    except OSError:
+        pass
+    for arr in arrays.values():
+        arr.setflags(write=False)
+    return arrays
+
+
+def _npz_disk_write(workspace: str, key: tuple, arrays: dict) -> None:
+    if settings.scalar_cache_mb <= 0:
+        return
+    cap = settings.scalar_disk_cache_mb * 1024 * 1024
+    if cap <= 0:
+        return
+    if sum(int(np.asarray(a).nbytes) for a in arrays.values()) > cap:
+        return
+    scalars_dir = os.path.join(_disk_cache_root(workspace), "scalars")
+    path = os.path.join(scalars_dir, _disk_key_name(key) + ".npz")
+    if os.path.exists(path):
+        return
+    try:
+        os.makedirs(scalars_dir, exist_ok=True)
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "wb") as fh:
+            np.savez(fh, **arrays)
+        os.replace(tmp, path)
+    except OSError:
+        logger.warning("scalar disk cache: write failed for %s", path, exc_info=True)
+        return
+    _evict_scalar_disk(scalars_dir, cap)
+
+
+def _deform_disk_get(workspace: str, key: tuple) -> Optional[tuple]:
+    """deformed-positions 条目 → (positions, normals, aux_sections) 或 None。"""
+    d = _npz_disk_read(workspace, key)
+    if d is None or "positions" not in d or "normals" not in d:
+        return None
+    aux = []
+    names = d.get("aux_names")
+    if names is not None:
+        for i, raw in enumerate(np.asarray(names).tolist()):
+            arr = d.get(f"aux_{i}")
+            if arr is None:
+                return None
+            name = raw.decode("ascii") if isinstance(raw, bytes) else str(raw)
+            aux.append((name, arr))
+    return d["positions"], d["normals"], aux
+
+
+def _deform_disk_put(workspace: str, key: tuple, value: tuple) -> None:
+    positions, normals, aux = value
+    arrays = {"positions": positions, "normals": normals}
+    if aux:
+        arrays["aux_names"] = np.array([name.encode("ascii") for name, _ in aux])
+        for i, (_, arr) in enumerate(aux):
+            arrays[f"aux_{i}"] = arr
+    _npz_disk_write(workspace, key, arrays)
+
+
+def _disp_disk_get(workspace: str, key: tuple) -> Optional[np.ndarray]:
+    """顶点位移向量条目 → disp_vertex [Nv, 3] 或 None。"""
+    d = _npz_disk_read(workspace, key)
+    if d is None or "disp" not in d:
+        return None
+    return d["disp"]
+
+
+def _disp_disk_put(workspace: str, key: tuple, disp: np.ndarray) -> None:
+    _npz_disk_write(workspace, key, {"disp": disp})
 
 
 # ─── Generic component extraction ────────────────────────────────────────────
@@ -714,6 +1067,51 @@ def compute_scalar_range(
     _manifest = ManifestRepo(idx.workspace)
     geom_h5_path = _manifest.get_geom_path(instance)
 
+    # 无 set 的范围只由结果文件版本 + (instance, 帧, 分量, 阈值) 决定，整体缓存；
+    # 前端逐帧/切分量反复询问范围时不再重读 H5。
+    h5_sig = _result_h5_sig(h5_path)
+    range_key = (
+        "scalar_range", odb_id, instance, h5_path, h5_sig, int(frame_idx),
+        None if component_idx is None else int(component_idx),
+        float(average_threshold),
+    )
+    if h5_sig is not None:
+        hit = _range_cache_get(range_key)
+        if hit is not _CACHE_MISS:
+            return hit
+        hit = _range_disk_get(idx.workspace, range_key)
+        if hit is not _CACHE_MISS:
+            _range_cache_put(range_key, hit)        # 磁盘命中 → 提升到内存层
+            return hit
+
+    result_range = _scalar_range_from_h5(
+        h5_path=h5_path,
+        instance=instance,
+        frame_idx=frame_idx,
+        component_idx=component_idx,
+        src_etype=src_etype,
+        src_elem_row=src_elem_row,
+        geom_h5_path=geom_h5_path,
+        average_threshold=average_threshold,
+    )
+    if h5_sig is not None:
+        _range_cache_put(range_key, result_range)
+        _range_disk_put(idx.workspace, range_key, result_range)
+    return result_range
+
+
+def _scalar_range_from_h5(
+    *,
+    h5_path: str,
+    instance: str,
+    frame_idx: int,
+    component_idx: Optional[int],
+    src_etype: Optional[np.ndarray],
+    src_elem_row: Optional[np.ndarray],
+    geom_h5_path: Optional[str],
+    average_threshold: float,
+) -> Optional[Tuple[float, float]]:
+    """compute_scalar_range 无 set 路径的计算主体（原 with 块原样搬出以便缓存）。"""
     with h5py.File(h5_path, "r") as f:
 
         # ── NODAL ────────────────────────────────────────────────────────────
@@ -864,123 +1262,150 @@ def frame_scalars(
     result_position = "NODAL"
     global_range = None   # (val_min, val_max) from full model; set per code-path below
 
-    with h5py.File(h5_path, "r") as f:
+    # 归一化前的 scalar_vertex 只由 (结果文件版本, instance, 帧, 分量, 渲染参数)
+    # 决定，与 set 过滤 / override 无关 → 在这里缓存，命中时跳过整个 H5 读取与
+    # 条件平均；set 过滤和归一化仍在缓存之后按本次请求参数执行。
+    h5_sig = _result_h5_sig(h5_path)
+    fa_cache_key = None if feature_angle is None else round(float(feature_angle), 4)
+    vertex_key = (
+        "frame_scalars", odb_id, instance, h5_path, h5_sig, int(frame_idx),
+        None if component_idx is None else int(component_idx),
+        effective_render_mode, fa_cache_key, float(average_threshold),
+        bool(use_geometry_split),
+    )
+    cached = _vertex_cache_get(vertex_key) if h5_sig is not None else None
+    if cached is None and h5_sig is not None:
+        cached = _vertex_disk_get(idx.workspace, vertex_key)
+        if cached is not None:
+            _vertex_cache_put(vertex_key, cached)   # 磁盘命中 → 提升到内存层
+    if cached is not None:
+        scalar_vertex, global_range, result_position, num_frames = cached
+    else:
+        with h5py.File(h5_path, "r") as f:
 
-        # ── NODAL ────────────────────────────────────────────────────────────
-        result = _scalar_nodal_by_idx(f, instance, frame_idx, component_idx)
-        if result is not None:
-            scalar_node, num_frames = result
-            scalar_node = _expand_sparse_nodal_to_geometry_rows(
-                f=f,
-                instance=instance,
-                scalar_node=scalar_node,
-                workspace=idx.workspace,
-            )
-            result_position = "NODAL"
+            # ── NODAL ────────────────────────────────────────────────────────────
+            result = _scalar_nodal_by_idx(f, instance, frame_idx, component_idx)
+            if result is not None:
+                scalar_node, num_frames = result
+                scalar_node = _expand_sparse_nodal_to_geometry_rows(
+                    f=f,
+                    instance=instance,
+                    scalar_node=scalar_node,
+                    workspace=idx.workspace,
+                )
+                result_position = "NODAL"
 
-            # Extend sparse NODAL fields so indexing always succeeds
-            max_node_row = int(src_node_rows.max()) if src_node_rows.size else 0
-            if max_node_row >= len(scalar_node):
-                extended = np.full(max_node_row + 1, np.nan, dtype=np.float32)
-                extended[:len(scalar_node)] = scalar_node
-                scalar_node = extended
+                # Extend sparse NODAL fields so indexing always succeeds
+                max_node_row = int(src_node_rows.max()) if src_node_rows.size else 0
+                if max_node_row >= len(scalar_node):
+                    extended = np.full(max_node_row + 1, np.nan, dtype=np.float32)
+                    extended[:len(scalar_node)] = scalar_node
+                    scalar_node = extended
 
-            # Global range from ALL nodes (nanmin/nanmax ignores the NaN fill above)
-            finite_nodes = scalar_node[np.isfinite(scalar_node)]
-            if finite_nodes.size > 0:
-                global_range = (float(finite_nodes.min()), float(finite_nodes.max()))
+                # Global range from ALL nodes (nanmin/nanmax ignores the NaN fill above)
+                finite_nodes = scalar_node[np.isfinite(scalar_node)]
+                if finite_nodes.size > 0:
+                    global_range = (float(finite_nodes.min()), float(finite_nodes.max()))
 
-            if effective_render_mode == "flat" and src_elem_row is not None:
-                # Per-element average of node values
-                face_node_vals = scalar_node[src_node_rows]   # [Nt, 3]
-                face_vals = face_node_vals.mean(axis=1)        # [Nt]
-                if src_etype is not None:
-                    _, et_idx = np.unique(src_etype, return_inverse=True)
-                    max_er = int(src_elem_row.max()) + 1
-                    composite = et_idx.astype(np.int64) * max_er + src_elem_row.astype(np.int64)
+                if effective_render_mode == "flat" and src_elem_row is not None:
+                    # Per-element average of node values
+                    face_node_vals = scalar_node[src_node_rows]   # [Nt, 3]
+                    face_vals = face_node_vals.mean(axis=1)        # [Nt]
+                    if src_etype is not None:
+                        _, et_idx = np.unique(src_etype, return_inverse=True)
+                        max_er = int(src_elem_row.max()) + 1
+                        composite = et_idx.astype(np.int64) * max_er + src_elem_row.astype(np.int64)
+                    else:
+                        composite = src_elem_row.astype(np.int64)
+                    _, inverse = np.unique(composite, return_inverse=True)
+                    n_groups = int(inverse.max()) + 1
+                    elem_sum = np.zeros(n_groups, dtype=np.float64)
+                    np.add.at(elem_sum, inverse, face_vals)
+                    elem_cnt = np.bincount(inverse, minlength=n_groups).astype(np.float64)
+                    elem_mean = (elem_sum / np.where(elem_cnt > 0, elem_cnt, 1)).astype(np.float32)
+                    if vtx_ti is not None:
+                        scalar_vertex = elem_mean[inverse[vtx_ti]]  # [Nv] indexed
+                    else:
+                        scalar_vertex = np.repeat(elem_mean[inverse], 3)  # [Nt*3] soup
+                elif vtx_nr is not None:
+                    scalar_vertex = scalar_node[vtx_nr]            # [Nv] indexed smooth
                 else:
-                    composite = src_elem_row.astype(np.int64)
-                _, inverse = np.unique(composite, return_inverse=True)
-                n_groups = int(inverse.max()) + 1
-                elem_sum = np.zeros(n_groups, dtype=np.float64)
-                np.add.at(elem_sum, inverse, face_vals)
-                elem_cnt = np.bincount(inverse, minlength=n_groups).astype(np.float64)
-                elem_mean = (elem_sum / np.where(elem_cnt > 0, elem_cnt, 1)).astype(np.float32)
-                if vtx_ti is not None:
-                    scalar_vertex = elem_mean[inverse[vtx_ti]]  # [Nv] indexed
-                else:
-                    scalar_vertex = np.repeat(elem_mean[inverse], 3)  # [Nt*3] soup
-            elif vtx_nr is not None:
-                scalar_vertex = scalar_node[vtx_nr]            # [Nv] indexed smooth
-            else:
-                # soup smooth：稀疏场对"部分角点无数据"的三角形整体置灰，
-                # 避免接触面颜色沿共享节点溢出到侧面（global_range 已在上面
-                # 按节点级算好，掩蔽不影响图例）。
-                scalar_vertex = _mask_partial_nan_triangles_soup(
-                    scalar_node[src_node_rows.ravel()])         # [Nt*3] soup smooth
+                    # soup smooth：稀疏场对"部分角点无数据"的三角形整体置灰，
+                    # 避免接触面颜色沿共享节点溢出到侧面（global_range 已在上面
+                    # 按节点级算好，掩蔽不影响图例）。
+                    scalar_vertex = _mask_partial_nan_triangles_soup(
+                        scalar_node[src_node_rows.ravel()])         # [Nt*3] soup smooth
 
-        # ── ELEMENT_NODAL (per-local-node with domain averaging) ─────────
-        if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
-            local_node_idx = idx.source_local_node_idx.get(instance)
-            render_idx     = idx.render_indices.get(instance)
-            avd            = idx.averaging_data.get(instance)
+            # ── ELEMENT_NODAL (per-local-node with domain averaging) ─────────
+            if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
+                local_node_idx = idx.source_local_node_idx.get(instance)
+                render_idx     = idx.render_indices.get(instance)
+                avd            = idx.averaging_data.get(instance)
 
-            if (effective_render_mode != "flat"
-                    and local_node_idx is not None and render_idx is not None
-                    and avd is not None and vtx_nr is not None):
-                fa = feature_angle if use_geometry_split else None
-                domain_id = _get_domain_ids(idx, instance, fa)
-                if domain_id is not None:
-                    en_result = _en_per_vertex_averaged(
-                        f, instance, frame_idx, component_idx,
+                if (effective_render_mode != "flat"
+                        and local_node_idx is not None and render_idx is not None
+                        and avd is not None and vtx_nr is not None):
+                    fa = feature_angle if use_geometry_split else None
+                    domain_id = _get_domain_ids(idx, instance, fa)
+                    if domain_id is not None:
+                        en_result = _en_per_vertex_averaged(
+                            f, instance, frame_idx, component_idx,
+                            src_etype, src_elem_row,
+                            local_node_idx, vtx_nr, render_idx,
+                            domain_id,
+                            avd["elem_etype"], avd["elem_row"],
+                            average_threshold=average_threshold,
+                        )
+                        if en_result is not None:
+                            scalar_vertex, num_frames, global_range = en_result
+                            result_position = "ELEMENT_NODAL"
+
+                # Flat fallback if averaging data not available
+                if scalar_vertex is None:
+                    result = _scalar_elem_pos_by_idx(
+                        f, "ELEMENT_NODAL", instance, frame_idx, component_idx,
                         src_etype, src_elem_row,
-                        local_node_idx, vtx_nr, render_idx,
-                        domain_id,
-                        avd["elem_etype"], avd["elem_row"],
-                        average_threshold=average_threshold,
                     )
-                    if en_result is not None:
-                        scalar_vertex, num_frames, global_range = en_result
-                        result_position = "ELEMENT_NODAL"
+                    if result is not None:
+                        scalar_face, num_frames, global_range = result
+                        result_position = "ELEMENT_NODAL_FLAT"
+                        if vtx_ti is not None:
+                            scalar_vertex = scalar_face[vtx_ti]     # [Nv] indexed
+                        else:
+                            scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
-            # Flat fallback if averaging data not available
-            if scalar_vertex is None:
+            # ── All-element global range for ELEMENT_NODAL paths ────────────
+            # Override surface-only range with full-model averaged range using
+            # section_id from geometry H5 (all elements including interior).
+            if result_position.startswith("ELEMENT_NODAL") and geom_h5_path is not None:
+                all_range = _compute_en_global_range(
+                    f, geom_h5_path, instance, frame_idx, component_idx,
+                    average_threshold,
+                )
+                if all_range is not None:
+                    global_range = all_range
+
+            # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
+            if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
                 result = _scalar_elem_pos_by_idx(
-                    f, "ELEMENT_NODAL", instance, frame_idx, component_idx,
+                    f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
                     src_etype, src_elem_row,
                 )
                 if result is not None:
                     scalar_face, num_frames, global_range = result
-                    result_position = "ELEMENT_NODAL_FLAT"
+                    result_position = "INTEGRATION_POINT_FLAT"
                     if vtx_ti is not None:
-                        scalar_vertex = scalar_face[vtx_ti]     # [Nv] indexed
+                        scalar_vertex = scalar_face[vtx_ti]         # [Nv] indexed
                     else:
                         scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
 
-        # ── All-element global range for ELEMENT_NODAL paths ────────────
-        # Override surface-only range with full-model averaged range using
-        # section_id from geometry H5 (all elements including interior).
-        if result_position.startswith("ELEMENT_NODAL") and geom_h5_path is not None:
-            all_range = _compute_en_global_range(
-                f, geom_h5_path, instance, frame_idx, component_idx,
-                average_threshold,
-            )
-            if all_range is not None:
-                global_range = all_range
-
-        # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
-        if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
-            result = _scalar_elem_pos_by_idx(
-                f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
-                src_etype, src_elem_row,
-            )
-            if result is not None:
-                scalar_face, num_frames, global_range = result
-                result_position = "INTEGRATION_POINT_FLAT"
-                if vtx_ti is not None:
-                    scalar_vertex = scalar_face[vtx_ti]         # [Nv] indexed
-                else:
-                    scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3] soup
+        if scalar_vertex is not None and h5_sig is not None:
+            # 缓存的数组会被多个请求共享：置为只读，下游只允许整体重新赋值
+            # （set 过滤 / 归一化都是产生新数组，不做原地修改）。
+            scalar_vertex.setflags(write=False)
+            value = (scalar_vertex, global_range, result_position, num_frames)
+            _vertex_cache_put(vertex_key, value)
+            _vertex_disk_put(idx.workspace, vertex_key, value)
 
     if scalar_vertex is None:
         logger.warning(
@@ -1411,6 +1836,39 @@ def _compute_en_global_range(
     average_threshold: float = 0.75,
 ) -> Optional[Tuple[float, float]]:
     """
+    Cached front for _compute_en_global_range_uncached: the full-model averaged
+    range re-reads the whole geometry + ELEMENT_NODAL datasets, yet only depends
+    on the result file version and a handful of parameters — ideal cache food.
+    """
+    h5_path = result_h5.filename
+    sig = _result_h5_sig(h5_path)
+    key = (
+        "en_range", h5_path, sig, geom_h5_path, instance, int(frame_idx),
+        None if component_idx is None else int(component_idx),
+        float(average_threshold),
+    )
+    if sig is not None:
+        hit = _range_cache_get(key)
+        if hit is not _CACHE_MISS:
+            return hit
+    result = _compute_en_global_range_uncached(
+        result_h5, geom_h5_path, instance, frame_idx, component_idx,
+        average_threshold,
+    )
+    if sig is not None:
+        _range_cache_put(key, result)
+    return result
+
+
+def _compute_en_global_range_uncached(
+    result_h5,
+    geom_h5_path: str,
+    instance: str,
+    frame_idx: int,
+    component_idx: Optional[int],
+    average_threshold: float = 0.75,
+) -> Optional[Tuple[float, float]]:
+    """
     Compute global legend range from ALL elements (including interior) using
     section-only partitioned 75% conditional averaging.
 
@@ -1563,19 +2021,18 @@ def _compute_en_global_range(
 
 # ─── frame_deformed_positions ─────────────────────────────────────────────────
 
-def _load_raw_node_displacements(
-    registry: OdbRegistry,
-    odb_id: str,
+def _read_raw_node_displacements(
+    idx,
     instance: str,
     step: str,
     frame_idx: int,
     result_group: str = None,
-) -> Tuple[np.ndarray, object]:
+) -> np.ndarray:
     """
-    Load U NODAL displacement for frame_idx as [n_result_nodes, 3] float32,
+    Read U NODAL displacement for frame_idx as [n_result_nodes, 3] float32,
     indexed by geometry node row (same convention as vtx_node_row and the
     geometry element `conn` arrays).  No scatter to vertices, no padding —
-    callers pad/index as needed.  Returns (disp_node, idx).
+    callers pad/index as needed.
     """
     if frame_idx < 0:
         raise ValidationError(
@@ -1583,18 +2040,26 @@ def _load_raw_node_displacements(
             {"frame_idx": frame_idx},
         )
 
-    idx = registry.get(odb_id)
-    if idx is None:
-        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    if not idx.is_render_ready:
-        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
-
     h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
     if not os.path.exists(h5_path):
         raise NotFoundError(
             f"U field not found for step='{step}'",
             {"step": step, "field": "U"},
         )
+
+    cache_path = None
+    if settings.scalar_cache_mb > 0 and settings.scalar_disk_cache_mb > 0:
+        cache_path = _raw_displacement_cache_path(
+            idx,
+            instance=instance,
+            step=step,
+            frame_idx=frame_idx,
+            result_group=result_group,
+            h5_path=h5_path,
+        )
+    cached = _load_cached_array(cache_path, dtype=np.float32, ndim=2, width=3)
+    if cached is not None:
+        return cached
 
     with h5py.File(h5_path, "r") as f:
         ds_path = f"/NODAL/{instance}/data"
@@ -1618,7 +2083,106 @@ def _load_raw_node_displacements(
             {"instance": instance},
         )
 
+    _store_cached_array(cache_path, disp_node)
+    return disp_node
+
+
+def _load_raw_node_displacements(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+) -> Tuple[np.ndarray, object]:
+    """Registry-level wrapper of _read_raw_node_displacements → (disp_node, idx)."""
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
+    disp_node = _read_raw_node_displacements(idx, instance, step, frame_idx, result_group)
     return disp_node, idx
+
+
+def _raw_displacement_cache_path(idx, *, instance: str, step: str, frame_idx: int,
+                                 result_group: Optional[str], h5_path: str) -> str:
+    parts = {
+        "kind": "raw_node_displacement_v1",
+        "instance": str(instance),
+        "step": str(step),
+        "frame_idx": int(frame_idx),
+        "result_group": result_group,
+        "result_path": os.path.abspath(h5_path),
+        "result_size": os.path.getsize(h5_path) if os.path.exists(h5_path) else None,
+        "result_mtime": os.path.getmtime(h5_path) if os.path.exists(h5_path) else None,
+    }
+    raw = json.dumps(parts, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()
+    cache_dir = os.path.join(idx.workspace, "l3_cache", "raw_displacements")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{digest}.npy")
+
+
+def _load_render_positions_indices(render_h5: str) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    """
+    Read immutable render positions/indices with a tiny process-local LRU.
+
+    Deformed result requests repeatedly need the same render arrays.  Avoiding
+    repeated HDF5 reads matters once normals are cached and the hot path becomes
+    memory movement rather than computation.
+    """
+    max_items = max(0, int(os.getenv("APP_L3_RENDER_ARRAY_CACHE_MAX", "4")))
+    stat = os.stat(render_h5)
+    key = (os.path.abspath(render_h5), stat.st_size, stat.st_mtime_ns)
+    if max_items:
+        cached = _RENDER_ARRAY_CACHE.get(key)
+        if cached is not None:
+            _RENDER_ARRAY_CACHE.move_to_end(key)
+            return cached
+
+    with h5py.File(render_h5, "r") as f:
+        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
+        indices = (
+            np.ascontiguousarray(f["render/indices"][:], dtype=np.int32)
+            if "render/indices" in f
+            else None
+        )
+
+    value = (positions, indices)
+    if max_items:
+        _RENDER_ARRAY_CACHE[key] = value
+        _RENDER_ARRAY_CACHE.move_to_end(key)
+        while len(_RENDER_ARRAY_CACHE) > max_items:
+            _RENDER_ARRAY_CACHE.popitem(last=False)
+    return value
+
+
+def _load_cached_array(path: Optional[str], *, dtype, ndim: int, width: Optional[int] = None) -> Optional[np.ndarray]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        arr = np.load(path, mmap_mode=None)
+        if arr.dtype != dtype or arr.ndim != ndim:
+            return None
+        if width is not None and (arr.shape[-1] if arr.ndim else None) != width:
+            return None
+        return np.ascontiguousarray(arr)
+    except Exception:
+        logger.exception("failed to load L3 array cache: %s", path)
+        return None
+
+
+def _store_cached_array(path: Optional[str], arr: np.ndarray) -> None:
+    if not path:
+        return
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "wb") as fp:
+            np.save(fp, np.ascontiguousarray(arr), allow_pickle=False)
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("failed to store L3 array cache: %s", path)
 
 
 def _disp_at_rows(disp_node: np.ndarray, rows: np.ndarray) -> np.ndarray:
@@ -1638,6 +2202,84 @@ def _disp_at_rows(disp_node: np.ndarray, rows: np.ndarray) -> np.ndarray:
     return disp_node[rows]
 
 
+def _get_render_positions(idx, instance: str) -> Optional[np.ndarray]:
+    """
+    render/positions [Nv, 3] float32（只读）。优先取 ModelIndex 常驻副本
+    （load_l2_render_data 已加载），缺失时回退读 render.h5 并回填常驻 dict
+    （老索引/测试注入的 idx 也就此受益）。找不到返回 None。
+    """
+    pos = idx.render_positions.get(instance)
+    if pos is not None:
+        return pos
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        return None
+    with h5py.File(render_h5, "r") as f:
+        if "render/positions" not in f:
+            return None
+        pos = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
+    pos.setflags(write=False)
+    idx.render_positions[instance] = pos
+    return pos
+
+
+def _get_render_indices(idx, instance: str) -> Optional[np.ndarray]:
+    """render/indices [Nt, 3] int32。常驻副本优先，缺失回退读盘并回填。"""
+    ind = idx.render_indices.get(instance)
+    if ind is not None:
+        return ind
+    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
+    if not os.path.exists(render_h5):
+        return None
+    with h5py.File(render_h5, "r") as f:
+        if "render/indices" not in f:
+            return None
+        ind = np.ascontiguousarray(f["render/indices"][:], dtype=np.int32)
+    ind.setflags(write=False)
+    idx.render_indices[instance] = ind
+    return ind
+
+
+def _cached_disp_vertex(
+    idx,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    result_group: str = None,
+) -> np.ndarray:
+    """
+    顶点位移向量 [Nv, 3] float32（只读），带两级缓存：
+    key = (U 结果文件签名, instance, 帧)。vertex-displacements / modal-shape /
+    modal-animation 共用（modal-animation 的多帧 sin 合成在此之上现算，不缓存）。
+    """
+    vtx_nr = idx.vtx_node_row.get(instance)
+    if vtx_nr is None:
+        raise NotFoundError(
+            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
+            {"instance": instance},
+        )
+
+    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
+    h5_sig = _result_h5_sig(h5_path)
+    key = ("disp_vertex", idx.odb_id, instance, h5_path, h5_sig, int(frame_idx))
+    if h5_sig is not None:
+        cached = _vertex_cache_get(key)
+        if cached is None:
+            cached = _disp_disk_get(idx.workspace, key)
+            if cached is not None:
+                _vertex_cache_put(key, cached)   # 磁盘命中 → 提升到内存层
+        if cached is not None:
+            return cached
+
+    disp_node = _read_raw_node_displacements(idx, instance, step, frame_idx, result_group)
+    disp_vertex = _disp_at_rows(disp_node, vtx_nr)
+    disp_vertex.setflags(write=False)
+    if h5_sig is not None:
+        _vertex_cache_put(key, disp_vertex)
+        _disp_disk_put(idx.workspace, key, disp_vertex)
+    return disp_vertex
+
+
 def _load_vertex_displacements(
     registry: OdbRegistry,
     odb_id: str,
@@ -1648,20 +2290,14 @@ def _load_vertex_displacements(
 ) -> Tuple[np.ndarray, object]:
     """
     Load U NODAL displacement for frame_idx and map from nodes to render vertices.
-    Returns (disp_vertex [Nv, 3] float32, idx).
+    Returns (disp_vertex [Nv, 3] float32, idx).  Cached (see _cached_disp_vertex).
     """
-    disp_node, idx = _load_raw_node_displacements(
-        registry, odb_id, instance, step, frame_idx, result_group
-    )
-
-    vtx_nr = idx.vtx_node_row.get(instance)
-    if vtx_nr is None:
-        raise NotFoundError(
-            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
-            {"instance": instance},
-        )
-
-    return _disp_at_rows(disp_node, vtx_nr), idx   # disp_vertex [Nv, 3], idx
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
+    return _cached_disp_vertex(idx, instance, step, frame_idx, result_group), idx
 
 
 def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
@@ -1677,17 +2313,107 @@ def _compute_vertex_normals(positions: np.ndarray, indices: np.ndarray) -> np.nd
     v2 = positions[indices[:, 2]]
     face_normals = np.cross(v1 - v0, v2 - v0)          # [Nt, 3]
 
-    normals = np.zeros_like(positions, dtype=np.float64)
-    np.add.at(normals, indices[:, 0], face_normals)
-    np.add.at(normals, indices[:, 1], face_normals)
-    np.add.at(normals, indices[:, 2], face_normals)
+    # np.add.at 在 8M 三角形上是秒级慢操作；bincount 按 (角, 分量) 聚合快一个量级
+    n_verts = positions.shape[0]
+    normals = np.zeros((n_verts, 3), dtype=np.float64)
+    for corner in range(3):
+        col = indices[:, corner]
+        for c in range(3):
+            normals[:, c] += np.bincount(
+                col, weights=face_normals[:, c], minlength=n_verts)
 
     lengths = np.linalg.norm(normals, axis=1, keepdims=True)
     lengths  = np.where(lengths < 1e-12, 1.0, lengths)
     return (normals / lengths).astype(np.float32)
 
 
-def _deform_surface_from_disp(idx, instance, disp_node, scale):
+def _compute_vertex_normals_vtk(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Compute point normals via VTK/PyVista, falling back to caller on import/runtime errors."""
+    import pyvista as pv
+
+    n_faces = int(indices.shape[0])
+    faces = np.empty((n_faces, 4), dtype=np.int64)
+    faces[:, 0] = 3
+    faces[:, 1:] = indices.astype(np.int64, copy=False)
+    mesh = pv.PolyData(np.ascontiguousarray(positions, dtype=np.float32), faces.ravel())
+    mesh = mesh.compute_normals(
+        point_normals=True,
+        cell_normals=False,
+        split_vertices=False,
+        auto_orient_normals=False,
+        consistent_normals=False,
+        inplace=False,
+    )
+    return np.ascontiguousarray(mesh.point_data["Normals"], dtype=np.float32)
+
+
+def _compute_vertex_normals_fast(positions: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    backend = os.getenv("APP_L3_NORMAL_BACKEND", "pyvista").strip().lower()
+    if backend in ("pyvista", "vtk"):
+        try:
+            return _compute_vertex_normals_vtk(positions, indices)
+        except Exception:
+            logger.exception("VTK/PyVista normal computation failed; falling back to NumPy")
+    return _compute_vertex_normals(positions, indices)
+
+
+def _deformed_normal_cache_path(idx, instance: str, positions: np.ndarray,
+                                indices: np.ndarray, render_h5: str,
+                                cache_context: Optional[dict]) -> Optional[str]:
+    if not cache_context:
+        return None
+    step = str(cache_context.get("step") or "")
+    frame_idx = int(cache_context.get("frame_idx") or 0)
+    scale = float(cache_context.get("scale") or 0.0)
+    result_group = cache_context.get("result_group")
+    try:
+        result_h5 = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
+    except Exception:
+        result_h5 = ""
+    parts = {
+        "kind": "deformed_normals_v1",
+        "instance": str(instance),
+        "step": step,
+        "frame_idx": frame_idx,
+        "scale": repr(scale),
+        "result_group": result_group,
+        "positions_shape": tuple(int(x) for x in positions.shape),
+        "indices_shape": tuple(int(x) for x in indices.shape),
+        "render_mtime_ns": os.path.getmtime(render_h5) if os.path.exists(render_h5) else None,
+        "result_mtime_ns": os.path.getmtime(result_h5) if result_h5 and os.path.exists(result_h5) else None,
+    }
+    raw = json.dumps(parts, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()
+    cache_dir = os.path.join(idx.workspace, "l3_cache", "deformed_normals")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{digest}.npy")
+
+
+def _load_cached_normals(path: Optional[str], expected_shape: tuple) -> Optional[np.ndarray]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        normals = np.load(path, mmap_mode=None)
+        if normals.shape == expected_shape and normals.dtype == np.float32:
+            return np.ascontiguousarray(normals)
+    except Exception:
+        logger.exception("failed to load deformed normal cache: %s", path)
+    return None
+
+
+def _store_cached_normals(path: Optional[str], normals: np.ndarray) -> None:
+    if not path:
+        return
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "wb") as fp:
+            np.save(fp, np.ascontiguousarray(normals, dtype=np.float32), allow_pickle=False)
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("failed to store deformed normal cache: %s", path)
+
+
+def _deform_surface_from_disp(idx, instance, disp_node, scale, cache_context: Optional[dict] = None):
     """
     Surface deformed positions + normals from a preloaded raw node displacement
     array (see _load_raw_node_displacements).  Factored out so callers that also
@@ -1702,21 +2428,19 @@ def _deform_surface_from_disp(idx, instance, disp_node, scale):
         )
     disp_vertex = _disp_at_rows(disp_node, vtx_nr)
 
-    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
-    if not os.path.exists(render_h5):
+    positions = _get_render_positions(idx, instance)
+    if positions is None:
         raise NotFoundError(
             f"Render H5 not found for instance '{instance}'",
             {"instance": instance},
         )
-
-    with h5py.File(render_h5, "r") as f:
-        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
-        indices   = np.ascontiguousarray(f["render/indices"][:],   dtype=np.int32) \
-                    if "render/indices" in f else None
+    indices = _get_render_indices(idx, instance)
 
     deformed = (positions + np.float32(scale) * disp_vertex).astype(np.float32)
-    normals  = _compute_vertex_normals(deformed, indices) if indices is not None \
-               else np.zeros_like(deformed)
+    if indices is not None:
+        normals = _compute_vertex_normals_fast(deformed, indices)
+    else:
+        normals = np.zeros_like(deformed)
     return deformed, normals
 
 
@@ -1776,11 +2500,12 @@ def frame_deformed_positions(
     expensive JS computeVertexNormals on weak-CPU frontends).
 
     Requires indexed geometry (vtx_node_row present in ModelIndex).
+    Shares the frame_deformed_with_aux cache (aux sections are cheap to carry).
     """
-    disp_node, idx = _load_raw_node_displacements(
-        registry, odb_id, instance, step, frame_idx, result_group
+    positions, normals, _aux = frame_deformed_with_aux(
+        registry, odb_id, instance, step, frame_idx, scale, result_group
     )
-    return _deform_surface_from_disp(idx, instance, disp_node, scale)
+    return positions, normals
 
 
 def frame_deformed_with_aux(
@@ -1798,13 +2523,40 @@ def frame_deformed_with_aux(
 
     Returns (positions [Nv,3], normals [Nv,3], aux_sections) where aux_sections is
     the list from _deform_aux_from_disp (line/point/coupling; possibly empty).
+
+    整包结果按 (U 结果文件签名, instance, 帧, scale) 走两级缓存：动画循环第二圈
+    起全命中；scale 进缓存键，改 scale 视为新条目。缓存数组只读共享。
     """
-    disp_node, idx = _load_raw_node_displacements(
-        registry, odb_id, instance, step, frame_idx, result_group
-    )
+    idx = registry.get(odb_id)
+    if idx is None:
+        raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
+
+    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
+    h5_sig = _result_h5_sig(h5_path)
+    key = ("deform_aux", odb_id, instance, h5_path, h5_sig,
+           int(frame_idx), float(scale))
+    if h5_sig is not None:
+        cached = _vertex_cache_get(key)
+        if cached is None:
+            cached = _deform_disk_get(idx.workspace, key)
+            if cached is not None:
+                _vertex_cache_put(key, cached)   # 磁盘命中 → 提升到内存层
+        if cached is not None:
+            positions, normals, aux = cached
+            return positions, normals, list(aux)
+
+    disp_node = _read_raw_node_displacements(idx, instance, step, frame_idx, result_group)
     positions, normals = _deform_surface_from_disp(idx, instance, disp_node, scale)
     aux = _deform_aux_from_disp(idx, instance, disp_node, scale)
-    return positions, normals, aux
+    for arr in (positions, normals, *(a for _, a in aux)):
+        arr.setflags(write=False)
+    if h5_sig is not None:
+        value = (positions, normals, aux)
+        _vertex_cache_put(key, value)
+        _deform_disk_put(idx.workspace, key, value)
+    return positions, normals, list(aux)
 
 
 def frame_vertex_displacements(
@@ -1893,6 +2645,21 @@ def deform_scale_stats(
     if not idx.is_render_ready:
         raise NotReadyError(f"ODB '{odb_id}' render data not loaded")
 
+    # 为算一个标量要把该帧所有 instance 的整块 U 读盘 → 结果 dict 按
+    # (U 结果文件签名, step, 帧) 走小结果缓存（内存 LRU + JSON 磁盘层）。
+    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
+    h5_sig = _result_h5_sig(h5_path)
+    stats_key = ("deform_stats", odb_id, h5_path, h5_sig, step,
+                 int(frame_idx), result_group)
+    if h5_sig is not None:
+        hit = _range_cache_get(stats_key)
+        if hit is _CACHE_MISS:
+            hit = _json_disk_get(idx.workspace, stats_key)
+            if hit is not _CACHE_MISS:
+                _range_cache_put(stats_key, hit)
+        if hit is not _CACHE_MISS and isinstance(hit, dict):
+            return dict(hit)
+
     manifest = ManifestRepo(idx.workspace)
 
     step_info = manifest.get_step_info(step, result_group)
@@ -1928,7 +2695,6 @@ def deform_scale_stats(
     stats["bbox_min"] = global_min.tolist()
     stats["bbox_max"] = global_max.tolist()
 
-    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
     if not os.path.exists(h5_path):
         return stats
 
@@ -1951,6 +2717,9 @@ def deform_scale_stats(
                 max_scalar_disp = inst_max
 
     stats["max_disp"] = max_scalar_disp
+    if h5_sig is not None:
+        _range_cache_put(stats_key, dict(stats))
+        _json_disk_put(idx.workspace, stats_key, stats)
     return stats
 
 
@@ -1989,55 +2758,15 @@ def _load_disp_vertex(
 ):
     """
     共用帮助：读取指定帧的顶点位移向量 [Nv, 3] float32，以及原始坐标和索引。
-    返回 (positions [Nv,3], disp_vertex [Nv,3], indices [Nf*3] or None)
+    返回 (positions [Nv,3], disp_vertex [Nv,3], indices [Nt,3] or None)。
+    positions/indices 取 ModelIndex 常驻副本，disp_vertex 走两级缓存。
     """
-    if frame_idx < 0:
-        raise ValidationError(f"frame_idx must be >= 0, got {frame_idx}", {"frame_idx": frame_idx})
-
-    vtx_nr = idx.vtx_node_row.get(instance)
-    if vtx_nr is None:
-        raise NotFoundError(
-            f"Instance '{instance}' has no vtx_node_row; indexed geometry required",
-            {"instance": instance},
-        )
-
-    render_h5 = os.path.join(idx.workspace, "l2", "render", f"{instance}_render.h5")
-    if not os.path.exists(render_h5):
+    positions = _get_render_positions(idx, instance)
+    if positions is None:
         raise NotFoundError(f"Render H5 not found for instance '{instance}'", {"instance": instance})
+    indices = _get_render_indices(idx, instance)
 
-    with h5py.File(render_h5, "r") as f:
-        positions = np.ascontiguousarray(f["render/positions"][:], dtype=np.float32)
-        indices   = np.ascontiguousarray(f["render/indices"][:], dtype=np.int32) \
-                    if "render/indices" in f else None
-
-    h5_path = _manifest_result_h5_path(idx.workspace, step, "U", result_group)
-    if not os.path.exists(h5_path):
-        raise NotFoundError(f"U field not found for step='{step}'", {"step": step, "field": "U"})
-
-    with h5py.File(h5_path, "r") as f:
-        ds_path = f"/NODAL/{instance}/data"
-        if ds_path not in f:
-            raise NotFoundError(f"No NODAL U data for instance '{instance}'", {"instance": instance})
-        ds = f[ds_path]
-        num_frames = ds.shape[0]
-        if frame_idx >= num_frames:
-            raise ValidationError(
-                f"frame_idx {frame_idx} out of range [0, {num_frames})",
-                {"frame_idx": frame_idx},
-            )
-        disp_node = ds[frame_idx, :, :3].astype(np.float32)   # [N_nodes, 3] — UX/UY/UZ only
-
-    if disp_node.ndim == 1:
-        raise ValidationError("U field is scalar; expected 3-component vector", {"instance": instance})
-
-    n_nodes = disp_node.shape[0]
-    max_nr  = int(vtx_nr.max())
-    if max_nr >= n_nodes:
-        padded = np.zeros((max_nr + 1, disp_node.shape[1]), dtype=np.float32)
-        padded[:n_nodes] = disp_node
-        disp_node = padded
-
-    disp_vertex = disp_node[vtx_nr]   # [Nv, 3]
+    disp_vertex = _cached_disp_vertex(idx, instance, step, frame_idx, result_group)
     return positions, disp_vertex, indices
 
 
