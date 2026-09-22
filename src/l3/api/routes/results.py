@@ -498,6 +498,25 @@ async def get_frame_scalars(
     )
 
 
+@router.post("/results/warmup")
+async def post_results_warmup(odb_id: str):
+    """
+    手动触发该模型的缓存预热（后台线程，立即返回）。
+
+    预热内容：每个 result_group × step × field × instance 的第 0 帧默认视图
+    （模长分量），算完写入内存 + 磁盘缓存。幂等：已缓存的组合秒过，只补算
+    新增字段。返回 warmup = started | already_running。
+    正常情况下不需要手动调用——模型加载完成和新 result_group 就绪时会自动
+    预热（APP_WARMUP=0 可关闭自动，此接口仍可用）。
+    """
+    from ...services.warmup_service import warm_odb_async
+
+    if odb_id not in registry.known_ids():
+        raise CoreNotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
+    status = warm_odb_async(odb_id, reason="manual")
+    return ok({"odb_id": odb_id, "warmup": status})
+
+
 @router.get("/results/frame-scalar-range")
 async def get_frame_scalar_range(
     odb_id: str,
