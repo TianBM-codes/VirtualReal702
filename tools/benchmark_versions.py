@@ -32,6 +32,14 @@ DEFAULT_TIMEOUT = 1800.0
 TERMINAL_STATES = {"ready", "error", "not_found"}
 
 
+class HttpRequestError(RuntimeError):
+    def __init__(self, status: int, url: str, detail: str):
+        self.status = int(status)
+        self.url = url
+        self.detail = detail
+        super().__init__(f"HTTP {self.status} for {url}: {detail}")
+
+
 def _unwrap(payload: Any) -> Any:
     if isinstance(payload, dict) and "code" in payload and "data" in payload:
         if int(payload.get("code") or 0) >= 400:
@@ -73,7 +81,7 @@ def _request(url: str, timeout: float, *, collect_json: bool = False) -> dict[st
             return result
     except HTTPError as exc:
         detail = exc.read(4096).decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code} for {url}: {detail}") from exc
+        raise HttpRequestError(exc.code, url, detail) from exc
     except URLError as exc:
         raise RuntimeError(f"Cannot reach {url}: {exc.reason}") from exc
 
@@ -102,7 +110,9 @@ def _first_name(items: list[Any], keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def _discover(version: dict[str, Any], timeout: float) -> dict[str, str]:
+def _discover(
+    version: dict[str, Any], timeout: float, settings: dict[str, Any]
+) -> dict[str, str]:
     base = version["base_url"]
     project_id = str(version["project_id"])
     project = _json_get(base, f"api/projects/{quote(project_id, safe='')}", timeout)
@@ -111,8 +121,9 @@ def _discover(version: dict[str, Any], timeout: float) -> dict[str, str]:
             f"{version['name']}: project {project_id} geom_status={project.get('geom_status')!r}"
         )
 
-    result_group = version.get("result_group")
-    if not result_group:
+    include_op2 = bool(settings.get("include_op2", True))
+    result_group = version.get("result_group") if include_op2 else None
+    if include_op2 and not result_group:
         ready = [r for r in project.get("result_groups", []) if r.get("status") == "ready"]
         result_group = ready[0].get("result_group") if ready else None
 
@@ -128,13 +139,16 @@ def _discover(version: dict[str, Any], timeout: float) -> dict[str, str]:
     step = version.get("step") or _first_name(
         overview.get("steps", []), ("step_name", "name")
     )
-    missing = [k for k, v in (("instance", instance), ("step", step)) if not v]
+    required = [("instance", instance)]
+    if include_op2:
+        required.append(("step", step))
+    missing = [k for k, v in required if not v]
     if missing:
         raise RuntimeError(f"{version['name']}: cannot discover {', '.join(missing)}")
     return {
         "project_id": project_id,
         "instance": str(instance),
-        "step": str(step),
+        "step": str(step or ""),
         "result_group": str(result_group or ""),
     }
 
@@ -148,9 +162,13 @@ def _cases(ctx: dict[str, str], settings: dict[str, Any]) -> list[tuple[str, str
         "frame": int(settings.get("frame", 0)),
         "result_group": ctx["result_group"] or None,
     }
-    return [
+    cases = [
         ("metadata", f"api/odb/{project}/meta/overview", {"result_group": common["result_group"]}),
         ("model_load", f"api/odb/{project}/geometry/{instance_path}/render-buffers", {}),
+    ]
+    if not bool(settings.get("include_op2", True)):
+        return cases
+    cases.extend([
         ("modal_shape", f"api/odb/{project}/results/modal-shape", common),
         (
             "deformed_positions",
@@ -166,13 +184,14 @@ def _cases(ctx: dict[str, str], settings: dict[str, Any]) -> list[tuple[str, str
                 "n_frames": int(settings.get("n_frames", 4)),
             },
         ),
-    ]
+    ])
+    return cases
 
 
 def _benchmark_version(version: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, Any]]:
     timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
     repeat = max(1, int(settings.get("repeat", 5)))
-    ctx = _discover(version, timeout)
+    ctx = _discover(version, timeout, settings)
     print(
         f"[{version['name']}] project={ctx['project_id']} instance={ctx['instance']} "
         f"step={ctx['step']} result_group={ctx['result_group'] or '-'}"
@@ -214,10 +233,16 @@ def _parse_ts(value: str) -> datetime | None:
 def _log_stage_rows(version: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, Any]]:
     timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
     project_id = str(version["project_id"])
-    data = _json_get(
-        version["base_url"], f"api/projects/{quote(project_id, safe='')}/logs", timeout,
-        {"since_id": 0, "limit": 1000},
-    )
+    try:
+        data = _json_get(
+            version["base_url"], f"api/projects/{quote(project_id, safe='')}/logs", timeout,
+            {"since_id": 0, "limit": 1000},
+        )
+    except HttpRequestError as exc:
+        if exc.status != 404:
+            raise
+        print(f"[{version['name']}] project logs are not available; skipping log-derived timings.")
+        return []
     grouped: dict[str, list[datetime]] = {}
     for item in data.get("logs", []):
         ts = _parse_ts(item.get("ts", ""))
@@ -225,7 +250,10 @@ def _log_stage_rows(version: dict[str, Any], settings: dict[str, Any]) -> list[d
         if ts and stage:
             grouped.setdefault(stage, []).append(ts)
     rows = []
-    for stage in ("l1_bdf", "l2_ingest", "rg_op2"):
+    stages = ["l1_bdf", "l2_ingest"]
+    if bool(settings.get("include_op2", True)):
+        stages.append("rg_op2")
+    for stage in stages:
         stamps = grouped.get(stage, [])
         if len(stamps) >= 2:
             elapsed_ms = (max(stamps) - min(stamps)).total_seconds() * 1000.0
@@ -239,8 +267,18 @@ def _log_stage_rows(version: dict[str, Any], settings: dict[str, Any]) -> list[d
 
 
 def _project_status(version: dict[str, Any], timeout: float) -> dict[str, Any]:
-    project_id = quote(str(version["project_id"]), safe="")
-    return _json_get(version["base_url"], f"api/projects/{project_id}", timeout)
+    raw_project_id = str(version["project_id"])
+    project_id = quote(raw_project_id, safe="")
+    try:
+        return _json_get(version["base_url"], f"api/projects/{project_id}", timeout)
+    except HttpRequestError as exc:
+        if exc.status != 404:
+            raise
+        return {
+            "project_id": raw_project_id,
+            "geom_status": "not_found",
+            "result_groups": [],
+        }
 
 
 def _watch_imports(versions: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
@@ -253,7 +291,9 @@ def _watch_imports(versions: list[dict[str, Any]], settings: dict[str, Any]) -> 
     }
     rows: list[dict[str, Any]] = []
     labels = ", ".join(str(v["name"]) for v in versions)
-    print(f"Waiting for frontend submission: {labels}. Start the BDF/OP2 import now...")
+    include_op2 = bool(settings.get("include_op2", True))
+    import_label = "BDF/OP2" if include_op2 else "BDF"
+    print(f"Waiting for frontend submission: {labels}. Start the {import_label} import now...")
     while time.monotonic() < deadline:
         all_done = True
         for version in versions:
@@ -278,6 +318,11 @@ def _watch_imports(versions: list[dict[str, Any]], settings: dict[str, Any]) -> 
                 item["geom"] = geom_status
                 rows.append(_watch_row(version, "observed_bdf_import", item["seen"], now, geom_status))
                 print(f"[{version['name']}] BDF finished: {geom_status}, {(now-item['seen']):.1f} s")
+
+            if not include_op2:
+                if item["geom"] not in {"ready", "error"}:
+                    all_done = False
+                continue
 
             target_rg = version.get("result_group")
             groups = project.get("result_groups", [])
@@ -441,6 +486,8 @@ def main() -> int:
         if not version.get("base_url") or not version.get("project_id"):
             raise ValueError("each version requires base_url and project_id")
     settings = config.get("benchmark", {})
+    include_op2 = bool(settings.get("include_op2", True))
+    print("Test scope: " + ("BDF + OP2 + result endpoints" if include_op2 else "BDF only"))
     _verify_sources(config)
     output_dir = Path(settings.get("output_dir", "benchmark_results"))
     if not output_dir.is_absolute():
