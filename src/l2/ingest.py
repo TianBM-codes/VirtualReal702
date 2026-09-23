@@ -19,7 +19,6 @@ Usage:
 
 import argparse
 import logging
-import math
 import os
 import sqlite3
 import sys
@@ -27,6 +26,8 @@ import time
 
 import h5py
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -716,7 +717,7 @@ def compute_section_ids(geom_h5, surf_global_elem_idx,
 def build_domain_ids(section_id, elem_kind, adj_src, adj_dst, adj_angle_deg,
                      feature_angle_deg=20.0):
     """
-    Compute averaging domain IDs for surface elements using Union-Find.
+    Compute averaging domain IDs from a SciPy sparse adjacency graph.
 
     Step 1: Each (section_id group) starts as seed.
     Step 2: For shell/membrane elements within the same section,
@@ -727,60 +728,56 @@ def build_domain_ids(section_id, elem_kind, adj_src, adj_dst, adj_angle_deg,
         domain_id [E] int32   globally unique domain IDs (0-based)
     """
     E = len(section_id)
-    parent = np.arange(E, dtype=np.int32)
-    rank   = np.zeros(E, dtype=np.int32)
+    if E == 0:
+        return np.zeros(0, dtype=np.int32)
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]   # path compression
-            x = parent[x]
-        return x
+    src = np.asarray(adj_src, dtype=np.int64)
+    dst = np.asarray(adj_dst, dtype=np.int64)
+    angle = np.asarray(adj_angle_deg)
+    valid = ((src >= 0) & (src < E) & (dst >= 0) & (dst < E))
 
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra == rb:
-            return
-        if rank[ra] < rank[rb]:
-            ra, rb = rb, ra
-        parent[rb] = ra
-        if rank[ra] == rank[rb]:
-            rank[ra] += 1
+    # Index only valid rows before looking up element metadata. This also keeps
+    # malformed external adjacency data from indexing past the arrays.
+    valid_rows = np.flatnonzero(valid)
+    if len(valid_rows):
+        va = src[valid_rows]
+        vb = dst[valid_rows]
+        same_section = section_id[va] == section_id[vb]
+        ka = elem_kind[va]
+        kb = elem_kind[vb]
+        solid_pair = ((ka == ELEM_KIND_SOLID) &
+                      (kb == ELEM_KIND_SOLID))
+        shell_like_a = ((ka == ELEM_KIND_SHELL) |
+                        (ka == ELEM_KIND_MEMBRANE))
+        shell_like_b = ((kb == ELEM_KIND_SHELL) |
+                        (kb == ELEM_KIND_MEMBRANE))
+        shell_pair = (shell_like_a & shell_like_b &
+                      (angle[valid_rows] <= feature_angle_deg))
+        keep = same_section & (solid_pair | shell_pair)
+        src_keep = va[keep]
+        dst_keep = vb[keep]
+    else:
+        src_keep = np.zeros(0, dtype=np.int64)
+        dst_keep = np.zeros(0, dtype=np.int64)
 
-    cos_thr = math.cos(math.radians(feature_angle_deg))
+    rows = np.concatenate((src_keep, dst_keep))
+    cols = np.concatenate((dst_keep, src_keep))
+    graph = coo_matrix(
+        (np.ones(len(rows), dtype=np.uint8), (rows, cols)),
+        shape=(E, E),
+    ).tocsr()
+    _, labels = connected_components(
+        graph, directed=False, return_labels=True)
 
-    # Only connect shell/membrane elements within same section
-    for i in range(len(adj_src)):
-        ea, eb = int(adj_src[i]), int(adj_dst[i])
-        if section_id[ea] != section_id[eb]:
-            continue
-        ka, kb = int(elem_kind[ea]), int(elem_kind[eb])
-        # Solid elements: same section = same domain (union regardless of angle)
-        if ka == ELEM_KIND_SOLID and kb == ELEM_KIND_SOLID:
-            union(ea, eb)
-        # Shell/membrane: union only if angle within threshold
-        elif (ka in (ELEM_KIND_SHELL, ELEM_KIND_MEMBRANE) and
-              kb in (ELEM_KIND_SHELL, ELEM_KIND_MEMBRANE)):
-            angle = float(adj_angle_deg[i])
-            if math.cos(math.radians(angle)) >= cos_thr:
-                union(ea, eb)
-        # Mixed solid/shell: don't connect (different structural semantics)
-
-    # Assign global domain IDs: (section_id, root) -> domain_id
-    root_to_did = {}
-    domain_id   = np.empty(E, dtype=np.int32)
-    did_counter = 0
-
-    for ei in range(E):
-        root = find(ei)
-        # Include section_id in key: elements from different sections
-        # might share the same union-find root if section_id==0 (unassigned)
-        key = (int(section_id[ei]), root)
-        if key not in root_to_did:
-            root_to_did[key] = did_counter
-            did_counter += 1
-        domain_id[ei] = root_to_did[key]
-
-    return domain_id
+    # SciPy component labels are implementation details. Relabel by each
+    # component's first element so IDs remain deterministic and compatible
+    # with the previous Union-Find output convention.
+    _, first_indices = np.unique(labels, return_index=True)
+    first_indices.sort()
+    label_to_domain = np.empty(E, dtype=np.int32)
+    label_to_domain[labels[first_indices]] = np.arange(
+        len(first_indices), dtype=np.int32)
+    return label_to_domain[labels]
 
 
 def compute_elem_adjacency(surf_fnc, surf_global_elem_idx, coords_global):
@@ -813,30 +810,19 @@ def compute_elem_adjacency(surf_fnc, surf_global_elem_idx, coords_global):
     nrm = np.linalg.norm(face_normals, axis=1, keepdims=True)
     face_normals /= np.where(nrm > 1e-12, nrm, 1.0)     # unit normals
 
-    # Enumerate all face edges (sorted node pairs) with face index
+    # Enumerate all face edges (sorted node pairs) in bulk. Rows are padded
+    # with -1, so the final valid node in each row must wrap back to column 0.
     valid = surf_fnc != -1
     n_per_face = valid.sum(axis=1)                       # [Sf]
-    max_n = int(n_per_face.max()) if Sf > 0 else 0
-
-    edge_fa = []   # face index
-    edge_n1 = []   # node a (smaller)
-    edge_n2 = []   # node b (larger)
-
-    for fi in range(Sf):
-        n = int(n_per_face[fi])
-        nodes = surf_fnc[fi, :n]
-        for j in range(n):
-            a = int(nodes[j])
-            b = int(nodes[(j + 1) % n])
-            if a > b:
-                a, b = b, a
-            edge_fa.append(fi)
-            edge_n1.append(a)
-            edge_n2.append(b)
-
-    edge_fa = np.array(edge_fa, dtype=np.int32)
-    edge_n1 = np.array(edge_n1, dtype=np.int32)
-    edge_n2 = np.array(edge_n2, dtype=np.int32)
+    next_nodes = np.roll(surf_fnc, -1, axis=1)
+    face_rows = np.arange(Sf)
+    next_nodes[face_rows, n_per_face - 1] = surf_fnc[:, 0]
+    edge_mask = np.arange(surf_fnc.shape[1])[None, :] < n_per_face[:, None]
+    edge_a = surf_fnc[edge_mask]
+    edge_b = next_nodes[edge_mask]
+    edge_fa = np.repeat(face_rows, n_per_face).astype(np.int32, copy=False)
+    edge_n1 = np.minimum(edge_a, edge_b)
+    edge_n2 = np.maximum(edge_a, edge_b)
 
     # Sort by (n1, n2) to group shared edges
     order   = np.lexsort((edge_n2, edge_n1))
@@ -844,42 +830,63 @@ def compute_elem_adjacency(surf_fnc, surf_global_elem_idx, coords_global):
     edge_n1 = edge_n1[order]
     edge_n2 = edge_n2[order]
 
-    adj_src_list   = []
-    adj_dst_list   = []
-    adj_angle_list = []
-
-    i = 0
-    total = len(edge_fa)
-    while i < total:
-        j = i + 1
-        while (j < total and edge_n1[j] == edge_n1[i]
-               and edge_n2[j] == edge_n2[i]):
-            j += 1
-        # faces i..j-1 share this edge
-        if j - i >= 2:
-            for a in range(i, j):
-                fa = int(edge_fa[a])
-                ea = int(surf_global_elem_idx[fa])
-                for b in range(a + 1, j):
-                    fb = int(edge_fa[b])
-                    eb = int(surf_global_elem_idx[fb])
-                    if ea == eb:
-                        continue   # same element (e.g. solid with two surface tris sharing an edge)
-                    dot = float(np.clip(
-                        face_normals[fa] @ face_normals[fb], -1.0, 1.0))
-                    angle = math.degrees(math.acos(dot))
-                    adj_src_list.append(ea)
-                    adj_dst_list.append(eb)
-                    adj_angle_list.append(angle)
-        i = j
-
-    if not adj_src_list:
+    if len(edge_fa) == 0:
         return (np.zeros(0, np.int32), np.zeros(0, np.int32),
                 np.zeros(0, np.float32))
 
-    return (np.array(adj_src_list, dtype=np.int32),
-            np.array(adj_dst_list, dtype=np.int32),
-            np.array(adj_angle_list, dtype=np.float32))
+    group_start = np.flatnonzero(np.r_[
+        True,
+        (edge_n1[1:] != edge_n1[:-1]) | (edge_n2[1:] != edge_n2[:-1]),
+    ])
+    group_count = np.diff(np.r_[group_start, len(edge_fa)])
+    shared_groups = np.flatnonzero(group_count >= 2)
+    if len(shared_groups) == 0:
+        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
+                np.zeros(0, np.float32))
+
+    pair_face_a = []
+    pair_face_b = []
+    pair_group = []
+
+    # The normal manifold case has exactly two faces per edge and is fully
+    # vectorized. Only rare non-manifold edges need a short Python loop.
+    pair_groups = shared_groups[group_count[shared_groups] == 2]
+    if len(pair_groups):
+        starts = group_start[pair_groups]
+        pair_face_a.append(edge_fa[starts])
+        pair_face_b.append(edge_fa[starts + 1])
+        pair_group.append(pair_groups)
+
+    for group_idx in shared_groups[group_count[shared_groups] > 2]:
+        start = group_start[group_idx]
+        count = group_count[group_idx]
+        left, right = np.triu_indices(count, k=1)
+        pair_face_a.append(edge_fa[start + left])
+        pair_face_b.append(edge_fa[start + right])
+        pair_group.append(np.full(len(left), group_idx, dtype=np.int64))
+
+    face_a = np.concatenate(pair_face_a)
+    face_b = np.concatenate(pair_face_b)
+    groups = np.concatenate(pair_group)
+    pair_order = np.argsort(groups, kind="stable")
+    face_a = face_a[pair_order]
+    face_b = face_b[pair_order]
+
+    adj_src = surf_global_elem_idx[face_a].astype(np.int32, copy=False)
+    adj_dst = surf_global_elem_idx[face_b].astype(np.int32, copy=False)
+    different_elements = adj_src != adj_dst
+    adj_src = adj_src[different_elements]
+    adj_dst = adj_dst[different_elements]
+    face_a = face_a[different_elements]
+    face_b = face_b[different_elements]
+    if len(adj_src) == 0:
+        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
+                np.zeros(0, np.float32))
+
+    dots = np.einsum(
+        "ij,ij->i", face_normals[face_a], face_normals[face_b])
+    angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
+    return adj_src, adj_dst, angles.astype(np.float32)
 
 
 # ─── source_local_node_idx ────────────────────────────────────────────────────

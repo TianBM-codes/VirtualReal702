@@ -16,6 +16,8 @@ from typing import Dict, Literal, Optional, Tuple
 
 import h5py
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 from ..core.config import settings
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
@@ -1514,52 +1516,49 @@ _ELEM_KIND_MEMBRANE = 2
 
 def _union_find_domains(section_id, elem_kind, adj_src, adj_dst, adj_angle_deg,
                         feature_angle_deg=20.0):
-    """Union-Find domain partition (mirrors L2 build_domain_ids)."""
-    E      = len(section_id)
-    parent = np.arange(E, dtype=np.int32)
-    rank   = np.zeros(E, dtype=np.int32)
+    """SciPy sparse-graph domain partition (mirrors L2 build_domain_ids)."""
+    E = len(section_id)
+    if E == 0:
+        return np.zeros(0, dtype=np.int32)
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+    src = np.asarray(adj_src, dtype=np.int64)
+    dst = np.asarray(adj_dst, dtype=np.int64)
+    angle = np.asarray(adj_angle_deg)
+    valid_rows = np.flatnonzero(
+        (src >= 0) & (src < E) & (dst >= 0) & (dst < E))
+    if len(valid_rows):
+        va = src[valid_rows]
+        vb = dst[valid_rows]
+        ka = elem_kind[va]
+        kb = elem_kind[vb]
+        solid_pair = ((ka == _ELEM_KIND_SOLID) &
+                      (kb == _ELEM_KIND_SOLID))
+        shell_pair = (
+            ((ka == _ELEM_KIND_SHELL) | (ka == _ELEM_KIND_MEMBRANE)) &
+            ((kb == _ELEM_KIND_SHELL) | (kb == _ELEM_KIND_MEMBRANE)) &
+            (angle[valid_rows] <= feature_angle_deg)
+        )
+        keep = (section_id[va] == section_id[vb]) & (solid_pair | shell_pair)
+        src_keep = va[keep]
+        dst_keep = vb[keep]
+    else:
+        src_keep = np.zeros(0, dtype=np.int64)
+        dst_keep = np.zeros(0, dtype=np.int64)
 
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra == rb:
-            return
-        if rank[ra] < rank[rb]:
-            ra, rb = rb, ra
-        parent[rb] = ra
-        if rank[ra] == rank[rb]:
-            rank[ra] += 1
-
-    cos_thr = math.cos(math.radians(feature_angle_deg))
-
-    for i in range(len(adj_src)):
-        ea, eb = int(adj_src[i]), int(adj_dst[i])
-        if section_id[ea] != section_id[eb]:
-            continue
-        ka, kb = int(elem_kind[ea]), int(elem_kind[eb])
-        if ka == _ELEM_KIND_SOLID and kb == _ELEM_KIND_SOLID:
-            union(ea, eb)
-        elif ka in (_ELEM_KIND_SHELL, _ELEM_KIND_MEMBRANE) and \
-             kb in (_ELEM_KIND_SHELL, _ELEM_KIND_MEMBRANE):
-            if math.cos(math.radians(float(adj_angle_deg[i]))) >= cos_thr:
-                union(ea, eb)
-
-    root_to_did = {}
-    domain_id   = np.empty(E, dtype=np.int32)
-    did_counter = 0
-    for ei in range(E):
-        root = find(ei)
-        key  = (int(section_id[ei]), root)
-        if key not in root_to_did:
-            root_to_did[key] = did_counter
-            did_counter += 1
-        domain_id[ei] = root_to_did[key]
-    return domain_id
+    rows = np.concatenate((src_keep, dst_keep))
+    cols = np.concatenate((dst_keep, src_keep))
+    graph = coo_matrix(
+        (np.ones(len(rows), dtype=np.uint8), (rows, cols)),
+        shape=(E, E),
+    ).tocsr()
+    _, labels = connected_components(
+        graph, directed=False, return_labels=True)
+    _, first_indices = np.unique(labels, return_index=True)
+    first_indices.sort()
+    label_to_domain = np.empty(E, dtype=np.int32)
+    label_to_domain[labels[first_indices]] = np.arange(
+        len(first_indices), dtype=np.int32)
+    return label_to_domain[labels]
 
 
 # Module-level LRU-style cache: key → domain_id array
