@@ -42,8 +42,12 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 - `metadata`、`model_load`、`modal_shape`、`deformed_positions`、`modal_animation`：前端实际使用的读取接口耗时。
 - `Improvement`：`(旧版耗时 - 新版耗时) / 旧版耗时`；正数表示新版更快，负数表示新版更慢。
 
-自动模式每次都会重新启动被测服务，因此接口的 `first` 是该版本本轮运行中的首次请求；
-`repeat median` 是除首次请求外的中位数，更接近日常重复操作的响应速度。
+报告把接口耗时分成两张表：
+
+- **HTTP 总时间**：包含后端处理、回环网络传输和客户端下载完整响应体，使用每个版本独立的持久连接；适合衡量前端实际等待时间。
+- **Backend processing time**：读取响应头 `X-Elapsed-Time-Ms`，只反映服务端处理；对于只有几百字节的 `metadata`，这个指标比 HTTP 总时间稳定。
+
+自动模式每次都会重新启动被测服务，因此接口的 `first` 是脚本在该版本本轮测量阶段观察到的首次请求；`repeat median` 是除首次请求外的中位数，更接近日常重复操作的响应速度。示例配置通过 `repeat_by_case.metadata=21` 单独增加小响应采样次数，不会让几十 MiB 的模型接口也重复 21 次。低于 10 ms 的 HTTP 数值很容易受 Windows 线程调度影响，不应根据单次请求计算出的百分比判断代码回归。
 
 两版顺序执行可以避免同时争抢 CPU、内存和磁盘，但后运行的新版仍可能受益于 Windows 的
 文件缓存。日常判断可直接使用本报告；如果结果要用于正式对外结论，建议重启电脑后再跑一轮，

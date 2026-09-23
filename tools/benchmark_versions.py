@@ -35,6 +35,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+import requests
+
 
 DEFAULT_TIMEOUT = 1800.0
 TERMINAL_STATES = {"ready", "error", "not_found"}
@@ -69,6 +71,7 @@ def _request(
     collect_json: bool = False,
     method: str = "GET",
     payload: dict[str, Any] | None = None,
+    session: requests.Session | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     size = 0
@@ -78,6 +81,39 @@ def _request(
     if payload is not None:
         request_body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
+    if session is not None:
+        try:
+            with session.request(
+                method,
+                url,
+                data=request_body,
+                headers=headers,
+                timeout=timeout,
+                stream=True,
+            ) as response:
+                if response.status_code >= 400:
+                    detail = response.content[:4096].decode("utf-8", errors="replace")
+                    raise HttpRequestError(response.status_code, url, detail)
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    size += len(chunk)
+                    if body is not None:
+                        body.extend(chunk)
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                result = {
+                    "status": response.status_code,
+                    "elapsed_ms": elapsed_ms,
+                    "server_ms": _float_or_none(
+                        response.headers.get("x-elapsed-time-ms")),
+                    "bytes": size,
+                    "cache": response.headers.get("x-cache", ""),
+                }
+                if body is not None:
+                    result["json"] = _unwrap(json.loads(body.decode("utf-8-sig")))
+                return result
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Cannot reach {url}: {exc}") from exc
     try:
         request = Request(url, data=request_body, headers=headers, method=method)
         with urlopen(request, timeout=timeout) as response:
@@ -229,29 +265,36 @@ def _cases(ctx: dict[str, str], settings: dict[str, Any]) -> list[tuple[str, str
 def _benchmark_version(version: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, Any]]:
     timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
     repeat = max(1, int(settings.get("repeat", 5)))
+    repeat_by_case = settings.get("repeat_by_case", {})
     ctx = _discover(version, timeout, settings)
     print(
         f"[{version['name']}] project={ctx['project_id']} instance={ctx['instance']} "
         f"step={ctx['step']} result_group={ctx['result_group'] or '-'}"
     )
     rows = []
-    for case_name, path, params in _cases(ctx, settings):
-        for run in range(1, repeat + 1):
-            result = _request(_url(version["base_url"], path, params), timeout)
-            row = {
-                "version": version["name"],
-                "project_id": ctx["project_id"],
-                "case": case_name,
-                "run": run,
-                "temperature": "first" if run == 1 else "repeat",
-                **result,
-            }
-            rows.append(row)
-            print(
-                f"  {case_name}[{run}]: {result['elapsed_ms']:.1f} ms, "
-                f"server={_fmt_ms(result['server_ms'])}, "
-                f"size={result['bytes'] / 1024 / 1024:.2f} MiB, cache={result['cache'] or '-'}"
-            )
+    with requests.Session() as session:
+        for case_name, path, params in _cases(ctx, settings):
+            case_repeat = max(1, int(repeat_by_case.get(case_name, repeat)))
+            for run in range(1, case_repeat + 1):
+                result = _request(
+                    _url(version["base_url"], path, params),
+                    timeout,
+                    session=session,
+                )
+                row = {
+                    "version": version["name"],
+                    "project_id": ctx["project_id"],
+                    "case": case_name,
+                    "run": run,
+                    "temperature": "first" if run == 1 else "repeat",
+                    **result,
+                }
+                rows.append(row)
+                print(
+                    f"  {case_name}[{run}]: {result['elapsed_ms']:.1f} ms, "
+                    f"server={_fmt_ms(result['server_ms'])}, "
+                    f"size={result['bytes'] / 1024 / 1024:.2f} MiB, cache={result['cache'] or '-'}"
+                )
     return rows
 
 
@@ -548,8 +591,21 @@ def _summary(rows: list[dict[str, Any]], versions: list[dict[str, Any]]) -> list
             selected = [r for r in rows if r["version"] == name and r["case"] == case]
             first = [float(r["elapsed_ms"]) for r in selected if r["temperature"] != "repeat"]
             repeat = [float(r["elapsed_ms"]) for r in selected if r["temperature"] == "repeat"]
+            first_server = [
+                float(r["server_ms"]) for r in selected
+                if (r["temperature"] != "repeat" and
+                    r.get("server_ms") not in (None, ""))
+            ]
+            repeat_server = [
+                float(r["server_ms"]) for r in selected
+                if (r["temperature"] == "repeat" and
+                    r.get("server_ms") not in (None, ""))
+            ]
             entry[name] = {
                 "first": _median(first), "repeat": _median(repeat), "p95": _p95(repeat),
+                "server_first": _median(first_server),
+                "server_repeat": _median(repeat_server),
+                "server_p95": _p95(repeat_server),
                 "bytes": max((int(r["bytes"]) for r in selected), default=0),
             }
         output.append(entry)
@@ -600,18 +656,59 @@ def _write_outputs(
     ]
     for item in summary:
         old, new = item[names[0]], item[names[1]]
-        ratio = (new["first"] / old["first"] * 100.0) if old["first"] and new["first"] is not None else None
+        payload_bytes = max(old["bytes"], new["bytes"])
+        tiny_http_sample = (
+            payload_bytes < 64 * 1024 and
+            old["first"] is not None and new["first"] is not None and
+            max(old["first"], new["first"]) < 50.0
+        )
+        ratio = (
+            new["first"] / old["first"] * 100.0
+            if old["first"] and new["first"] is not None and not tiny_http_sample
+            else None
+        )
         improvement = (100.0 - ratio) if ratio is not None else None
-        payload = max(old["bytes"], new["bytes"]) / 1024 / 1024
+        payload = payload_bytes / 1024 / 1024
         lines.append(
             f"| {item['case']} | {_human_time(old['first'])} | {_human_time(new['first'])} | "
             f"{_pct(ratio)} | {_pct(improvement)} | {_human_time(old['repeat'])} | "
             f"{_human_time(new['repeat'])} | {payload:.2f} MiB |"
         )
     lines += [
+        "", "## Backend processing time", "",
+        f"| Test | {names[0]} server first | {names[1]} server first | "
+        f"{names[0]} server repeat median | {names[1]} server repeat median | "
+        "Repeat delta | Repeat improvement |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for item in summary:
+        old, new = item[names[0]], item[names[1]]
+        old_repeat = old["server_repeat"]
+        new_repeat = new["server_repeat"]
+        repeat_ratio = (
+            new_repeat / old_repeat * 100.0
+            if (old_repeat and new_repeat is not None and
+                max(old_repeat, new_repeat) >= 10.0)
+            else None
+        )
+        repeat_improvement = (
+            100.0 - repeat_ratio if repeat_ratio is not None else None)
+        repeat_delta = (
+            new_repeat - old_repeat
+            if old_repeat is not None and new_repeat is not None else None)
+        lines.append(
+            f"| {item['case']} | {_human_time(old['server_first'])} | "
+            f"{_human_time(new['server_first'])} | "
+            f"{_human_time(old_repeat)} | {_human_time(new_repeat)} | "
+            f"{_human_delta(repeat_delta)} | {_pct(repeat_improvement)} |"
+        )
+    lines += [
         "", "Notes:", "",
         "- `first` is the first request observed by this script; restart services or clear caches for a true cold test.",
-        "- `repeat median` excludes the first request. HTTP time includes downloading the complete response body.",
+        "- `repeat median` excludes the first request. HTTP time includes downloading the complete response body and reuses one persistent connection per version.",
+        "- Backend processing time comes from `X-Elapsed-Time-Ms`; it excludes client/network scheduling and is the better metric for tiny responses such as metadata.",
+        "- Sub-10 ms HTTP measurements are sensitive to operating-system scheduling; compare the server repeat median instead of a single percentage.",
+        "- HTTP percentages are suppressed for responses below 64 KiB when both versions finish within 50 ms; backend percentages are suppressed below 10 ms. Use the absolute times/delta instead.",
         "- `log_*` durations are derived from the first and last timestamps for that stage and have one-second precision.",
         "- Versions run sequentially to avoid CPU/disk contention; the second run may still benefit from the OS file cache.",
         "- Negative improvement means the new version was slower.", "",
@@ -625,6 +722,13 @@ def _human_time(value: float | None) -> str:
     if value is None:
         return "-"
     return f"{value / 1000:.2f} s" if value >= 1000 else f"{value:.1f} ms"
+
+
+def _human_delta(value: float | None) -> str:
+    if value is None:
+        return "-"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value / 1000:.2f} s" if abs(value) >= 1000 else f"{sign}{value:.1f} ms"
 
 
 def _pct(value: float | None) -> str:

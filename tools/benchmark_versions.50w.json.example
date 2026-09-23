@@ -24,6 +24,9 @@
   "benchmark": {
     "include_op2": true,
     "repeat": 5,
+    "repeat_by_case": {
+      "metadata": 21
+    },
     "frame": 0,
     "scale": 1.0,
     "n_frames": 4,
