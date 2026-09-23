@@ -48,6 +48,7 @@ ecosystem.config.js
 *.vtu
 model/
 runtime_bundle/
+benchmark_results/
 *.odb
 *.h5
 *.hdf5

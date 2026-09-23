@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Compare two running VirtualReal702 services without changing either service.
+"""Compare old/new VirtualReal702 versions and generate a Markdown report.
 
-Typical workflow:
+Fully automated workflow:
   1. Configure old/new base_url and project_id in a JSON file.
-  2. Create/import both projects with the same frontend and source files.
-  3. Run: python tools/benchmark_versions.py --config benchmark_versions.json
+  2. Configure automation.repo_path/commit for each version.
+  3. Run: python tools/benchmark_versions.py --config benchmark_versions.json --mode auto
+
+The auto mode creates/reuses an isolated Git worktree for the old commit, starts
+the API and job runner, submits BDF/OP2 imports, benchmarks the ready project,
+then repeats the same process for the current version. Only benchmark project
+IDs configured in the JSON file are deleted.
 
 The script streams binary responses instead of retaining them in memory. Results
 are written as raw CSV plus a compact Markdown comparison report.
@@ -17,14 +22,17 @@ import csv
 import hashlib
 import json
 import math
+import os
+import re
 import statistics
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -54,12 +62,25 @@ def _url(base_url: str, path: str, params: dict[str, Any] | None = None) -> str:
     return url + (("?" + urlencode(clean)) if clean else "")
 
 
-def _request(url: str, timeout: float, *, collect_json: bool = False) -> dict[str, Any]:
+def _request(
+    url: str,
+    timeout: float,
+    *,
+    collect_json: bool = False,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     size = 0
     body = bytearray() if collect_json else None
+    request_body = None
+    headers = {"Accept-Encoding": "identity"}
+    if payload is not None:
+        request_body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
     try:
-        with urlopen(Request(url, headers={"Accept-Encoding": "identity"}), timeout=timeout) as response:
+        request = Request(url, data=request_body, headers=headers, method=method)
+        with urlopen(request, timeout=timeout) as response:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
@@ -95,6 +116,23 @@ def _float_or_none(value: Any) -> float | None:
 
 def _json_get(base_url: str, path: str, timeout: float, params=None) -> Any:
     return _request(_url(base_url, path, params), timeout, collect_json=True)["json"]
+
+
+def _json_request(
+    base_url: str,
+    path: str,
+    timeout: float,
+    *,
+    method: str,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    return _request(
+        _url(base_url, path),
+        timeout,
+        collect_json=True,
+        method=method,
+        payload=payload,
+    )["json"]
 
 
 def _first_name(items: list[Any], keys: tuple[str, ...]) -> str | None:
@@ -281,6 +319,135 @@ def _project_status(version: dict[str, Any], timeout: float) -> dict[str, Any]:
         }
 
 
+def _delete_benchmark_project(version: dict[str, Any], settings: dict[str, Any]) -> None:
+    """Delete only the explicitly configured benchmark project."""
+    timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
+    project_id = str(version["project_id"])
+    project = _project_status(version, min(timeout, 30.0))
+    if project.get("geom_status") != "not_found":
+        print(f"[{version['name']}] deleting previous benchmark project {project_id}")
+    try:
+        _json_request(
+            version["base_url"],
+            f"api/projects/{quote(project_id, safe='')}",
+            timeout,
+            method="DELETE",
+        )
+    except HttpRequestError as exc:
+        if exc.status != 404:
+            raise
+
+
+def _ensure_runner_alive(version: dict[str, Any]) -> None:
+    process = version.get("_runner_process")
+    if process is None or process.poll() is None:
+        return
+    log_path = Path(str(version.get("_runner_log") or ""))
+    raise RuntimeError(
+        f"{version['name']}: job runner exited with {process.returncode}\n{_tail(log_path)}"
+    )
+
+
+def _wait_for_geometry(
+    version: dict[str, Any], settings: dict[str, Any], started: float
+) -> dict[str, Any]:
+    timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
+    poll = max(0.2, float(settings.get("poll_seconds", 1.0)))
+    deadline = time.monotonic() + float(settings.get("watch_timeout_seconds", 7200))
+    while time.monotonic() < deadline:
+        _ensure_runner_alive(version)
+        project = _project_status(version, min(timeout, 30.0))
+        status = str(project.get("geom_status") or "not_found")
+        if status in {"ready", "error"}:
+            row = _watch_row(version, "bdf_import_total", started, time.perf_counter(), status)
+            print(f"[{version['name']}] BDF finished: {status}, {row['elapsed_ms'] / 1000:.2f} s")
+            if status == "error":
+                raise RuntimeError(f"{version['name']}: BDF import failed; inspect the service logs")
+            return row
+        time.sleep(poll)
+    raise TimeoutError(f"{version['name']}: BDF import timed out")
+
+
+def _wait_for_result_group(
+    version: dict[str, Any], settings: dict[str, Any], started: float
+) -> dict[str, Any]:
+    timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
+    poll = max(0.2, float(settings.get("poll_seconds", 1.0)))
+    deadline = time.monotonic() + float(settings.get("watch_timeout_seconds", 7200))
+    target = str(version["result_group"])
+    while time.monotonic() < deadline:
+        _ensure_runner_alive(version)
+        project = _project_status(version, min(timeout, 30.0))
+        match = next(
+            (g for g in project.get("result_groups", []) if g.get("result_group") == target),
+            None,
+        )
+        status = str(match.get("status")) if match else "not_found"
+        if status in {"ready", "error"}:
+            row = _watch_row(version, "op2_import_total", started, time.perf_counter(), status)
+            print(f"[{version['name']}] OP2 finished: {status}, {row['elapsed_ms'] / 1000:.2f} s")
+            if status == "error":
+                raise RuntimeError(f"{version['name']}: OP2 import failed; inspect the service logs")
+            return row
+        time.sleep(poll)
+    raise TimeoutError(f"{version['name']}: OP2 import timed out")
+
+
+def _submit_imports(
+    version: dict[str, Any], config: dict[str, Any], settings: dict[str, Any]
+) -> list[dict[str, Any]]:
+    timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
+    sources = config.get("sources", {})
+    bdf_path = str(Path(sources["bdf_path"]).resolve())
+    op2_path = str(Path(sources["op2_path"]).resolve()) if settings.get("include_op2", True) else ""
+    project_id = str(version["project_id"])
+    rows: list[dict[str, Any]] = []
+
+    if bool(settings.get("delete_existing_project", True)):
+        _delete_benchmark_project(version, settings)
+    elif _project_status(version, min(timeout, 30.0)).get("geom_status") != "not_found":
+        raise RuntimeError(
+            f"{version['name']}: project {project_id} already exists; enable delete_existing_project "
+            "or choose another benchmark project_id"
+        )
+
+    print(f"[{version['name']}] submitting BDF: {bdf_path}")
+    started = time.perf_counter()
+    _json_request(
+        version["base_url"],
+        "api/projects",
+        timeout,
+        method="POST",
+        payload={"project_id": project_id, "source_path": bdf_path, "source_type": "bdf"},
+    )
+    rows.append(_wait_for_geometry(version, settings, started))
+
+    if bool(settings.get("include_op2", True)):
+        result_group = str(
+            version.get("result_group") or settings.get("result_group") or "benchmark_op2"
+        )
+        version["result_group"] = result_group
+        print(f"[{version['name']}] submitting OP2: {op2_path}")
+        started = time.perf_counter()
+        payload: dict[str, Any] = {
+            "source_path": op2_path,
+            "result_group": result_group,
+            "display_name": f"{version['name']} benchmark",
+        }
+        parse_options = settings.get("op2_parse_options")
+        if isinstance(parse_options, dict) and parse_options:
+            payload["parse_options"] = parse_options
+        _json_request(
+            version["base_url"],
+            f"api/projects/{quote(project_id, safe='')}/results",
+            timeout,
+            method="POST",
+            payload=payload,
+        )
+        rows.append(_wait_for_result_group(version, settings, started))
+    return rows
+
+
 def _watch_imports(versions: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
     timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
     poll = max(0.2, float(settings.get("poll_seconds", 1.0)))
@@ -393,6 +560,7 @@ def _write_outputs(
     rows: list[dict[str, Any]],
     versions: list[dict[str, Any]],
     output_dir: Path,
+    source_info: list[dict[str, Any]] | None = None,
     file_tag: str = "benchmark",
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -409,6 +577,23 @@ def _write_outputs(
     summary = _summary(rows, versions)
     lines = [
         "# Version benchmark", "", f"Generated: {datetime.now().isoformat(timespec='seconds')}", "",
+        "## Test inputs", "",
+        "| Version | Git commit | BDF parser | Project | Service |",
+        "|---|---|---|---|---|",
+    ]
+    for version in versions:
+        lines.append(
+            f"| {version['name']} | {version.get('resolved_commit') or version.get('commit') or '-'} | "
+            f"{version.get('bdf_parser') or '-'} | {version['project_id']} | {version['base_url']} |"
+        )
+    if source_info:
+        lines += ["", "| Source | Size | SHA-256 |", "|---|---:|---|"]
+        for item in source_info:
+            lines.append(
+                f"| {item['path']} | {item['size'] / 1024 / 1024:.2f} MiB | `{item['sha256']}` |"
+            )
+    lines += [
+        "", "## Results", "",
         f"| Test | {names[0]} first | {names[1]} first | New/old | Improvement | "
         f"{names[0]} repeat median | {names[1]} repeat median | Payload |", 
         "|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -428,6 +613,7 @@ def _write_outputs(
         "- `first` is the first request observed by this script; restart services or clear caches for a true cold test.",
         "- `repeat median` excludes the first request. HTTP time includes downloading the complete response body.",
         "- `log_*` durations are derived from the first and last timestamps for that stage and have one-second precision.",
+        "- Versions run sequentially to avoid CPU/disk contention; the second run may still benefit from the OS file cache.",
         "- Negative improvement means the new version was slower.", "",
     ]
     md_path.write_text("\n".join(lines), encoding="utf-8")
@@ -445,7 +631,8 @@ def _pct(value: float | None) -> str:
     return "-" if value is None else f"{value:.1f}%"
 
 
-def _verify_sources(config: dict[str, Any]) -> None:
+def _verify_sources(config: dict[str, Any]) -> list[dict[str, Any]]:
+    source_info: list[dict[str, Any]] = []
     for key in ("bdf_path", "op2_path"):
         raw = config.get("sources", {}).get(key)
         if not raw:
@@ -458,7 +645,305 @@ def _verify_sources(config: dict[str, Any]) -> None:
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
                 digest.update(chunk)
-        print(f"Source {key}: {path.name}, {path.stat().st_size / 1024 / 1024:.2f} MiB, sha256={digest.hexdigest()}")
+        item = {
+            "kind": key,
+            "path": str(path.resolve()),
+            "size": path.stat().st_size,
+            "sha256": digest.hexdigest(),
+        }
+        source_info.append(item)
+        print(
+            f"Source {key}: {path.name}, {item['size'] / 1024 / 1024:.2f} MiB, "
+            f"sha256={item['sha256']}"
+        )
+    return source_info
+
+
+def _config_path(raw: str, config_dir: Path) -> Path:
+    path = Path(raw)
+    return path.resolve() if path.is_absolute() else (config_dir / path).resolve()
+
+
+def _command_output(args: list[str], *, cwd: Path) -> str:
+    completed = subprocess.run(
+        args,
+        cwd=str(cwd),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(f"Command failed ({' '.join(args)}): {detail}")
+    return completed.stdout.strip()
+
+
+def _prepare_version_repo(
+    version: dict[str, Any], automation: dict[str, Any], config_dir: Path
+) -> Path:
+    source_repo = _config_path(str(automation.get("repository_path", "..")), config_dir)
+    commit = str(version.get("commit") or "").strip()
+    worktree_raw = version.get("worktree_path")
+    repo_raw = version.get("repo_path")
+
+    if worktree_raw:
+        if not commit:
+            raise ValueError(f"{version['name']}: commit is required with worktree_path")
+        repo_path = _config_path(str(worktree_raw), config_dir)
+        if not repo_path.exists():
+            repo_path.parent.mkdir(parents=True, exist_ok=True)
+            print(f"[{version['name']}] creating isolated worktree at {repo_path}")
+            _command_output(
+                ["git", "worktree", "add", "--detach", str(repo_path), commit],
+                cwd=source_repo,
+            )
+        actual = _command_output(["git", "rev-parse", "HEAD"], cwd=repo_path)
+        expected = _command_output(["git", "rev-parse", commit], cwd=source_repo)
+        if actual != expected:
+            raise RuntimeError(
+                f"{version['name']}: existing worktree is at {actual}, expected {expected}; "
+                "choose a new worktree_path or update it manually"
+            )
+        dirty = _command_output(["git", "status", "--porcelain"], cwd=repo_path)
+        if dirty:
+            raise RuntimeError(f"{version['name']}: old-version worktree has local changes")
+    else:
+        repo_path = _config_path(str(repo_raw or automation.get("repository_path", "..")), config_dir)
+        if not (repo_path / "app.py").is_file():
+            raise RuntimeError(f"{version['name']}: app.py not found in {repo_path}")
+        actual = _command_output(["git", "rev-parse", "HEAD"], cwd=repo_path)
+        if commit:
+            expected = _command_output(["git", "rev-parse", commit], cwd=repo_path)
+            if actual != expected:
+                raise RuntimeError(
+                    f"{version['name']}: repo_path is at {actual}, expected configured commit {expected}"
+                )
+        if _command_output(["git", "status", "--porcelain"], cwd=repo_path):
+            actual += " (dirty)"
+
+    version["resolved_commit"] = actual
+    version["resolved_repo_path"] = str(repo_path)
+    return repo_path
+
+
+def _service_port(base_url: str) -> int:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"Invalid base_url: {base_url}")
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("auto mode only starts local services (127.0.0.1 or localhost)")
+    return int(parsed.port or (443 if parsed.scheme == "https" else 80))
+
+
+def _tail(path: Path, limit: int = 30) -> str:
+    try:
+        return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:])
+    except OSError:
+        return ""
+
+
+def _wait_for_service(
+    version: dict[str, Any], app_process: subprocess.Popen, app_log: Path, startup_timeout: float
+) -> None:
+    deadline = time.monotonic() + startup_timeout
+    health_url = _url(version["base_url"], "api/health/live")
+    while time.monotonic() < deadline:
+        if app_process.poll() is not None:
+            raise RuntimeError(
+                f"{version['name']}: API process exited with {app_process.returncode}\n{_tail(app_log)}"
+            )
+        try:
+            _request(health_url, 3.0)
+            print(f"[{version['name']}] service is ready at {version['base_url']}")
+            return
+        except RuntimeError:
+            time.sleep(0.5)
+    raise TimeoutError(f"{version['name']}: service startup timed out; log: {app_log}")
+
+
+def _start_managed_service(
+    version: dict[str, Any],
+    automation: dict[str, Any],
+    config_dir: Path,
+    output_dir: Path,
+) -> dict[str, Any]:
+    repo_path = _prepare_version_repo(version, automation, config_dir)
+    port = _service_port(str(version["base_url"]))
+    runtime_root = _config_path(
+        str(automation.get("runtime_root", "../benchmark_runtime")), config_dir
+    )
+    slug_source = f"{version['name']}_{version['project_id']}"
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", slug_source).strip("_") or "version"
+    run_id = str(automation.get("_run_id") or f"{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}")
+    version_runtime = runtime_root / "runs" / run_id / slug
+    data_root = version_runtime / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    version_runtime.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env.update({
+        "PYTHONUNBUFFERED": "1",
+        "APP_HOST": "127.0.0.1",
+        "APP_PORT": str(port),
+        "APP_BASE_URL": str(version["base_url"]).rstrip("/"),
+        "APP_DATA_ROOT": str(data_root),
+        "APP_REGISTRY_DB_PATH": str(version_runtime / "registry.db"),
+        "APP_EMBEDDED_RUNNER": "0",
+        "JOB_RUNNER_POLL_INTERVAL": str(automation.get("runner_poll_seconds", 1)),
+    })
+    source_repo = _config_path(str(automation.get("repository_path", "..")), config_dir)
+    config_file_raw = automation.get("service_config")
+    service_config = (
+        _config_path(str(config_file_raw), config_dir)
+        if config_file_raw
+        else source_repo / "service_config.json"
+    )
+    if service_config.is_file():
+        env["CONFIG_FILE"] = str(service_config)
+    configured_env = version.get("env", {})
+    if configured_env and not isinstance(configured_env, dict):
+        raise ValueError(f"{version['name']}: env must be an object")
+    env.update({str(k): str(v) for k, v in configured_env.items()})
+
+    log_dir = output_dir / "service_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    app_log = log_dir / f"{slug}_app_{stamp}.log"
+    runner_log = log_dir / f"{slug}_runner_{stamp}.log"
+    app_handle = app_log.open("w", encoding="utf-8")
+    runner_handle = runner_log.open("w", encoding="utf-8")
+    python_exe = str(automation.get("python_executable") or sys.executable)
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    processes: list[subprocess.Popen] = []
+    try:
+        print(f"[{version['name']}] starting API and job runner from {repo_path}")
+        app_process = subprocess.Popen(
+            [python_exe, "app.py"],
+            cwd=str(repo_path),
+            env=env,
+            stdout=app_handle,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags,
+        )
+        processes.append(app_process)
+        runner_process = subprocess.Popen(
+            [python_exe, "src/job_runner.py"],
+            cwd=str(repo_path),
+            env=env,
+            stdout=runner_handle,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags,
+        )
+        processes.append(runner_process)
+        _wait_for_service(
+            version,
+            app_process,
+            app_log,
+            float(automation.get("startup_timeout_seconds", 180)),
+        )
+        if runner_process.poll() is not None:
+            raise RuntimeError(
+                f"{version['name']}: job runner exited with {runner_process.returncode}\n"
+                f"{_tail(runner_log)}"
+            )
+        version["_runner_process"] = runner_process
+        version["_runner_log"] = str(runner_log)
+        print(f"[{version['name']}] logs: {app_log} ; {runner_log}")
+        return {
+            "processes": processes,
+            "handles": [app_handle, runner_handle],
+            "app_log": app_log,
+            "runner_log": runner_log,
+        }
+    except Exception:
+        _stop_managed_service({"processes": processes, "handles": [app_handle, runner_handle]})
+        raise
+
+
+def _stop_managed_service(service: dict[str, Any]) -> None:
+    processes = list(reversed(service.get("processes", [])))
+    if os.name == "nt":
+        for process in processes:
+            if process.poll() is None:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+    else:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+    for process in processes:
+        if process.poll() is not None:
+            continue
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+    for handle in service.get("handles", []):
+        handle.close()
+
+
+def _detect_bdf_parser(runner_log: Path) -> str:
+    try:
+        text = runner_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "unknown"
+    if "Fast BDF scan done." in text:
+        return "fast path"
+    if "Fast BDF path: fallback to pyNastran" in text:
+        return "pyNastran (fast-path fallback)"
+    if "Reading BDF" in text:
+        return "pyNastran"
+    return "unknown"
+
+
+def _run_auto_sequential(
+    config: dict[str, Any],
+    versions: list[dict[str, Any]],
+    settings: dict[str, Any],
+    config_dir: Path,
+    output_dir: Path,
+    source_info: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    automation = config.get("automation", {})
+    automation["_run_id"] = f"{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}"
+    rows: list[dict[str, Any]] = []
+    for index, version in enumerate(versions):
+        print("\n" + "=" * 72)
+        print(f"Automatic sequential phase {index + 1}/2: {version['name']}")
+        service: dict[str, Any] | None = None
+        try:
+            service = _start_managed_service(version, automation, config_dir, output_dir)
+            rows.extend(_submit_imports(version, config, settings))
+            version["bdf_parser"] = _detect_bdf_parser(service["runner_log"])
+            print(f"[{version['name']}] BDF parser used: {version['bdf_parser']}")
+            rows.extend(_log_stage_rows(version, settings))
+            rows.extend(_benchmark_version(version, settings))
+            _write_outputs(
+                rows,
+                versions,
+                output_dir,
+                source_info,
+                file_tag=f"benchmark_{'old' if index == 0 else 'complete'}_checkpoint",
+            )
+            if bool(settings.get("delete_project_after", True)):
+                _delete_benchmark_project(version, settings)
+        finally:
+            if service is not None:
+                _stop_managed_service(service)
+                print(f"[{version['name']}] managed service stopped")
+        if index == 0:
+            cooldown = max(0.0, float(automation.get("between_versions_seconds", 2.0)))
+            if cooldown:
+                time.sleep(cooldown)
+    return rows
 
 
 def main() -> int:
@@ -466,18 +951,25 @@ def main() -> int:
     parser.add_argument("--config", required=True, help="JSON configuration path")
     parser.add_argument(
         "--mode",
-        choices=("benchmark", "watch", "all", "sequential"),
+        choices=("benchmark", "watch", "all", "sequential", "auto"),
         default="benchmark",
         help=(
             "benchmark=measure ready projects; watch=only monitor imports; "
             "all=monitor two simultaneously then benchmark; "
-            "sequential=old and new use the same port, one service at a time"
+            "sequential=manually switch services on the same port; "
+            "auto=start services, submit imports, and test old/new sequentially"
         ),
     )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    for source_key in ("bdf_path", "op2_path"):
+        source_value = config.get("sources", {}).get(source_key)
+        if source_value:
+            source_path = Path(source_value)
+            if not source_path.is_absolute():
+                config["sources"][source_key] = str((config_path.parent / source_path).resolve())
     versions = config.get("versions", [])
     if len(versions) != 2:
         raise ValueError("config.versions must contain exactly two entries: old, then new")
@@ -488,13 +980,31 @@ def main() -> int:
     settings = config.get("benchmark", {})
     include_op2 = bool(settings.get("include_op2", True))
     print("Test scope: " + ("BDF + OP2 + result endpoints" if include_op2 else "BDF only"))
-    _verify_sources(config)
+    source_info = _verify_sources(config)
+    if args.mode == "auto":
+        required_sources = {"bdf_path"} | ({"op2_path"} if include_op2 else set())
+        missing_sources = [
+            key for key in sorted(required_sources)
+            if not config.get("sources", {}).get(key)
+            or not Path(config["sources"][key]).is_file()
+        ]
+        if missing_sources:
+            raise ValueError(f"auto mode requires existing source files: {', '.join(missing_sources)}")
     output_dir = Path(settings.get("output_dir", "benchmark_results"))
     if not output_dir.is_absolute():
         output_dir = config_path.parent / output_dir
 
     rows: list[dict[str, Any]] = []
-    if args.mode == "sequential":
+    if args.mode == "auto":
+        rows = _run_auto_sequential(
+            config,
+            versions,
+            settings,
+            config_path.parent,
+            output_dir,
+            source_info,
+        )
+    elif args.mode == "sequential":
         for index, version in enumerate(versions):
             print("\n" + "=" * 72)
             print(f"Sequential phase {index + 1}/2: {version['name']}")
@@ -515,7 +1025,7 @@ def main() -> int:
                 rows.extend(_log_stage_rows(version, settings))
                 rows.extend(_benchmark_version(version, settings))
 
-    _write_outputs(rows, versions, output_dir)
+    _write_outputs(rows, versions, output_dir, source_info)
     return 0
 
 

@@ -2,15 +2,15 @@
   "versions": [
     {
       "name": "旧版",
-      "base_url": "http://127.0.0.1:5000",
-      "project_id": "benchmark_old",
+      "base_url": "http://127.0.0.1:5099",
+      "project_id": "bench_50w_old",
       "commit": "9139bdd6ade261ff7115a07b698194f60f464e7d",
       "worktree_path": "../../VirtualReal702-benchmark-old"
     },
     {
       "name": "新版",
-      "base_url": "http://127.0.0.1:5000",
-      "project_id": "benchmark_new",
+      "base_url": "http://127.0.0.1:5099",
+      "project_id": "bench_50w_new",
       "repo_path": "..",
       "env": {
         "APP_FAST_BDF_MIN_BYTES": "1"
@@ -18,8 +18,8 @@
     }
   ],
   "sources": {
-    "bdf_path": "D:/models/test.bdf",
-    "op2_path": "D:/models/test.op2"
+    "bdf_path": "D:/WorkSpace/FEM/Nastran/50w-cylinder/50w-nodes-cylinder.bdf",
+    "op2_path": "D:/WorkSpace/FEM/Nastran/50w-cylinder/50w-nodes-cylinder.op2"
   },
   "benchmark": {
     "include_op2": true,
@@ -37,7 +37,7 @@
   },
   "automation": {
     "repository_path": "..",
-    "runtime_root": "D:/Temp/VirtualReal702-benchmark",
+    "runtime_root": "D:/WorkSpace/Temp/VirtualReal702-benchmark",
     "startup_timeout_seconds": 180,
     "runner_poll_seconds": 1,
     "between_versions_seconds": 2
