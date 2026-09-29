@@ -6,8 +6,12 @@ from src.l2.ingest import (
     ELEM_KIND_MEMBRANE,
     ELEM_KIND_SHELL,
     ELEM_KIND_SOLID,
+    build_surface_edge_topology,
     build_domain_ids,
     compute_elem_adjacency,
+    compute_elem_adjacency_from_topology,
+    compute_all_surface_edges,
+    compute_feature_edges,
 )
 from src.l3.services.result_service import _union_find_domains
 
@@ -58,6 +62,33 @@ def test_compute_elem_adjacency_non_manifold_and_same_element_filter():
     np.testing.assert_array_equal(src, [20, 20])
     np.testing.assert_array_equal(dst, [21, 21])
     assert angle.shape == (2,)
+
+
+def test_one_edge_topology_feeds_all_advanced_products():
+    coords = np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ], dtype=np.float32)
+    triangles = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    elem_rows = np.array([10, 11], dtype=np.int32)
+    face_seq = np.array([1, 1], dtype=np.uint8)
+    etype_code = np.array([1, 1], dtype=np.uint16)
+
+    topology = build_surface_edge_topology(triangles, coords)
+    src, dst, angle = compute_elem_adjacency_from_topology(topology, elem_rows)
+    feature_nodes, feature_types = compute_feature_edges(
+        triangles, coords, topology=topology)
+    mesh_nodes = compute_all_surface_edges(
+        triangles, elem_rows, face_seq, etype_code, topology=topology)
+
+    np.testing.assert_array_equal(src, [10])
+    np.testing.assert_array_equal(dst, [11])
+    np.testing.assert_allclose(angle, [0.0], atol=1e-5)
+    assert len(feature_nodes) == 4
+    np.testing.assert_array_equal(feature_types, np.ones(4, dtype=np.uint8))
+    assert len(mesh_nodes) == 5
 
 
 def test_build_domain_ids_respects_section_kind_and_feature_angle():

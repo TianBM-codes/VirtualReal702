@@ -992,8 +992,8 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
 
     print('    done. ({})'.format(_fmt_t(time.time() - t0)))
 
-    # Post-pass: subdivide shell section_ids by 20° normal connectivity
-    _refine_shell_sections(h5_abs)
+    # Geometric shell domains are derived once in L2 from the shared edge
+    # topology. L1 keeps the faithful property/section assignment IDs.
 
     # ── 7. Write assembly.h5 ──────────────────────────────────────────────────
     print('  Writing assembly.h5 ...')
@@ -1232,7 +1232,8 @@ def _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=None):
             csr.create_dataset("elem_label_data", data=np.array([], dtype=np.int32))
 
     print("    done. ({})".format(_fmt_t(time.time() - t0)))
-    _refine_shell_sections(h5_abs)
+    # Geometric shell domains are derived once in L2 from the shared edge
+    # topology. L1 keeps the faithful property/section assignment IDs.
 
     print("  Writing assembly.h5 ...")
     asm_path = os.path.join(l1_dir, "assembly.h5")

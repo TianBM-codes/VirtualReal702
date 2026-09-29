@@ -331,7 +331,7 @@ def _log_stage_rows(version: dict[str, Any], settings: dict[str, Any]) -> list[d
         if ts and stage:
             grouped.setdefault(stage, []).append(ts)
     rows = []
-    stages = ["l1_bdf", "l2_ingest"]
+    stages = ["l1_bdf", "l2_core", "l2_advanced", "l2_ingest"]
     if bool(settings.get("include_op2", True)):
         stages.append("rg_op2")
     for stage in stages:

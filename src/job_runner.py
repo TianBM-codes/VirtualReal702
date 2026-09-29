@@ -608,26 +608,43 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
         return True
 
     _update_status(odb_id, "l2_running", l2_started_at=_now_iso())
-    logger.info("[%s] L2: ingest.py", odb_id)
+    logger.info("[%s] L2 core: ingest.py", odb_id)
     _log_job(odb_id, "step",
-             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest", percent=65)
+             f"{_kw('L2 基础几何')}启动：表面提取与渲染缓冲区生成",
+             stage="l2_core", percent=65)
 
     rc, tail = _run_streaming(
-        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        odb_id, "l2_ingest",
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace,
+         "--phase", "core"],
+        odb_id, "l2_core",
     )
     if rc != 0:
         _update_status(odb_id, "error", error_msg="[L2] ingest failed: " + tail[-2000:])
         _log_job(odb_id, "error",
                  f"{_bad('L2 预处理失败')} (rc={rc})：" + _esc(tail[-500:]),
-                 stage="l2_ingest")
+                 stage="l2_core")
         logger.error("[%s] L2 failed (rc=%d)", odb_id, rc)
         return False
 
     _update_status(odb_id, "ready", l2_done_at=_now_iso())
-    _log_job(odb_id, "step", _good("解析全部完成，已就绪"), stage="l2_done", percent=100)
-    logger.info("[%s] ready", odb_id)
+    _log_job(odb_id, "step", _good("基础几何已就绪"),
+             stage="l2_done", percent=85)
+    logger.info("[%s] core geometry ready", odb_id)
+
+    rc_advanced, tail_advanced = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace,
+         "--phase", "advanced"],
+        odb_id, "l2_advanced",
+    )
+    if rc_advanced != 0:
+        _log_job(odb_id, "warn",
+                 f"{_ws('高级索引失败（基础几何仍可用）')}："
+                 f"{_esc(tail_advanced[-500:])}",
+                 stage="l2_advanced", percent=100)
+        logger.warning("[%s] advanced L2 failed (rc=%d)", odb_id, rc_advanced)
+    else:
+        _log_job(odb_id, "step", _good("高级索引完成"),
+                 stage="l2_advanced", percent=100)
     return True
 
 
@@ -1066,28 +1083,48 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
              f"{_kw('BDF 解析完成')}，开始 L2 预处理",
              stage="l1_done", percent=50)
 
-    logger.info("[%s] BDF project: ingest.py (L2)", project_id)
+    logger.info("[%s] BDF project: ingest.py (L2 core)", project_id)
     _log_job(project_id, "step",
-             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest", percent=55)
+             f"{_kw('L2 基础几何')}启动：表面提取与渲染缓冲区生成",
+             stage="l2_core", percent=55)
     rc2, tail2 = _run_streaming(
-        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        project_id, "l2_ingest",
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace,
+         "--phase", "core"],
+        project_id, "l2_core",
     )
     if rc2 != 0:
-        msg = "ingest failed: " + tail2[-2000:]
+        msg = "L2 core ingest failed: " + tail2[-2000:]
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
-                 f"{_bad('L2 预处理失败')} (rc={rc2})：{_esc(tail2[-500:])}",
-                 stage="l2_ingest")
-        logger.error("[%s] BDF project L2 failed (rc=%d)", project_id, rc2)
+                 f"{_bad('L2 基础几何失败')} (rc={rc2})：{_esc(tail2[-500:])}",
+                 stage="l2_core")
+        logger.error("[%s] BDF project L2 core failed (rc=%d)", project_id, rc2)
         return False
 
     _update_project_geom_status(project_id, "ready")
     _log_job(project_id, "step",
-             _good("BDF 几何解析完成，已就绪"),
+             _good("BDF 基础几何已就绪，高级索引转入后台阶段"),
              stage="l2_done", percent=85)
-    logger.info("[%s] BDF project ready", project_id)
+    logger.info("[%s] BDF project core geometry ready", project_id)
+
+    _log_job(project_id, "step",
+             f"{_kw('L2 高级索引')}启动：邻接域、边线与 Octree",
+             stage="l2_advanced", percent=86)
+    rc_advanced, tail_advanced = _run_streaming(
+        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace,
+         "--phase", "advanced"],
+        project_id, "l2_advanced",
+    )
+    if rc_advanced != 0:
+        _log_job(project_id, "warn",
+                 f"{_ws('L2 高级索引失败（基础几何仍可用）')}："
+                 f"{_esc(tail_advanced[-500:])}",
+                 stage="l2_advanced", percent=90)
+        logger.warning("[%s] BDF project advanced L2 failed (rc=%d)",
+                       project_id, rc_advanced)
+    else:
+        _log_job(project_id, "step", _good("L2 高级索引完成"),
+                 stage="l2_advanced", percent=90)
 
     # ── Auto model-update BDF import ──────────────────────────────────────────
     _log_job(project_id, "step",

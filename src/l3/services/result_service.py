@@ -1068,6 +1068,9 @@ def compute_scalar_range(
 
     _manifest = ManifestRepo(idx.workspace)
     geom_h5_path = _manifest.get_geom_path(instance)
+    averaging = idx.averaging_data.get(instance, {})
+    all_element_domain = averaging.get("all_element_domain")
+    advanced_version = int(getattr(idx, "_advanced_status_mtime_ns", 0))
 
     # 无 set 的范围只由结果文件版本 + (instance, 帧, 分量, 阈值) 决定，整体缓存；
     # 前端逐帧/切分量反复询问范围时不再重读 H5。
@@ -1075,7 +1078,7 @@ def compute_scalar_range(
     range_key = (
         "scalar_range", odb_id, instance, h5_path, h5_sig, int(frame_idx),
         None if component_idx is None else int(component_idx),
-        float(average_threshold),
+        float(average_threshold), advanced_version,
     )
     if h5_sig is not None:
         hit = _range_cache_get(range_key)
@@ -1094,6 +1097,8 @@ def compute_scalar_range(
         src_etype=src_etype,
         src_elem_row=src_elem_row,
         geom_h5_path=geom_h5_path,
+        all_element_domain=all_element_domain,
+        domain_version=advanced_version,
         average_threshold=average_threshold,
     )
     if h5_sig is not None:
@@ -1111,6 +1116,8 @@ def _scalar_range_from_h5(
     src_etype: Optional[np.ndarray],
     src_elem_row: Optional[np.ndarray],
     geom_h5_path: Optional[str],
+    all_element_domain: Optional[dict],
+    domain_version: int,
     average_threshold: float,
 ) -> Optional[Tuple[float, float]]:
     """compute_scalar_range 无 set 路径的计算主体（原 with 块原样搬出以便缓存）。"""
@@ -1139,7 +1146,7 @@ def _scalar_range_from_h5(
                 if geom_h5_path is not None:
                     all_range = _compute_en_global_range(
                         f, geom_h5_path, instance, frame_idx, component_idx,
-                        average_threshold,
+                        average_threshold, all_element_domain, domain_version,
                     )
                     if all_range is not None:
                         return all_range
@@ -1251,6 +1258,9 @@ def frame_scalars(
 
     _manifest = ManifestRepo(idx.workspace)
     geom_h5_path = _manifest.get_geom_path(instance)
+    averaging = idx.averaging_data.get(instance, {})
+    all_element_domain = averaging.get("all_element_domain")
+    advanced_version = int(getattr(idx, "_advanced_status_mtime_ns", 0))
 
     # Indexed geometry arrays — present only when L2 produced an index buffer.
     # vtx_nr [Nv]: L1 node row for each unique vertex
@@ -1273,7 +1283,7 @@ def frame_scalars(
         "frame_scalars", odb_id, instance, h5_path, h5_sig, int(frame_idx),
         None if component_idx is None else int(component_idx),
         effective_render_mode, fa_cache_key, float(average_threshold),
-        bool(use_geometry_split),
+        bool(use_geometry_split), advanced_version,
     )
     cached = _vertex_cache_get(vertex_key) if h5_sig is not None else None
     if cached is None and h5_sig is not None:
@@ -1382,7 +1392,7 @@ def frame_scalars(
             if result_position.startswith("ELEMENT_NODAL") and geom_h5_path is not None:
                 all_range = _compute_en_global_range(
                     f, geom_h5_path, instance, frame_idx, component_idx,
-                    average_threshold,
+                    average_threshold, all_element_domain, advanced_version,
                 )
                 if all_range is not None:
                     global_range = all_range
@@ -1833,6 +1843,8 @@ def _compute_en_global_range(
     frame_idx: int,
     component_idx: Optional[int],
     average_threshold: float = 0.75,
+    all_element_domain: Optional[dict] = None,
+    domain_version: int = 0,
 ) -> Optional[Tuple[float, float]]:
     """
     Cached front for _compute_en_global_range_uncached: the full-model averaged
@@ -1844,7 +1856,7 @@ def _compute_en_global_range(
     key = (
         "en_range", h5_path, sig, geom_h5_path, instance, int(frame_idx),
         None if component_idx is None else int(component_idx),
-        float(average_threshold),
+        float(average_threshold), int(domain_version),
     )
     if sig is not None:
         hit = _range_cache_get(key)
@@ -1852,7 +1864,7 @@ def _compute_en_global_range(
             return hit
     result = _compute_en_global_range_uncached(
         result_h5, geom_h5_path, instance, frame_idx, component_idx,
-        average_threshold,
+        average_threshold, all_element_domain,
     )
     if sig is not None:
         _range_cache_put(key, result)
@@ -1866,10 +1878,11 @@ def _compute_en_global_range_uncached(
     frame_idx: int,
     component_idx: Optional[int],
     average_threshold: float = 0.75,
+    all_element_domain: Optional[dict] = None,
 ) -> Optional[Tuple[float, float]]:
     """
     Compute global legend range from ALL elements (including interior) using
-    section-only partitioned 75% conditional averaging.
+    L2 geometric domains when available, otherwise L1 section domains.
 
     Returns (global_min, global_max), or None if section_id data is unavailable.
     """
@@ -1894,7 +1907,13 @@ def _compute_en_global_range_uncached(
                 if 'conn' not in geom_grp or 'section_id' not in geom_grp:
                     continue
 
-                sec_id   = geom_grp['section_id'][:]   # [N_geom] int32
+                sec_id = None
+                if all_element_domain is not None:
+                    domain_values = all_element_domain.get(etype_key)
+                    if domain_values is not None and len(domain_values) == len(geom_grp['section_id']):
+                        sec_id = np.asarray(domain_values, dtype=np.int32)
+                if sec_id is None:
+                    sec_id = geom_grp['section_id'][:]   # [N_geom] int32
                 conn     = geom_grp['conn'][:]          # [N_geom, n_corner] int32
                 # Prefer full connectivity (corner + mid-nodes) so mid-node
                 # extrema — which often hold the field min/max on high-order

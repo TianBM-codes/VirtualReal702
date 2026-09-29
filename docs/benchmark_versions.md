@@ -36,9 +36,9 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 
 ## 输出指标
 
-- `bdf_import_total`：从提交 BDF 到几何项目 ready 的总耗时，包含 BDF 解析和 L2 预处理。
+- `bdf_import_total`：从提交 BDF 到基础几何项目 ready 的总耗时。新版两阶段 L2 中，它包含 BDF 解析和 `l2_core`，不等待高级索引完成；旧版仍包含完整 L2。
 - `op2_import_total`：从提交 OP2 到结果组 ready 的总耗时。
-- `log_l1_bdf`、`log_l2_ingest`、`log_rg_op2`：由任务日志估算的各处理阶段耗时，日志时间戳精度为一秒。
+- `log_l1_bdf`、`log_l2_core`、`log_l2_advanced`、`log_l2_ingest`、`log_rg_op2`：由任务日志估算的各处理阶段耗时。`l2_ingest` 用于旧版兼容，日志时间戳精度为一秒。
 - `metadata`、`model_load`、`modal_shape`、`deformed_positions`、`modal_animation`：前端实际使用的读取接口耗时。
 - `Improvement`：`(旧版耗时 - 新版耗时) / 旧版耗时`；正数表示新版更快，负数表示新版更慢。
 

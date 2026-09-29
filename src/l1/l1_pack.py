@@ -512,8 +512,8 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                     g.create_dataset('offsets',         data=np.zeros(n_nodes + 1, dtype=np.int32))
                     g.create_dataset('elem_label_data', data=np.array([], dtype=np.int32))
 
-        # Post-pass: subdivide shell section_ids by 20° normal connectivity
-        _refine_shell_sections(h5_abs)
+        # Geometric shell domains are derived once in L2 from the shared edge
+        # topology. L1 remains a faithful dump of section assignments.
 
         # High-order file
         ho_rel = None

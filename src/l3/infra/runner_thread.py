@@ -358,6 +358,33 @@ class EmbeddedRunner:
 
     # ── L2 pipeline ───────────────────────────────────────────────────────────
 
+    def _run_project_l2_staged(self, project_id: str, workspace: str) -> bool:
+        """Publish core geometry first, then build optional advanced indexes."""
+        for phase in ("core", "advanced"):
+            ret = subprocess.run(
+                [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
+                 "--phase", phase],
+                capture_output=True, encoding="utf-8", errors="replace",
+            )
+            if ret.returncode != 0:
+                if phase == "core":
+                    msg = "L2 core ingest failed: " + ret.stderr[-2000:]
+                    self._update_project_geom_status(project_id, "error", msg)
+                    logger.error("[%s] L2 core failed (rc=%d)",
+                                 project_id, ret.returncode)
+                    return False
+                logger.warning(
+                    "[%s] L2 advanced indexes failed but core geometry remains ready: %s",
+                    project_id, ret.stderr[-500:],
+                )
+                return True
+            if phase == "core":
+                self._update_project_geom_status(project_id, "ready")
+                logger.info("[%s] Core geometry ready; building advanced indexes",
+                            project_id)
+        logger.info("[%s] Advanced L2 indexes ready", project_id)
+        return True
+
     def _run_l2(self, odb_id: str, workspace: str) -> bool:
         if not _INGEST_SCRIPT.exists():
             logger.info("[%s] L2 script not found, skipping — marking ready", odb_id)
@@ -369,7 +396,8 @@ class EmbeddedRunner:
 
         _win_flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         ret = subprocess.run(
-            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
+            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
+             "--phase", "core"],
             capture_output=True, encoding='utf-8', errors='replace',
             creationflags=_win_flags,
         )
@@ -380,7 +408,20 @@ class EmbeddedRunner:
             return False
 
         self._update_status(odb_id, "ready", l2_done_at=_now_iso())
-        logger.info("[%s] ready", odb_id)
+        logger.info("[%s] core geometry ready", odb_id)
+        advanced = subprocess.run(
+            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
+             "--phase", "advanced"],
+            capture_output=True, encoding='utf-8', errors='replace',
+            creationflags=_win_flags,
+        )
+        if advanced.returncode != 0:
+            logger.warning(
+                "[%s] advanced L2 failed but core geometry remains ready: %s",
+                odb_id, advanced.stderr[-500:],
+            )
+        else:
+            logger.info("[%s] advanced L2 indexes ready", odb_id)
         return True
 
     # ── Project / result_group helpers ────────────────────────────────────────
@@ -512,20 +553,8 @@ class EmbeddedRunner:
             self._update_project_geom_status(project_id, "error", msg)
             return False
 
-        logger.info("[%s] Geom: ingest.py (L2)", project_id)
-        ret = subprocess.run(
-            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
-            capture_output=True, encoding="utf-8", errors="replace",
-        )
-        if ret.returncode != 0:
-            msg = "ingest failed: " + ret.stderr[-2000:]
-            self._update_project_geom_status(project_id, "error", msg)
-            logger.error("[%s] L2 failed (rc=%d)", project_id, ret.returncode)
-            return False
-
-        self._update_project_geom_status(project_id, "ready")
-        logger.info("[%s] Geom ready", project_id)
-        return True
+        logger.info("[%s] Geom: staged ingest.py (L2)", project_id)
+        return self._run_project_l2_staged(project_id, workspace)
 
     def _run_odb_project(self, project_id: str, odb_path: str,
                          workspace: str) -> bool:
@@ -553,19 +582,9 @@ class EmbeddedRunner:
             self._update_project_geom_status(project_id, "error", msg)
             return False
 
-        logger.info("[%s] Project ODB: ingest.py (L2)", project_id)
-        ret = subprocess.run(
-            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
-            capture_output=True, encoding="utf-8", errors="replace",
-        )
-        if ret.returncode != 0:
-            msg = "ingest failed: " + ret.stderr[-2000:]
-            self._update_project_geom_status(project_id, "error", msg)
-            logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, ret.returncode)
+        logger.info("[%s] Project ODB: staged ingest.py (L2)", project_id)
+        if not self._run_project_l2_staged(project_id, workspace):
             return False
-
-        self._update_project_geom_status(project_id, "ready")
-        logger.info("[%s] Project ODB ready", project_id)
         try:
             self._adopt_odb_default_results(project_id, odb_path, workspace)
         except Exception:
@@ -638,17 +657,7 @@ class EmbeddedRunner:
                 self._update_project_geom_status(
                     project_id, "error", source_type + " geometry pack failed: " + tail)
                 return False
-            ret = subprocess.run(
-                [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
-                capture_output=True, encoding="utf-8", errors="replace",
-            )
-            if ret.returncode != 0:
-                self._update_project_geom_status(
-                    project_id, "error", "ingest failed: " + ret.stderr[-2000:])
-                return False
-            self._update_project_geom_status(project_id, "ready")
-            logger.info("[%s] %s geometry ready", project_id, source_type)
-            return True
+            return self._run_project_l2_staged(project_id, workspace)
         return self._run_geom_project(project_id, source_path, workspace)
 
     # ── Result group pipeline ─────────────────────────────────────────────────

@@ -232,6 +232,17 @@ def _build_project_response(proj, repo) -> dict:
     workspace  = _resolve_workspace(proj["workspace"], project_id)
     rg_rows    = repo.list_result_groups(project_id)
     source_type = proj["source_type"] if "source_type" in proj.keys() else "inp"
+    advanced_status = "pending"
+    status_path = os.path.join(workspace, "l2", "advanced_status.json")
+    try:
+        with open(status_path, "r", encoding="utf-8") as f:
+            advanced_status = str(json.load(f).get("status") or "pending")
+    except FileNotFoundError:
+        # 旧工作区把高级数据直接写在主 H5 内，没有独立状态文件。
+        if proj["geom_status"] == "ready":
+            advanced_status = "ready"
+    except (OSError, ValueError, TypeError):
+        advanced_status = "pending"
 
     result_groups = []
     for rg in rg_rows:
@@ -274,6 +285,7 @@ def _build_project_response(proj, repo) -> dict:
         "project_id": project_id,
         "source_type": source_type,
         "geom_status": proj["geom_status"],
+        "advanced_status": advanced_status,
         "source_file": proj["original_source_file"] or proj["source_file"],
         "source_path": proj["original_inp_path"] or proj["inp_path"],
         "result_groups": result_groups,

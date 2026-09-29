@@ -18,11 +18,13 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sqlite3
 import sys
 import time
+from datetime import datetime
 
 import h5py
 import numpy as np
@@ -96,6 +98,10 @@ def _resolve_elem_code(etype_str):
 def parse_args():
     p = argparse.ArgumentParser(description="L2 Preprocessing")
     p.add_argument("--workspace", required=True)
+    p.add_argument(
+        "--phase", choices=("all", "core", "advanced"), default="all",
+        help="core writes display geometry; advanced writes optional indexes",
+    )
     return p.parse_args()
 
 
@@ -780,6 +786,112 @@ def build_domain_ids(section_id, elem_kind, adj_src, adj_dst, adj_angle_deg,
     return label_to_domain[labels]
 
 
+def build_surface_edge_topology(surf_tri_nodes, coords_global=None):
+    """Build one reusable edge table for adjacency and both edge overlays."""
+    face_count = len(surf_tri_nodes)
+    if face_count == 0:
+        return {
+            "edge_nodes": np.zeros((0, 2), dtype=np.int32),
+            "counts": np.zeros(0, dtype=np.int64),
+            "starts": np.zeros(0, dtype=np.int64),
+            "sorted_faces": np.zeros(0, dtype=np.int32),
+            "face_normals": np.zeros((0, 3), dtype=np.float64),
+        }
+
+    edge_nodes = np.vstack((
+        np.sort(surf_tri_nodes[:, [0, 1]], axis=1),
+        np.sort(surf_tri_nodes[:, [1, 2]], axis=1),
+        np.sort(surf_tri_nodes[:, [2, 0]], axis=1),
+    )).astype(np.int32, copy=False)
+    edge_faces = np.tile(np.arange(face_count, dtype=np.int32), 3)
+    order = np.lexsort((edge_nodes[:, 1], edge_nodes[:, 0]))
+    sorted_edges = edge_nodes[order]
+    sorted_faces = edge_faces[order]
+    starts = np.flatnonzero(np.r_[
+        True,
+        (sorted_edges[1:, 0] != sorted_edges[:-1, 0]) |
+        (sorted_edges[1:, 1] != sorted_edges[:-1, 1]),
+    ])
+    counts = np.diff(np.r_[starts, len(sorted_edges)])
+
+    if coords_global is None:
+        face_normals = np.zeros((face_count, 3), dtype=np.float64)
+    else:
+        p0 = coords_global[surf_tri_nodes[:, 0]].astype(np.float64)
+        p1 = coords_global[surf_tri_nodes[:, 1]].astype(np.float64)
+        p2 = coords_global[surf_tri_nodes[:, 2]].astype(np.float64)
+        face_normals = np.cross(p1 - p0, p2 - p0)
+        norms = np.linalg.norm(face_normals, axis=1, keepdims=True)
+        face_normals /= np.where(norms > 1e-12, norms, 1.0)
+
+    return {
+        "edge_nodes": sorted_edges[starts],
+        "counts": counts,
+        "starts": starts,
+        "sorted_faces": sorted_faces,
+        "face_normals": face_normals,
+    }
+
+
+def _shared_edge_face_pairs(topology):
+    """Return face pairs and their unique-edge group in stable edge order."""
+    counts = topology["counts"]
+    starts = topology["starts"]
+    sorted_faces = topology["sorted_faces"]
+    shared_groups = np.flatnonzero(counts >= 2)
+    if len(shared_groups) == 0:
+        empty = np.zeros(0, dtype=np.int32)
+        return empty, empty, empty
+
+    face_a_parts = []
+    face_b_parts = []
+    group_parts = []
+    pair_groups = shared_groups[counts[shared_groups] == 2]
+    if len(pair_groups):
+        pair_starts = starts[pair_groups]
+        face_a_parts.append(sorted_faces[pair_starts])
+        face_b_parts.append(sorted_faces[pair_starts + 1])
+        group_parts.append(pair_groups.astype(np.int32, copy=False))
+
+    for group_idx in shared_groups[counts[shared_groups] > 2]:
+        start = starts[group_idx]
+        count = counts[group_idx]
+        left, right = np.triu_indices(count, k=1)
+        face_a_parts.append(sorted_faces[start + left])
+        face_b_parts.append(sorted_faces[start + right])
+        group_parts.append(np.full(len(left), group_idx, dtype=np.int32))
+
+    face_a = np.concatenate(face_a_parts)
+    face_b = np.concatenate(face_b_parts)
+    groups = np.concatenate(group_parts)
+    pair_order = np.argsort(groups, kind="stable")
+    return face_a[pair_order], face_b[pair_order], groups[pair_order]
+
+
+def compute_elem_adjacency_from_topology(topology, tri_global_elem_idx):
+    """Build element adjacency from a shared triangle-edge topology."""
+    face_a, face_b, _ = _shared_edge_face_pairs(topology)
+    if len(face_a) == 0:
+        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
+                np.zeros(0, np.float32))
+
+    adj_src = tri_global_elem_idx[face_a].astype(np.int32, copy=False)
+    adj_dst = tri_global_elem_idx[face_b].astype(np.int32, copy=False)
+    different_elements = adj_src != adj_dst
+    adj_src = adj_src[different_elements]
+    adj_dst = adj_dst[different_elements]
+    face_a = face_a[different_elements]
+    face_b = face_b[different_elements]
+    if len(adj_src) == 0:
+        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
+                np.zeros(0, np.float32))
+
+    normals = topology["face_normals"]
+    dots = np.einsum("ij,ij->i", normals[face_a], normals[face_b])
+    angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
+    return adj_src, adj_dst, angles.astype(np.float32)
+
+
 def compute_elem_adjacency(surf_fnc, surf_global_elem_idx, coords_global):
     """
     Build surface element adjacency graph with dihedral angles.
@@ -797,96 +909,23 @@ def compute_elem_adjacency(surf_fnc, surf_global_elem_idx, coords_global):
         adj_dst       [A]  int32    global_elem_idx of element b
         adj_angle_deg [A]  float32  angle between face normals (degrees)
     """
-    Sf = len(surf_fnc)
-    if Sf == 0:
+    face_count = len(surf_fnc)
+    if face_count == 0:
         return (np.zeros(0, np.int32), np.zeros(0, np.int32),
                 np.zeros(0, np.float32))
 
-    # Compute face normals from first 3 nodes of each face
-    n0 = coords_global[surf_fnc[:, 0]].astype(np.float64)
-    n1 = coords_global[surf_fnc[:, 1]].astype(np.float64)
-    n2 = coords_global[surf_fnc[:, 2]].astype(np.float64)
-    face_normals = np.cross(n1 - n0, n2 - n0)           # [Sf, 3]
-    nrm = np.linalg.norm(face_normals, axis=1, keepdims=True)
-    face_normals /= np.where(nrm > 1e-12, nrm, 1.0)     # unit normals
-
-    # Enumerate all face edges (sorted node pairs) in bulk. Rows are padded
-    # with -1, so the final valid node in each row must wrap back to column 0.
-    valid = surf_fnc != -1
-    n_per_face = valid.sum(axis=1)                       # [Sf]
-    next_nodes = np.roll(surf_fnc, -1, axis=1)
-    face_rows = np.arange(Sf)
-    next_nodes[face_rows, n_per_face - 1] = surf_fnc[:, 0]
-    edge_mask = np.arange(surf_fnc.shape[1])[None, :] < n_per_face[:, None]
-    edge_a = surf_fnc[edge_mask]
-    edge_b = next_nodes[edge_mask]
-    edge_fa = np.repeat(face_rows, n_per_face).astype(np.int32, copy=False)
-    edge_n1 = np.minimum(edge_a, edge_b)
-    edge_n2 = np.maximum(edge_a, edge_b)
-
-    # Sort by (n1, n2) to group shared edges
-    order   = np.lexsort((edge_n2, edge_n1))
-    edge_fa = edge_fa[order]
-    edge_n1 = edge_n1[order]
-    edge_n2 = edge_n2[order]
-
-    if len(edge_fa) == 0:
-        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
-                np.zeros(0, np.float32))
-
-    group_start = np.flatnonzero(np.r_[
-        True,
-        (edge_n1[1:] != edge_n1[:-1]) | (edge_n2[1:] != edge_n2[:-1]),
-    ])
-    group_count = np.diff(np.r_[group_start, len(edge_fa)])
-    shared_groups = np.flatnonzero(group_count >= 2)
-    if len(shared_groups) == 0:
-        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
-                np.zeros(0, np.float32))
-
-    pair_face_a = []
-    pair_face_b = []
-    pair_group = []
-
-    # The normal manifold case has exactly two faces per edge and is fully
-    # vectorized. Only rare non-manifold edges need a short Python loop.
-    pair_groups = shared_groups[group_count[shared_groups] == 2]
-    if len(pair_groups):
-        starts = group_start[pair_groups]
-        pair_face_a.append(edge_fa[starts])
-        pair_face_b.append(edge_fa[starts + 1])
-        pair_group.append(pair_groups)
-
-    for group_idx in shared_groups[group_count[shared_groups] > 2]:
-        start = group_start[group_idx]
-        count = group_count[group_idx]
-        left, right = np.triu_indices(count, k=1)
-        pair_face_a.append(edge_fa[start + left])
-        pair_face_b.append(edge_fa[start + right])
-        pair_group.append(np.full(len(left), group_idx, dtype=np.int64))
-
-    face_a = np.concatenate(pair_face_a)
-    face_b = np.concatenate(pair_face_b)
-    groups = np.concatenate(pair_group)
-    pair_order = np.argsort(groups, kind="stable")
-    face_a = face_a[pair_order]
-    face_b = face_b[pair_order]
-
-    adj_src = surf_global_elem_idx[face_a].astype(np.int32, copy=False)
-    adj_dst = surf_global_elem_idx[face_b].astype(np.int32, copy=False)
-    different_elements = adj_src != adj_dst
-    adj_src = adj_src[different_elements]
-    adj_dst = adj_dst[different_elements]
-    face_a = face_a[different_elements]
-    face_b = face_b[different_elements]
-    if len(adj_src) == 0:
-        return (np.zeros(0, np.int32), np.zeros(0, np.int32),
-                np.zeros(0, np.float32))
-
-    dots = np.einsum(
-        "ij,ij->i", face_normals[face_a], face_normals[face_b])
-    angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
-    return adj_src, adj_dst, angles.astype(np.float32)
+    tri_parts = []
+    owner_parts = []
+    for face_idx, row in enumerate(surf_fnc):
+        width = int(np.count_nonzero(row != -1))
+        for column in range(1, width - 1):
+            tri_parts.append(row[[0, column, column + 1]][None, :])
+            owner_parts.append(np.array([face_idx], dtype=np.int32))
+    tri_nodes = np.vstack(tri_parts).astype(np.int32, copy=False)
+    tri_owner = np.concatenate(owner_parts)
+    topology = build_surface_edge_topology(tri_nodes, coords_global)
+    return compute_elem_adjacency_from_topology(
+        topology, np.asarray(surf_global_elem_idx)[tri_owner])
 
 
 # ─── source_local_node_idx ────────────────────────────────────────────────────
@@ -936,39 +975,20 @@ def compute_source_local_node_idx(tri_etype_str, tri_elem_row,
 # ─── Feature edges (vectorized) ───────────────────────────────────────────────
 
 def compute_feature_edges(surf_tri_nodes, coords_global,
-                           fold_angle_deg=FOLD_ANGLE_DEG):
+                          fold_angle_deg=FOLD_ANGLE_DEG, topology=None):
     """
     Returns:
         edge_nodes [E, 2] int32    sorted node row pairs
         edge_types [E]    uint8    1=boundary, 2=fold
     """
-    Sf = len(surf_tri_nodes)
-    if Sf == 0:
+    if len(surf_tri_nodes) == 0:
         return np.zeros((0, 2), dtype=np.int32), np.zeros(0, dtype=np.uint8)
+    topology = topology or build_surface_edge_topology(
+        surf_tri_nodes, coords_global)
+    counts = topology["counts"]
+    unique_edge_nodes = topology["edge_nodes"]
 
-    # All 3 edges per triangle, sorted node pairs
-    e01 = np.sort(surf_tri_nodes[:, [0, 1]], axis=1)
-    e12 = np.sort(surf_tri_nodes[:, [1, 2]], axis=1)
-    e20 = np.sort(surf_tri_nodes[:, [2, 0]], axis=1)
-    all_edges      = np.vstack([e01, e12, e20])          # [3*Sf, 2]
-    face_of_edge   = np.tile(np.arange(Sf, dtype=np.int32), 3)
-
-    edges_bytes = np.ascontiguousarray(all_edges).view(
-        np.dtype((np.void, all_edges.dtype.itemsize * 2))
-    ).ravel()
-    _, inv, counts = np.unique(edges_bytes, return_inverse=True, return_counts=True)
-
-    n_uniq = len(counts)
-    # Recover unique edge node pairs
-    first_occ = np.empty(n_uniq, dtype=np.int64)
-    # Use argmax on one-hot: faster than loop
-    order = np.argsort(inv, kind="stable")
-    sorted_inv = inv[order]
-    starts = np.searchsorted(sorted_inv, np.arange(n_uniq))
-    first_occ = order[starts]
-    unique_edge_nodes = all_edges[first_occ]             # [n_uniq, 2]
-
-    edge_types = np.zeros(n_uniq, dtype=np.uint8)
+    edge_types = np.zeros(len(counts), dtype=np.uint8)
 
     # Boundary edges
     is_boundary = counts == 1
@@ -977,25 +997,16 @@ def compute_feature_edges(surf_tri_nodes, coords_global,
     # Fold edges (shared by exactly 2 triangles)
     is_shared = counts == 2
     if is_shared.any():
-        p0 = coords_global[surf_tri_nodes[:, 0]]
-        p1 = coords_global[surf_tri_nodes[:, 1]]
-        p2 = coords_global[surf_tri_nodes[:, 2]]
-        face_normals = np.cross(p1 - p0, p2 - p0).astype(np.float32)
-        nrm = np.linalg.norm(face_normals, axis=1, keepdims=True)
-        face_normals /= np.where(nrm > 1e-12, nrm, 1.0)
-
         cos_thresh = np.cos(np.radians(fold_angle_deg))
         shared_idx = np.where(is_shared)[0]             # unique edge indices
-
-        # For each shared edge, find its two triangle indices
-        # Sorted order → consecutive entries with same inv value
-        sorted_faces = face_of_edge[order]
+        starts = topology["starts"]
+        sorted_faces = topology["sorted_faces"]
         face_a = sorted_faces[starts[shared_idx]]
         face_b = sorted_faces[starts[shared_idx] + 1]
 
         # Vectorized angle check
-        na = face_normals[face_a]
-        nb = face_normals[face_b]
+        na = topology["face_normals"][face_a]
+        nb = topology["face_normals"][face_b]
         cos_angle = (na * nb).sum(axis=1)
         edge_types[shared_idx[cos_angle < cos_thresh]] = 2
 
@@ -1011,7 +1022,8 @@ def compute_feature_edges(surf_tri_nodes, coords_global,
 
 # ─── Element mesh edges (vectorized) ─────────────────────────────────────────
 
-def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs, surf_tri_ec):
+def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs,
+                              surf_tri_ec, topology=None):
     """
     Compute element_mesh_edges: every real surface unit boundary edge.
 
@@ -1029,27 +1041,13 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs, surf_tri
     Returns:
         edge_nodes [E, 2] int32   sorted node row pairs
     """
-    Sf = len(surf_tri_nodes)
-    if Sf == 0:
+    if len(surf_tri_nodes) == 0:
         return np.zeros((0, 2), dtype=np.int32)
-
-    e01 = np.sort(surf_tri_nodes[:, [0, 1]], axis=1)
-    e12 = np.sort(surf_tri_nodes[:, [1, 2]], axis=1)
-    e20 = np.sort(surf_tri_nodes[:, [2, 0]], axis=1)
-    all_edges    = np.vstack([e01, e12, e20])              # [3*Sf, 2]
-    face_of_edge = np.tile(np.arange(Sf, dtype=np.int32), 3)
-
-    edges_bytes = np.ascontiguousarray(all_edges).view(
-        np.dtype((np.void, all_edges.dtype.itemsize * 2))
-    ).ravel()
-    _, inv, counts = np.unique(edges_bytes, return_inverse=True, return_counts=True)
-
-    n_uniq = len(counts)
-    order       = np.argsort(inv, kind="stable")
-    sorted_inv  = inv[order]
-    starts      = np.searchsorted(sorted_inv, np.arange(n_uniq))
-    first_occ   = order[starts]
-    unique_edge_nodes = all_edges[first_occ]               # [n_uniq, 2]
+    topology = topology or build_surface_edge_topology(surf_tri_nodes)
+    counts = topology["counts"]
+    starts = topology["starts"]
+    sorted_faces = topology["sorted_faces"]
+    unique_edge_nodes = topology["edge_nodes"]
 
     # Boundary edges are always real
     keep = counts == 1
@@ -1066,7 +1064,6 @@ def compute_all_surface_edges(surf_tri_nodes, surf_tri_er, surf_tri_fs, surf_tri
     # Old code (counts==2 only) would silently drop these → interior shell grid lines missing.
     is_shared = counts >= 2
     if is_shared.any():
-        sorted_faces = face_of_edge[order]
         shared_idx   = np.where(is_shared)[0]
         face_a = sorted_faces[starts[shared_idx]]
         face_b = sorted_faces[starts[shared_idx] + 1]
@@ -1234,8 +1231,8 @@ def process_orientations(workspace, asm_h5):
 
 # ─── Per-instance processing ──────────────────────────────────────────────────
 
-def process_instance(workspace, db_conn, asm_h5, inst_name):
-    logger.info("Processing instance: {} ...".format(inst_name))
+def process_instance_core(workspace, db_conn, asm_h5, inst_name):
+    logger.info("Processing core geometry for instance: {} ...".format(inst_name))
     t0 = time.time()
 
     row = db_conn.execute(
@@ -1255,6 +1252,12 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
 
     surface_h5_path = os.path.join(l2_geom_dir, "{}_surface.h5".format(inst_name))
     render_h5_path  = os.path.join(l2_render_dir, "{}_render.h5".format(inst_name))
+    for stale_path in (
+        os.path.join(l2_geom_dir, "{}_edges.h5".format(inst_name)),
+        os.path.join(l2_render_dir, "{}_advanced.h5".format(inst_name)),
+    ):
+        if os.path.isfile(stale_path):
+            os.remove(stale_path)
 
     with h5py.File(geom_path, "r") as f_in:
         local_coords = f_in["nodes/coords"][:]
@@ -1277,12 +1280,6 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         # 2d. Coupling lines (RBE2 / KINEMATIC) — written by INP exporter / l1_pack
         coupling_positions, coupling_node_rows = collect_couplings(f_in)
 
-        # Load conn arrays for source_local_node_idx computation (task #6)
-        conn_by_etype = {}
-        for et in f_in.get("elements", {}):
-            if "conn" in f_in["elements/{}".format(et)]:
-                conn_by_etype[et] = f_in["elements/{}/conn".format(et)][:]
-
     # Load full (mid-node) connectivity for high-order elements → node rows.
     # conn_full in <inst>_highorder.h5 stores node LABELS; map to rows via the
     # sorted node label array (same convention as L1 label_to_row).
@@ -1298,12 +1295,6 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
                 cf_lbl = g["conn_full"][:]                       # [N_elem, n_full] labels
                 conn_full_rows_by_etype[et] = \
                     np.searchsorted(labels, cf_lbl).astype(np.int32)
-
-    # source_local_node_idx must resolve mid-node vertices to their FULL
-    # connectivity column (= ELEMENT_NODAL data column).  Use full rows for
-    # high-order etypes, corner rows for the rest (identical for linear elems).
-    conn_lookup_by_etype = dict(conn_by_etype)
-    conn_lookup_by_etype.update(conn_full_rows_by_etype)
 
     # 3. Filter to surface faces (face-level, before triangulation)
     surf_fnc       = fnc[is_surface]
@@ -1337,93 +1328,7 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     # surf_tri_nodes [Nt, 3]: node rows per triangle, needed for edge detection
     surf_tri_nodes = vtx_node_row[render_indices] if Nt > 0 else np.zeros((0, 3), np.int32)
 
-    # 4b. source_local_node_idx [Nt, 3]: local index of each triangle corner
-    #     within its source element's connectivity array (for EN per-node lookup)
-    source_local_node_idx = compute_source_local_node_idx(
-        tri_etype_str, tri_elem_row, vtx_node_row, render_indices,
-        conn_lookup_by_etype
-    )
-
-    # 4c. Averaging domain data ────────────────────────────────────────────────
-    # Unique surface elements: deduplicate (etype, elem_row) pairs from surf_fnc
-    # (a solid element can contribute multiple surface faces)
-    surf_etype_elem_pairs = np.stack(
-        [surf_etype_strs.view(np.uint64),
-         surf_elem_rows.astype(np.int64).view(np.uint64)], axis=1
-    )
-    _, uniq_idx = np.unique(surf_etype_elem_pairs.view(
-        np.dtype((np.void, surf_etype_elem_pairs.dtype.itemsize * 2))
-    ).ravel(), return_index=True)
-    uniq_idx = np.sort(uniq_idx)   # preserve order
-
-    surf_uniq_etypes = surf_etype_strs[uniq_idx]    # [E] S8
-    surf_uniq_erows  = surf_elem_rows[uniq_idx]      # [E] int32
-    E = len(uniq_idx)
-
-    # Build face → global_elem_idx map for adjacency computation
-    pair_bytes = surf_etype_elem_pairs.view(
-        np.dtype((np.void, surf_etype_elem_pairs.dtype.itemsize * 2))
-    ).ravel()
-    uniq_pairs_bytes = pair_bytes[uniq_idx]
-    # searchsorted needs sorted uniq_pairs_bytes
-    sort_order = np.argsort(uniq_pairs_bytes)
-    sorted_uniq_bytes = uniq_pairs_bytes[sort_order]
-    pos_in_sorted = np.searchsorted(sorted_uniq_bytes, pair_bytes)
-    surf_global_elem_idx = sort_order[pos_in_sorted].astype(np.int32)  # [Sf]
-
-    # elem_kind per unique surface element
-    avg_elem_kind = np.array(
-        [classify_elem_kind(eb.decode("ascii").rstrip("\x00"))
-         for eb in surf_uniq_etypes],
-        dtype=np.uint8
-    )
-
-    # section_id per unique surface element (needs labels from geom H5)
-    etype_labels_cache = {}
-    with h5py.File(geom_path, "r") as f_in:
-        for et in f_in.get("elements", {}):
-            if "labels" in f_in["elements/{}".format(et)]:
-                etype_labels_cache[et] = f_in["elements/{}/labels".format(et)][:]
-        avg_section_id, section_names = compute_section_ids(
-            f_in, surf_global_elem_idx,
-            surf_uniq_etypes, surf_uniq_erows,
-            etype_labels_cache
-        )
-    section_names_arr = np.array(
-        [s.encode("utf-8") for s in section_names], dtype="S128"
-    ) if section_names else np.zeros(0, dtype="S128")
-
-    # adjacency graph (face-level edges → element-level)
-    adj_src, adj_dst, adj_angle_deg = compute_elem_adjacency(
-        surf_fnc, surf_global_elem_idx, coords_global
-    )
-
-    # default domain IDs with feature_angle=20°
-    DEFAULT_FEATURE_ANGLE = 20.0
-    avg_domain_id = build_domain_ids(
-        avg_section_id, avg_elem_kind,
-        adj_src, adj_dst, adj_angle_deg,
-        feature_angle_deg=DEFAULT_FEATURE_ANGLE
-    )
-
-    logger.info("  {} surface elements, {} domains, {} adjacency edges".format(
-        E, int(avg_domain_id.max()) + 1 if E > 0 else 0, len(adj_src)))
-
-    # 5. Feature edges (use triangulated surface topology)
-    edge_nodes, edge_types = compute_feature_edges(surf_tri_nodes, coords_global)
-    logger.info("  {} feature edges".format(len(edge_nodes)))
-
-    # 5b. Element mesh edges
-    mesh_edge_nodes = compute_all_surface_edges(surf_tri_nodes, tri_elem_row, tri_face_seq, tri_etype_code)
-    logger.info("  {} element mesh edges".format(len(mesh_edge_nodes)))
-
     render_face_idx = np.arange(Nt, dtype=np.int32)
-
-    # 6. Octree (operates on per-triangle positions [Nt, 3, 3])
-    tri_positions = render_positions[render_indices] if Nt > 0 \
-                    else np.zeros((0, 3, 3), dtype=np.float32)
-    octree = build_octree(tri_positions)
-    logger.info("  Octree: {} nodes".format(len(octree["node_bbox"])))
 
     N_lines     = len(line_positions)
     N_points    = len(point_positions)
@@ -1437,15 +1342,6 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         ng = f.create_group("nodes")
         ng.create_dataset("labels",        data=labels)
         ng.create_dataset("coords_global", data=coords_global)
-
-        eg = f.create_group("feature_edges")
-        if len(edge_nodes) > 0:
-            eg.create_dataset("edge_nodes", data=edge_nodes)
-            eg.create_dataset("edge_types", data=edge_types)
-
-        meg = f.create_group("element_mesh_edges")
-        if len(mesh_edge_nodes) > 0:
-            meg.create_dataset("edge_nodes", data=mesh_edge_nodes)
 
         lg = f.create_group("lines")
         if N_lines > 0:
@@ -1488,31 +1384,9 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
         if Nt > 0:
             rg.create_dataset("source_elem_row",       data=tri_elem_row)
             rg.create_dataset("source_node_rows",      data=surf_tri_nodes)   # [Nt,3] backward compat
+            rg.create_dataset("source_face_seq",       data=tri_face_seq)
             rg.create_dataset("source_etype_code",     data=tri_etype_code)
             rg.create_dataset("source_etype_str",      data=tri_etype_str)
-            rg.create_dataset("source_local_node_idx", data=source_local_node_idx)
-
-        # averaging domain data
-        ag = f.create_group("averaging")
-        ag.create_dataset("elem_etype",      data=surf_uniq_etypes)
-        ag.create_dataset("elem_row",        data=surf_uniq_erows)
-        ag.create_dataset("elem_section_id", data=avg_section_id)
-        ag.create_dataset("elem_kind",       data=avg_elem_kind)
-        ag.create_dataset("default_domain_id", data=avg_domain_id)
-        ag.attrs["default_feature_angle_deg"] = DEFAULT_FEATURE_ANGLE
-        if len(section_names_arr) > 0:
-            ag.create_dataset("section_names", data=section_names_arr)
-        if len(adj_src) > 0:
-            ag.create_dataset("adj_src",       data=adj_src)
-            ag.create_dataset("adj_dst",       data=adj_dst)
-            ag.create_dataset("adj_angle_deg", data=adj_angle_deg)
-
-        og = f.create_group("octree")
-        og.create_dataset("node_bbox",     data=octree["node_bbox"])
-        og.create_dataset("node_children", data=octree["node_children"])
-        og.create_dataset("node_is_leaf",  data=octree["node_is_leaf"])
-        og.create_dataset("face_indices",  data=octree["face_indices"])
-        og.create_dataset("leaf_offsets",  data=octree["leaf_offsets"])
 
     # ── Update manifest.db ──
     db_conn.execute("""
@@ -1541,10 +1415,222 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
     """, (inst_name,
           "l2/geometry/{}_surface.h5".format(inst_name),
           "l2/render/{}_render.h5".format(inst_name),
-          Sf_faces, Nt, len(edge_nodes), 1, N_lines))
+          Sf_faces, Nt, 0, 1, N_lines))
     db_conn.commit()
 
     logger.info("  Done in {:.2f}s".format(time.time() - t0))
+
+
+def _stable_unique_element_map(etype_arr, elem_row_arr):
+    """Return stable unique (etype, row) arrays and item-to-unique mapping."""
+    pairs = np.stack([
+        etype_arr.view(np.uint64),
+        elem_row_arr.astype(np.int64).view(np.uint64),
+    ], axis=1)
+    pair_bytes = pairs.view(
+        np.dtype((np.void, pairs.dtype.itemsize * 2))).ravel()
+    _, unique_indices = np.unique(pair_bytes, return_index=True)
+    unique_indices.sort()
+    unique_bytes = pair_bytes[unique_indices]
+    sort_order = np.argsort(unique_bytes)
+    positions = np.searchsorted(unique_bytes[sort_order], pair_bytes)
+    item_to_unique = sort_order[positions].astype(np.int32)
+    return (etype_arr[unique_indices], elem_row_arr[unique_indices],
+            item_to_unique)
+
+
+def _all_element_domains(geom_path, unique_etypes, unique_rows,
+                         elem_kind, domain_id):
+    """Merge L2 shell domains into full-element section arrays for EN ranges."""
+    arrays = {}
+    with h5py.File(geom_path, "r") as geom_h5:
+        max_section = -1
+        for etype in geom_h5.get("elements", {}):
+            group = geom_h5["elements/{}".format(etype)]
+            if "section_id" not in group:
+                continue
+            values = group["section_id"][:]
+            valid = values[values >= 0]
+            if len(valid):
+                max_section = max(max_section, int(valid.max()))
+        shell_mask = ((elem_kind == ELEM_KIND_SHELL) |
+                      (elem_kind == ELEM_KIND_MEMBRANE))
+        shell_domains = np.unique(domain_id[shell_mask])
+        domain_to_full = {
+            int(domain): max_section + 1 + offset
+            for offset, domain in enumerate(shell_domains.tolist())
+        }
+        for index in np.flatnonzero(shell_mask):
+            etype = unique_etypes[index].decode("ascii").rstrip("\x00")
+            if etype not in arrays:
+                group = geom_h5.get("elements/{}".format(etype))
+                if group is None or "section_id" not in group:
+                    continue
+                arrays[etype] = group["section_id"][:].astype(
+                    np.int32, copy=True)
+            row = int(unique_rows[index])
+            values = arrays[etype]
+            if 0 <= row < len(values):
+                values[row] = domain_to_full[int(domain_id[index])]
+    return arrays
+
+
+def _atomic_h5_path(final_path):
+    return final_path + ".tmp-{}".format(os.getpid())
+
+
+def process_instance_advanced(workspace, db_conn, inst_name):
+    logger.info("Processing advanced indexes for instance: {} ...".format(inst_name))
+    started = time.time()
+    row = db_conn.execute(
+        "SELECT geom_path FROM instances WHERE instance_name=?", (inst_name,)
+    ).fetchone()
+    geom_path = (os.path.join(workspace, row[0]) if row and row[0]
+                 else os.path.join(workspace, "l1", "geometry", "{}.h5".format(inst_name)))
+    surface_path = os.path.join(
+        workspace, "l2", "geometry", "{}_surface.h5".format(inst_name))
+    render_path = os.path.join(
+        workspace, "l2", "render", "{}_render.h5".format(inst_name))
+    if not all(os.path.exists(path) for path in (geom_path, surface_path, render_path)):
+        raise RuntimeError("Core L2 files are missing for {}".format(inst_name))
+
+    with h5py.File(surface_path, "r") as surface_h5:
+        coords_global = surface_h5["nodes/coords_global"][:]
+    with h5py.File(render_path, "r") as render_h5:
+        positions = render_h5["render/positions"][:]
+        indices = render_h5["render/indices"][:]
+        vtx_node_row = render_h5["render/vtx_node_row"][:]
+        tri_elem_row = render_h5["render/source_elem_row"][:]
+        tri_node_rows = render_h5["render/source_node_rows"][:]
+        tri_face_seq = render_h5["render/source_face_seq"][:] \
+            if "render/source_face_seq" in render_h5 else np.ones(len(indices), np.uint8)
+        tri_etype_code = render_h5["render/source_etype_code"][:]
+        tri_etype_str = render_h5["render/source_etype_str"][:]
+
+    conn_by_etype = {}
+    labels = None
+    etype_labels_cache = {}
+    with h5py.File(geom_path, "r") as geom_h5:
+        labels = geom_h5["nodes/labels"][:]
+        for etype in geom_h5.get("elements", {}):
+            group = geom_h5["elements/{}".format(etype)]
+            if "conn" in group:
+                conn_by_etype[etype] = group["conn"][:]
+            if "labels" in group:
+                etype_labels_cache[etype] = group["labels"][:]
+
+    highorder_path = geom_path[:-3] + "_highorder.h5" if geom_path.endswith(".h5") else None
+    if highorder_path and os.path.exists(highorder_path):
+        with h5py.File(highorder_path, "r") as highorder_h5:
+            for etype in highorder_h5.get("elements", {}):
+                group = highorder_h5["elements/{}".format(etype)]
+                if "conn_full" in group:
+                    conn_by_etype[etype] = np.searchsorted(
+                        labels, group["conn_full"][:]).astype(np.int32)
+
+    source_local_node_idx = compute_source_local_node_idx(
+        tri_etype_str, tri_elem_row, vtx_node_row, indices, conn_by_etype)
+    unique_etypes, unique_rows, tri_global_elem_idx = _stable_unique_element_map(
+        tri_etype_str, tri_elem_row)
+    elem_kind = np.array([
+        classify_elem_kind(value.decode("ascii").rstrip("\x00"))
+        for value in unique_etypes
+    ], dtype=np.uint8)
+    with h5py.File(geom_path, "r") as geom_h5:
+        section_id, section_names = compute_section_ids(
+            geom_h5, tri_global_elem_idx, unique_etypes, unique_rows,
+            etype_labels_cache)
+
+    topology = build_surface_edge_topology(tri_node_rows, coords_global)
+    adj_src, adj_dst, adj_angle_deg = compute_elem_adjacency_from_topology(
+        topology, tri_global_elem_idx)
+    default_angle = 20.0
+    domain_id = build_domain_ids(
+        section_id, elem_kind, adj_src, adj_dst, adj_angle_deg,
+        feature_angle_deg=default_angle)
+    all_elem_domains = _all_element_domains(
+        geom_path, unique_etypes, unique_rows, elem_kind, domain_id)
+    logger.info("  {} surface elements, {} domains, {} adjacency edges".format(
+        len(unique_rows), int(domain_id.max()) + 1 if len(domain_id) else 0,
+        len(adj_src)))
+
+    edge_nodes, edge_types = compute_feature_edges(
+        tri_node_rows, coords_global, topology=topology)
+    mesh_edge_nodes = compute_all_surface_edges(
+        tri_node_rows, tri_elem_row, tri_face_seq, tri_etype_code,
+        topology=topology)
+    logger.info("  {} feature edges, {} element mesh edges".format(
+        len(edge_nodes), len(mesh_edge_nodes)))
+
+    tri_positions = positions[indices] if len(indices) else np.zeros(
+        (0, 3, 3), dtype=np.float32)
+    octree = build_octree(tri_positions)
+    logger.info("  Octree: {} nodes".format(len(octree["node_bbox"])))
+
+    advanced_path = os.path.join(
+        workspace, "l2", "render", "{}_advanced.h5".format(inst_name))
+    advanced_tmp = _atomic_h5_path(advanced_path)
+    with h5py.File(advanced_tmp, "w") as advanced_h5:
+        advanced_h5.create_dataset(
+            "render/source_local_node_idx", data=source_local_node_idx)
+        averaging = advanced_h5.create_group("averaging")
+        averaging.create_dataset("elem_etype", data=unique_etypes)
+        averaging.create_dataset("elem_row", data=unique_rows)
+        averaging.create_dataset("elem_section_id", data=section_id)
+        averaging.create_dataset("elem_kind", data=elem_kind)
+        averaging.create_dataset("default_domain_id", data=domain_id)
+        averaging.attrs["default_feature_angle_deg"] = default_angle
+        if section_names:
+            averaging.create_dataset(
+                "section_names",
+                data=np.array([s.encode("utf-8") for s in section_names], dtype="S128"))
+        if len(adj_src):
+            averaging.create_dataset("adj_src", data=adj_src)
+            averaging.create_dataset("adj_dst", data=adj_dst)
+            averaging.create_dataset("adj_angle_deg", data=adj_angle_deg)
+        full_group = averaging.create_group("all_element_domain")
+        for etype, values in all_elem_domains.items():
+            full_group.create_dataset(etype, data=values)
+        octree_group = advanced_h5.create_group("octree")
+        for name, values in octree.items():
+            octree_group.create_dataset(name, data=values)
+    os.replace(advanced_tmp, advanced_path)
+
+    edges_path = os.path.join(
+        workspace, "l2", "geometry", "{}_edges.h5".format(inst_name))
+    edges_tmp = _atomic_h5_path(edges_path)
+    with h5py.File(edges_tmp, "w") as edges_h5:
+        feature_group = edges_h5.create_group("feature_edges")
+        if len(edge_nodes):
+            feature_group.create_dataset("edge_nodes", data=edge_nodes)
+            feature_group.create_dataset("edge_types", data=edge_types)
+        mesh_group = edges_h5.create_group("element_mesh_edges")
+        if len(mesh_edge_nodes):
+            mesh_group.create_dataset("edge_nodes", data=mesh_edge_nodes)
+    os.replace(edges_tmp, edges_path)
+
+    db_conn.execute(
+        "UPDATE l2_instances SET edge_count=? WHERE instance_name=?",
+        (len(edge_nodes), inst_name),
+    )
+    db_conn.commit()
+    logger.info("  Advanced indexes done in {:.2f}s".format(time.time() - started))
+
+
+def _write_advanced_status(workspace, status, error=None):
+    l2_dir = os.path.join(workspace, "l2")
+    mkdirs(l2_dir)
+    final_path = os.path.join(l2_dir, "advanced_status.json")
+    tmp_path = final_path + ".tmp-{}".format(os.getpid())
+    payload = {
+        "status": status,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if error:
+        payload["error"] = str(error)
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True)
+    os.replace(tmp_path, final_path)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -1552,6 +1638,7 @@ def process_instance(workspace, db_conn, asm_h5, inst_name):
 def main():
     args      = parse_args()
     workspace = args.workspace
+    phase = args.phase
 
     if not os.path.exists(workspace):
         logger.error("Workspace not found: {}".format(workspace))
@@ -1564,7 +1651,7 @@ def main():
         logger.error("L1 outputs not found — run L1 first.")
         return
 
-    logger.info("=== Layer 2 Preprocessing ===")
+    logger.info("=== Layer 2 Preprocessing (%s) ===", phase)
     logger.info("  Workspace: {}".format(workspace))
 
     conn = sqlite3.connect(db_path, timeout=5.0)
@@ -1574,12 +1661,24 @@ def main():
 
     failed = False
     try:
-        with h5py.File(asm_path, "r") as asm_h5:
+        if phase in ("all", "core"):
+            _write_advanced_status(workspace, "pending")
+            with h5py.File(asm_path, "r") as asm_h5:
+                for (inst_name,) in instances:
+                    process_instance_core(workspace, conn, asm_h5, inst_name)
+                process_orientations(workspace, asm_h5)
+        if phase in ("all", "advanced"):
+            _write_advanced_status(workspace, "running")
             for (inst_name,) in instances:
-                process_instance(workspace, conn, asm_h5, inst_name)
-            process_orientations(workspace, asm_h5)
+                process_instance_advanced(workspace, conn, inst_name)
+            _write_advanced_status(workspace, "ready")
     except Exception as e:
         failed = True
+        if phase in ("all", "advanced"):
+            try:
+                _write_advanced_status(workspace, "error", e)
+            except Exception:
+                pass
         logger.error("Layer 2 failed: {}".format(e), exc_info=True)
     finally:
         conn.close()
@@ -1589,7 +1688,7 @@ def main():
         logger.error("=== Layer 2 FAILED ===")
         sys.exit(1)
 
-    logger.info("=== Layer 2 Complete ===")
+    logger.info("=== Layer 2 %s Complete ===", phase)
 
 
 if __name__ == "__main__":

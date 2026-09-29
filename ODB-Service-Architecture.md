@@ -587,8 +587,11 @@ values = h5['NODAL/Part-1-1/data'][:, node_row, comp_idx]       # [num_frames]
 l2/
   geometry/
     <instance_name>_surface.h5   # 表面几何、索引关系
+    <instance_name>_edges.h5     # 高级阶段：特征边、单元网格边
   render/
-    <instance_name>_render.h5    # 渲染 Buffer + 八叉树
+    <instance_name>_render.h5    # 基础阶段：渲染 Buffer
+    <instance_name>_advanced.h5  # 高级阶段：均化域、局部节点映射、八叉树
+  advanced_status.json           # pending/running/ready/error
 ```
 
 L2 独立于 L1，不修改任何 L1 文件。
@@ -633,7 +636,7 @@ L2 独立于 L1，不修改任何 L1 文件。
 
 ---
 
-### 3.3 l2/render/\<instance\>\_render.h5
+### 3.3 l2/render/\<instance\>\_render.h5 与高级旁路文件
 
 ```
 /render/
@@ -644,6 +647,18 @@ L2 独立于 L1，不修改任何 L1 文件。
   source_elem_row [Rf]         int32     # → L1 /elements/<type>/labels 行号
   source_node_rows [Rf, 3]     int32     # → L1 /nodes/labels 行号（角节点）
   source_elem_type [Rf]        uint8     # 单元类型编码
+```
+
+以下数据写入 `<instance>_advanced.h5`，基础几何可用后继续生成：
+
+```
+/averaging/
+  elem_etype、elem_row、elem_section_id、elem_kind、default_domain_id
+  adj_src、adj_dst、adj_angle_deg
+  all_element_domain/<etype>       # 全单元图例范围使用的统一域编号
+
+/render/
+  source_local_node_idx            # ELEMENT_NODAL 局部节点映射
 
 /octree/
   # 八叉树空间索引（用于 bbox 查询、LOD、区域轻量化）
@@ -657,11 +672,10 @@ L2 独立于 L1，不修改任何 L1 文件。
   # 每面片所属分区（用于区域轻量化分批加载）
   tri_partition   [Rf]         int32    # 分区 ID（与 surface.h5 /partitions/ 对齐）
 
-/edges/
-  # 渲染用边线（来自 l2/geometry/edges，全局坐标）
-  positions       [Ee, 2, 3]   float32
-  render_edge_idx [Ee]         int32
 ```
+
+`geometry/<instance>_edges.h5` 保存 `feature_edges/edge_nodes` 与
+`element_mesh_edges/edge_nodes`。三个高级功能（均化邻接、特征边、单元网格边）共用一次节点对排序生成的边拓扑表。
 
 ---
 
@@ -1091,15 +1105,11 @@ Step 2：ingest.py（纯 Python，不依赖 Abaqus license）
   · 高阶单元线性化（取角节点，中间节点忽略）
   · 三角化（面定义 → 三角片，建立三层索引）
   · 表面提取（剔除内部面）
-  · Feature Edges 提取（边界边 + 折角边 ≥30°）
-  · 几何特征分区（Instance 边界 + 法向特征角）
-  · 构建八叉树（max_depth=8，叶节点 ≤1000 面片）
-  · 写 l2/geometry/<inst>_surface.h5
-  · 写 l2/render/<inst>_render.h5
-  · 更新 manifest.db（l2_instances 表）
-  · 预计算每字段全局 min/max → 更新 result_files 表
-  · registry.db status → ready
-  · 通知 L3 补充加载该 ODB 的 L2 索引（全部 API 可用）
+  · core：表面提取、三角化并写 surface.h5 / render.h5
+  · registry.db status → ready，基础模型可立即显示
+  · advanced：共享一次边拓扑排序，生成均化域、Feature Edges、单元网格边和八叉树
+  · 原子写 advanced.h5 / edges.h5，再把 advanced_status.json 置为 ready
+  · L3 轮询后给驻留模型补载高级数据；高级阶段失败不撤销基础几何 ready
 ```
 
 ---

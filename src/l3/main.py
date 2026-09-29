@@ -211,6 +211,8 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         if existing is not None and status == "ready" and not existing.is_render_ready:
             registry.upgrade(odb_id)
             logger.info("Poll: upgraded ODB %s to render-ready", odb_id)
+        elif existing is not None and existing.is_render_ready:
+            existing.load_l2_advanced_data()
         if settings.enable_warmup and existing is not None:
             maybe_warm_new_targets(odb_id)
 
@@ -224,6 +226,8 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         if existing is not None and not existing.is_render_ready:
             registry.upgrade(project_id)
             logger.info("Poll: upgraded project %s to render-ready", project_id)
+        elif existing is not None:
+            existing.load_l2_advanced_data()
         # Backfill: if ODB project has no result_groups yet, try to adopt now
         source_type = row["source_type"] if "source_type" in row.keys() else "inp"
         if source_type == "odb" and not repo.list_result_groups(project_id):

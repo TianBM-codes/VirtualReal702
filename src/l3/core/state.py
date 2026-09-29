@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import threading
 import time
@@ -98,6 +99,9 @@ class ModelIndex:
         #   face_indices  [F]    int32     render face rows (leaf nodes only, concatenated)
         #   leaf_offsets  [N+1]  int32     slice bounds into face_indices per node
         self.octree: Dict[str, dict] = {}
+        self.advanced_status = "missing"
+        self._advanced_status_mtime_ns = 0
+        self._advanced_load_lock = threading.Lock()
 
         # Read-only cache for legend/color-code computations. L1 geometry data
         # is immutable once the ODB is loaded, so the expensive per-instance H5
@@ -194,11 +198,98 @@ class ModelIndex:
 
         if all_ok:
             self.is_render_ready = True
+            self.load_l2_advanced_data()
         else:
             logger.error(
                 "ODB %s: one or more L2 files failed to load; is_render_ready remains False",
                 self.odb_id,
             )
+
+    def load_l2_advanced_data(self) -> bool:
+        """Load completed optional L2 sidecars once; core geometry stays usable."""
+        status_path = os.path.join(
+            self.workspace, "l2", "advanced_status.json")
+        try:
+            stat = os.stat(status_path)
+        except OSError:
+            return False
+        if stat.st_mtime_ns == self._advanced_status_mtime_ns:
+            return self.advanced_status == "ready"
+
+        with self._advanced_load_lock:
+            if stat.st_mtime_ns == self._advanced_status_mtime_ns:
+                return self.advanced_status == "ready"
+            try:
+                with open(status_path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                status = str(payload.get("status") or "missing")
+            except Exception:
+                logger.exception("Failed to read L2 advanced status for %s", self.odb_id)
+                return False
+            self.advanced_status = status
+            if status != "ready":
+                self._advanced_status_mtime_ns = stat.st_mtime_ns
+                return False
+
+            render_dir = os.path.join(self.workspace, "l2", "render")
+            loaded = 0
+            failed = False
+            for fname in os.listdir(render_dir):
+                if not fname.endswith("_advanced.h5"):
+                    continue
+                instance = fname[:-len("_advanced.h5")]
+                path = os.path.join(render_dir, fname)
+                try:
+                    with h5py.File(path, "r") as advanced_h5:
+                        if "render/source_local_node_idx" in advanced_h5:
+                            self.source_local_node_idx[instance] = \
+                                advanced_h5["render/source_local_node_idx"][:]
+                        if "averaging/elem_etype" in advanced_h5:
+                            group = advanced_h5["averaging"]
+                            data = {
+                                "elem_etype": group["elem_etype"][:],
+                                "elem_row": group["elem_row"][:],
+                                "elem_section_id": group["elem_section_id"][:],
+                                "elem_kind": group["elem_kind"][:],
+                                "default_domain_id": group["default_domain_id"][:],
+                                "default_feature_angle_deg": float(
+                                    group.attrs.get("default_feature_angle_deg", 20.0)),
+                            }
+                            for key, dtype in (
+                                ("adj_src", np.int32),
+                                ("adj_dst", np.int32),
+                                ("adj_angle_deg", np.float32),
+                            ):
+                                data[key] = group[key][:] if key in group \
+                                    else np.zeros(0, dtype=dtype)
+                            full_group = group.get("all_element_domain")
+                            if full_group is not None:
+                                data["all_element_domain"] = {
+                                    key: full_group[key][:] for key in full_group
+                                }
+                            self.averaging_data[instance] = data
+                        if "octree/node_bbox" in advanced_h5:
+                            group = advanced_h5["octree"]
+                            self.octree[instance] = {
+                                "node_bbox": group["node_bbox"][:],
+                                "node_children": group["node_children"][:],
+                                "node_is_leaf": group["node_is_leaf"][:],
+                                "face_indices": group["face_indices"][:],
+                                "leaf_offsets": group["leaf_offsets"][:],
+                            }
+                    loaded += 1
+                except Exception:
+                    logger.exception("Failed to load L2 advanced sidecar: %s", path)
+                    failed = True
+            if failed:
+                # Leave mtime unchanged so the poll loop retries the read.
+                return False
+            self._advanced_status_mtime_ns = stat.st_mtime_ns
+            logger.info(
+                "Loaded L2 advanced indexes for %s (%d instance(s))",
+                self.odb_id, loaded,
+            )
+            return loaded > 0
 
 
 class OdbRegistry:
