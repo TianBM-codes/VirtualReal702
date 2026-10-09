@@ -154,7 +154,7 @@
 ## 5. 进度
 
 - [x] 第 1 步 统一缓存存储层（`services/cache_store.py`；测试 `test_l3_deform_cache.py`、`test_l3_disk_cache_warmup.py` 已同步）
-- [ ] 第 2 步 最后一帧预计算
+- [x] 第 2 步 最后一帧预计算（`warmup_service._last_frame`：frames 表最大 frame_idx → steps.num_frames-1 → 0）
 - [ ] 第 3 步 color-code 分类缓存
 - [ ] 第 4 步 element-mesh-edges 缓存
 - [ ] 第 5 步 frame-colors 缓存

@@ -1,8 +1,9 @@
 """
 缓存预热服务。
 
-目标：用户第一次点开云图就命中缓存。做法是在三个时机后台预算"第 0 帧默认
-视图"（每个 result_group × step × field × instance，分量取默认模长/Mises）：
+目标：用户第一次点开云图就命中缓存。做法是在三个时机后台预算"每个 step 最后
+一帧的默认视图"（每个 result_group × step × field × instance，分量取默认模长/
+Mises；静力 step 的第 0 帧通常是加载前的初始状态，没有预算价值）：
 
   1. 模型加载完成（core.state 的 on_render_ready_loaded 回调，覆盖启动预载
      与首次访问按需加载）；
@@ -12,7 +13,7 @@
 
 预热直接调 compute_scalar_range / frame_scalars，算完自然写入内存 + 磁盘
 缓存（见 result_service 的缓存层）；U 场再顺带预热变形家族的
-deform-suggest-scale 统计与各 instance 第 0 帧顶点位移向量。已缓存的组合命中后立即返回，所以预热
+deform-suggest-scale 统计与各 instance 顶点位移向量（同为最后一帧）。已缓存的组合命中后立即返回，所以预热
 是幂等的，重复触发只补算新增的字段。整个过程单线程串行、daemon 线程执行，
 失败只记日志、不影响正常请求。
 """
@@ -59,9 +60,26 @@ def _list_result_targets(manifest: ManifestRepo) -> list:
         return []
 
 
+def _last_frame(manifest: ManifestRepo, step: str, result_group) -> int:
+    """step 的最后一帧：优先 frames 表的最大 frame_idx，其次 steps.num_frames-1，都没有取 0。"""
+    try:
+        frames = manifest.get_frames(step, result_group)
+        idxs = [int(r["frame_idx"]) for r in frames if r["frame_idx"] is not None]
+        if idxs:
+            return max(idxs)
+    except Exception:
+        pass
+    info = manifest.get_step_info(step, result_group)
+    try:
+        n = int(info.get("num_frames")) if info else 0
+    except (TypeError, ValueError):
+        n = 0
+    return max(n - 1, 0)
+
+
 def warm_odb_sync(odb_id: str, reason: str = "",
                   reg: Optional[OdbRegistry] = None) -> dict:
-    """同步预热一个模型的第 0 帧默认视图。未加载的模型会先触发加载。"""
+    """同步预热一个模型各 step 最后一帧的默认视图。未加载的模型会先触发加载。"""
     reg = reg if reg is not None else _global_registry
     t0 = time.time()
     idx = reg.get(odb_id)
@@ -71,33 +89,40 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     manifest = ManifestRepo(idx.workspace)
     targets = _list_result_targets(manifest)
     instances = list(idx.source_node_rows.keys())
+    last_frames: Dict[tuple, int] = {}
+    for result_group, step, _field in targets:
+        if (result_group, step) not in last_frames:
+            last_frames[(result_group, step)] = _last_frame(manifest, step, result_group)
+
     n_ok = n_skip = 0
     for result_group, step, field in targets:
+        frame = last_frames[(result_group, step)]
         for instance in instances:
             try:
                 compute_scalar_range(
                     registry=reg, odb_id=odb_id, instance=instance,
-                    step=step, field=field, frame_idx=0,
+                    step=step, field=field, frame_idx=frame,
                     result_group=result_group,
                 )
                 frame_scalars(
                     registry=reg, odb_id=odb_id, instance=instance,
-                    step=step, field=field, frame_idx=0,
+                    step=step, field=field, frame_idx=frame,
                     result_group=result_group,
                 )
                 n_ok += 1
             except Exception:
                 # 该 instance 没有这个字段/位置数据是常态，跳过即可
                 n_skip += 1
-    # 变形家族顺带预热（U 场第 0 帧）：deform-suggest-scale 统计 + 每 instance
+    # 变形家族顺带预热（U 场最后一帧）：deform-suggest-scale 统计 + 每 instance
     # 顶点位移向量。deformed-positions 的整包按 scale 进缓存键、前端实际 scale
     # 不可预知 → 不预热，留给首次请求填。
     n_deform = 0
     for result_group, step, field in targets:
         if field != "U":
             continue
+        frame = last_frames[(result_group, step)]
         try:
-            deform_scale_stats(reg, odb_id, step, 0, result_group)
+            deform_scale_stats(reg, odb_id, step, frame, result_group)
             n_deform += 1
         except Exception:
             pass
@@ -105,7 +130,7 @@ def warm_odb_sync(odb_id: str, reason: str = "",
             try:
                 frame_vertex_displacements(
                     registry=reg, odb_id=odb_id, instance=instance,
-                    step=step, frame_idx=0, result_group=result_group,
+                    step=step, frame_idx=frame, result_group=result_group,
                 )
                 n_deform += 1
             except Exception:

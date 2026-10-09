@@ -98,9 +98,10 @@ class Settings:
         self.scalar_disk_cache_mb = max(
             0, int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "102400")))
 
-        # Cache warm-up: automatically precompute frame-0 default views (every
-        # field × instance, magnitude component) in a background thread when a
-        # model finishes loading or a new result_group becomes ready, so the
+        # Cache warm-up: automatically precompute the default view of the LAST
+        # frame of every step (every field × instance, magnitude component) in
+        # a background thread when a model finishes loading or a new
+        # result_group becomes ready, so the
         # first click hits a warm cache. 0 = no automatic warm-up (the manual
         # POST /results/warmup endpoint still works).
         self.enable_warmup = _get(cfg, "APP_WARMUP", "1") == "1"

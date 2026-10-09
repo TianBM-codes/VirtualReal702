@@ -196,3 +196,40 @@ def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
         step="Step-1", field="U", frame_idx=0,
     )
     assert r == (pytest.approx(0.0), pytest.approx(8.0))
+
+
+def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypatch):
+    """预热取每个 step 的最后一帧（frames 表最大 frame_idx），第 0 帧不预算。"""
+    registry, instance, _ = _setup_nodal_instance(
+        workspace, make_registry, values=np.arange(9.0)
+    )
+    conn = sqlite3.connect(workspace / "manifest.db")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS result_files "
+        "(step_name TEXT, field_name TEXT, result_group TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO result_files (step_name, field_name, result_group) "
+        "VALUES ('Step-1', 'U', NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS frames "
+        "(step_name TEXT, frame_idx INT, frame_value REAL, result_group TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO frames VALUES ('Step-1', ?, ?, NULL)", [(0, 0.0), (1, 1.0)]
+    )
+    conn.commit()
+    conn.close()
+
+    report = warm_odb_sync("odb", reason="test", reg=registry)
+    assert report["status"] == "done" and report["warmed"] == 1
+
+    monkeypatch.setattr(h5py, "File", _boom)
+    u, legend, _ = frame_scalars(
+        registry=registry, odb_id="odb", instance=instance,
+        step="Step-1", field="U", frame_idx=1, component_idx=None,
+    )
+    assert legend[1] == pytest.approx(16.0)       # 第 1 帧数据 = 第 0 帧 × 2
+    with pytest.raises(AssertionError, match="cache miss"):
+        _call_frame_scalars(registry, instance)   # 第 0 帧未预算
