@@ -245,6 +245,8 @@ def evict(workspace: str, cap_bytes: Optional[int] = None) -> None:
     total = 0
     for dirpath, _dirnames, filenames in os.walk(root):
         for fn in filenames:
+            if fn.startswith("."):
+                continue        # .warmup.lock / .warmup_done 等控制文件不参与淘汰
             p = os.path.join(dirpath, fn)
             try:
                 st = os.stat(p)
