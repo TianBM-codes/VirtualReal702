@@ -1,6 +1,6 @@
 # L3 预计算缓存方案（导入即算好、接口直接走缓存）
 
-> 更新时间：2026-10-09。状态：方案已确认，按第 4 节步骤逐步实施，每步完成后更新第 5 节进度。
+> 更新时间：2026-10-09。状态：第 1～7 步已全部实现并推送，待开发者本地跑测试 + 实测。
 > 前置背景：`docs/l3/Perf-Cache-Worklog.md`（frame-scalars 四步优化）、
 > `docs/近期效率优化与算例总览.md`（开发者 9c2afe2 引入的另一套整包缓存）。
 
@@ -159,4 +159,24 @@
 - [x] 第 4 步 element-mesh-edges 缓存（`services/mesh_edge_service.py`；响应头加 `X-Cache`；去重改一维 int64 键；测试 `test_l3_mesh_edges_cache.py`）
 - [x] 第 5 步 frame-colors 缓存（set 过滤与着色前的 soup 顶点标量进统一缓存；预热用路由默认分量 U1）
 - [x] 第 6 步 结果组重新解析清理（`job_runner` / `runner_thread` 的 `_cleanup_result_group` 在解析前删 `groups/<result_group>/`）
-- [ ] 第 7 步 文档同步
+- [x] 第 7 步 文档同步（Quick-Reference 更新时间行与 warmup / element-mesh-edges / deformed-positions / modal-animation 段落、CLAUDE.md、Perf-Cache-Worklog、近期效率优化总览）
+
+## 6. 验证情况（2026-10-09，本机等价脚本，非 pytest）
+
+- 缓存 / 预热 / 变形 / color-code / 单元边线相关测试 + 其他调用到 result_service、color_service、
+  results / geometry 路由的 L3 测试：77/79 通过。
+- 未通过的 2 个在改动前的代码（e564bbe）上同样失败，与本次改动无关，待开发者本地确认：
+  `test_l3_raw_results_route::test_raw_values_route_returns_json_by_default`、
+  `test_l3_result_service::test_frame_scalars_maps_sparse_nodal_labels_back_to_geometry_rows`。
+- color-code 新旧实现对拍：多材料 / 多截面 / 两种单元类型 / elset 跨 instance 的合成模型上，
+  标签、颜色数组、图例、legend-entries（含 face/elem 计数、默认标题）、region mask 共 118 项逐项一致。
+- 性能（合成 400 万面片）：etype 分类约 1s，section 分类约 3.8s（旧实现为逐面 Python 字典查找），
+  首次算完后走缓存，导入后由预计算完成。
+
+### 待开发者实测
+
+1. `python3 -m pytest tests/ -v`（重点：`test_l3_disk_cache_warmup`、`test_l3_deform_cache`、
+   `test_l3_color_code_cache`、`test_l3_mesh_edges_cache`、`test_color_*`）。
+2. 用大模型导入后看日志 `Warmup[...]: N color-code, N mesh-edges, N combo(s) warmed ...`，
+   确认预计算完成时间与 `l3_cache/` 占用。
+3. 预热完成后首次打开云图 / 分类着色 / 单元边线是否秒开；`X-Cache` 响应头是否为 `hit`。
