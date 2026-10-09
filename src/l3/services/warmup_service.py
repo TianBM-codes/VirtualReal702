@@ -14,8 +14,8 @@ Mises；静力 step 的第 0 帧通常是加载前的初始状态，没有预算
      ready 的项目，即使没人打开也主动加载并预热（run_pending）。
 
 让路与去重：
-  - 解析（job_runner）是 CPU/磁盘大户，有任何解析任务在排队/运行时，自动触发的
-    预热一律推迟（记入待办，解析全部结束后由 poll 补做）；预热进行中遇到解析
+  - 解析（job_runner）是 CPU/磁盘大户，有任何解析任务在排队/运行时（含基础几何
+    ready 之后后台继续跑的 L2 高级索引阶段），自动触发的预热一律推迟（记入待办，解析全部结束后由 poll 补做）；预热进行中遇到解析
     开始也会在下一个组合处中止。手动 POST 不受限制。
   - 多 worker / 多进程：同一工作区用文件锁 l3_cache/.warmup.lock 保证同一时刻
     只有一个进程在预热；预热完成写 l3_cache/.warmup_done（结果文件签名），其他
@@ -92,6 +92,28 @@ def parse_busy() -> bool:
         busy = False
     _busy_cache[0], _busy_cache[1] = now, busy
     return busy
+
+
+_ADVANCED_STALE_S = 12 * 3600
+
+
+def advanced_busy(workspace: str) -> bool:
+    """L2 高级索引（--phase advanced：邻接域、边线、Octree）是否还在排队/运行。
+
+    基础几何 ready 后项目就对外可用，高级阶段在后台继续跑（l2/advanced_status.json）；
+    这期间预热一来抢资源，二来云图单元平均 / 按截面着色依赖高级数据，提前算等于白算。
+    超过 12 小时没更新的 pending/running 视为进程中途死掉的残留，不再阻塞预热。
+    """
+    path = os.path.join(workspace, "l2", "advanced_status.json")
+    try:
+        st = os.stat(path)
+        if time.time() - st.st_mtime > _ADVANCED_STALE_S:
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            status = str(json.load(f).get("status") or "")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return status in ("pending", "running")
 
 
 # ── 跨进程文件锁 ────────────────────────────────────────────────────────────

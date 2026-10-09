@@ -462,6 +462,11 @@ class OdbRegistry:
             entry = self._known.get(odb_id)
         return entry[0] if entry else None
 
+    def known_workspaces(self) -> list:
+        """所有已注册模型的工作区路径（不加载）。"""
+        with self._lock:
+            return [ws for ws, _status in self._known.values()]
+
     def known_ids(self) -> set:
         """Every id we can serve, resident or not."""
         with self._lock:

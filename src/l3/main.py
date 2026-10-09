@@ -281,9 +281,13 @@ async def lifespan(app: FastAPI):
     if settings.enable_warmup:
         # 在 bootstrap 之前注册，启动预载的模型也会触发预热
         from .core.state import set_on_render_ready_loaded
-        from .services.warmup_service import set_busy_check, warm_odb_async
+        from .services.warmup_service import (
+            advanced_busy, set_busy_check, warm_odb_async)
         _busy_repo = RegistryRepo(settings.registry_db_path)
-        set_busy_check(_busy_repo.has_active_tasks)   # 解析繁忙时自动预热让路
+        # 解析繁忙时自动预热让路：registry 里有排队/运行的任务，或某个工作区的
+        # L2 高级索引阶段还没跑完（该阶段在 geom ready 之后，registry 看不到）
+        set_busy_check(lambda: _busy_repo.has_active_tasks() or any(
+            advanced_busy(ws) for ws in registry.known_workspaces()))
         set_on_render_ready_loaded(
             lambda odb_id: warm_odb_async(odb_id, reason="model loaded"))
     _t0 = time.perf_counter()

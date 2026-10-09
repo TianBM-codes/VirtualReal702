@@ -129,3 +129,20 @@ def test_async_warmup_skips_when_other_process_holds_lock(workspace, make_regist
         assert ws._read_done(str(workspace)) == ""           # 没有预热
     finally:
         other.release()
+
+
+def test_advanced_busy_reads_l2_status(tmp_path):
+    import json
+    import time
+    d = tmp_path / "l2"
+    d.mkdir()
+    p = d / "advanced_status.json"
+    assert not ws.advanced_busy(str(tmp_path))               # 旧工作区无状态文件
+    for status, busy in (("pending", True), ("running", True),
+                         ("ready", False), ("error", False)):
+        p.write_text(json.dumps({"status": status}))
+        assert ws.advanced_busy(str(tmp_path)) is busy
+    p.write_text(json.dumps({"status": "running"}))
+    old = time.time() - ws._ADVANCED_STALE_S - 10
+    os.utime(p, (old, old))
+    assert not ws.advanced_busy(str(tmp_path))               # 残留的旧状态不阻塞
