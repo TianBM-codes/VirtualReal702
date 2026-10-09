@@ -157,6 +157,6 @@
 - [x] 第 2 步 最后一帧预计算（`warmup_service._last_frame`：frames 表最大 frame_idx → steps.num_frames-1 → 0）
 - [x] 第 3 步 color-code 分类缓存（`color_service._face_codes`；全部 scheme 逐面循环改 numpy，与旧实现逐项对拍一致；测试 `test_l3_color_code_cache.py`）
 - [x] 第 4 步 element-mesh-edges 缓存（`services/mesh_edge_service.py`；响应头加 `X-Cache`；去重改一维 int64 键；测试 `test_l3_mesh_edges_cache.py`）
-- [ ] 第 5 步 frame-colors 缓存
+- [x] 第 5 步 frame-colors 缓存（set 过滤与着色前的 soup 顶点标量进统一缓存；预热用路由默认分量 U1）
 - [ ] 第 6 步 结果组重新解析清理
 - [ ] 第 7 步 文档同步

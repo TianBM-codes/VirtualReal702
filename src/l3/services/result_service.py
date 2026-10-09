@@ -528,6 +528,70 @@ def frame_colors(
     num_frames = None
     legend_override = None   # NODAL smooth: node-level range computed pre-mask
 
+    # set 过滤与着色之前的 (scalar_vertex, legend_override, num_frames) 只由
+    # (结果文件版本, 几何, instance, 帧, 分量, 渲染模式) 决定 → 走统一缓存。
+    h5_sig = _result_h5_sig(h5_path)
+    bucket = cache_store.group_bucket(result_group)
+    colors_key = (
+        "frame_colors", odb_id, instance, h5_path, h5_sig,
+        cache_store.render_sig(idx.workspace, instance), int(frame_idx),
+        str(component), effective_render_mode,
+    )
+    cached = _frame_colors_cache_get(idx.workspace, bucket, colors_key) \
+        if h5_sig is not None else None
+    if cached is not None:
+        scalar_vertex, legend_override, num_frames = cached
+    else:
+        scalar_vertex, legend_override, num_frames = _frame_colors_scalars(
+            h5_path, idx, instance, frame_idx, component, effective_render_mode,
+            src_node_rows, src_elem_row, src_etype)
+        if scalar_vertex is not None and h5_sig is not None:
+            scalar_vertex.setflags(write=False)
+            _frame_colors_cache_put(idx.workspace, bucket, colors_key,
+                                    (scalar_vertex, legend_override, num_frames))
+    return _frame_colors_finish(idx, instance, field, frame_idx, set_name,
+                                scalar_vertex, legend_override, num_frames)
+
+
+def _frame_colors_cache_get(workspace: str, bucket: str, key: tuple) -> Optional[tuple]:
+    hit = _vertex_cache_get(key)
+    if hit is not None:
+        return hit
+    d = cache_store.arrays_get(workspace, bucket, key)
+    if d is None or "scalar_vertex" not in d:
+        return None
+    lo = d["legend_override"]
+    nf = int(d["num_frames"][()])
+    value = (d["scalar_vertex"],
+             (float(lo[0]), float(lo[1])) if lo.size == 2 else None,
+             None if nf < 0 else nf)
+    _vertex_cache_put(key, value)              # 磁盘命中 → 提升到内存层
+    return value
+
+
+def _frame_colors_cache_put(workspace: str, bucket: str, key: tuple, value: tuple) -> None:
+    scalar_vertex, legend_override, num_frames = value
+    _vertex_cache_put(key, value)
+    cache_store.arrays_put(workspace, bucket, key, {
+        "scalar_vertex": scalar_vertex,
+        "legend_override": (np.asarray(legend_override, dtype=np.float64)
+                            if legend_override is not None
+                            else np.zeros(0, dtype=np.float64)),
+        "num_frames": np.array(-1 if num_frames is None else int(num_frames),
+                               dtype=np.int64),
+    })
+
+
+def _frame_colors_scalars(h5_path, idx, instance, frame_idx, component,
+                          effective_render_mode, src_node_rows, src_elem_row, src_etype):
+    """frame_colors 的重计算部分：读结果 H5 → soup 顶点标量 [Nt*3]（可缓存）。
+
+    Returns (scalar_vertex or None, legend_override or None, num_frames)。
+    """
+    scalar_vertex = None
+    num_frames = None
+    legend_override = None   # NODAL smooth: node-level range computed pre-mask
+
     with h5py.File(h5_path, "r") as f:
         # ── Try NODAL ──────────────────────────────────────────────────────
         result = _scalar_from_nodal(f, instance, frame_idx, component)
@@ -599,6 +663,12 @@ def frame_colors(
                 scalar_face, num_frames = result
                 scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3]
 
+    return scalar_vertex, legend_override, num_frames
+
+
+def _frame_colors_finish(idx, instance, field, frame_idx, set_name,
+                         scalar_vertex, legend_override, num_frames):
+    """frame_colors 的按请求部分：帧校验 → set 过滤 → 图例范围 → jet 着色。"""
     if scalar_vertex is None:
         raise NotFoundError(
             f"No result data (NODAL/ELEMENT_NODAL/INTEGRATION_POINT) "

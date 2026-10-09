@@ -31,6 +31,7 @@ from .color_service import warm_color_codes
 from .mesh_edge_service import warm_element_mesh_edges
 from .result_service import (
     compute_scalar_range,
+    frame_colors,
     deform_scale_stats,
     frame_scalars,
     frame_vertex_displacements,
@@ -130,6 +131,16 @@ def warm_odb_sync(odb_id: str, reason: str = "",
             except Exception:
                 # 该 instance 没有这个字段/位置数据是常态，跳过即可
                 n_skip += 1
+                continue
+            try:
+                # 旧接口 frame-colors（前端用哪个未知，两个都覆盖）：路由默认分量 U1
+                frame_colors(
+                    registry=reg, odb_id=odb_id, instance=instance,
+                    step=step, field=field, frame_idx=frame, component="U1",
+                    result_group=result_group,
+                )
+            except Exception:
+                pass
     # 变形家族顺带预热（U 场最后一帧）：deform-suggest-scale 统计 + 每 instance
     # 顶点位移向量。deformed-positions 的整包按 scale 进缓存键、前端实际 scale
     # 不可预知 → 不预热，留给首次请求填。

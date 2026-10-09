@@ -233,3 +233,39 @@ def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypat
     assert legend[1] == pytest.approx(16.0)       # 第 1 帧数据 = 第 0 帧 × 2
     with pytest.raises(AssertionError, match="cache miss"):
         _call_frame_scalars(registry, instance)   # 第 0 帧未预算
+
+
+def test_frame_colors_cached_and_warmed(workspace, make_registry, monkeypatch):
+    """frame-colors（旧接口）：预热后不碰 H5，结果与首算一致；set 过滤仍按请求执行。"""
+    from src.l3.services.result_service import frame_colors
+
+    registry, instance, _ = _setup_nodal_instance(
+        workspace, make_registry, values=np.arange(9.0)
+    )
+    conn = sqlite3.connect(workspace / "manifest.db")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS result_files "
+        "(step_name TEXT, field_name TEXT, result_group TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO result_files (step_name, field_name, result_group) "
+        "VALUES ('Step-1', 'U', NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    def _call():
+        return frame_colors(
+            registry=registry, odb_id="odb", instance=instance,
+            step="Step-1", field="U", frame_idx=0, component="U1",
+        )
+
+    c_ref, l_ref = _call()          # 首算（也写入缓存）
+    clear_result_caches()
+    warm_odb_sync("odb", reason="test", reg=registry)   # 磁盘已有 → 幂等
+
+    clear_result_caches()
+    monkeypatch.setattr(h5py, "File", _boom)
+    c2, l2 = _call()                # 磁盘命中
+    assert np.array_equal(c_ref, c2) and np.array_equal(l_ref, l2)
+    assert list((workspace / GROUP_DIR / "arrays").glob("*.npz"))
