@@ -24,6 +24,7 @@ import numpy as np
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import ModelIndex
 from src.l1.manifest_schema import canon_instance
+from . import cache_store
 
 # ---------------------------------------------------------------------------
 # Colour palette  (qualitative, 16 entries)
@@ -70,8 +71,9 @@ def _build_global_section_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float,
     palette_idx = 0
     for inst in sorted(idx.averaging_data.keys()):
         avd = idx.averaging_data[inst]
-        unique_ids = sorted(set(int(v) for v in avd["default_domain_id"] if v >= 0))
-        for i, _ in enumerate(unique_ids):
+        dom = np.asarray(avd["default_domain_id"])
+        unique_ids = np.unique(dom[dom >= 0])
+        for i in range(len(unique_ids)):
             label = f"{inst}.Region_{i + 1}"
             color_map[label] = _PALETTE[palette_idx % len(_PALETTE)]
             palette_idx += 1
@@ -336,13 +338,13 @@ def get_color_code(
             {"instance": instance},
         )
 
-    labels, legend, val_to_id = _compute_labels_and_legend(
+    face_ids, legend = _compute_labels_and_legend(
         idx, instance, scheme, set_names, etype_arr, elem_row_arr
     )
 
-    pal_arr     = np.array([(e["r"], e["g"], e["b"]) for e in legend], dtype=np.float32)
-    face_codes  = np.array([val_to_id[v] for v in labels], dtype=np.int32)
-    face_colors = pal_arr[face_codes]   # [Rf, 3]
+    pal_arr     = np.array([(e["r"], e["g"], e["b"]) for e in legend],
+                           dtype=np.float32).reshape(-1, 3)
+    face_colors = pal_arr[face_ids]   # [Rf, 3]
 
     vtx_ti = idx.vtx_tri_idx.get(instance)
     if vtx_ti is not None:
@@ -378,7 +380,7 @@ def get_legend(
             {"instance": instance},
         )
 
-    _, legend, _ = _compute_labels_and_legend(
+    _, legend = _compute_labels_and_legend(
         idx, instance, scheme, set_names, etype_arr, elem_row_arr
     )
     return legend
@@ -404,71 +406,126 @@ def region_face_mask(
     if etype_arr is None or elem_row_arr is None:
         return None
 
+    if scheme not in _SCHEMES:
+        return None
     try:
-        if scheme == "section":
-            labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
-        elif scheme == "section_assignment":
-            labels = _labels_from_section_assignment(idx, instance, etype_arr, elem_row_arr)
-        elif scheme == "etype":
-            labels = _labels_from_etype(etype_arr)
-        elif scheme in ("material", "section_type"):
-            attr_name = "material_name" if scheme == "material" else "section_type"
-            labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
-        elif scheme == "elset":
-            # _labels_from_elsets returns the set name or "other"; region IS the set name
-            labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, [region])
-        else:
-            return None
+        # elset: labels are the set name or "other"; region IS the set name
+        codes, vals = _face_codes(idx, instance, scheme,
+                                  [region] if scheme == "elset" else None,
+                                  etype_arr, elem_row_arr)
     except Exception:
         return None
-
-    return np.array([l == region for l in labels], dtype=bool)
-
-
-def _labels_from_etype(etype_arr: np.ndarray) -> List[str]:
-    """Decode the S8 bytes array into clean etype strings."""
-    return [
-        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
-        for b in etype_arr
-    ]
+    if region not in vals:
+        return np.zeros(len(codes), dtype=bool)
+    return codes == vals.index(region)
 
 
-def _labels_from_section_id(
+# 着色分类统一用"编码"表示：codes [Rf] int32 + vals List[str]，第 i 个面的标签
+# = vals[codes[i]]。几百万面片时逐面构造 Python 字符串列表本身就要数秒，
+# 所有计算都在 numpy 整数数组上完成，只有去重后的少量取值才解码成字符串。
+
+_SCHEMES = ("etype", "section", "section_assignment", "material", "section_type", "elset")
+
+
+def _decode(b) -> str:
+    return bytes(b).rstrip(b"\x00").decode("ascii", errors="replace")
+
+
+def _etype_groups(etype_arr: np.ndarray) -> Tuple[List[str], np.ndarray]:
+    """(去重后的 etype 字符串, 每个面在其中的下标)：每种 etype 只解码一次。"""
+    uniq, inv = np.unique(np.asarray(etype_arr), return_inverse=True)
+    return [_decode(u) for u in uniq], inv.reshape(-1)
+
+
+def _compact_codes(codes: np.ndarray, vals: List[str]) -> Tuple[np.ndarray, List[str]]:
+    """把 vals 重排成"按面首次出现的顺序"、去掉未出现与重复的取值，并重映射 codes。
+
+    与旧实现 list(dict.fromkeys(labels)) 的图例顺序完全一致。
+    """
+    codes = np.asarray(codes, dtype=np.int64).reshape(-1)
+    if codes.size == 0:
+        return np.zeros(0, dtype=np.int32), []
+    present, first = np.unique(codes, return_index=True)
+    order = present[np.argsort(first, kind="stable")]
+    remap = np.zeros(len(vals), dtype=np.int32)
+    new_vals: List[str] = []
+    pos: Dict[str, int] = {}
+    for i in order:
+        v = vals[int(i)]
+        if v not in pos:
+            pos[v] = len(new_vals)
+            new_vals.append(v)
+        remap[int(i)] = pos[v]
+    return remap[codes], new_vals
+
+
+def _domain_per_face(avd: dict, etype_arr: np.ndarray, elem_row_arr: np.ndarray) -> np.ndarray:
+    """每个渲染面所属的均化域 id（render.h5 averaging_data 查表），查不到为 -1。
+
+    等价于旧实现的 {(etype, elem_row): domain_id} 字典逐面查找（重复键后者覆盖前者），
+    改为 (etype 编码, elem_row) 合成 int64 键后排序 + searchsorted。
+    """
+    a_et = np.asarray(avd["elem_etype"])
+    f_et = np.asarray(etype_arr)
+    Rf = len(f_et)
+    if len(a_et) == 0 or Rf == 0:
+        return np.full(Rf, -1, dtype=np.int32)
+    width = max(a_et.dtype.itemsize if a_et.dtype.kind == "S" else 32,
+                f_et.dtype.itemsize if f_et.dtype.kind == "S" else 32)
+    dt = f"S{width}"
+    _, inv = np.unique(np.concatenate([a_et.astype(dt), f_et.astype(dt)]),
+                       return_inverse=True)
+    inv = inv.reshape(-1).astype(np.int64)
+    a_row = np.asarray(avd["elem_row"], dtype=np.int64)
+    f_row = np.asarray(elem_row_arr, dtype=np.int64)
+    base = int(max(a_row.max(), f_row.max())) + 1
+    a_key = inv[:len(a_et)] * base + a_row
+    f_key = inv[len(a_et):] * base + f_row
+    # 重复键取最后一次出现（与 dict 覆盖语义一致）：反转后取首次
+    uk, ui = np.unique(a_key[::-1], return_index=True)
+    dom = np.asarray(avd["default_domain_id"]).reshape(-1)[::-1][ui]
+    pos = np.clip(np.searchsorted(uk, f_key), 0, len(uk) - 1)
+    hit = uk[pos] == f_key
+    return np.where(hit, dom[pos], -1).astype(np.int32)
+
+
+def _codes_from_etype(etype_arr: np.ndarray) -> Tuple[np.ndarray, List[str]]:
+    names, inv = _etype_groups(etype_arr)
+    return inv.astype(np.int32), names
+
+
+def _codes_from_section_id(
     idx: ModelIndex,
     instance: str,
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
-) -> List[str]:
-    """Color by averaging region — domain ID from render.h5 averaging_data (in memory)."""
-    Rf  = len(etype_arr)
+) -> Tuple[np.ndarray, List[str]]:
+    """Color by averaging region — domain ID from render.h5 averaging_data (in memory).
+
+    Region 编号按域 id 升序：f"{instance}.Region_{i+1}"；查不到域的面为 "(none)"。
+    """
+    Rf = len(etype_arr)
     avd = idx.averaging_data.get(instance)
     if avd is None:
-        return ["(none)"] * Rf
-
-    lookup: Dict[Tuple[bytes, int], int] = {
-        (avd["elem_etype"][i].tobytes().rstrip(b"\x00"), int(avd["elem_row"][i])): int(avd["default_domain_id"][i])
-        for i in range(len(avd["elem_etype"]))
-    }
-    domain_per_face = np.array([
-        lookup.get((etype_arr[fi].tobytes().rstrip(b"\x00"), int(elem_row_arr[fi])), -1)
-        for fi in range(Rf)
-    ], dtype=np.int32)
-
+        return np.zeros(Rf, dtype=np.int32), ["(none)"]
+    domain_per_face = _domain_per_face(avd, etype_arr, elem_row_arr)
     if not np.any(domain_per_face >= 0):
-        return ["(none)"] * Rf
+        return np.zeros(Rf, dtype=np.int32), ["(none)"]
+    unique_ids = np.unique(domain_per_face[domain_per_face >= 0])
+    codes = np.zeros(Rf, dtype=np.int32)                      # 0 = "(none)"
+    ok = domain_per_face >= 0
+    codes[ok] = np.searchsorted(unique_ids, domain_per_face[ok]).astype(np.int32) + 1
+    vals = ["(none)"] + [f"{instance}.Region_{i + 1}" for i in range(len(unique_ids))]
+    return codes, vals
 
-    unique_ids = sorted(set(int(v) for v in domain_per_face if v >= 0))
-    id_to_label = {did: f"{instance}.Region_{i + 1}" for i, did in enumerate(unique_ids)}
-    return [id_to_label.get(int(v), "(none)") for v in domain_per_face]
 
-
-def _labels_from_elem_attr(
+def _codes_from_elem_attr(
     idx: ModelIndex,
     instance: str,
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
     attr_name: str,
-) -> List[str]:
+) -> Tuple[np.ndarray, List[str]]:
     """
     Look up per-element string attributes (material_name / section_type)
     from L1 geometry H5, grouped by etype for efficiency.
@@ -481,28 +538,39 @@ def _labels_from_elem_attr(
 
     Rf     = len(etype_arr)
     result = np.full(Rf, b"", dtype="S64")
-
-    # Decode all etype strings upfront — numpy S8 byte comparison can silently
-    # fail to match when bytes scalars have different lengths/padding, so we
-    # compare plain Python strings instead.
-    etype_strs = np.array([
-        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
-        for b in etype_arr
-    ])
+    etype_names, etype_inv = _etype_groups(etype_arr)
+    elem_row_arr = np.asarray(elem_row_arr)
 
     with h5py.File(geom_h5, "r") as f:
-        for etype_str in np.unique(etype_strs):
-            mask      = (etype_strs == etype_str)
-            grp       = f.get(f"elements/{etype_str}")
+        for gi, etype_str in enumerate(etype_names):
+            grp = f.get(f"elements/{etype_str}")
             if grp is None or attr_name not in grp:
                 continue
-            attr_data          = grp[attr_name][:]     # [M] S64/S16
-            result[mask]       = attr_data[elem_row_arr[mask]]
+            mask         = etype_inv == gi
+            attr_data    = grp[attr_name][:]     # [M] S64/S16
+            result[mask] = attr_data[elem_row_arr[mask]]
 
-    return [
-        s.tobytes().rstrip(b"\x00").decode("ascii", errors="replace") or "(none)"
-        for s in result
-    ]
+    uniq, inv = np.unique(result, return_inverse=True)
+    return inv.reshape(-1).astype(np.int32), [_decode(u) or "(none)" for u in uniq]
+
+
+def _codes_to_labels(codes: np.ndarray, vals: List[str]) -> List[str]:
+    lut = np.array(vals, dtype=object) if vals else np.zeros(0, dtype=object)
+    return lut[np.asarray(codes, dtype=np.int64)].tolist()
+
+
+def _labels_from_etype(etype_arr: np.ndarray) -> List[str]:
+    """Decode the S8 bytes array into clean etype strings."""
+    return _codes_to_labels(*_codes_from_etype(etype_arr))
+
+
+def _labels_from_section_id(idx, instance, etype_arr, elem_row_arr) -> List[str]:
+    return _codes_to_labels(*_codes_from_section_id(idx, instance, etype_arr, elem_row_arr))
+
+
+def _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name) -> List[str]:
+    return _codes_to_labels(
+        *_codes_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name))
 
 
 def _split_instance_prefix(name: str, known_instances) -> Tuple[Optional[str], str]:
@@ -533,6 +601,17 @@ def _labels_from_elsets(
     elem_row_arr: np.ndarray,
     set_names: List[str],
 ) -> List[str]:
+    return _codes_to_labels(
+        *_codes_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names))
+
+
+def _codes_from_elsets(
+    idx: ModelIndex,
+    instance: str,
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+    set_names: List[str],
+) -> Tuple[np.ndarray, List[str]]:
     """
     Return per-face label: the first matching set name if the element belongs
     to any of *set_names*, else "other".  Priority = order of set_names.
@@ -622,15 +701,12 @@ def _labels_from_elsets(
     Rf         = len(etype_arr)
     # face_set[i] = index into set_names + 1 (0 = "other")
     face_set   = np.zeros(Rf, dtype=np.int32)
-
-    etype_strs = np.array([
-        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
-        for b in etype_arr
-    ])
+    etype_names, etype_inv = _etype_groups(etype_arr)
+    elem_row_arr = np.asarray(elem_row_arr)
 
     with h5py.File(geom_h5, "r") as f:
-        for etype_str in np.unique(etype_strs):
-            mask      = (etype_strs == etype_str)
+        for gi, etype_str in enumerate(etype_names):
+            mask      = etype_inv == gi
             grp       = f.get(f"elements/{etype_str}")
             if grp is None or "labels" not in grp:
                 continue
@@ -645,12 +721,7 @@ def _labels_from_elsets(
                 face_set_mask[hit]    = si + 1
                 face_set[mask]        = face_set_mask
 
-    # Convert code → label string
-    code_to_name = {0: "other"}
-    for si, (sn, _) in enumerate(set_label_arrays):
-        code_to_name[si + 1] = sn
-
-    return [code_to_name[c] for c in face_set]
+    return face_set, ["other"] + [sn for sn, _ in set_label_arrays]
 
 
 # ---------------------------------------------------------------------------
@@ -749,19 +820,24 @@ def _section_assignment_counts(idx: ModelIndex, instance: str) -> Dict[str, int]
     }
 
 
-def _labels_from_section_assignment(
+def _labels_from_section_assignment(idx, instance, etype_arr, elem_row_arr) -> List[str]:
+    return _codes_to_labels(
+        *_codes_from_section_assignment(idx, instance, etype_arr, elem_row_arr))
+
+
+def _codes_from_section_assignment(
     idx: ModelIndex,
     instance: str,
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
-) -> List[str]:
+) -> Tuple[np.ndarray, List[str]]:
     """Per-face label = the section name whose element_set owns the face's
     element, else '(none)'. Each element belongs to one section; first match
     wins (assignments are normally non-overlapping)."""
     assignments = _section_assignments(idx, instance)
     Rf = len(etype_arr)
     if not assignments:
-        return ["(none)"] * Rf
+        return np.zeros(Rf, dtype=np.int32), ["(none)"]
 
     from ..infra.manifest_repo import ManifestRepo
     geom_h5 = ManifestRepo(idx.workspace).get_geom_path(instance) or \
@@ -769,14 +845,12 @@ def _labels_from_section_assignment(
 
     names = list(assignments.keys())
     code  = np.zeros(Rf, dtype=np.int32)   # 0 = "(none)"
-    etype_strs = np.array([
-        b.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
-        for b in etype_arr
-    ])
+    etype_names, etype_inv = _etype_groups(etype_arr)
+    elem_row_arr = np.asarray(elem_row_arr)
     try:
         with h5py.File(geom_h5, "r") as f:
-            for etype_str in np.unique(etype_strs):
-                mask = (etype_strs == etype_str)
+            for gi, etype_str in enumerate(etype_names):
+                mask = etype_inv == gi
                 grp  = f.get(f"elements/{etype_str}")
                 if grp is None or "labels" not in grp:
                     continue
@@ -789,12 +863,9 @@ def _labels_from_section_assignment(
                     code_mask[hit] = si + 1
                     code[mask]     = code_mask
     except Exception:
-        return ["(none)"] * Rf
+        return np.zeros(Rf, dtype=np.int32), ["(none)"]
 
-    code_to_name = {0: "(none)"}
-    for si, n in enumerate(names):
-        code_to_name[si + 1] = n
-    return [code_to_name[int(c)] for c in code]
+    return code, ["(none)"] + names
 
 
 # ---------------------------------------------------------------------------
@@ -866,6 +937,109 @@ def _all_etypes_from_l1(idx: ModelIndex, instance: str) -> List[str]:
 # Shared labels + legend computation (used by get_color_code and get_legend)
 # ---------------------------------------------------------------------------
 
+def _geom_h5_path(idx: ModelIndex, instance: str) -> str:
+    from ..infra.manifest_repo import ManifestRepo
+    return ManifestRepo(idx.workspace).get_geom_path(instance) or \
+        os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
+
+
+def _face_codes(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]],
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+) -> Tuple[np.ndarray, List[str]]:
+    """每个渲染面的分类编码（已按首次出现顺序压缩）：(codes [Rf] int32 只读, vals)。
+
+    分类只取决于模型几何（L1 geometry / sets、L2 render.h5），导入后不再变化 →
+    走统一缓存：内存层 + 工作区磁盘 model 桶（scheme=elset 的集合组合无穷，只进内存）。
+    key 带 render.h5 / L1 几何 / sets.h5 签名，L2 重跑后自然失效。用户改色/改名
+    （legend overrides）不影响这里，每次请求在编码之上现查。
+    """
+    if scheme not in _SCHEMES:
+        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
+    if scheme == "elset" and not set_names:
+        raise ValidationError("set_names required for elset scheme", {})
+
+    ws = idx.workspace
+    sets_sig = cache_store.file_sig(os.path.join(ws, "l1", "sets", "sets.h5")) \
+        if scheme == "elset" else None
+    key = ("color_codes", ws, instance, scheme,
+           tuple(set_names) if scheme == "elset" else (),
+           cache_store.render_sig(ws, instance),
+           cache_store.file_sig(_geom_h5_path(idx, instance)), sets_sig,
+           len(etype_arr))
+    hit = cache_store.mem_get(key)
+    if hit is not None:
+        return hit
+    to_disk = scheme != "elset"
+    if to_disk:
+        d = cache_store.arrays_get(ws, cache_store.MODEL_BUCKET, key)
+        if d is not None and "codes" in d and "vals" in d:
+            value = (d["codes"], json.loads(bytes(d["vals"]).decode("utf-8")))
+            cache_store.mem_put(key, value)
+            return value
+
+    if scheme == "etype":
+        codes, vals = _codes_from_etype(etype_arr)
+    elif scheme == "section":
+        codes, vals = _codes_from_section_id(idx, instance, etype_arr, elem_row_arr)
+    elif scheme == "section_assignment":
+        codes, vals = _codes_from_section_assignment(idx, instance, etype_arr, elem_row_arr)
+    elif scheme in ("material", "section_type"):
+        attr_name = "material_name" if scheme == "material" else "section_type"
+        codes, vals = _codes_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
+    else:
+        codes, vals = _codes_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
+
+    codes, vals = _compact_codes(codes, vals)
+    codes.setflags(write=False)
+    value = (codes, vals)
+    cache_store.mem_put(key, value)
+    if to_disk:
+        cache_store.arrays_put(ws, cache_store.MODEL_BUCKET, key, {
+            "codes": codes,
+            "vals": np.frombuffer(json.dumps(vals).encode("utf-8"), dtype=np.uint8),
+        })
+    return value
+
+
+def _legend_values(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]],
+    vals: List[str],
+) -> List[str]:
+    """图例取值顺序：表面出现顺序，etype/material/section_type/section_assignment
+    再补上只存在于内部单元的取值；elset 按 set_names 顺序 + other。"""
+    if scheme == "elset" and set_names:
+        present = set(vals)
+        return [v for v in list(set_names) + ["other"] if v in present]
+
+    unique_vals = list(vals)
+    if scheme in ("etype", "material", "section_type"):
+        if scheme == "etype":
+            all_l1 = _all_etypes_from_l1(idx, instance)
+        else:
+            attr_name = "material_name" if scheme == "material" else "section_type"
+            all_l1 = _all_unique_vals_from_l1(idx, instance, attr_name)
+        surface_set = set(unique_vals)
+        for v in all_l1:
+            if v and v not in surface_set:
+                unique_vals.append(v)
+                surface_set.add(v)
+    elif scheme == "section_assignment":
+        surface_set = set(unique_vals)
+        for v in _section_assignments(idx, instance).keys():
+            if v and v not in surface_set:
+                unique_vals.append(v)
+                surface_set.add(v)
+    return unique_vals
+
+
 def _compute_labels_and_legend(
     idx: ModelIndex,
     instance: str,
@@ -873,59 +1047,18 @@ def _compute_labels_and_legend(
     set_names: Optional[List[str]],
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
-) -> Tuple[List[str], List[dict], Dict[str, int]]:
-    """Compute per-face labels and build the legend list.
+) -> Tuple[np.ndarray, List[dict]]:
+    """Compute per-face legend ids and build the legend list.
 
-    Returns (labels, legend, val_to_id) where:
-      labels    — per-face string label, length Rf
-      legend    — [{id, legend_key, name, r, g, b}, ...]
-      val_to_id — {label_value: palette_index} for building color arrays
+    Returns (face_ids, legend) where:
+      face_ids — [Rf] int32, index into legend for every render face
+      legend   — [{id, legend_key, name, r, g, b}, ...]
     """
-    if scheme == "etype":
-        labels = _labels_from_etype(etype_arr)
-    elif scheme == "section":
-        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
-    elif scheme == "section_assignment":
-        labels = _labels_from_section_assignment(idx, instance, etype_arr, elem_row_arr)
-    elif scheme in ("material", "section_type"):
-        attr_name = "material_name" if scheme == "material" else "section_type"
-        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
-    elif scheme == "elset":
-        if not set_names:
-            raise ValidationError("set_names required for elset scheme", {})
-        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
-    else:
-        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
-
-    if scheme == "elset" and set_names:
-        ordered     = list(set_names) + ["other"]
-        present     = set(labels)
-        unique_vals = [v for v in ordered if v in present]
-    else:
-        # Surface-derived labels (in appearance order)
-        unique_vals = list(dict.fromkeys(labels))
-        # For etype / material / section_type / section_assignment: append any
-        # values that only exist on interior (non-surface) elements so the
-        # legend is complete.
-        if scheme in ("etype", "material", "section_type"):
-            if scheme == "etype":
-                all_l1 = _all_etypes_from_l1(idx, instance)
-            else:
-                attr_name = "material_name" if scheme == "material" else "section_type"
-                all_l1 = _all_unique_vals_from_l1(idx, instance, attr_name)
-            surface_set = set(unique_vals)
-            for v in all_l1:
-                if v and v not in surface_set:
-                    unique_vals.append(v)
-                    surface_set.add(v)
-        elif scheme == "section_assignment":
-            surface_set = set(unique_vals)
-            for v in _section_assignments(idx, instance).keys():
-                if v and v not in surface_set:
-                    unique_vals.append(v)
-                    surface_set.add(v)
-
+    codes, vals = _face_codes(idx, instance, scheme, set_names, etype_arr, elem_row_arr)
+    unique_vals = _legend_values(idx, instance, scheme, set_names, vals)
     val_to_id = {v: i for i, v in enumerate(unique_vals)}
+    code_to_id = np.array([val_to_id[v] for v in vals], dtype=np.int32)
+    face_ids = code_to_id[codes] if len(vals) else np.zeros(len(codes), dtype=np.int32)
 
     from ..infra.manifest_repo import ManifestRepo
     overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
@@ -953,7 +1086,30 @@ def _compute_labels_and_legend(
             "b":          rgb[2],
         })
 
-    return labels, legend, val_to_id
+    return face_ids, legend
+
+
+def warm_color_codes(idx: ModelIndex) -> int:
+    """预计算所有 instance × 可用 scheme（除 elset）的面分类编码，返回成功个数。"""
+    n = 0
+    for inst in sorted(idx.source_elem_etype.keys()):
+        etype_arr    = idx.source_elem_etype.get(inst)
+        elem_row_arr = idx.render_source_elem_row.get(inst)
+        if etype_arr is None or elem_row_arr is None:
+            continue
+        try:
+            schemes = get_schemes(idx, inst)["schemes"]
+        except Exception:
+            schemes = ["etype"]
+        for scheme in schemes:
+            if scheme == "elset":
+                continue
+            try:
+                _face_codes(idx, inst, scheme, None, etype_arr, elem_row_arr)
+                n += 1
+            except Exception:
+                pass
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -961,34 +1117,31 @@ def _compute_labels_and_legend(
 # ---------------------------------------------------------------------------
 
 def _surface_elem_counts_per_label(
-    labels: List[str],
+    codes: np.ndarray,
+    vals: List[str],
     etype_arr: np.ndarray,
     elem_row_arr: np.ndarray,
 ):
     """Count distinct *surface* elements per label.
 
-    `labels` is per-render-face (length Rf), so Counter(labels) over-counts: a
-    single element can contribute several surface faces. Every face of one
-    element carries the same label, so we deduplicate faces by their source
-    element key (etype, elem_row) and tally one element per unique key.
+    Per-face counts over-count: a single element can contribute several surface
+    faces. Every face of one element carries the same label, so we deduplicate
+    faces by their source element key (etype, elem_row) and tally one element
+    per unique key.
 
     Only sees elements exposed on the render surface — used for the `section`
     scheme, whose regions are themselves a surface-only concept (averaging
     domains built by union-find over surface adjacency).
     """
     from collections import Counter
-    Rf = len(labels)
-    if Rf == 0:
+    if len(codes) == 0:
         return Counter()
-    labels_arr = np.asarray(labels)
-    # Encode the S8 etype bytes to small int codes, then dedup (etype, elem_row).
-    _, etype_codes = np.unique(etype_arr, return_inverse=True)
-    pairs = np.stack(
-        [etype_codes.astype(np.int64), np.asarray(elem_row_arr, dtype=np.int64)],
-        axis=1,
-    )
-    _, first_face_of_elem = np.unique(pairs, axis=0, return_index=True)
-    return Counter(labels_arr[first_face_of_elem].tolist())
+    _, etype_codes = np.unique(np.asarray(etype_arr), return_inverse=True)
+    rows = np.asarray(elem_row_arr, dtype=np.int64)
+    elem_key = etype_codes.reshape(-1).astype(np.int64) * (int(rows.max()) + 1) + rows
+    _, first_face_of_elem = np.unique(elem_key, return_index=True)
+    cnt = np.bincount(codes[first_face_of_elem], minlength=len(vals))
+    return Counter({vals[i]: int(c) for i, c in enumerate(cnt) if c})
 
 
 def _l1_etype_counts(idx: ModelIndex, instance: str) -> Dict[str, int]:
@@ -1179,56 +1332,17 @@ def get_legend_entries(
             {"instance": instance},
         )
 
-    if scheme == "etype":
-        labels = _labels_from_etype(etype_arr)
-    elif scheme == "section":
-        labels = _labels_from_section_id(idx, instance, etype_arr, elem_row_arr)
-    elif scheme == "section_assignment":
-        labels = _labels_from_section_assignment(idx, instance, etype_arr, elem_row_arr)
-    elif scheme in ("material", "section_type"):
-        attr_name = "material_name" if scheme == "material" else "section_type"
-        labels = _labels_from_elem_attr(idx, instance, etype_arr, elem_row_arr, attr_name)
-    elif scheme == "elset":
-        if not set_names:
-            raise ValidationError("set_names required for elset scheme", {})
-        labels = _labels_from_elsets(idx, instance, etype_arr, elem_row_arr, set_names)
-    else:
-        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
-
-    from collections import Counter
-    face_counts = Counter(labels)
+    codes, vals = _face_codes(idx, instance, scheme, set_names, etype_arr, elem_row_arr)
+    counts_arr = np.bincount(codes, minlength=len(vals)) if len(vals) else []
+    face_counts = {v: int(c) for v, c in zip(vals, counts_arr)}
     # elem_count = actual total elements per label (incl. interior, from L1),
     # except scheme=section where regions are surface-defined.
-    surface_elem_counts = _surface_elem_counts_per_label(labels, etype_arr, elem_row_arr)
+    surface_elem_counts = _surface_elem_counts_per_label(codes, vals, etype_arr, elem_row_arr)
     elem_counts = _total_elem_counts_per_label(
         idx, instance, scheme, set_names, surface_elem_counts
     )
 
-    if scheme == "elset" and set_names:
-        ordered   = list(set_names) + ["other"]
-        present   = set(labels)
-        unique_vals = [v for v in ordered if v in present]
-    else:
-        unique_vals = list(dict.fromkeys(labels))
-        # Append values that only exist on interior (non-surface) elements so
-        # the legend editor table is complete (face_count will be 0 for these).
-        if scheme in ("etype", "material", "section_type"):
-            if scheme == "etype":
-                all_l1 = _all_etypes_from_l1(idx, instance)
-            else:
-                attr_name = "material_name" if scheme == "material" else "section_type"
-                all_l1 = _all_unique_vals_from_l1(idx, instance, attr_name)
-            surface_set = set(unique_vals)
-            for v in all_l1:
-                if v and v not in surface_set:
-                    unique_vals.append(v)
-                    surface_set.add(v)
-        elif scheme == "section_assignment":
-            surface_set = set(unique_vals)
-            for v in _section_assignments(idx, instance).keys():
-                if v and v not in surface_set:
-                    unique_vals.append(v)
-                    surface_set.add(v)
+    unique_vals = _legend_values(idx, instance, scheme, set_names, vals)
 
     # Palette assignment (identical logic to get_color_code)
     global_colors = _build_global_color_map(idx, scheme)
@@ -1280,46 +1394,37 @@ def _default_titles_section(
     elem_row_arr: np.ndarray,
     unique_vals: List[str],
 ) -> Dict[str, str]:
-    """For section scheme: map each 'Region N' label → material_name as default title."""
+    """For section scheme: map each 'Region N' label → material_name as default title.
+
+    每个域的代表单元 = averaging_data 中该域第一次出现的单元；Region 编号规则与
+    _codes_from_section_id 一致（表面出现的域 id 升序）。
+    """
     avd = idx.averaging_data.get(instance)
     if avd is None:
         return {}
 
-    # Build lookup: (etype_bytes, elem_row) → domain_id
-    # Also collect one representative element per domain for material lookup
-    lookup:     Dict[Tuple[bytes, int], int] = {}
-    domain_rep: Dict[int, Tuple[str, int]]   = {}
-    for i in range(len(avd["elem_etype"])):
-        etype_b = avd["elem_etype"][i].tobytes().rstrip(b"\x00")
-        row     = int(avd["elem_row"][i])
-        did     = int(avd["default_domain_id"][i])
-        lookup[(etype_b, row)] = did
-        if did not in domain_rep:
-            domain_rep[did] = (etype_b.decode("ascii", errors="replace"), row)
+    dom_all = np.asarray(avd["default_domain_id"]).reshape(-1)
+    rep_dids, rep_idx = np.unique(dom_all, return_index=True)
+    domain_rep = {int(d): (_decode(avd["elem_etype"][i]), int(avd["elem_row"][i]))
+                  for d, i in zip(rep_dids, rep_idx)}
 
-    # Rebuild domain_id → "Region N" (same ordering as _labels_from_section_id)
-    Rf = len(etype_arr)
-    domain_per_face = np.array([
-        lookup.get((etype_arr[fi].tobytes().rstrip(b"\x00"), int(elem_row_arr[fi])), -1)
-        for fi in range(Rf)
-    ], dtype=np.int32)
-    unique_ids  = sorted(set(int(v) for v in domain_per_face if v >= 0))
-    id_to_label = {did: f"{instance}.Region_{i + 1}" for i, did in enumerate(unique_ids)}
-    label_to_id = {v: k for k, v in id_to_label.items()}
+    domain_per_face = _domain_per_face(avd, etype_arr, elem_row_arr)
+    unique_ids = np.unique(domain_per_face[domain_per_face >= 0])
+    label_to_id = {f"{instance}.Region_{i + 1}": int(did) for i, did in enumerate(unique_ids)}
 
-    # Look up material_name for each domain's representative element from geometry H5
-    from ..infra.manifest_repo import ManifestRepo
-    geom_h5 = (ManifestRepo(idx.workspace).get_geom_path(instance)
-               or os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5"))
+    geom_h5 = _geom_h5_path(idx, instance)
     domain_mat: Dict[int, str] = {}
     if os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
-            for did, (etype, row) in domain_rep.items():
+            for val in unique_vals:
+                did = label_to_id.get(val)
+                if did is None or did not in domain_rep or did in domain_mat:
+                    continue
+                etype, row = domain_rep[did]
                 grp = f.get(f"elements/{etype}")
                 mat = ""
                 if grp is not None and "material_name" in grp:
-                    raw = grp["material_name"][row]
-                    mat = raw.tobytes().rstrip(b"\x00").decode("ascii", errors="replace")
+                    mat = _decode(grp["material_name"][row])
                 domain_mat[did] = mat
 
     result: Dict[str, str] = {}

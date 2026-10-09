@@ -11,6 +11,9 @@ Mises；静力 step 的第 0 帧通常是加载前的初始状态，没有预算
      （覆盖 job_runner 在另一进程解析完新 result_group 的场景）；
   3. 手动 POST /api/odb/{odb_id}/results/warmup。
 
+另外先预算只依赖模型几何的数据：按属性/截面/单元类型等分类着色（color-code
+各 scheme，elset 除外）的面分类编码。
+
 预热直接调 compute_scalar_range / frame_scalars，算完自然写入内存 + 磁盘
 缓存（见 result_service 的缓存层）；U 场再顺带预热变形家族的
 deform-suggest-scale 统计与各 instance 顶点位移向量（同为最后一帧）。已缓存的组合命中后立即返回，所以预热
@@ -24,6 +27,7 @@ from typing import Dict, Optional, Set
 
 from ..core.state import OdbRegistry, registry as _global_registry
 from ..infra.manifest_repo import ManifestRepo
+from .color_service import warm_color_codes
 from .result_service import (
     compute_scalar_range,
     deform_scale_stats,
@@ -86,6 +90,13 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     if idx is None or not idx.is_render_ready:
         return {"odb_id": odb_id, "status": "not_ready"}
 
+    # 模型几何类（与结果无关）：着色分类编码
+    try:
+        n_color = warm_color_codes(idx)
+    except Exception:
+        logger.exception("Warmup[%s]: color-code warmup failed", odb_id)
+        n_color = 0
+
     manifest = ManifestRepo(idx.workspace)
     targets = _list_result_targets(manifest)
     instances = list(idx.source_node_rows.keys())
@@ -139,9 +150,11 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     _warmed_targets[odb_id] = frozenset(targets)
 
     dt = time.time() - t0
-    logger.info("Warmup[%s]%s: %d combo(s) warmed, %d skipped, %d deform, %.1fs",
-                odb_id, f" ({reason})" if reason else "", n_ok, n_skip, n_deform, dt)
+    logger.info("Warmup[%s]%s: %d color-code, %d combo(s) warmed, %d skipped, "
+                "%d deform, %.1fs", odb_id, f" ({reason})" if reason else "",
+                n_color, n_ok, n_skip, n_deform, dt)
     return {"odb_id": odb_id, "status": "done",
+            "color_warmed": n_color,
             "warmed": n_ok, "skipped": n_skip,
             "deform_warmed": n_deform, "seconds": round(dt, 1)}
 
