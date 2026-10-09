@@ -1492,6 +1492,10 @@ def _cleanup_result_group(workspace: str, result_group: str) -> None:
                     (result_group,),
                 )
 
+    # 该结果组的 L3 结果缓存（l3_cache/groups/<result_group>/）随之作废，立即回收磁盘
+    from src.l3.services import cache_store
+    cache_store.clear_bucket(workspace, cache_store.group_bucket(result_group))
+
 
 def _normalize_op2_modal_import_config(parse_options_json: str = None):
     parse_opts = {}

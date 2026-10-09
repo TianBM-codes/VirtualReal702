@@ -269,3 +269,17 @@ def test_frame_colors_cached_and_warmed(workspace, make_registry, monkeypatch):
     c2, l2 = _call()                # 磁盘命中
     assert np.array_equal(c_ref, c2) and np.array_equal(l_ref, l2)
     assert list((workspace / GROUP_DIR / "arrays").glob("*.npz"))
+
+
+def test_result_group_cleanup_clears_its_cache_bucket(tmp_path):
+    """结果组重新解析前的清理会删掉该组的缓存目录，其他组与 model 桶不受影响。"""
+    from src import job_runner
+
+    for rel in ("groups/rg_a/arrays", "groups/rg_b/arrays", "model/arrays"):
+        d = tmp_path / "l3_cache" / rel
+        d.mkdir(parents=True)
+        (d / "x.npz").write_bytes(b"x")
+    job_runner._cleanup_result_group(str(tmp_path), "rg_a")
+    assert not (tmp_path / "l3_cache" / "groups" / "rg_a").exists()
+    assert (tmp_path / "l3_cache" / "groups" / "rg_b" / "arrays" / "x.npz").exists()
+    assert (tmp_path / "l3_cache" / "model" / "arrays" / "x.npz").exists()

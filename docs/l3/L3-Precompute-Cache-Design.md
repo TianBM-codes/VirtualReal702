@@ -158,5 +158,5 @@
 - [x] 第 3 步 color-code 分类缓存（`color_service._face_codes`；全部 scheme 逐面循环改 numpy，与旧实现逐项对拍一致；测试 `test_l3_color_code_cache.py`）
 - [x] 第 4 步 element-mesh-edges 缓存（`services/mesh_edge_service.py`；响应头加 `X-Cache`；去重改一维 int64 键；测试 `test_l3_mesh_edges_cache.py`）
 - [x] 第 5 步 frame-colors 缓存（set 过滤与着色前的 soup 顶点标量进统一缓存；预热用路由默认分量 U1）
-- [ ] 第 6 步 结果组重新解析清理
+- [x] 第 6 步 结果组重新解析清理（`job_runner` / `runner_thread` 的 `_cleanup_result_group` 在解析前删 `groups/<result_group>/`）
 - [ ] 第 7 步 文档同步
