@@ -1,8 +1,9 @@
 """磁盘缓存层 + 预热服务回归测试。
 
-磁盘层：算过的 scalar_vertex / 图例范围写到 <workspace>/l3_cache/ 下
-（scalars/*.npz、ranges/*.json），重启（清空内存缓存模拟）后直接从磁盘复用，
-不再打开结果 H5；APP_SCALAR_DISK_CACHE_MB=0 关闭；容量超限按 mtime 淘汰旧文件。
+磁盘层（统一缓存层 cache_store）：算过的 scalar_vertex / 图例范围写到
+<workspace>/l3_cache/groups/<result_group>/ 下（arrays/*.npz、json/*.json），重启
+（清空内存缓存模拟）后直接从磁盘复用，不再打开结果 H5；APP_SCALAR_DISK_CACHE_MB=0
+关闭；整个 l3_cache/ 超容量按 mtime 淘汰旧文件；旧布局目录首次访问时删除。
 
 预热：warm_odb_sync 遍历 manifest result_files 的 (result_group, step, field)
 × instance，预算第 0 帧默认视图并写入两级缓存；之后 frame_scalars /
@@ -15,13 +16,16 @@ import h5py
 import numpy as np
 import pytest
 
-import src.l3.services.result_service as rs
+from src.l3.services import cache_store
 from src.l3.services.result_service import (
     clear_result_caches,
     compute_scalar_range,
     frame_scalars,
 )
 from src.l3.services.warmup_service import warm_odb_sync
+
+
+GROUP_DIR = "l3_cache/groups/_default"
 
 
 @pytest.fixture(autouse=True)
@@ -65,8 +69,7 @@ def test_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch)
         workspace, make_registry, values=np.arange(9.0)
     )
     u1, legend1, pos1 = _call_frame_scalars(registry, instance)
-    assert (workspace / "l3_cache" / "scalars").is_dir()
-    assert list((workspace / "l3_cache" / "scalars").glob("*.npz"))
+    assert list((workspace / GROUP_DIR / "arrays").glob("*.npz"))
 
     clear_result_caches()
     monkeypatch.setattr(h5py, "File", _boom)
@@ -84,7 +87,7 @@ def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkey
         registry=registry, odb_id="odb", instance=instance,
         step="Step-1", field="U", frame_idx=0,
     )
-    assert list((workspace / "l3_cache" / "ranges").glob("*.json"))
+    assert list((workspace / GROUP_DIR / "json").glob("*.json"))
 
     clear_result_caches()
     monkeypatch.setattr(h5py, "File", _boom)
@@ -96,7 +99,7 @@ def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkey
 
 
 def test_disk_cache_disabled_by_config(workspace, make_registry, monkeypatch):
-    monkeypatch.setattr(rs.settings, "scalar_disk_cache_mb", 0)
+    monkeypatch.setattr(cache_store.settings, "scalar_disk_cache_mb", 0)
     registry, instance, _ = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
@@ -115,7 +118,7 @@ def test_corrupt_disk_entry_recomputes(workspace, make_registry):
         workspace, make_registry, values=np.arange(9.0)
     )
     _, legend1, _ = _call_frame_scalars(registry, instance)
-    for f in (workspace / "l3_cache" / "scalars").glob("*.npz"):
+    for f in (workspace / GROUP_DIR / "arrays").glob("*.npz"):
         f.write_bytes(b"garbage")
     clear_result_caches()
     _, legend2, _ = _call_frame_scalars(registry, instance)
@@ -123,16 +126,44 @@ def test_corrupt_disk_entry_recomputes(workspace, make_registry):
 
 
 def test_disk_eviction_by_cap(tmp_path):
-    """scalars 目录超容量时按 mtime 从旧到新删。"""
-    d = tmp_path / "scalars"
-    d.mkdir()
-    for i in range(5):
-        p = d / f"f{i}.npz"
+    """整个 l3_cache/ 超容量时跨子目录按 mtime 从旧到新删。"""
+    root = tmp_path / "l3_cache"
+    dirs = [root / "model" / "arrays", root / "groups" / "g1" / "payloads",
+            root / "groups" / "g2" / "json"]
+    for d in dirs:
+        d.mkdir(parents=True)
+    for i in range(6):
+        p = dirs[i % 3] / f"f{i}.bin"
         p.write_bytes(b"x" * 1000)
         os.utime(p, ns=(i * 1_000_000_000,) * 2)
-    rs._evict_scalar_disk(str(d), cap_bytes=2500)
-    left = sorted(f.name for f in d.glob("*.npz"))
-    assert left == ["f3.npz", "f4.npz"]
+    cache_store.evict(str(tmp_path), cap_bytes=2500)
+    left = sorted(f.name for f in root.rglob("*.bin"))
+    assert left == ["f4.bin", "f5.bin"]
+
+
+def test_legacy_cache_dirs_purged(workspace, make_registry):
+    """统一缓存层之前的目录（scalars/ranges/deformed_payloads……）首次访问时删除。"""
+    for name in ("scalars", "ranges", "raw_displacements", "deformed_normals",
+                 "deformed_payloads", "modal_payloads"):
+        d = workspace / "l3_cache" / name
+        d.mkdir(parents=True)
+        (d / "old.bin").write_bytes(b"x")
+    cache_store._purged_workspaces.discard(str(workspace / "l3_cache"))
+    registry, instance, _ = _setup_nodal_instance(
+        workspace, make_registry, values=np.arange(9.0)
+    )
+    _call_frame_scalars(registry, instance)
+    assert sorted(p.name for p in (workspace / "l3_cache").iterdir()) == ["groups"]
+
+
+def test_group_bucket_names():
+    assert cache_store.group_bucket(None) == "groups/_default"
+    assert cache_store.group_bucket("") == "groups/_default"
+    assert cache_store.group_bucket("op2_rg-1.v2") == "groups/op2_rg-1.v2"
+    a = cache_store.group_bucket("a/b")
+    b = cache_store.group_bucket("a_b")
+    assert a.startswith("groups/a_b-") and b == "groups/a_b" and a != b
+    assert cache_store.group_bucket("..") != "groups/.."
 
 
 def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
@@ -165,3 +196,90 @@ def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
         step="Step-1", field="U", frame_idx=0,
     )
     assert r == (pytest.approx(0.0), pytest.approx(8.0))
+
+
+def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypatch):
+    """预热取每个 step 的最后一帧（frames 表最大 frame_idx），第 0 帧不预算。"""
+    registry, instance, _ = _setup_nodal_instance(
+        workspace, make_registry, values=np.arange(9.0)
+    )
+    conn = sqlite3.connect(workspace / "manifest.db")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS result_files "
+        "(step_name TEXT, field_name TEXT, result_group TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO result_files (step_name, field_name, result_group) "
+        "VALUES ('Step-1', 'U', NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS frames "
+        "(step_name TEXT, frame_idx INT, frame_value REAL, result_group TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO frames VALUES ('Step-1', ?, ?, NULL)", [(0, 0.0), (1, 1.0)]
+    )
+    conn.commit()
+    conn.close()
+
+    report = warm_odb_sync("odb", reason="test", reg=registry)
+    assert report["status"] == "done" and report["warmed"] == 1
+
+    monkeypatch.setattr(h5py, "File", _boom)
+    u, legend, _ = frame_scalars(
+        registry=registry, odb_id="odb", instance=instance,
+        step="Step-1", field="U", frame_idx=1, component_idx=None,
+    )
+    assert legend[1] == pytest.approx(16.0)       # 第 1 帧数据 = 第 0 帧 × 2
+    with pytest.raises(AssertionError, match="cache miss"):
+        _call_frame_scalars(registry, instance)   # 第 0 帧未预算
+
+
+def test_frame_colors_cached_and_warmed(workspace, make_registry, monkeypatch):
+    """frame-colors（旧接口）：预热后不碰 H5，结果与首算一致；set 过滤仍按请求执行。"""
+    from src.l3.services.result_service import frame_colors
+
+    registry, instance, _ = _setup_nodal_instance(
+        workspace, make_registry, values=np.arange(9.0)
+    )
+    conn = sqlite3.connect(workspace / "manifest.db")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS result_files "
+        "(step_name TEXT, field_name TEXT, result_group TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO result_files (step_name, field_name, result_group) "
+        "VALUES ('Step-1', 'U', NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    def _call():
+        return frame_colors(
+            registry=registry, odb_id="odb", instance=instance,
+            step="Step-1", field="U", frame_idx=0, component="U1",
+        )
+
+    c_ref, l_ref = _call()          # 首算（也写入缓存）
+    clear_result_caches()
+    warm_odb_sync("odb", reason="test", reg=registry)   # 磁盘已有 → 幂等
+
+    clear_result_caches()
+    monkeypatch.setattr(h5py, "File", _boom)
+    c2, l2 = _call()                # 磁盘命中
+    assert np.array_equal(c_ref, c2) and np.array_equal(l_ref, l2)
+    assert list((workspace / GROUP_DIR / "arrays").glob("*.npz"))
+
+
+def test_result_group_cleanup_clears_its_cache_bucket(tmp_path):
+    """结果组重新解析前的清理会删掉该组的缓存目录，其他组与 model 桶不受影响。"""
+    from src import job_runner
+
+    for rel in ("groups/rg_a/arrays", "groups/rg_b/arrays", "model/arrays"):
+        d = tmp_path / "l3_cache" / rel
+        d.mkdir(parents=True)
+        (d / "x.npz").write_bytes(b"x")
+    job_runner._cleanup_result_group(str(tmp_path), "rg_a")
+    assert not (tmp_path / "l3_cache" / "groups" / "rg_a").exists()
+    assert (tmp_path / "l3_cache" / "groups" / "rg_b" / "arrays" / "x.npz").exists()
+    assert (tmp_path / "l3_cache" / "model" / "arrays" / "x.npz").exists()

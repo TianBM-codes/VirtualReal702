@@ -89,16 +89,19 @@ class Settings:
         # invalidates automatically. 0 = disable result caching entirely.
         self.scalar_cache_mb = max(0, int(_get(cfg, "APP_SCALAR_CACHE_MB", "512")))
 
-        # Disk layer of the result-scalar cache: computed scalars are also
-        # persisted under <workspace>/l3_cache/ so they survive restarts and are
-        # shared across worker processes. Cap is per workspace, evicted oldest-
-        # mtime-first. 0 = memory-only caching.
+        # Disk layer of the unified L3 result cache (services/cache_store.py):
+        # computed scalars, ranges, displacements, color-code labels and final
+        # deform/animation payloads are persisted under <workspace>/l3_cache/ so
+        # they survive restarts and are shared across worker processes. Cap is
+        # for the whole l3_cache/ of one workspace, evicted oldest-mtime-first.
+        # Default 100 GB (final value to be decided). 0 = memory-only caching.
         self.scalar_disk_cache_mb = max(
-            0, int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "2048")))
+            0, int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "102400")))
 
-        # Cache warm-up: automatically precompute frame-0 default views (every
-        # field × instance, magnitude component) in a background thread when a
-        # model finishes loading or a new result_group becomes ready, so the
+        # Cache warm-up: automatically precompute the default view of the LAST
+        # frame of every step (every field × instance, magnitude component) in
+        # a background thread when a model finishes loading or a new
+        # result_group becomes ready, so the
         # first click hits a warm cache. 0 = no automatic warm-up (the manual
         # POST /results/warmup endpoint still works).
         self.enable_warmup = _get(cfg, "APP_WARMUP", "1") == "1"

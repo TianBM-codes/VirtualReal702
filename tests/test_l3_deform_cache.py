@@ -1,17 +1,15 @@
-"""变形/动画家族缓存回归测试。
+"""变形/动画家族缓存回归测试（统一缓存层 cache_store 之后的分层）。
 
-大模型下 deformed-positions / modal-* 每帧都全量重读 render/positions 并重算
-法线，deform-suggest-scale 为一个标量读整块 U。缓存策略（复用 frame-scalars
-的两级缓存设施）：
   - render/positions、render/indices 常驻 ModelIndex（load_l2_render_data 加载，
     回退读盘时回填）；
-  - frame_deformed_with_aux 的 (positions, normals, aux) 整包按
-    (U 文件签名, instance, 帧, scale) 缓存（内存字节 LRU + 磁盘 npz）；
-  - 顶点位移向量 [Nv,3] 按 (U 文件签名, instance, 帧) 缓存，
+  - 顶点位移向量 [Nv,3] 按 (U 文件签名, 几何签名, instance, 帧) 两级缓存，
     vertex-displacements / modal-shape / modal-animation 共用；
+  - deformed-positions / modal-animation 在路由层缓存最终响应包
+    （<workspace>/l3_cache/groups/<result_group>/payloads/），scale / n_frames 进 key，
+    命中时响应头 X-Cache: hit；frame_deformed_with_aux 本身不再缓存；
   - deform_scale_stats 的小 dict 走小结果 LRU + JSON 磁盘层；
   - U 结果文件被重写 → 签名变 → 自动失效；
-  - 法线聚合从 np.add.at 换成 np.bincount（纯向量化提速，结果逐位一致）。
+  - 法线聚合用 np.bincount（结果与 np.add.at 逐位一致）。
 
 验证手法同 test_l3_result_scalar_cache：第一次调用后把 h5py.File monkeypatch
 成抛错，命中缓存的第二次调用不得碰 H5。
@@ -23,7 +21,7 @@ import h5py
 import numpy as np
 import pytest
 
-import src.l3.services.result_service as rs
+from src.l3.services import cache_store
 from src.l3.services.result_service import (
     _compute_vertex_normals,
     clear_result_caches,
@@ -100,48 +98,64 @@ def _setup_deform_workspace(workspace, make_registry, *, with_aux=True):
     return registry, surf_pos, u, u_path
 
 
-def test_deformed_with_aux_second_call_hits_cache(workspace, make_registry, monkeypatch):
+def _route_client(monkeypatch, registry):
+    pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.l3.api.routes import results
+
+    idx = registry.get("odb")
+    monkeypatch.setattr(results.registry, "get", lambda odb_id: idx)
+    app = FastAPI()
+    app.include_router(results.router)
+    return TestClient(app)
+
+
+PAYLOAD_DIR = ("l3_cache", "groups", "_default", "payloads")
+
+
+def test_deformed_with_aux_values(workspace, make_registry):
     registry, surf_pos, u, _ = _setup_deform_workspace(workspace, make_registry)
     p1, n1, aux1 = frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 2.0)
     assert np.allclose(p1, surf_pos + 2.0 * u)
     assert [name for name, _ in aux1] == ["line_positions"]
-
-    monkeypatch.setattr(h5py, "File", _boom)
-    p2, n2, aux2 = frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 2.0)
-    # frame_deformed_positions（deformed-normals 端点）共用同一缓存
-    p3, n3 = frame_deformed_positions(registry, "odb", INSTANCE, "Step-1", 0, 2.0)
-
+    p2, n2 = frame_deformed_positions(registry, "odb", INSTANCE, "Step-1", 0, 2.0)
     assert np.array_equal(p1, p2) and np.array_equal(n1, n2)
-    assert np.array_equal(p1, p3) and np.array_equal(n1, n3)
-    assert np.array_equal(aux1[0][1], aux2[0][1])
 
 
-def test_deform_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch):
-    """清空内存缓存（模拟重启）后从磁盘 npz 复用，aux sections 原样还原。"""
+def test_deformed_positions_route_payload_cache(workspace, make_registry, monkeypatch):
+    """首次 miss 落盘响应包；再次请求 hit 且不碰 H5；内容逐字节一致。"""
     registry, _, _, _ = _setup_deform_workspace(workspace, make_registry)
-    p1, n1, aux1 = frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 3.0)
-    assert list((workspace / "l3_cache" / "scalars").glob("*.npz"))
+    client = _route_client(monkeypatch, registry)
+    url = f"/api/odb/odb/results/deformed-positions?instance={INSTANCE}&step=Step-1&scale=2.0"
 
-    clear_result_caches()
+    r1 = client.get(url)
+    assert r1.status_code == 200 and r1.headers["X-Cache"] == "miss"
+    assert list(workspace.joinpath(*PAYLOAD_DIR).glob("*.bin"))
+
+    clear_result_caches()          # 内存层清空也不影响：响应包在磁盘
     monkeypatch.setattr(h5py, "File", _boom)
-    p2, n2, aux2 = frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 3.0)
-    assert np.array_equal(p1, p2) and np.array_equal(n1, n2)
-    assert [name for name, _ in aux2] == ["line_positions"]
-    assert np.array_equal(aux1[0][1], aux2[0][1])
+    r2 = client.get(url)
+    assert r2.headers["X-Cache"] == "hit"
+    assert r2.headers["X-Vertex-Count"] == "3"
+    assert r1.content == r2.content
 
 
-def test_scale_is_part_of_cache_key(workspace, make_registry, monkeypatch):
+def test_scale_is_part_of_payload_key(workspace, make_registry, monkeypatch):
     registry, _, _, _ = _setup_deform_workspace(workspace, make_registry)
-    frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 1.0)
+    client = _route_client(monkeypatch, registry)
+    base = f"/api/odb/odb/results/deformed-positions?instance={INSTANCE}&step=Step-1"
+    assert client.get(base + "&scale=1.0").headers["X-Cache"] == "miss"
+    assert client.get(base + "&scale=5.0").headers["X-Cache"] == "miss"
+    assert client.get(base + "&scale=1.0").headers["X-Cache"] == "hit"
 
-    monkeypatch.setattr(h5py, "File", _boom)
-    with pytest.raises(AssertionError, match="cache miss"):
-        frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 5.0)
 
-
-def test_rewritten_u_file_invalidates_deform_cache(workspace, make_registry):
-    registry, surf_pos, _, u_path = _setup_deform_workspace(workspace, make_registry)
-    p1, _, _ = frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 1.0)
+def test_rewritten_u_file_invalidates_payload(workspace, make_registry, monkeypatch):
+    registry, _, _, u_path = _setup_deform_workspace(workspace, make_registry)
+    client = _route_client(monkeypatch, registry)
+    url = f"/api/odb/odb/results/deformed-positions?instance={INSTANCE}&step=Step-1"
+    r1 = client.get(url)
 
     new_u = np.full((3, 3), 7.0, dtype=np.float32)
     with h5py.File(u_path, "w") as f:
@@ -149,9 +163,23 @@ def test_rewritten_u_file_invalidates_deform_cache(workspace, make_registry):
             "data", data=np.stack([new_u, new_u]))
     os.utime(u_path, ns=(os.stat(u_path).st_mtime_ns + 1_000_000,) * 2)
 
-    p2, _, _ = frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 1.0)
-    assert np.allclose(p2, surf_pos + new_u)
-    assert not np.array_equal(p1, p2)
+    r2 = client.get(url)
+    assert r2.headers["X-Cache"] == "miss"
+    assert r1.content != r2.content
+
+
+def test_modal_animation_route_payload_cache(workspace, make_registry, monkeypatch):
+    registry, _, _, _ = _setup_deform_workspace(workspace, make_registry)
+    client = _route_client(monkeypatch, registry)
+    url = (f"/api/odb/odb/results/modal-animation?instance={INSTANCE}"
+           f"&step=Step-1&scale=1.0&n_frames=4")
+    r1 = client.get(url)
+    assert r1.headers["X-Cache"] == "miss"
+    monkeypatch.setattr(h5py, "File", _boom)
+    r2 = client.get(url)
+    assert r2.headers["X-Cache"] == "hit" and r1.content == r2.content
+    # n_frames 进 key
+    assert client.get(url.replace("n_frames=4", "n_frames=8")).headers["X-Cache"] == "miss"
 
 
 def test_disp_vertex_cache_shared_across_modal_family(workspace, make_registry, monkeypatch):
@@ -183,7 +211,7 @@ def test_deform_scale_stats_cached(workspace, make_registry, monkeypatch):
     registry, _, _, _ = _setup_deform_workspace(workspace, make_registry)
     s1 = deform_scale_stats(registry, "odb", "Step-1", 0)
     assert s1["max_disp"] == pytest.approx(8.0)
-    assert list((workspace / "l3_cache" / "ranges").glob("*.json"))
+    assert list((workspace / "l3_cache" / "groups" / "_default" / "json").glob("*.json"))
 
     monkeypatch.setattr(h5py, "File", _boom)
     assert deform_scale_stats(registry, "odb", "Step-1", 0) == s1
@@ -226,12 +254,15 @@ def test_warmup_covers_deform_family(workspace, make_registry, monkeypatch):
 
 
 def test_deform_cache_disabled_by_config(workspace, make_registry, monkeypatch):
-    monkeypatch.setattr(rs.settings, "scalar_cache_mb", 0)
-    monkeypatch.setattr(rs.settings, "scalar_disk_cache_mb", 0)
+    monkeypatch.setattr(cache_store.settings, "scalar_cache_mb", 0)
     registry, _, _, _ = _setup_deform_workspace(workspace, make_registry)
-    frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 1.0)
+    client = _route_client(monkeypatch, registry)
+    url = f"/api/odb/odb/results/deformed-positions?instance={INSTANCE}&step=Step-1"
+    assert client.get(url).headers["X-Cache"] == "miss"
+    assert client.get(url).headers["X-Cache"] == "miss"   # 关闭时从不命中
+    frame_vertex_displacements(registry, "odb", INSTANCE, "Step-1", 0)
     assert not (workspace / "l3_cache").exists()
 
     monkeypatch.setattr(h5py, "File", _boom)
     with pytest.raises(AssertionError, match="cache miss"):
-        frame_deformed_with_aux(registry, "odb", INSTANCE, "Step-1", 0, 1.0)
+        frame_vertex_displacements(registry, "odb", INSTANCE, "Step-1", 0)

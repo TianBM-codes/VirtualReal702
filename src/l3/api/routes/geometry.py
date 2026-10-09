@@ -26,6 +26,7 @@ from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...infra.manifest_repo import ManifestRepo
 from ...infra.registry_repo import RegistryRepo
+from ...services.mesh_edge_service import element_mesh_edges_payload
 from ...services.user_field_service import get_face_mask_for_elem_labels
 from ..response import ok
 
@@ -390,42 +391,19 @@ async def get_element_mesh_edges(odb_id: str, instance: str):
             headers={"X-Edge-Count": "0"},
         )
 
-    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
-    edges_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_edges.h5")
-    if not os.path.exists(surface_h5):
+    # 只依赖模型几何：最终响应包走统一缓存（导入后预热），命中时原样返回
+    result = element_mesh_edges_payload(idx.workspace, instance)
+    if result is None:
         return Response(
             content=l3be_build([("edge_positions", _empty_edges)]),
             media_type="application/octet-stream",
             headers={"X-Edge-Count": "0"},
         )
-
-    edge_source = edges_h5 if os.path.exists(edges_h5) else surface_h5
-    with h5py.File(edge_source, "r") as f:
-        if "element_mesh_edges/edge_nodes" not in f:
-            return Response(
-                content=l3be_build([("edge_positions", _empty_edges)]),
-                media_type="application/octet-stream",
-                headers={"X-Edge-Count": "0"},
-            )
-
-        edge_nodes = f["element_mesh_edges/edge_nodes"][:]   # [E, 2] int32
-    with h5py.File(surface_h5, "r") as f:
-        coords = f["nodes/coords_global"][:]                 # [N, 3] float32
-
-    # Deduplicate: sort each pair so (a,b)==(b,a), then unique rows.
-    # Adjacent elements share edges; L2 may emit each shared edge twice.
-    edge_nodes = np.unique(np.sort(edge_nodes, axis=1), axis=0)
-
-    E = len(edge_nodes)
-    edge_positions = np.ascontiguousarray(
-        coords[edge_nodes.ravel()].reshape(E * 2, 3)
-    )
-
-    payload = l3be_build([("edge_positions", edge_positions)])
+    payload, E, hit = result
     return Response(
         content=payload,
         media_type="application/octet-stream",
-        headers={"X-Edge-Count": str(E)},
+        headers={"X-Edge-Count": str(E), "X-Cache": "hit" if hit else "miss"},
     )
 
 

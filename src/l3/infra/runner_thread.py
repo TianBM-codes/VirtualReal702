@@ -532,6 +532,10 @@ class EmbeddedRunner:
                     )
             logger.info("Runner: cleaned manifest rows for result_group=%s", result_group)
 
+        # 该结果组的 L3 结果缓存（l3_cache/groups/<result_group>/）随之作废，立即回收磁盘
+        from ..services import cache_store
+        cache_store.clear_bucket(workspace, cache_store.group_bucket(result_group))
+
     # ── Project geometry pipeline ─────────────────────────────────────────────
 
     def _run_geom_project(self, project_id: str, inp_path: str,

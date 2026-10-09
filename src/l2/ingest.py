@@ -21,6 +21,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import sys
 import time
@@ -1653,6 +1654,13 @@ def main():
 
     logger.info("=== Layer 2 Preprocessing (%s) ===", phase)
     logger.info("  Workspace: {}".format(workspace))
+
+    # 渲染几何即将重建：L3 的结果缓存（<workspace>/l3_cache/）全部依赖它，
+    # 整体删除以立即回收磁盘（缓存 key 也带 render.h5 签名，不删也不会读到旧值）。
+    l3_cache = os.path.join(workspace, "l3_cache")
+    if phase in ("all", "core") and os.path.isdir(l3_cache):
+        shutil.rmtree(l3_cache, ignore_errors=True)
+        logger.info("  Cleared L3 cache: {}".format(l3_cache))
 
     conn = sqlite3.connect(db_path, timeout=5.0)
     conn.execute("PRAGMA journal_mode=WAL;")
