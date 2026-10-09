@@ -91,7 +91,9 @@
 - 写入一律"临时文件 + `os.replace`"原子写；读到损坏文件直接删除当未命中。
 - key 仍包含源文件的 `(mtime_ns, size)` 签名：结果文件被重写后自动失效。
 - 无 result_group 的老模型（legacy ODB jobs）用 `groups/_default/`。
-- 统一在响应头返回 `X-Cache: hit|miss`。
+- 缓存最终响应包的接口（`deformed-positions`、`modal-animation`）在响应头返回 `X-Cache: hit|miss`；
+  `modal-shape` 改为直接由顶点位移缓存打包，不再单独存响应包，也不再带 `X-Cache`。
+- L2 重跑（`ingest.py`）开始时整体删除 `l3_cache/`；所有依赖渲染几何的 key 同时带 render.h5 签名。
 
 **去冗余后的分层**（变形 / 模态家族）：
 
@@ -151,7 +153,7 @@
 
 ## 5. 进度
 
-- [ ] 第 1 步 统一缓存存储层
+- [x] 第 1 步 统一缓存存储层（`services/cache_store.py`；测试 `test_l3_deform_cache.py`、`test_l3_disk_cache_warmup.py` 已同步）
 - [ ] 第 2 步 最后一帧预计算
 - [ ] 第 3 步 color-code 分类缓存
 - [ ] 第 4 步 element-mesh-edges 缓存

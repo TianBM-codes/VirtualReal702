@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 import src.l3.services.result_service as rs
+from src.l3.services import cache_store
 from src.l3.services.result_service import (
     clear_result_caches,
     compute_scalar_range,
@@ -121,7 +122,7 @@ def test_cache_disabled_by_config(workspace, make_registry, monkeypatch):
     registry, instance, _ = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
-    monkeypatch.setattr(rs.settings, "scalar_cache_mb", 0)
+    monkeypatch.setattr(cache_store.settings, "scalar_cache_mb", 0)
     _call_frame_scalars(registry, instance)
 
     monkeypatch.setattr(h5py, "File", _boom)

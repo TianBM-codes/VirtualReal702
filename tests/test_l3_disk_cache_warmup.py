@@ -1,8 +1,9 @@
 """磁盘缓存层 + 预热服务回归测试。
 
-磁盘层：算过的 scalar_vertex / 图例范围写到 <workspace>/l3_cache/ 下
-（scalars/*.npz、ranges/*.json），重启（清空内存缓存模拟）后直接从磁盘复用，
-不再打开结果 H5；APP_SCALAR_DISK_CACHE_MB=0 关闭；容量超限按 mtime 淘汰旧文件。
+磁盘层（统一缓存层 cache_store）：算过的 scalar_vertex / 图例范围写到
+<workspace>/l3_cache/groups/<result_group>/ 下（arrays/*.npz、json/*.json），重启
+（清空内存缓存模拟）后直接从磁盘复用，不再打开结果 H5；APP_SCALAR_DISK_CACHE_MB=0
+关闭；整个 l3_cache/ 超容量按 mtime 淘汰旧文件；旧布局目录首次访问时删除。
 
 预热：warm_odb_sync 遍历 manifest result_files 的 (result_group, step, field)
 × instance，预算第 0 帧默认视图并写入两级缓存；之后 frame_scalars /
@@ -15,13 +16,16 @@ import h5py
 import numpy as np
 import pytest
 
-import src.l3.services.result_service as rs
+from src.l3.services import cache_store
 from src.l3.services.result_service import (
     clear_result_caches,
     compute_scalar_range,
     frame_scalars,
 )
 from src.l3.services.warmup_service import warm_odb_sync
+
+
+GROUP_DIR = "l3_cache/groups/_default"
 
 
 @pytest.fixture(autouse=True)
@@ -65,8 +69,7 @@ def test_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch)
         workspace, make_registry, values=np.arange(9.0)
     )
     u1, legend1, pos1 = _call_frame_scalars(registry, instance)
-    assert (workspace / "l3_cache" / "scalars").is_dir()
-    assert list((workspace / "l3_cache" / "scalars").glob("*.npz"))
+    assert list((workspace / GROUP_DIR / "arrays").glob("*.npz"))
 
     clear_result_caches()
     monkeypatch.setattr(h5py, "File", _boom)
@@ -84,7 +87,7 @@ def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkey
         registry=registry, odb_id="odb", instance=instance,
         step="Step-1", field="U", frame_idx=0,
     )
-    assert list((workspace / "l3_cache" / "ranges").glob("*.json"))
+    assert list((workspace / GROUP_DIR / "json").glob("*.json"))
 
     clear_result_caches()
     monkeypatch.setattr(h5py, "File", _boom)
@@ -96,7 +99,7 @@ def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkey
 
 
 def test_disk_cache_disabled_by_config(workspace, make_registry, monkeypatch):
-    monkeypatch.setattr(rs.settings, "scalar_disk_cache_mb", 0)
+    monkeypatch.setattr(cache_store.settings, "scalar_disk_cache_mb", 0)
     registry, instance, _ = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
@@ -115,7 +118,7 @@ def test_corrupt_disk_entry_recomputes(workspace, make_registry):
         workspace, make_registry, values=np.arange(9.0)
     )
     _, legend1, _ = _call_frame_scalars(registry, instance)
-    for f in (workspace / "l3_cache" / "scalars").glob("*.npz"):
+    for f in (workspace / GROUP_DIR / "arrays").glob("*.npz"):
         f.write_bytes(b"garbage")
     clear_result_caches()
     _, legend2, _ = _call_frame_scalars(registry, instance)
@@ -123,16 +126,44 @@ def test_corrupt_disk_entry_recomputes(workspace, make_registry):
 
 
 def test_disk_eviction_by_cap(tmp_path):
-    """scalars 目录超容量时按 mtime 从旧到新删。"""
-    d = tmp_path / "scalars"
-    d.mkdir()
-    for i in range(5):
-        p = d / f"f{i}.npz"
+    """整个 l3_cache/ 超容量时跨子目录按 mtime 从旧到新删。"""
+    root = tmp_path / "l3_cache"
+    dirs = [root / "model" / "arrays", root / "groups" / "g1" / "payloads",
+            root / "groups" / "g2" / "json"]
+    for d in dirs:
+        d.mkdir(parents=True)
+    for i in range(6):
+        p = dirs[i % 3] / f"f{i}.bin"
         p.write_bytes(b"x" * 1000)
         os.utime(p, ns=(i * 1_000_000_000,) * 2)
-    rs._evict_scalar_disk(str(d), cap_bytes=2500)
-    left = sorted(f.name for f in d.glob("*.npz"))
-    assert left == ["f3.npz", "f4.npz"]
+    cache_store.evict(str(tmp_path), cap_bytes=2500)
+    left = sorted(f.name for f in root.rglob("*.bin"))
+    assert left == ["f4.bin", "f5.bin"]
+
+
+def test_legacy_cache_dirs_purged(workspace, make_registry):
+    """统一缓存层之前的目录（scalars/ranges/deformed_payloads……）首次访问时删除。"""
+    for name in ("scalars", "ranges", "raw_displacements", "deformed_normals",
+                 "deformed_payloads", "modal_payloads"):
+        d = workspace / "l3_cache" / name
+        d.mkdir(parents=True)
+        (d / "old.bin").write_bytes(b"x")
+    cache_store._purged_workspaces.discard(str(workspace / "l3_cache"))
+    registry, instance, _ = _setup_nodal_instance(
+        workspace, make_registry, values=np.arange(9.0)
+    )
+    _call_frame_scalars(registry, instance)
+    assert sorted(p.name for p in (workspace / "l3_cache").iterdir()) == ["groups"]
+
+
+def test_group_bucket_names():
+    assert cache_store.group_bucket(None) == "groups/_default"
+    assert cache_store.group_bucket("") == "groups/_default"
+    assert cache_store.group_bucket("op2_rg-1.v2") == "groups/op2_rg-1.v2"
+    a = cache_store.group_bucket("a/b")
+    b = cache_store.group_bucket("a_b")
+    assert a.startswith("groups/a_b-") and b == "groups/a_b" and a != b
+    assert cache_store.group_bucket("..") != "groups/.."
 
 
 def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
