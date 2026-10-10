@@ -970,7 +970,10 @@ def _face_codes(
            tuple(set_names) if scheme == "elset" else (),
            cache_store.render_sig(ws, instance),
            cache_store.file_sig(_geom_h5_path(idx, instance)), sets_sig,
-           len(etype_arr))
+           len(etype_arr),
+           # section / region 分类依赖 L2 高级阶段的 averaging_data，高级索引
+           # 加载前后结果不同；与 result_service 的 advanced_version 同口径
+           int(getattr(idx, "_advanced_status_mtime_ns", 0)))
     hit = cache_store.mem_get(key)
     if hit is not None:
         return hit

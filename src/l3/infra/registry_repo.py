@@ -576,6 +576,24 @@ class RegistryRepo:
             ).fetchone()
             return row is not None
 
+    def has_active_tasks(self) -> bool:
+        """全局：是否有任何解析任务在排队/运行（项目几何、结果组、旧版 ODB job）。
+
+        L3 缓存预热用它让路：解析是 CPU/磁盘大户，预热只是锦上添花。
+        """
+        with self._connect() as conn:
+            for sql in (
+                "SELECT 1 FROM projects WHERE geom_status IN ('pending','running') LIMIT 1",
+                "SELECT 1 FROM result_groups WHERE status IN ('pending','running') LIMIT 1",
+                "SELECT 1 FROM odb_jobs WHERE status IN ('submitted','l1_running','l2_running') LIMIT 1",
+            ):
+                try:
+                    if conn.execute(sql).fetchone() is not None:
+                        return True
+                except sqlite3.OperationalError:
+                    continue        # 老库缺表
+        return False
+
     def clone_project_records(self, source_project_id: str, new_project_id: str) -> None:
         """
         Clone registry rows for one project and all its result_groups.

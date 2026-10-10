@@ -128,6 +128,24 @@
 - 内容：A 类（color-code 各 scheme、element-mesh-edges）+ B 类（见 3.1）。
 - 仍是单线程串行的后台 daemon 线程，幂等（已缓存的直接命中跳过），失败只记日志。
 - `APP_WARMUP=0` 关闭自动预计算，手动接口仍可用。
+- **调度（2026-10-09 第二轮补充）**：
+  - 导入即预计算：poll 记录每个项目的状态签名（几何状态 + 各结果组状态），服务运行期间签名变化且
+    项目整体就绪（几何 ready、无排队/运行中的结果组）→ 记入待办，解析空闲时主动加载并预热，
+    即使没人打开。首轮 poll 只记基线：服务启动前就有的老项目不主动加载（避免一启动全部进内存）。
+  - 解析让路：有任何解析任务（项目几何 / 结果组 / 旧版 ODB job，以及几何 ready 之后后台继续跑的
+    L2 高级索引阶段——`l2/advanced_status.json` 为 pending/running，超过 12 小时未更新视为残留）
+    排队或运行时，自动触发的预热一律推迟；预热进行中每个组合开始前也检查一次，遇到解析开始即中止，之后补做（已算部分在缓存里）。
+    原因：结果组解析时每写完一个字段 result_files 就多一行，旧逻辑下 poll 每 10 秒都会重新触发一轮
+    预热，和解析抢 CPU/磁盘。手动 `POST /results/warmup` 不受限制。
+  - 跨进程去重：`l3_cache/.warmup.lock`（Linux flock / Windows msvcrt，进程退出自动释放）保证同一
+    工作区同时只有一个进程在预热；完成后写 `l3_cache/.warmup_done`（result_files 全部条目 + 结果文件
+    (mtime,size) 的摘要），其他进程处理待办时看到签名一致就不再为预热去加载模型。两个控制文件不参与
+    容量淘汰；L2 重跑清空 l3_cache 时一并删除。
+  - L2 分阶段（开发者 2a59fe0）后，单元平均云图与按截面/区域着色依赖高级阶段的 averaging_data：
+    frame-scalars / scalar-range 的 key 已带 `advanced_version`（开发者加），color-code 分类编码的
+    key 同样加入该版本，高级索引加载前算出的结果不会在加载后继续命中。
+  - 代价：新导入的模型会被加载进内存，受 `APP_MAX_LOADED_PROJECTS` LRU 上限约束，连续导入多个
+    会挤出最久没用的模型（磁盘缓存不受影响）。
 
 ### 3.5 清理
 
@@ -160,6 +178,8 @@
 - [x] 第 4 步 element-mesh-edges 缓存（`services/mesh_edge_service.py`；响应头加 `X-Cache`；去重改一维 int64 键；测试 `test_l3_mesh_edges_cache.py`）
 - [x] 第 5 步 frame-colors 缓存（set 过滤与着色前的 soup 顶点标量进统一缓存；预热用路由默认分量 U1）
 - [x] 第 6 步 结果组重新解析清理（`job_runner` / `runner_thread` 的 `_cleanup_result_group` 在解析前删 `groups/<result_group>/`）
+- [x] 补充 预热调度：导入即预计算 + 解析让路 + 跨进程文件锁（`warmup_service`、`main._poll_registry_once`、
+  `registry_repo.has_active_tasks`；测试 `test_l3_warmup_scheduling.py`）
 - [x] 第 7 步 文档同步（Quick-Reference 更新时间行与 warmup / element-mesh-edges / deformed-positions / modal-animation 段落、CLAUDE.md、Perf-Cache-Worklog、近期效率优化总览）
 
 ## 6. 验证情况（2026-10-09，本机等价脚本，非 pytest）

@@ -427,7 +427,7 @@ async def post_results_warmup(odb_id: str):
 
     if odb_id not in registry.known_ids():
         raise CoreNotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
-    status = warm_odb_async(odb_id, reason="manual")
+    status = warm_odb_async(odb_id, reason="manual", force=True)
     return ok({"odb_id": odb_id, "warmup": status})
 
 

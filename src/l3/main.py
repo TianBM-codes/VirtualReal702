@@ -200,6 +200,7 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
     # needs to become *reachable*, and the first request for it pays the load.
     # peek() rather than get() — get() would pull every project back into RAM
     # on every tick and defeat the LRU cap.
+    from .services import warmup_service
     from .services.warmup_service import maybe_warm_new_targets
 
     for row in repo.list_ready_or_l1done():
@@ -237,6 +238,16 @@ def _poll_registry_once(repo: RegistryRepo) -> None:
         # poll 发现 result_files 变化。
         if settings.enable_warmup and existing is not None:
             maybe_warm_new_targets(project_id)
+        # 导入即预计算：本次运行期间新导入完成 / 新结果组 ready 的项目，即使
+        # 没人打开也主动加载并预热（解析全部空闲时才做，见 run_pending）。
+        if settings.enable_warmup:
+            groups = tuple(sorted((g["result_group"], g["status"])
+                                  for g in repo.list_result_groups(project_id)))
+            warmup_service.note_project_state(project_id, (row["geom_status"], groups))
+
+    if settings.enable_warmup:
+        warmup_service.finish_poll_round()
+        warmup_service.run_pending()
 
 
 def _poll_loop(repo: RegistryRepo) -> None:
@@ -270,7 +281,13 @@ async def lifespan(app: FastAPI):
     if settings.enable_warmup:
         # 在 bootstrap 之前注册，启动预载的模型也会触发预热
         from .core.state import set_on_render_ready_loaded
-        from .services.warmup_service import warm_odb_async
+        from .services.warmup_service import (
+            advanced_busy, set_busy_check, warm_odb_async)
+        _busy_repo = RegistryRepo(settings.registry_db_path)
+        # 解析繁忙时自动预热让路：registry 里有排队/运行的任务，或某个工作区的
+        # L2 高级索引阶段还没跑完（该阶段在 geom ready 之后，registry 看不到）
+        set_busy_check(lambda: _busy_repo.has_active_tasks() or any(
+            advanced_busy(ws) for ws in registry.known_workspaces()))
         set_on_render_ready_loaded(
             lambda odb_id: warm_odb_async(odb_id, reason="model loaded"))
     _t0 = time.perf_counter()
