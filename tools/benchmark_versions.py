@@ -9,7 +9,10 @@ Fully automated workflow:
 The auto mode creates/reuses an isolated Git worktree for the old commit, starts
 the API and job runner, submits BDF/OP2 imports, benchmarks the ready project,
 then repeats the same process for the current version. Only benchmark project
-IDs configured in the JSON file are deleted.
+IDs configured in the JSON file are deleted. They must not be numeric: the
+managed services share the real MySQL database from service_config.json, and
+the service purges/overwrites model-update rows by numeric project id. Managed
+services run with APP_WARMUP=0 unless a version's env overrides it.
 
 The script streams binary responses instead of retaining them in memory. Results
 are written as raw CSV plus a compact Markdown comparison report.
@@ -20,6 +23,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -40,6 +44,10 @@ import requests
 
 DEFAULT_TIMEOUT = 1800.0
 TERMINAL_STATES = {"ready", "error", "not_found"}
+ADVANCED_BUSY_STATES = {"pending", "running"}
+LOG_PAGE_SIZE = 1000
+# Waiting time, not processing cost; the old value is mostly polling latency.
+NO_RATIO_CASES = {"op2_queue_wait"}
 
 
 class HttpRequestError(RuntimeError):
@@ -141,6 +149,9 @@ def _request(
         raise HttpRequestError(exc.code, url, detail) from exc
     except URLError as exc:
         raise RuntimeError(f"Cannot reach {url}: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # urllib leaves read timeouts and dropped connections unwrapped.
+        raise RuntimeError(f"Cannot reach {url}: {exc!r}") from exc
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -314,18 +325,29 @@ def _parse_ts(value: str) -> datetime | None:
 def _log_stage_rows(version: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, Any]]:
     timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
     project_id = str(version["project_id"])
+    logs: list[dict[str, Any]] = []
+    since_id = 0
     try:
-        data = _json_get(
-            version["base_url"], f"api/projects/{quote(project_id, safe='')}/logs", timeout,
-            {"since_id": 0, "limit": 1000},
-        )
+        # Every subprocess output line is a log row, so page through all of them;
+        # the OP2 stage comes last and would be the first to be cut off.
+        while True:
+            data = _json_get(
+                version["base_url"], f"api/projects/{quote(project_id, safe='')}/logs", timeout,
+                {"since_id": since_id, "limit": LOG_PAGE_SIZE},
+            )
+            page = data.get("logs", [])
+            logs.extend(page)
+            next_since_id = int(data.get("next_since_id") or since_id)
+            if len(page) < LOG_PAGE_SIZE or next_since_id <= since_id:
+                break
+            since_id = next_since_id
     except HttpRequestError as exc:
         if exc.status != 404:
             raise
         print(f"[{version['name']}] project logs are not available; skipping log-derived timings.")
         return []
     grouped: dict[str, list[datetime]] = {}
-    for item in data.get("logs", []):
+    for item in logs:
         ts = _parse_ts(item.get("ts", ""))
         stage = str(item.get("stage") or "")
         if ts and stage:
@@ -381,59 +403,121 @@ def _delete_benchmark_project(version: dict[str, Any], settings: dict[str, Any])
             raise
 
 
-def _ensure_runner_alive(version: dict[str, Any]) -> None:
-    process = version.get("_runner_process")
-    if process is None or process.poll() is None:
-        return
-    log_path = Path(str(version.get("_runner_log") or ""))
-    raise RuntimeError(
-        f"{version['name']}: job runner exited with {process.returncode}\n{_tail(log_path)}"
-    )
+def _ensure_service_alive(version: dict[str, Any]) -> None:
+    for process_key, log_key, label in (
+        ("_app_process", "_app_log", "API process"),
+        ("_runner_process", "_runner_log", "job runner"),
+    ):
+        process = version.get(process_key)
+        if process is None or process.poll() is None:
+            continue
+        log_path = Path(str(version.get(log_key) or ""))
+        raise RuntimeError(
+            f"{version['name']}: {label} exited with {process.returncode}\n{_tail(log_path)}"
+        )
+
+
+def _poll_project(version: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any] | None:
+    """Poll the project status once; a timeout or dropped connection returns None.
+
+    The first GET that sees geom_status=ready loads the model into memory before
+    answering, which can outlast the per-poll timeout on large models.
+    """
+    _ensure_service_alive(version)
+    timeout = min(float(settings.get("timeout_seconds", DEFAULT_TIMEOUT)), 30.0)
+    try:
+        return _project_status(version, timeout)
+    except HttpRequestError:
+        raise
+    except RuntimeError as exc:
+        now = time.monotonic()
+        if now - float(version.get("_last_poll_warning") or 0.0) >= 10.0:
+            print(f"[{version['name']}] status poll failed, retrying: {exc}", file=sys.stderr)
+            version["_last_poll_warning"] = now
+        return None
+
+
+def _advanced_status(project: dict[str, Any]) -> str:
+    # Versions without staged L2 do not report it: their geometry is complete at ready.
+    return str(project.get("advanced_status") or "ready")
 
 
 def _wait_for_geometry(
-    version: dict[str, Any], settings: dict[str, Any], started: float
-) -> dict[str, Any]:
-    timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
+    version: dict[str, Any], settings: dict[str, Any]
+) -> tuple[dict[str, Any], float]:
     poll = max(0.2, float(settings.get("poll_seconds", 1.0)))
     deadline = time.monotonic() + float(settings.get("watch_timeout_seconds", 7200))
     while time.monotonic() < deadline:
-        _ensure_runner_alive(version)
-        project = _project_status(version, min(timeout, 30.0))
-        status = str(project.get("geom_status") or "not_found")
-        if status in {"ready", "error"}:
-            row = _watch_row(version, "bdf_import_total", started, time.perf_counter(), status)
-            print(f"[{version['name']}] BDF finished: {status}, {row['elapsed_ms'] / 1000:.2f} s")
-            if status == "error":
-                raise RuntimeError(f"{version['name']}: BDF import failed; inspect the service logs")
-            return row
+        project = _poll_project(version, settings)
+        if project is not None and project.get("geom_status") in {"ready", "error"}:
+            return project, time.perf_counter()
         time.sleep(poll)
     raise TimeoutError(f"{version['name']}: BDF import timed out")
 
 
+def _wait_for_advanced(
+    version: dict[str, Any], settings: dict[str, Any]
+) -> tuple[str, float]:
+    """Wait for staged-L2 advanced indexes so they do not overlap the measurements."""
+    poll = max(0.2, float(settings.get("poll_seconds", 1.0)))
+    deadline = time.monotonic() + float(settings.get("watch_timeout_seconds", 7200))
+    announced = False
+    while time.monotonic() < deadline:
+        project = _poll_project(version, settings)
+        if project is not None:
+            status = _advanced_status(project)
+            if status not in ADVANCED_BUSY_STATES:
+                return status, time.perf_counter()
+            if not announced:
+                print(f"[{version['name']}] waiting for L2 advanced indexes ({status}) before measuring")
+                announced = True
+        time.sleep(poll)
+    raise TimeoutError(f"{version['name']}: L2 advanced indexes did not finish")
+
+
 def _wait_for_result_group(
-    version: dict[str, Any], settings: dict[str, Any], started: float
+    version: dict[str, Any], settings: dict[str, Any], watch_advanced: bool
 ) -> dict[str, Any]:
-    timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
+    """Poll until the OP2 result group finishes.
+
+    Also notes when the job runner claims it (status running) and, when asked,
+    when the advanced indexes it may be queued behind have finished.
+    """
     poll = max(0.2, float(settings.get("poll_seconds", 1.0)))
     deadline = time.monotonic() + float(settings.get("watch_timeout_seconds", 7200))
     target = str(version["result_group"])
+    marks: dict[str, Any] = {"running": None, "advanced": None, "advanced_status": None}
     while time.monotonic() < deadline:
-        _ensure_runner_alive(version)
-        project = _project_status(version, min(timeout, 30.0))
-        match = next(
-            (g for g in project.get("result_groups", []) if g.get("result_group") == target),
-            None,
-        )
-        status = str(match.get("status")) if match else "not_found"
-        if status in {"ready", "error"}:
-            row = _watch_row(version, "op2_import_total", started, time.perf_counter(), status)
-            print(f"[{version['name']}] OP2 finished: {status}, {row['elapsed_ms'] / 1000:.2f} s")
-            if status == "error":
-                raise RuntimeError(f"{version['name']}: OP2 import failed; inspect the service logs")
-            return row
+        project = _poll_project(version, settings)
+        if project is not None:
+            now = time.perf_counter()
+            if watch_advanced and marks["advanced"] is None:
+                advanced = _advanced_status(project)
+                if advanced not in ADVANCED_BUSY_STATES:
+                    marks["advanced"], marks["advanced_status"] = now, advanced
+            match = next(
+                (g for g in project.get("result_groups", []) if g.get("result_group") == target),
+                None,
+            )
+            status = str(match.get("status")) if match else "not_found"
+            if status == "running" and marks["running"] is None:
+                marks["running"] = now
+            if status in {"ready", "error"}:
+                marks["status"], marks["ready"] = status, now
+                return marks
         time.sleep(poll)
     raise TimeoutError(f"{version['name']}: OP2 import timed out")
+
+
+def _full_ready_row(
+    version: dict[str, Any], started: float, ended: float, status: str
+) -> dict[str, Any]:
+    row = _watch_row(version, "bdf_full_ready_total", started, ended, status)
+    print(
+        f"[{version['name']}] full geometry incl. L2 advanced indexes: {status}, "
+        f"{row['elapsed_ms'] / 1000:.2f} s"
+    )
+    return row
 
 
 def _submit_imports(
@@ -441,21 +525,22 @@ def _submit_imports(
 ) -> list[dict[str, Any]]:
     timeout = float(settings.get("timeout_seconds", DEFAULT_TIMEOUT))
     sources = config.get("sources", {})
+    include_op2 = bool(settings.get("include_op2", True))
     bdf_path = str(Path(sources["bdf_path"]).resolve())
-    op2_path = str(Path(sources["op2_path"]).resolve()) if settings.get("include_op2", True) else ""
+    op2_path = str(Path(sources["op2_path"]).resolve()) if include_op2 else ""
     project_id = str(version["project_id"])
-    rows: list[dict[str, Any]] = []
+    name = version["name"]
 
     if bool(settings.get("delete_existing_project", True)):
         _delete_benchmark_project(version, settings)
     elif _project_status(version, min(timeout, 30.0)).get("geom_status") != "not_found":
         raise RuntimeError(
-            f"{version['name']}: project {project_id} already exists; enable delete_existing_project "
+            f"{name}: project {project_id} already exists; enable delete_existing_project "
             "or choose another benchmark project_id"
         )
 
-    print(f"[{version['name']}] submitting BDF: {bdf_path}")
-    started = time.perf_counter()
+    print(f"[{name}] submitting BDF: {bdf_path}")
+    bdf_started = time.perf_counter()
     _json_request(
         version["base_url"],
         "api/projects",
@@ -463,31 +548,69 @@ def _submit_imports(
         method="POST",
         payload={"project_id": project_id, "source_path": bdf_path, "source_type": "bdf"},
     )
-    rows.append(_wait_for_geometry(version, settings, started))
+    project, geom_ready = _wait_for_geometry(version, settings)
+    geom_status = str(project.get("geom_status"))
+    print(f"[{name}] BDF finished: {geom_status}, {geom_ready - bdf_started:.2f} s")
+    if geom_status == "error":
+        raise RuntimeError(f"{name}: BDF import failed; inspect the service logs")
+    rows = [_watch_row(version, "bdf_import_total", bdf_started, geom_ready, geom_status)]
+    advanced_status = _advanced_status(project)
+    advanced_done = geom_ready if advanced_status not in ADVANCED_BUSY_STATES else None
 
-    if bool(settings.get("include_op2", True)):
-        result_group = str(
-            version.get("result_group") or settings.get("result_group") or "benchmark_op2"
+    if not include_op2:
+        if advanced_done is None:
+            advanced_status, advanced_done = _wait_for_advanced(version, settings)
+        rows.append(_full_ready_row(version, bdf_started, advanced_done, advanced_status))
+        return rows
+
+    # Submit OP2 as soon as the geometry is usable, like the frontend does. The
+    # job runner is single-threaded, so the OP2 job queues behind any geometry
+    # work still running (staged L2 advanced indexes, model-update import).
+    result_group = str(
+        version.get("result_group") or settings.get("result_group") or "benchmark_op2"
+    )
+    version["result_group"] = result_group
+    print(f"[{name}] submitting OP2: {op2_path}")
+    op2_started = time.perf_counter()
+    payload: dict[str, Any] = {
+        "source_path": op2_path,
+        "result_group": result_group,
+        "display_name": f"{name} benchmark",
+    }
+    parse_options = settings.get("op2_parse_options")
+    if isinstance(parse_options, dict) and parse_options:
+        payload["parse_options"] = parse_options
+    _json_request(
+        version["base_url"],
+        f"api/projects/{quote(project_id, safe='')}/results",
+        timeout,
+        method="POST",
+        payload=payload,
+    )
+    marks = _wait_for_result_group(version, settings, watch_advanced=advanced_done is None)
+    op2_status, op2_ready = marks["status"], marks["ready"]
+    print(f"[{name}] OP2 finished: {op2_status}, {op2_ready - op2_started:.2f} s")
+    if op2_status == "error":
+        raise RuntimeError(f"{name}: OP2 import failed; inspect the service logs")
+
+    if advanced_done is None and marks["advanced"] is not None:
+        advanced_status, advanced_done = marks["advanced_status"], marks["advanced"]
+    if advanced_done is not None:
+        rows.append(_full_ready_row(version, bdf_started, advanced_done, advanced_status))
+    else:
+        print(
+            f"[{name}] L2 advanced indexes still {advanced_status}; bdf_full_ready_total skipped",
+            file=sys.stderr,
         )
-        version["result_group"] = result_group
-        print(f"[{version['name']}] submitting OP2: {op2_path}")
-        started = time.perf_counter()
-        payload: dict[str, Any] = {
-            "source_path": op2_path,
-            "result_group": result_group,
-            "display_name": f"{version['name']} benchmark",
-        }
-        parse_options = settings.get("op2_parse_options")
-        if isinstance(parse_options, dict) and parse_options:
-            payload["parse_options"] = parse_options
-        _json_request(
-            version["base_url"],
-            f"api/projects/{quote(project_id, safe='')}/results",
-            timeout,
-            method="POST",
-            payload=payload,
-        )
-        rows.append(_wait_for_result_group(version, settings, started))
+    running = marks["running"]
+    if running is not None:
+        print(f"[{name}] OP2 queued {running - op2_started:.2f} s, parsed {op2_ready - running:.2f} s")
+        rows.append(_watch_row(version, "op2_queue_wait", op2_started, running, "running"))
+        rows.append(_watch_row(version, "op2_parse", running, op2_ready, op2_status))
+    else:
+        print(f"[{name}] OP2 finished between two polls; queue/parse split unavailable")
+    rows.append(_watch_row(version, "op2_import_total", op2_started, op2_ready, op2_status))
+    rows.append(_watch_row(version, "end_to_end_total", bdf_started, op2_ready, op2_status))
     return rows
 
 
@@ -634,13 +757,14 @@ def _write_outputs(
     lines = [
         "# Version benchmark", "", f"Generated: {datetime.now().isoformat(timespec='seconds')}", "",
         "## Test inputs", "",
-        "| Version | Git commit | BDF parser | Project | Service |",
-        "|---|---|---|---|---|",
+        "| Version | Git commit | BDF parser | APP_WARMUP | Project | Service |",
+        "|---|---|---|---|---|---|",
     ]
     for version in versions:
         lines.append(
             f"| {version['name']} | {version.get('resolved_commit') or version.get('commit') or '-'} | "
-            f"{version.get('bdf_parser') or '-'} | {version['project_id']} | {version['base_url']} |"
+            f"{version.get('bdf_parser') or '-'} | {version.get('warmup_env') or '-'} | "
+            f"{version['project_id']} | {version['base_url']} |"
         )
     if source_info:
         lines += ["", "| Source | Size | SHA-256 |", "|---|---:|---|"]
@@ -664,7 +788,8 @@ def _write_outputs(
         )
         ratio = (
             new["first"] / old["first"] * 100.0
-            if old["first"] and new["first"] is not None and not tiny_http_sample
+            if (old["first"] and new["first"] is not None and not tiny_http_sample and
+                item["case"] not in NO_RATIO_CASES)
             else None
         )
         improvement = (100.0 - ratio) if ratio is not None else None
@@ -709,6 +834,11 @@ def _write_outputs(
         "- Backend processing time comes from `X-Elapsed-Time-Ms`; it excludes client/network scheduling and is the better metric for tiny responses such as metadata.",
         "- Sub-10 ms HTTP measurements are sensitive to operating-system scheduling; compare the server repeat median instead of a single percentage.",
         "- HTTP percentages are suppressed for responses below 64 KiB when both versions finish within 50 ms; backend percentages are suppressed below 10 ms. Use the absolute times/delta instead.",
+        "- `bdf_import_total` ends when the base geometry is usable; staged-L2 versions publish it before the advanced indexes. `bdf_full_ready_total` also waits for the advanced L2 indexes and equals `bdf_import_total` for single-stage versions.",
+        "- OP2 is submitted as soon as the geometry is usable, like the frontend does. The job runner is single-threaded, so the OP2 job may queue behind the remaining geometry work: `op2_queue_wait` is submit to runner claim, `op2_parse` is runner claim to ready, `op2_import_total` is their sum and `end_to_end_total` is BDF submit to OP2 ready. Queue time is waiting rather than parsing cost, so it has no percentage.",
+        "- Import timings come from status polling and have about `poll_seconds` precision.",
+        "- Auto mode starts every managed service with `APP_WARMUP=0` unless the version's `env` overrides it, so background cache warm-up cannot overlap the measurements. Versions without warm-up ignore the variable.",
+        "- `first` is a single sample. Versions with the unified L3 result cache share per-frame vertex displacements between `modal_shape`, `deformed_positions` and `modal_animation`; the cases run in that order, so the later two may reuse what `modal_shape` computed and their `first` is not fully cold.",
         "- `log_*` durations are derived from the first and last timestamps for that stage and have one-second precision.",
         "- Versions run sequentially to avoid CPU/disk contention; the second run may still benefit from the OS file cache.",
         "- Negative improvement means the new version was slower.", "",
@@ -833,6 +963,15 @@ def _prepare_version_repo(
     return repo_path
 
 
+def _is_numeric_id(value: Any) -> bool:
+    # Same test the service uses before touching MySQL (int(project_id)).
+    try:
+        int(str(value))
+    except ValueError:
+        return False
+    return True
+
+
 def _service_port(base_url: str) -> int:
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -897,6 +1036,9 @@ def _start_managed_service(
         "APP_REGISTRY_DB_PATH": str(version_runtime / "registry.db"),
         "APP_EMBEDDED_RUNNER": "0",
         "JOB_RUNNER_POLL_INTERVAL": str(automation.get("runner_poll_seconds", 1)),
+        # Background cache warm-up would run during the measurements. Versions
+        # without warm-up ignore this; a version's env can set it back to 1.
+        "APP_WARMUP": "0",
     })
     source_repo = _config_path(str(automation.get("repository_path", "..")), config_dir)
     config_file_raw = automation.get("service_config")
@@ -911,6 +1053,7 @@ def _start_managed_service(
     if configured_env and not isinstance(configured_env, dict):
         raise ValueError(f"{version['name']}: env must be an object")
     env.update({str(k): str(v) for k, v in configured_env.items()})
+    version["warmup_env"] = env["APP_WARMUP"]
 
     log_dir = output_dir / "service_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -953,6 +1096,8 @@ def _start_managed_service(
                 f"{version['name']}: job runner exited with {runner_process.returncode}\n"
                 f"{_tail(runner_log)}"
             )
+        version["_app_process"] = app_process
+        version["_app_log"] = str(app_log)
         version["_runner_process"] = runner_process
         version["_runner_log"] = str(runner_log)
         print(f"[{version['name']}] logs: {app_log} ; {runner_log}")
@@ -1086,6 +1231,13 @@ def main() -> int:
     print("Test scope: " + ("BDF + OP2 + result endpoints" if include_op2 else "BDF only"))
     source_info = _verify_sources(config)
     if args.mode == "auto":
+        numeric_ids = [str(v["project_id"]) for v in versions if _is_numeric_id(v["project_id"])]
+        if numeric_ids:
+            raise ValueError(
+                f"auto mode requires non-numeric project_id values, got {', '.join(numeric_ids)}: "
+                "the managed services use the real MySQL from service_config.json, and the "
+                "service purges/overwrites model-update rows of numeric project ids on delete/import"
+            )
         required_sources = {"bdf_path"} | ({"op2_path"} if include_op2 else set())
         missing_sources = [
             key for key in sorted(required_sources)
@@ -1114,6 +1266,7 @@ def main() -> int:
             print(f"Sequential phase {index + 1}/2: {version['name']}")
             print(f"Expected service: {version['base_url']}, project: {version['project_id']}")
             rows.extend(_watch_imports([version], settings))
+            _wait_for_advanced(version, settings)
             rows.extend(_log_stage_rows(version, settings))
             rows.extend(_benchmark_version(version, settings))
             if index == 0:
@@ -1126,6 +1279,7 @@ def main() -> int:
             rows.extend(_watch_imports(versions, settings))
         if args.mode in ("benchmark", "all"):
             for version in versions:
+                _wait_for_advanced(version, settings)
                 rows.extend(_log_stage_rows(version, settings))
                 rows.extend(_benchmark_version(version, settings))
 

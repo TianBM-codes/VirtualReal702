@@ -4,8 +4,10 @@
 自动模式会完成以下流程：
 
 1. 为旧提交创建独立 Git worktree，不切换当前工作区。
-2. 启动旧版 API 和任务进程，删除同名 benchmark 项目，提交 BDF，再提交 OP2。
-3. 等待解析完成，记录导入阶段耗时，并测量模型和结果接口的首次及重复请求耗时。
+2. 启动旧版 API 和任务进程，删除同名 benchmark 项目，提交 BDF；几何一就绪就提交 OP2，
+   与前端的真实操作一致。
+3. 等待解析全部完成（包括新版在后台继续跑的 L2 高级索引），记录导入各阶段耗时，再测量
+   模型和结果接口的首次及重复请求耗时。
 4. 停止旧版进程，再用同一端口启动当前工作区的新版，重复相同测试。
 5. 输出原始 CSV、Markdown 汇总和两套服务日志。
 
@@ -34,10 +36,29 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 上一次意外中断留下的任务干扰本轮；每轮结束会通过项目 API 删除本轮的大体积模型数据，
 只留下很小的注册库和日志用于排查。
 
+## 测试条件
+
+- **项目 ID 不能是纯数字**：自动模式启动的服务只隔离了数据目录和注册库，MySQL 仍然是
+  `service_config.json` 里配置的那一个。服务删除项目时会按数字项目号清理 MySQL 里的模型修正
+  数据，BDF 导入也会按数字项目号先清空再重写 FEM 表，所以脚本会直接拒绝纯数字的
+  `project_id`。示例里的 `bench_50w_old` 不是数字，服务会跳过 MySQL 这一步；这也意味着
+  测到的导入时间不包含正式使用时的"BDF 导入 model_update"。
+- **默认关闭缓存预热**：新版的服务会在结果就绪后自动在后台预热缓存（提前算好每个 step
+  最后一帧的云图和位移）。预热和测量同时进行时，会和接口请求抢资源，还可能让首次请求直接
+  用上预热好的缓存，结果随机、不可复现。因此脚本启动服务时默认设置 `APP_WARMUP=0`；旧版
+  没有预热功能，会忽略这个变量。报告的输入表会列出每个版本的 `APP_WARMUP`。如果想测"开着
+  预热"的效果，在该版本的 `env` 里写 `"APP_WARMUP": "1"`，并在解读首次请求时说明哪些是缓存
+  命中。
+
 ## 输出指标
 
-- `bdf_import_total`：从提交 BDF 到基础几何项目 ready 的总耗时。新版两阶段 L2 中，它包含 BDF 解析和 `l2_core`，不等待高级索引完成；旧版仍包含完整 L2。
-- `op2_import_total`：从提交 OP2 到结果组 ready 的总耗时。
+- `bdf_import_total`：从提交 BDF 到基础几何 ready（前端已经能看到模型）的耗时。新版两阶段 L2 中，它只包含 BDF 解析和 `l2_core`；旧版包含完整 L2。
+- `bdf_full_ready_total`：从提交 BDF 到 L2 高级索引（邻接、边线、Octree）也完成的耗时。旧版不分阶段，等于 `bdf_import_total`。比较新旧版几何处理的总耗时看这一行。
+- `op2_queue_wait`：从提交 OP2 到任务进程开始处理它的排队时间。任务进程一次只做一件事，新版在几何 ready 后还要继续跑高级索引，OP2 会排在它后面。这段是等待，不是 OP2 解析变慢，所以报告不计算它的提升百分比。
+- `op2_parse`：从任务进程开始处理 OP2 到结果组 ready 的耗时，反映 OP2 解析本身。
+- `op2_import_total`：从提交 OP2 到结果组 ready 的总耗时，等于排队加解析，也就是用户提交 OP2 后实际等待的时间。
+- `end_to_end_total`：从提交 BDF 到 OP2 结果组 ready 的端到端总耗时。
+- 以上导入耗时都靠轮询状态得到，精度约等于 `poll_seconds`（默认 1 秒）。如果 OP2 在两次轮询之间就处理完，无法拆分排队和解析，报告里只有 `op2_import_total`。
 - `log_l1_bdf`、`log_l2_core`、`log_l2_advanced`、`log_l2_ingest`、`log_rg_op2`：由任务日志估算的各处理阶段耗时。`l2_ingest` 用于旧版兼容，日志时间戳精度为一秒。
 - `metadata`、`model_load`、`modal_shape`、`deformed_positions`、`modal_animation`：前端实际使用的读取接口耗时。
 - `Improvement`：`(旧版耗时 - 新版耗时) / 旧版耗时`；正数表示新版更快，负数表示新版更慢。
@@ -48,6 +69,11 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 - **Backend processing time**：读取响应头 `X-Elapsed-Time-Ms`，只反映服务端处理；对于只有几百字节的 `metadata`，这个指标比 HTTP 总时间稳定。
 
 自动模式每次都会重新启动被测服务，因此接口的 `first` 是脚本在该版本本轮测量阶段观察到的首次请求；`repeat median` 是除首次请求外的中位数，更接近日常重复操作的响应速度。示例配置通过 `repeat_by_case.metadata=21` 单独增加小响应采样次数，不会让几十 MiB 的模型接口也重复 21 次。低于 10 ms 的 HTTP 数值很容易受 Windows 线程调度影响，不应根据单次请求计算出的百分比判断代码回归。
+
+`first` 只有一次采样，结论要结合 `repeat median` 看。另外，带统一结果缓存的新版里，
+`modal_shape`、`deformed_positions`、`modal_animation` 共用同一帧的顶点位移；脚本按这个
+顺序测，所以后两项的 `first` 可能已经用上了 `modal_shape` 算好的位移，不是完全冷启动。旧版
+没有这层缓存，看这两项的提升百分比时要考虑这一点。
 
 两版顺序执行可以避免同时争抢 CPU、内存和磁盘，但后运行的新版仍可能受益于 Windows 的
 文件缓存。日常判断可直接使用本报告；如果结果要用于正式对外结论，建议重启电脑后再跑一轮，
