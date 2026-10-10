@@ -61,3 +61,13 @@ increment 优先读取可选的 `increment` 列，其次从 `frame_desc` 中提�
 `Increment 6` 这样的编号。两者都没有时回退到 `frame_idx`（输出帧号）。
 帧号可能与求解增量号不同，例如 ODB 只保存部分增量时；脚本不会把文本排序的
 `1,10,2` 当作正确顺序。曲线的空数值作为缺失值处理，不补零。
+
+## 测点方向投影
+
+`odb_node_history.py --sensors` 给带测量方向的测点额外导出 `component = proj:<测点名>` 的行
+（field 仍是 U / S / E，壳单元同样按截面点分开），可以像普通分量一样筛选和画图。测点对应哪个节点
+见同时导出的 `<输出名>_sensors.csv` 匹配表：
+
+```powershell
+python tools/extract_node_results.py --nodes PART-1-1.101 --components proj:SG1 --plot
+```
