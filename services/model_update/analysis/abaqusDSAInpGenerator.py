@@ -1286,10 +1286,13 @@ def _build_scope_structure_lines(
                     f"** Auto section subset from mother set {group['mother_set'][2]}: {group['group_set_name']}"
                 )
                 lines.extend(build_set_block("*ELSET", group["group_set_name"], group["elements"]))
+            elastic_parameter = task.get("quantity_code") == "E"
+            material_name = (f"DSA_{parameter_alias}_{group['material']}"
+                             if elastic_parameter else group['material'])
             lines.append(
-                f"{group['section_keyword']}, ELSET={group['group_set_name']}, MATERIAL={group['material']}"
+                f"{group['section_keyword']}, ELSET={group['group_set_name']}, MATERIAL={material_name}"
             )
-            lines.append(f"<{parameter_alias}>")
+            lines.append(str(group['original_thickness']) if elastic_parameter else f"<{parameter_alias}>")
         lines.append(
             f"** {AUTO_COMMENT_PREFIX}_TASK_END index={idx} parameter={parameter_name} alias={parameter_alias} set={task['set_name']}"
         )

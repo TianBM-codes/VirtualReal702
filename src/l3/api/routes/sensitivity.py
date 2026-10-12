@@ -194,6 +194,7 @@ def _expand_external_sensitivity_fields(manifest: ManifestRepo, result_group: st
     for frame in frames:
         frame_idx = int(frame["frame_idx"])
         description = str(frame["description"] or "").strip() or f"Frame {frame_idx}"
+        response_match = re.fullmatch(r"(\d+):(U[123]|UR[123])", description, re.I)
         items.append({
             "field_name": _make_frame_alias(field_name, frame_idx),
             "source_field_name": field_name,
@@ -202,8 +203,8 @@ def _expand_external_sensitivity_fields(manifest: ManifestRepo, result_group: st
             "frame_value": float(frame["frame_value"]),
             "frame_description": description,
             # Keep legacy keys non-null so existing callers can still render a list.
-            "response_node_label": frame_idx + 1,
-            "component": description,
+            "response_node_label": int(response_match.group(1)) if response_match else frame_idx + 1,
+            "component": response_match.group(2).upper() if response_match else description,
         })
     return items
 

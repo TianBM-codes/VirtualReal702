@@ -295,6 +295,8 @@ def _default_step_from_rows(step_rows: List[dict]) -> Optional[str]:
 def _infer_temp_quantity_code_from_target(target_row: dict) -> str:
     component_name = str(target_row.get("component_name") or "").upper()
     source_keyword = str(target_row.get("source_keyword") or "").upper()
+    if component_name in {"E", "YOUNG", "YOUNGS_MODULUS"} or source_keyword == "ELASTIC":
+        return "E"
     if component_name == "THICKNESS" or component_name.startswith("DIM") or "SECTION" in source_keyword:
         return "T"
     return "DSA"
@@ -1064,14 +1066,14 @@ def _load_project_thickness_parameters(project_id: int) -> List[dict]:
     explicit_rows = [
         row
         for row in selected_rows
-        if str(row.get("quantity_code") or "").upper() in {"T", "H"}
+        if str(row.get("quantity_code") or "").upper() in {"T", "H", "E"}
     ]
     if explicit_rows:
         return explicit_rows
 
-    fallback_rows = _build_surrogate_thickness_parameters_from_capabilities(project_id, selected_rows)
-    if fallback_rows:
-        return fallback_rows
+    if selected_rows:
+        raise ValidationError("Selected quantities are not supported by the DSA generator",
+                              {"quantities": [row.get("quantity_code") for row in selected_rows]})
     return []
 
 
@@ -1434,7 +1436,10 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
             "set_name": set_name,
             "parameter": parameter_name,
             "elements": elements,
+            "quantity_code": str(row.get("quantity_code") or "T").upper(),
         }
+        if item["quantity_code"] == "E":
+            item["value"] = _jsonable_scalar(row.get("scalar_value"))
         set_scope = str(row.get("set_scope") or "").strip().upper()
         part_name = str(row.get("part_name") or "").strip()
         instance_name = str(row.get("instance_name") or "").strip()
@@ -1616,6 +1621,61 @@ def _serialize_mother_set_remainders(
     return serialized
 
 
+def _build_dsa_elastic_materials(main_lines: List[str], tasks: List[dict]) -> List[str]:
+    """Clone each selected material so unselected elements keep their original E."""
+    from .abaqusDSAInpGenerator import _build_parameter_alias_map
+
+    aliases = _build_parameter_alias_map(tasks)
+    material_blocks = {}
+    starts = [i for i, line in enumerate(main_lines) if re.match(r"^\s*\*MATERIAL\b", line, re.I)]
+    for start in starts:
+        match = re.search(r"\bNAME\s*=\s*([^,]+)", main_lines[start], re.I)
+        if not match:
+            continue
+        end = start + 1
+        material_keywords = {"DENSITY", "ELASTIC", "PLASTIC", "EXPANSION", "DAMPING"}
+        while end < len(main_lines):
+            line = main_lines[end].strip()
+            if line.startswith("*") and not line.startswith("**"):
+                keyword = line[1:].split(",")[0].strip().upper()
+                if keyword not in material_keywords:
+                    break
+            end += 1
+        material_blocks[match.group(1).strip().upper()] = main_lines[start:end]
+
+    output = []
+    emitted = set()
+    for task in tasks:
+        if task.get("quantity_code") != "E":
+            continue
+        alias = aliases[str(task["parameter"])]
+        for group in task["source_groups"]:
+            original = str(group["material"])
+            clone_name = f"DSA_{alias}_{original}"
+            if clone_name in emitted:
+                continue
+            block = list(material_blocks.get(original.upper(), []))
+            if not block:
+                raise ValueError(f"Material {original} must be defined in the main INP for E DSA")
+            block[0] = f"*MATERIAL, NAME={clone_name}"
+            elastic_index = next((i for i, line in enumerate(block)
+                                  if re.match(r"^\s*\*ELASTIC\b", line, re.I)), None)
+            if elastic_index is None or re.search(r"TYPE\s*=", block[elastic_index], re.I):
+                raise ValueError(f"Material {original} requires simple isotropic ELASTIC for E DSA")
+            data_indices = [i for i in range(elastic_index + 1, len(block))
+                            if block[i].strip() and not block[i].lstrip().startswith("**")]
+            data_index = data_indices[0] if data_indices else None
+            if data_index is None or block[data_index].lstrip().startswith("*"):
+                raise ValueError(f"Material {original} has no elastic data")
+            values = block[data_index].split(",")
+            if len(values) != 2 or (len(data_indices) > 1 and not block[data_indices[1]].lstrip().startswith("*")):
+                raise ValueError(f"Material {original} requires a single constant E/Poisson row")
+            block[data_index] = f"<{alias}>,{values[1]}"
+            output.extend(block)
+            emitted.add(clone_name)
+    return output
+
+
 def generate_project_dsa_inp_from_db(
         *,
         project_id: int,
@@ -1679,6 +1739,8 @@ def generate_project_dsa_inp_from_db(
             config["element_sets"],
             parsed,
         )
+        for task, item in zip(enriched_tasks, config["element_sets"]):
+            task["quantity_code"] = item.get("quantity_code", "T")
         include_layout = build_dsa_include_layout(
             config,
             enriched_tasks,
@@ -1694,6 +1756,11 @@ def generate_project_dsa_inp_from_db(
         )
         patched_main_lines = patch_scoped_include_lines(patched_main_lines, parsed, include_layout)
         patched_main_lines = patch_static_step_to_dsa(patched_main_lines, config)
+        material_lines = _build_dsa_elastic_materials(main_lines, enriched_tasks)
+        if material_lines:
+            first_step = next((i for i, line in enumerate(patched_main_lines)
+                               if re.match(r"^\s*\*STEP\b", line, re.I)), len(patched_main_lines))
+            patched_main_lines[first_step:first_step] = material_lines
         patched_main_lines = remove_blank_lines(patched_main_lines)
     except ValueError as exc:
         raise ValidationError(
@@ -3076,7 +3143,10 @@ def run_sensitivity_inp_and_store(
             keep_raw=keep_raw,
             timeout=timeout,
             result_group=project_result_parse["result_group"] if project_result_parse else None,
-            optimization_parameter_rows=list(temp_selected_parameters.get("optimization_parameter_rows") or []),
+            optimization_parameter_rows=(
+                _load_project_optimization_parameters(project_id, required_scope="SENSITIVITY")
+                or list(temp_selected_parameters.get("optimization_parameter_rows") or [])
+            ),
         )
 
         result = _finalize_sensitivity_store_result(
@@ -3637,6 +3707,7 @@ def _discover_sensitivity_fields_from_workspace(
         instances: Optional[List[str]],
         selector: dict,
         position: Optional[str],
+        source_result_group: Optional[str] = None,
 ) -> dict:
     workspace_abs = _workspace_path(workspace)
     conn = _manifest_conn(workspace_abs)
@@ -3687,6 +3758,8 @@ def _discover_sensitivity_fields_from_workspace(
                 if not selector["match"](field_name):
                     continue
                 result_group = str(row["result_group"]).strip() if row["result_group"] not in (None, "") else None
+                if source_result_group is not None and result_group != source_result_group:
+                    continue
                 fields_map.setdefault((field_name, result_group), []).append(str(row["position"]))
 
             selected = []

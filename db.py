@@ -329,7 +329,7 @@ CREATE_TABLE_SQL_LIST = [
     CREATE TABLE IF NOT EXISTS t_mt_py_fem_node_pairs (
         pid INT NOT NULL COMMENT '工程ID',
         node INT NOT NULL COMMENT '节点编号',
-        point INT NOT NULL COMMENT '点编号',
+        point VARCHAR(100) NOT NULL COMMENT '测点编号或名称',
         distance FLOAT NOT NULL COMMENT '两点距离',
         x_offset FLOAT NOT NULL COMMENT 'X方向偏移量',
         y_offset FLOAT NOT NULL COMMENT 'Y方向偏移量',
@@ -1184,6 +1184,14 @@ def _run_schema_ddl():
 
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
+        # Static sensors use names such as WY4; preserve numeric IDs as text.
+        cursor.execute("SHOW COLUMNS FROM t_mt_py_fem_node_pairs LIKE 'point'")
+        point_column = cursor.fetchone()
+        if point_column and str(point_column[1]).lower() != "varchar(100)":
+            cursor.execute(
+                "ALTER TABLE t_mt_py_fem_node_pairs "
+                "MODIFY COLUMN point VARCHAR(100) NOT NULL COMMENT '测点编号或名称'"
+            )
         _ensure_column(
             "t_mt_py_test_node",
             "origin_x",

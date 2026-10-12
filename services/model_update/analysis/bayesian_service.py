@@ -2473,6 +2473,7 @@ def build_dsa_normalized_sensitivity_matrix(
             instances=instances,
             selector=selector,
             position=position,
+            source_result_group=result_group,
         )
         source_mode = "workspace"
     elif odb_id and (not base_url or _sens.registry.get(str(odb_id)) is not None):

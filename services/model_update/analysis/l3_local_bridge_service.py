@@ -79,6 +79,8 @@ def submit_project_result_group_and_wait(
             str(result_group),
             resolved_source_path,
             source_file,
+            resolved_source_path,
+            source_file,
             resolved_display_name,
             parse_options_json,
         )
@@ -89,6 +91,8 @@ def submit_project_result_group_and_wait(
             display_name=resolved_display_name,
             source_path=resolved_source_path,
             source_file=source_file,
+            original_source_path=resolved_source_path,
+            original_source_file=source_file,
             parse_options=parse_options_json,
         )
 
