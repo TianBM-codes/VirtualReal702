@@ -101,7 +101,7 @@ CREATE_TABLE_SQL_LIST = [
         fid BIGINT NOT NULL COMMENT '文件ID',
         load_case_no INT NOT NULL COMMENT '载荷工况号',
         result_no INT NOT NULL COMMENT '结果序号',
-        point INT NOT NULL COMMENT '测点ID',
+        point VARCHAR(100) NOT NULL COMMENT '测点ID或名称',
         ux DOUBLE NULL COMMENT 'X方向位移',
         uy DOUBLE NULL COMMENT 'Y方向位移',
         uz DOUBLE NULL COMMENT 'Z方向位移',
@@ -1191,6 +1191,13 @@ def _run_schema_ddl():
             cursor.execute(
                 "ALTER TABLE t_mt_py_fem_node_pairs "
                 "MODIFY COLUMN point VARCHAR(100) NOT NULL COMMENT '测点编号或名称'"
+            )
+        cursor.execute("SHOW COLUMNS FROM t_mt_py_test_static_result LIKE 'point'")
+        static_point_column = cursor.fetchone()
+        if static_point_column and str(static_point_column[1]).lower() != "varchar(100)":
+            cursor.execute(
+                "ALTER TABLE t_mt_py_test_static_result "
+                "MODIFY COLUMN point VARCHAR(100) NOT NULL COMMENT '测点ID或名称'"
             )
         _ensure_column(
             "t_mt_py_test_node",

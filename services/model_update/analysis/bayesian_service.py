@@ -404,6 +404,11 @@ def _load_project_static_target_response_values(
             )
         else:
             test_rows_raw = _correlation._load_static_test_rows_from_data_table(cursor, int(project_id))
+        cursor.execute(
+            "SELECT test_node_id, instance_name, fem_node_label FROM t_mt_py_fem_node_match WHERE pid = %s",
+            (int(project_id),),
+        )
+        sensor_matches = cursor.fetchall() or []
     finally:
         cursor.close()
         conn.close()
@@ -420,7 +425,11 @@ def _load_project_static_target_response_values(
     for row in list(response_rows or []):
         response_label = str(row.get("response_label") or "").strip()
         point_key = response_label.split("::")[-1] if "::" in response_label else response_label
-        test_row = test_rows_by_point.get(point_key)
+        matched_sensors = [str(item["test_node_id"]) for item in sensor_matches
+                           if str(item["instance_name"]) == str(row.get("instance"))
+                           and str(item["fem_node_label"]) == point_key]
+        matched_rows = [test_rows_by_point[name] for name in matched_sensors if name in test_rows_by_point]
+        test_row = (matched_rows[0] if len(matched_rows) == 1 else None) if matched_sensors else test_rows_by_point.get(point_key)
         if not test_row:
             missing.append({"response_label": response_label, "point": point_key})
             continue
@@ -2828,7 +2837,7 @@ def build_dsa_normalized_sensitivity_matrix(
                     resolved_response_component = inferred_component
             parameter_value = _sens._resolve_dsa_parameter_scalar_value(
                 dsa_model,
-                parameter_name=mapped_parameter_name,
+                parameter_name=parameter_token if parameter_token in dsa_model.parameters else mapped_parameter_name,
                 target_rows=target_rows,
             )
 
@@ -2842,6 +2851,7 @@ def build_dsa_normalized_sensitivity_matrix(
                 "field": source_field_name,
                 "parameter_token": parameter_token,
                 "parameter_name": mapped_parameter_name,
+                "inp_parameter_name": parameter_token if parameter_token in dsa_model.parameters else mapped_parameter_name,
                 "parameter_value": float(parameter_value),
                 "mapping_mode": mapping_mode,
                 "scatter": parameter_scatter,
@@ -3001,9 +3011,11 @@ def _copy_iteration_input(input_inp: str, output_dir: Path, iteration: int, *, b
     source_path = Path(input_inp).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     resolved_base_stem = str(base_stem or source_path.stem)
-    copied_path = (output_dir / f"{resolved_base_stem}_iter{iteration}.inp").resolve()
+    input_dir = output_dir / "inputs" / f"iteration_{iteration:04d}"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    copied_path = (input_dir / f"{resolved_base_stem}_iter{iteration}.inp").resolve()
     shutil.copyfile(str(source_path), str(copied_path))
-    _copy_relative_includes(source_path, source_path.parent, output_dir, set())
+    _copy_relative_includes(source_path, source_path.parent, input_dir, set())
     return copied_path
 
 
@@ -3016,6 +3028,32 @@ def _cleanup_iteration_solver_files(workdir: Path, job_name: str) -> List[str]:
         path.unlink()
         deleted.append(str(path))
     return deleted
+
+
+def _publish_static_iteration_results(*, project_id: int, batch_no: int, iteration: int,
+                                      solver_payload: dict, matrix_payload: dict, field_prefix: str) -> dict:
+    from .l3_local_bridge_service import submit_project_result_group_and_wait
+
+    source = submit_project_result_group_and_wait(
+        project_id=project_id,
+        source_path=solver_payload["solver"]["artifacts"]["odb"],
+        result_group=f"sensitivity_batch_update_{batch_no}_iter{iteration}",
+        display_name=f"Static update {batch_no}, evaluated iteration {iteration}",
+        parse_options={"steps": [matrix_payload["step"]], "frames": "all", "invariants": "none"},
+    )
+    stored = _sens._persist_sensitivity_matrix(
+        project_id=project_id, batch_no=f"update_{batch_no}_iter{iteration}",
+        case_name=f"static_update_iter{iteration}", matrix_payload=matrix_payload,
+    )
+    merged = _sens.merge_dsa_sensitivity_fields(
+        project_id=project_id, workspace=source["workspace"], step=matrix_payload["step"],
+        frame=matrix_payload["frame"], field_prefix=field_prefix,
+        instances=matrix_payload["instances"],
+        result_group=f"sensitivity_update_{batch_no}_iter{iteration}_U",
+        source_result_group=source["result_group"],
+    )
+    return {"source_result_group": source["result_group"], "sensitivity_store": stored,
+            "sensitivity_groups": merged, "workspace": source["workspace"]}
 
 
 def _run_iteration_solver(
@@ -4201,6 +4239,7 @@ def run_bayesian_update_workflow(
     if exit_diff_percent is not None and float(exit_diff_percent) < 0:
         raise ValidationError("exit_diff_percent must be >= 0", {"exit_diff_percent": exit_diff_percent})
     resolved_batch_no = _normalize_batch_no(batch_no)
+    explicit_initial_source = bool(workspace or odb_path or odb_id)
     resolved_defaults = _resolve_bayesian_static_run_defaults(
         project_id=int(project_id),
         workspace=workspace,
@@ -4211,6 +4250,8 @@ def run_bayesian_update_workflow(
         position=position,
     )
     workspace = resolved_defaults["workspace"]
+    if run_solver and not explicit_initial_source:
+        workspace = None
     step = resolved_defaults["step"]
     instances = resolved_defaults["instances"]
     field_prefix = resolved_defaults["field_prefix"]
@@ -4249,6 +4290,12 @@ def run_bayesian_update_workflow(
         cleanup_root_dir = root_dir
 
     try:
+        if run_solver and not getattr(parse_inp(str(input_path)), "design_parameters", []):
+            generated = _sens.generate_project_dsa_inp_from_db(
+                project_id=int(project_id), input_inp=str(input_path),
+                output_dir=str(root_dir / "generated_input"), value_mode="explicit",
+            )
+            input_path = Path(generated["analysis_inp"])
         current_inp = _copy_iteration_input(str(input_path), root_dir, 0, base_stem=input_base_stem)
 
         has_initial_source = bool(workspace or odb_path or odb_id)
@@ -4267,7 +4314,7 @@ def run_bayesian_update_workflow(
         stopped_early = False
         last_resolved_workspace: Optional[str] = None
         initial_parameter_values: Optional[np.ndarray] = None
-        cloud_export_odb_id = str(odb_id or "").strip() or None
+        cloud_export_odb_id = str(odb_id or (project_id if run_solver else "")).strip() or None
         cloud_export_base_url = base_url
         next_source = {
             "workspace": _normalize_optional_path(workspace),
@@ -4275,6 +4322,7 @@ def run_bayesian_update_workflow(
             "odb_id": odb_id,
             "base_url": base_url,
         }
+        active_solver_payload = None
 
         for iteration_index in range(int(iterations)):
             if progress_callback is not None:
@@ -4305,6 +4353,7 @@ def run_bayesian_update_workflow(
                     "odb_id": None,
                     "base_url": None,
                 }
+                active_solver_payload = solver_payload
             else:
                 solver_payload = None
 
@@ -4345,6 +4394,13 @@ def run_bayesian_update_workflow(
             if initial_parameter_values is None:
                 initial_parameter_values = p_current.copy()
             r_model = np.asarray(matrix_payload["response_values"], dtype=np.float64)
+            iteration_display = None
+            if active_solver_payload is not None:
+                iteration_display = _publish_static_iteration_results(
+                    project_id=int(project_id), batch_no=resolved_batch_no,
+                    iteration=iteration_index, solver_payload=active_solver_payload,
+                    matrix_payload=matrix_payload, field_prefix=field_prefix,
+                )
             resolved_target_input = target_responses
             if resolved_target_input is None:
                 resolved_target_input = _load_project_static_target_response_values(
@@ -4421,7 +4477,7 @@ def run_bayesian_update_workflow(
             )
 
             parameter_updates = {
-                str(column["parameter_name"]): float(update_payload["p_new"][col_idx])
+                str(column.get("inp_parameter_name") or column["parameter_name"]): float(update_payload["p_new"][col_idx])
                 for col_idx, column in enumerate(parameter_columns)
             }
             parameter_element_mapping = []
@@ -4480,6 +4536,7 @@ def run_bayesian_update_workflow(
                 "exit_check": _clone_jsonable(exit_check),
                 "updated_inp": str(next_inp) if save_results else None,
                 "solver": solver_payload if save_results else None,
+                "display_results": iteration_display,
             }
 
             current_inp = next_inp
@@ -4503,6 +4560,7 @@ def run_bayesian_update_workflow(
                 if save_results:
                     iteration_result["next_iteration_solver"] = rerun_payload
                 next_source["workspace"] = rerun_payload["workspace"]["workspace"]
+                active_solver_payload = rerun_payload
 
             if save_results:
                 iteration_result["saved_artifacts"] = _save_iteration_artifacts(root_dir, iteration_result)

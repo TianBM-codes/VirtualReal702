@@ -183,7 +183,20 @@ def _load_latest_static_test_data_row(cursor, project_id: int):
 def _load_static_test_rows_from_data_table(cursor, project_id: int) -> List[dict]:
     row = _load_latest_static_test_data_row(cursor, project_id)
     if not row:
-        return []
+        cursor.execute(
+            "SELECT load_case_no, result_no FROM t_mt_py_test_static_result "
+            "WHERE pid=%s ORDER BY created_at DESC, id DESC LIMIT 1",
+            (int(project_id),),
+        )
+        latest = cursor.fetchone()
+        if not latest:
+            return []
+        cursor.execute(
+            "SELECT point, ux, uy, uz, rx, ry, rz, load_factor, extra_json "
+            "FROM t_mt_py_test_static_result WHERE pid=%s AND load_case_no=%s AND result_no=%s ORDER BY point",
+            (int(project_id), int(latest["load_case_no"]), int(latest["result_no"])),
+        )
+        return cursor.fetchall() or []
 
     try:
         payload = _json_loads(row.get("data"))
