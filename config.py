@@ -60,7 +60,7 @@ DB_INIT_ON_STARTUP = _cfg_bool(_SERVICE_CONFIG, "DB_INIT_ON_STARTUP", True)
 
 APP_CONFIG = {
     "host": str(_cfg(_SERVICE_CONFIG, "APP_HOST", "0.0.0.0")),
-    "port": int(_cfg(_SERVICE_CONFIG, "APP_PORT", 5000)),
+    "port": int(_cfg(_SERVICE_CONFIG, "APP_PORT", 18071)),
     "debug": _cfg_bool(_SERVICE_CONFIG, "APP_DEBUG", False),
 }
 
