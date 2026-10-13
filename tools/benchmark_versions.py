@@ -48,6 +48,7 @@ ADVANCED_BUSY_STATES = {"pending", "running"}
 LOG_PAGE_SIZE = 1000
 # Waiting time, not processing cost; the old value is mostly polling latency.
 NO_RATIO_CASES = {"op2_queue_wait"}
+DEFAULT_COLOR_CODE_SCHEMES = ["etype", "material", "section_type", "section", "section_assignment"]
 
 
 class HttpRequestError(RuntimeError):
@@ -197,7 +198,7 @@ def _first_name(items: list[Any], keys: tuple[str, ...]) -> str | None:
 
 def _discover(
     version: dict[str, Any], timeout: float, settings: dict[str, Any]
-) -> dict[str, str]:
+) -> dict[str, Any]:
     base = version["base_url"]
     project_id = str(version["project_id"])
     project = _json_get(base, f"api/projects/{quote(project_id, safe='')}", timeout)
@@ -230,15 +231,35 @@ def _discover(
     missing = [k for k, v in required if not v]
     if missing:
         raise RuntimeError(f"{version['name']}: cannot discover {', '.join(missing)}")
+    requested_schemes = settings.get("color_code_schemes", DEFAULT_COLOR_CODE_SCHEMES)
+    if not isinstance(requested_schemes, list) or any(
+        scheme not in DEFAULT_COLOR_CODE_SCHEMES for scheme in requested_schemes
+    ):
+        raise ValueError(f"color_code_schemes must be a list drawn from {DEFAULT_COLOR_CODE_SCHEMES}")
+    requested_schemes = list(dict.fromkeys(requested_schemes))
+    available_schemes = []
+    if requested_schemes:
+        scheme_info = _json_get(
+            base, f"api/odb/{quote(project_id, safe='')}/color-code/{quote(str(instance), safe='')}/schemes",
+            timeout,
+        )
+        available_schemes = scheme_info.get("schemes", [])
+    color_schemes = [scheme for scheme in requested_schemes if scheme in available_schemes]
+    skipped_schemes = [scheme for scheme in requested_schemes if scheme not in available_schemes]
+    version["color_code_schemes"] = color_schemes
+    version["skipped_color_code_schemes"] = skipped_schemes
+    if skipped_schemes:
+        print(f"[{version['name']}] unavailable color-code schemes skipped: {', '.join(skipped_schemes)}")
     return {
         "project_id": project_id,
         "instance": str(instance),
         "step": str(step or ""),
         "result_group": str(result_group or ""),
+        "color_code_schemes": color_schemes,
     }
 
 
-def _cases(ctx: dict[str, str], settings: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+def _cases(ctx: dict[str, Any], settings: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
     project = quote(ctx["project_id"], safe="")
     instance_path = quote(ctx["instance"], safe="")
     common = {
@@ -250,7 +271,10 @@ def _cases(ctx: dict[str, str], settings: dict[str, Any]) -> list[tuple[str, str
     cases = [
         ("metadata", f"api/odb/{project}/meta/overview", {"result_group": common["result_group"]}),
         ("model_load", f"api/odb/{project}/geometry/{instance_path}/render-buffers", {}),
+        ("element_mesh_edges", f"api/odb/{project}/geometry/{instance_path}/element-mesh-edges", {}),
     ]
+    for scheme in ctx.get("color_code_schemes", []):
+        cases.append((f"color_code_{scheme}", f"api/odb/{project}/color-code/{instance_path}", {"scheme": scheme}))
     if not bool(settings.get("include_op2", True)):
         return cases
     cases.extend([
@@ -270,6 +294,17 @@ def _cases(ctx: dict[str, str], settings: dict[str, Any]) -> list[tuple[str, str
             },
         ),
     ])
+    color_modes = settings.get("frame_colors_modes", ["smooth", "flat"])
+    if not isinstance(color_modes, list) or any(mode not in ("smooth", "flat") for mode in color_modes):
+        raise ValueError("frame_colors_modes must be a list drawn from smooth, flat")
+    # Keep existing deformation cases in their original order. Cloud colors
+    # have separate scalar cache keys and run after the deformation family.
+    for mode in dict.fromkeys(color_modes):
+        cases.append((
+            f"frame_colors_{mode}", f"api/odb/{project}/results/frame-colors",
+            {**common, "field": settings.get("frame_colors_field", "U"),
+             "component": settings.get("frame_colors_component", "U1"), "mode": mode},
+        ))
     return cases
 
 
@@ -772,6 +807,14 @@ def _write_outputs(
             lines.append(
                 f"| {item['path']} | {item['size'] / 1024 / 1024:.2f} MiB | `{item['sha256']}` |"
             )
+    lines += ["", "## Coloring coverage", ""]
+    for version in versions:
+        if "color_code_schemes" not in version:
+            lines.append(f"- {version['name']}: not measured yet.")
+            continue
+        measured = ", ".join(version["color_code_schemes"]) or "none"
+        skipped = ", ".join(version.get("skipped_color_code_schemes", [])) or "none"
+        lines.append(f"- {version['name']}: color-code measured: {measured}; unavailable/skipped: {skipped}.")
     lines += [
         "", "## Results", "",
         f"| Test | {names[0]} first | {names[1]} first | New/old | Improvement | "
@@ -839,6 +882,8 @@ def _write_outputs(
         "- Import timings come from status polling and have about `poll_seconds` precision.",
         "- Auto mode starts every managed service with `APP_WARMUP=0` unless the version's `env` overrides it, so background cache warm-up cannot overlap the measurements. Versions without warm-up ignore the variable.",
         "- `first` is a single sample. Versions with the unified L3 result cache share per-frame vertex displacements between `modal_shape`, `deformed_positions` and `modal_animation`; the cases run in that order, so the later two may reuse what `modal_shape` computed and their `first` is not fully cold.",
+        "- `frame_colors_smooth` and `frame_colors_flat` use U/U1 by default. Color-code tests cover available non-elset schemes; absent material/section data is reported as skipped, not measured as an empty success. A simple model cannot represent the cost of many material/section regions.",
+        "- A blank `X-Cache` value does not mean caching is disabled: frame-colors and color-code cache intermediate arrays without exposing a hit/miss response header. Compare backend repeat timings as well as HTTP timings.",
         "- `log_*` durations are derived from the first and last timestamps for that stage and have one-second precision.",
         "- Versions run sequentially to avoid CPU/disk contention; the second run may still benefit from the OS file cache.",
         "- Negative improvement means the new version was slower.", "",
@@ -1029,6 +1074,7 @@ def _start_managed_service(
     env = os.environ.copy()
     env.update({
         "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
         "APP_HOST": "127.0.0.1",
         "APP_PORT": str(port),
         "APP_BASE_URL": str(version["base_url"]).rstrip("/"),
@@ -1076,6 +1122,14 @@ def _start_managed_service(
             creationflags=creationflags,
         )
         processes.append(app_process)
+        # The API creates the registry schema on startup. Starting the runner
+        # first lets it query a brand-new SQLite database before tables exist.
+        _wait_for_service(
+            version,
+            app_process,
+            app_log,
+            float(automation.get("startup_timeout_seconds", 180)),
+        )
         runner_process = subprocess.Popen(
             [python_exe, "src/job_runner.py"],
             cwd=str(repo_path),
@@ -1085,12 +1139,6 @@ def _start_managed_service(
             creationflags=creationflags,
         )
         processes.append(runner_process)
-        _wait_for_service(
-            version,
-            app_process,
-            app_log,
-            float(automation.get("startup_timeout_seconds", 180)),
-        )
         if runner_process.poll() is not None:
             raise RuntimeError(
                 f"{version['name']}: job runner exited with {runner_process.returncode}\n"
@@ -1228,7 +1276,10 @@ def main() -> int:
             raise ValueError("each version requires base_url and project_id")
     settings = config.get("benchmark", {})
     include_op2 = bool(settings.get("include_op2", True))
-    print("Test scope: " + ("BDF + OP2 + result endpoints" if include_op2 else "BDF only"))
+    print("Test scope: " + (
+        "BDF + OP2 + geometry/color/result endpoints" if include_op2
+        else "BDF + geometry/color endpoints"
+    ))
     source_info = _verify_sources(config)
     if args.mode == "auto":
         numeric_ids = [str(v["project_id"]) for v in versions if _is_numeric_id(v["project_id"])]

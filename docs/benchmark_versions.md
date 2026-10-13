@@ -4,7 +4,8 @@
 自动模式会完成以下流程：
 
 1. 为旧提交创建独立 Git worktree，不切换当前工作区。
-2. 启动旧版 API 和任务进程，删除同名 benchmark 项目，提交 BDF；几何一就绪就提交 OP2，
+2. 先启动旧版 API，等初始化完成后再启动任务进程，避免任务进程抢先查询尚未创建的项目表。
+   删除同名 benchmark 项目，提交 BDF；几何一就绪就提交 OP2，
    与前端的真实操作一致。
 3. 等待解析全部完成（包括新版在后台继续跑的 L2 高级索引），记录导入各阶段耗时，再测量
    模型和结果接口的首次及重复请求耗时。
@@ -61,7 +62,30 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 - 以上导入耗时都靠轮询状态得到，精度约等于 `poll_seconds`（默认 1 秒）。如果 OP2 在两次轮询之间就处理完，无法拆分排队和解析，报告里只有 `op2_import_total`。
 - `log_l1_bdf`、`log_l2_core`、`log_l2_advanced`、`log_l2_ingest`、`log_rg_op2`：由任务日志估算的各处理阶段耗时。`l2_ingest` 用于旧版兼容，日志时间戳精度为一秒。
 - `metadata`、`model_load`、`modal_shape`、`deformed_positions`、`modal_animation`：前端实际使用的读取接口耗时。
+- `element_mesh_edges`：显示全部单元边线的接口耗时；新版缓存完整响应包，命中时 CSV 中的 `cache` 为 `hit`。
+- `frame_colors_smooth`、`frame_colors_flat`：云图的平滑和分片两条路径，默认测 `field=U`、`component=U1`、第 0 帧。分别记录首次和重复请求，比较云图中间数据缓存的收益。
+- `color_code_etype`、`color_code_material`、`color_code_section_type`、`color_code_section`、`color_code_section_assignment`：按单元类型、材料、截面类型、平均域、截面指派上色。脚本先读取可用方案，只测模型支持的方案；缺失的方案会打印跳过原因并写入报告的 `Coloring coverage`。`elset` 需要指定单元集，不在这轮自动分类测试中。
 - `Improvement`：`(旧版耗时 - 新版耗时) / 旧版耗时`；正数表示新版更快，负数表示新版更慢。
+
+可在 JSON 的 `benchmark` 中调整新增测量项：
+
+```json
+{
+  "frame_colors_field": "U",
+  "frame_colors_component": "U1",
+  "frame_colors_modes": ["smooth", "flat"],
+  "color_code_schemes": ["etype", "material", "section_type", "section", "section_assignment"]
+}
+```
+
+`frame_colors_modes=[]` 可跳过云图，`color_code_schemes=[]` 可跳过分类颜色。
+`include_op2=false` 时只测几何、单元边线和可用的分类颜色，不请求云图或模态结果。
+`repeat_by_case` 仍可单独控制新增测量项的次数，如 `color_code_section=9`。
+两版若可用方案不同，对应报告行会留空，不能据此计算性能提升。
+
+云图和分类颜色缓存的是计算中间数据，接口没有 `X-Cache` 响应头，所以 CSV 中 `cache`
+留空不代表没缓存；应结合重复请求的后端处理时间判断。只有一种材料、截面或区域的模型，
+也不能代表复杂多区域模型的分类性能。本脚本测耗时，不验证两版结果数值或颜色是否一致。
 
 报告把接口耗时分成两张表：
 
@@ -72,8 +96,14 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 
 `first` 只有一次采样，结论要结合 `repeat median` 看。另外，带统一结果缓存的新版里，
 `modal_shape`、`deformed_positions`、`modal_animation` 共用同一帧的顶点位移；脚本按这个
-顺序测，所以后两项的 `first` 可能已经用上了 `modal_shape` 算好的位移，不是完全冷启动。旧版
-没有这层缓存，看这两项的提升百分比时要考虑这一点。
+顺序测，所以后两项的 `first` 可能已经用上了 `modal_shape` 算好的位移，不是完全冷启动。
+更早的基线可能已有独立的位移或响应包缓存，具体要看所选提交，不能把“旧版”一概视为无缓存。
+新增云图在原有变形/动画测量之后执行；平滑和分片云图使用不同缓存键，分类颜色逐 scheme 测量。
+
+如果专门比较本次统一缓存改造，可将旧版设为 `2a59fe06b4314e3259649261ab8adec7bd6be273`。
+它已有早期内存/磁盘缓存，但尚未合并统一缓存改造；并且已经支持快速 BDF 解析和两阶段 L2，
+此时应给两版相同的 `APP_FAST_BDF_MIN_BYTES` 设置。示例中的 `9139bdd…` 则是更早的基线，
+用于比较更广范围的解析和预处理优化。
 
 两版顺序执行可以避免同时争抢 CPU、内存和磁盘，但后运行的新版仍可能受益于 Windows 的
 文件缓存。日常判断可直接使用本报告；如果结果要用于正式对外结论，建议重启电脑后再跑一轮，
