@@ -877,8 +877,12 @@ function _buildChunkedInstance(inst, sections) {
 // ── Load Geometry ─────────────────────────────────────────────────────────
 async function loadGeometry(instances) {
   // Dispose old
-  for (const [k, l] of Object.entries(meshEdgesLines))    { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete meshEdgesLines[k];    delete meshEdgeVtxIdxs[k] }
-  for (const [k, l] of Object.entries(featureEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete featureEdgesLines[k]; delete featureEdgeVtxIdxs[k] }
+  // Mesh/feature edges may have been loaded BEFORE the geometry (edges-first loading, so the
+  // outline shows up while the big surface buffers are still downloading). Keep edges that
+  // belong to this model and one of the requested instances; reset them to their undeformed
+  // positions and drop their vertex index map — it's rebuilt once that instance's mesh arrives.
+  _retainEdgesForReload(meshEdgesLines,    meshEdgeVtxIdxs,    instances)
+  _retainEdgesForReload(featureEdgesLines, featureEdgeVtxIdxs, instances)
   for (const [k, l] of Object.entries(regionMeshEdgesLines)) { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionMeshEdgesLines[k]; delete regionMeshEdgeVtxIdxs[k] }
   for (const [k, l] of Object.entries(regionOutlineLines))   { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete regionOutlineLines[k];   delete regionOutlineVtxIdxs[k] }
   for (const [k, l] of Object.entries(lineMeshes))           { modelGroup.remove(l); l.geometry.dispose(); l.material.dispose(); delete lineMeshes[k] }
@@ -903,6 +907,7 @@ async function loadGeometry(instances) {
       store.instanceMeshes[inst] = im
       origPositions[inst] = im.globalPositions.slice()  // save for deform reset
       totalTris += im.numFaces
+      _bindEdgesToInstance(inst)
 
       const box = new THREE.Box3()
       for (const c of im.chunks) {
@@ -1127,10 +1132,48 @@ function _resetAuxMesh(mesh) {
   mesh.geometry.attributes.position.needsUpdate = true
 }
 
+// Edges loaded before the geometry: keep those of the current model whose instance is being
+// (re)loaded, dispose the rest.
+function _retainEdgesForReload(linesMap, idxsMap, instances) {
+  const keep = new Set(instances)
+  for (const [k, l] of Object.entries(linesMap)) {
+    delete idxsMap[k]
+    if (keep.has(k) && l.userData.odbId === store.activeOdbId) {
+      const orig = l.userData.origPositions
+      if (orig) { l.geometry.attributes.position.array.set(orig); l.geometry.attributes.position.needsUpdate = true }
+      continue
+    }
+    modelGroup.remove(l); l.geometry.dispose(); l.material.dispose()
+    delete linesMap[k]
+  }
+}
+
+// Build the edge→mesh vertex index map (needed for edges to follow deformation) for
+// edges that were displayed before this instance's mesh was loaded.
+function _bindEdgesToInstance(instName) {
+  const im = store.instanceMeshes[instName]; if (!im) return
+  for (const [linesMap, idxsMap] of [[meshEdgesLines, meshEdgeVtxIdxs], [featureEdgesLines, featureEdgeVtxIdxs]]) {
+    const line = linesMap[instName]
+    if (!line || idxsMap[instName]) continue
+    // match against undeformed mesh positions (edges are undeformed too)
+    idxsMap[instName] = _buildEdgeVtxIndex(line.userData.origPositions, origPositions[instName] ?? im.globalPositions)
+  }
+}
+
 // ── Load Edges ────────────────────────────────────────────────────────────
-async function loadEdges(type) {
-  const instNames = Object.keys(store.instanceMeshes)
+// Edges don't depend on the surface geometry, so they can be loaded first (much smaller
+// payload → the model outline appears quickly), then loadGeometry(). Pass `instances`
+// when no geometry is loaded yet; default = loaded instances, else all instances in meta.
+const _edgeLoadSeq = { mesh: 0, feature: 0 }
+async function loadEdges(type, instances) {
+  const loaded    = Object.keys(store.instanceMeshes)
+  const instNames = instances?.length ? instances
+    : loaded.length ? loaded
+    : (store.meta?.instances ?? []).map(i => i.instance_name)
   if (instNames.length === 0) return
+  const seqKey    = type === 'mesh' ? 'mesh' : 'feature'
+  const seq       = ++_edgeLoadSeq[seqKey]
+  const odbId     = store.activeOdbId
   const endpoint  = type === 'mesh' ? 'element-mesh-edges' : 'feature-edges'
   const color     = type === 'mesh' ? 0x111111 : 0xffff00
   const linesMap  = type === 'mesh' ? meshEdgesLines  : featureEdgesLines
@@ -1145,29 +1188,41 @@ async function loadEdges(type) {
   store.setStatus(`Loading ${type} edges for ${instNames.length} instance(s)…`)
   let totalEdges = 0
 
+  const edgeBox = new THREE.Box3()
   await Promise.all(instNames.map(async instName => {
-    const im = store.instanceMeshes[instName]; if (!im) return
     try {
       const res = await http.get(
         store.getApiUrl(`geometry/${encodeURIComponent(instName)}/${endpoint}`),
         { responseType: 'arraybuffer' }
       )
+      // A newer loadEdges(type) call or a model switch superseded this one
+      if (seq !== _edgeLoadSeq[seqKey] || odbId !== store.activeOdbId) return
       const sec        = parseL3BE(res.data)
       const edgePosArr = new Float32Array(sec.edge_positions.data)
-
-      // Build vertex index map so edges can follow deformation
-      idxsMap[instName] = _buildEdgeVtxIndex(edgePosArr, im.globalPositions)
 
       const geo = new THREE.BufferGeometry()
       geo.setAttribute('position', new THREE.BufferAttribute(edgePosArr, 3))
       const mat = new THREE.LineBasicMaterial({ color, linewidth: 1 })
       if (clipPlane) mat.clippingPlanes = [clipPlane]
       const line = new THREE.LineSegments(geo, mat)
+      line.userData.odbId         = odbId
+      line.userData.origPositions = edgePosArr.slice()  // undeformed, for re-binding on geometry reload
       modelGroup.add(line)
       linesMap[instName] = line
       totalEdges += edgePosArr.length / 6
+      geo.computeBoundingBox(); edgeBox.union(geo.boundingBox)
+
+      // Build vertex index map so edges can follow deformation. If the mesh isn't loaded
+      // yet, loadGeometry() builds it when the instance arrives (_bindEdgesToInstance).
+      _bindEdgesToInstance(instName)
+      requestRender()
     } catch { /* instance has no edge data */ }
   }))
+  if (seq !== _edgeLoadSeq[seqKey]) return
+
+  // Edges-first: nothing else on screen yet → frame the camera on the outline.
+  // loadGeometry() re-fits on the (practically identical) surface bbox later.
+  if (Object.keys(store.instanceMeshes).length === 0 && !edgeBox.isEmpty()) fitCameraToBox(edgeBox)
 
   const label = type === 'mesh' ? 'Mesh grid' : 'Feature edges'
   store.setStatus(`${label} loaded: ${totalEdges} edges`, 'ok')
