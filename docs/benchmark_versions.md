@@ -65,6 +65,8 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 - `element_mesh_edges`：显示全部单元边线的接口耗时；新版缓存完整响应包，命中时 CSV 中的 `cache` 为 `hit`。
 - `frame_colors_smooth`、`frame_colors_flat`：云图的平滑和分片两条路径，默认测 `field=U`、`component=U1`、第 0 帧。分别记录首次和重复请求，比较云图中间数据缓存的收益。
 - `color_code_etype`、`color_code_material`、`color_code_section_type`、`color_code_section`、`color_code_section_assignment`：按单元类型、材料、截面类型、平均域、截面指派上色。脚本先读取可用方案，只测模型支持的方案；缺失的方案会打印跳过原因并写入报告的 `Coloring coverage`。`elset` 需要指定单元集，不在这轮自动分类测试中。
+- `color_legend_<scheme>`：图例接口；`color_legend_entries_<scheme>`：当前 instance 的分类数量统计；`color_legend_entries_all_<scheme>`：整模型的分类统计。五种可用分类方案分别测量；解析 JSON 业务状态，避免把业务错误的 HTTP 200 当作成功。
+- `region_mesh_edges_<scheme>`、`region_outline_<scheme>`：指定分类区域的内部单元边线、外轮廓。每种方案从实测的 `legend-entries` 中选面数最多的一个真实区域，使用内部 `legend_key`，并在报告、CSV 中记录区域标签。没有可见区域时明确跳过。
 - `Improvement`：`(旧版耗时 - 新版耗时) / 旧版耗时`；正数表示新版更快，负数表示新版更慢。
 
 可在 JSON 的 `benchmark` 中调整新增测量项：
@@ -74,11 +76,13 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
   "frame_colors_field": "U",
   "frame_colors_component": "U1",
   "frame_colors_modes": ["smooth", "flat"],
+  "include_color_details": true,
   "color_code_schemes": ["etype", "material", "section_type", "section", "section_assignment"]
 }
 ```
 
 `frame_colors_modes=[]` 可跳过云图，`color_code_schemes=[]` 可跳过分类颜色。
+`include_color_details=false` 可跳过图例、统计及区域边线/轮廓的扩展测量。
 `include_op2=false` 时只测几何、单元边线和可用的分类颜色，不请求云图或模态结果。
 `repeat_by_case` 仍可单独控制新增测量项的次数，如 `color_code_section=9`。
 两版若可用方案不同，对应报告行会留空，不能据此计算性能提升。
@@ -86,6 +90,16 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 云图和分类颜色缓存的是计算中间数据，接口没有 `X-Cache` 响应头，所以 CSV 中 `cache`
 留空不代表没缓存；应结合重复请求的后端处理时间判断。只有一种材料、截面或区域的模型，
 也不能代表复杂多区域模型的分类性能。本脚本测耗时，不验证两版结果数值或颜色是否一致。
+
+扩展测量在主分类颜色请求之后执行，所以图例、统计和区域接口可能复用已经建立的分类缓存，
+`first` 不代表它们的分类计算处于冷缓存。这样更接近前端已经显示分类颜色后打开图例或区域的操作。
+区域接口除耗时外，还检查响应头 `X-Edge-Count`；CSV 新增 `edge_count`、`region`，报告新增
+`Edge response checks`。两版边数或区域标签不同，不计算对应性能提升比例；空响应不能作为性能收益。
+封闭区域的外轮廓为 0 可能合理，相同边数也不能替代逐坐标核对。
+
+2026-10-13 扩展测试发现：`2a59fe06…` 基线的区域单元边线仍只读旧表面文件，因该版本 L2 已将
+边数据拆到独立 `<instance>_edges.h5`，会返回空结果。新版已修复读取路径；涉及空结果的旧版耗时
+保留用于诊断，不用于计算提升比例。区域外轮廓用渲染三角形计算，不受这个文件路径问题影响。
 
 报告把接口耗时分成两张表：
 

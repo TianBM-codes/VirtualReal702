@@ -23,6 +23,7 @@
   },
   "benchmark": {
     "include_op2": true,
+    "include_color_details": true,
     "repeat": 5,
     "frame": 0,
     "frame_colors_field": "U",

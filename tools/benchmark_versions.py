@@ -117,6 +117,7 @@ def _request(
                         response.headers.get("x-elapsed-time-ms")),
                     "bytes": size,
                     "cache": response.headers.get("x-cache", ""),
+                    "edge_count": response.headers.get("x-edge-count", ""),
                 }
                 if body is not None:
                     result["json"] = _unwrap(json.loads(body.decode("utf-8-sig")))
@@ -141,6 +142,7 @@ def _request(
                 "server_ms": _float_or_none(headers.get("x-elapsed-time-ms")),
                 "bytes": size,
                 "cache": headers.get("x-cache", ""),
+                "edge_count": headers.get("x-edge-count", ""),
             }
             if body is not None:
                 result["json"] = _unwrap(json.loads(body.decode("utf-8-sig")))
@@ -319,20 +321,26 @@ def _benchmark_version(version: dict[str, Any], settings: dict[str, Any]) -> lis
     )
     rows = []
     with requests.Session() as session:
-        for case_name, path, params in _cases(ctx, settings):
+        def measure(case_name, path, params, *, collect_json=False):
+            first_json = None
             case_repeat = max(1, int(repeat_by_case.get(case_name, repeat)))
             for run in range(1, case_repeat + 1):
                 result = _request(
                     _url(version["base_url"], path, params),
                     timeout,
                     session=session,
+                    collect_json=collect_json,
                 )
+                payload = result.pop("json", None)
+                if run == 1:
+                    first_json = payload
                 row = {
                     "version": version["name"],
                     "project_id": ctx["project_id"],
                     "case": case_name,
                     "run": run,
                     "temperature": "first" if run == 1 else "repeat",
+                    "region": params.get("region", ""),
                     **result,
                 }
                 rows.append(row)
@@ -340,7 +348,43 @@ def _benchmark_version(version: dict[str, Any], settings: dict[str, Any]) -> lis
                     f"  {case_name}[{run}]: {result['elapsed_ms']:.1f} ms, "
                     f"server={_fmt_ms(result['server_ms'])}, "
                     f"size={result['bytes'] / 1024 / 1024:.2f} MiB, cache={result['cache'] or '-'}"
+                    + (f", edges={result['edge_count']}" if result["edge_count"] != "" else "")
                 )
+            return first_json
+
+        for case_name, path, params in _cases(ctx, settings):
+            measure(case_name, path, params)
+        if bool(settings.get("include_color_details", True)):
+            project = quote(ctx["project_id"], safe="")
+            instance_path = quote(ctx["instance"], safe="")
+            color_path = f"api/odb/{project}/color-code/{instance_path}"
+            version["color_code_regions"] = {}
+            version["skipped_color_regions"] = []
+            for scheme in ctx["color_code_schemes"]:
+                params = {"scheme": scheme}
+                measure(f"color_legend_{scheme}", color_path + "/legend", params, collect_json=True)
+                entries = measure(
+                    f"color_legend_entries_{scheme}", color_path + "/legend-entries",
+                    params, collect_json=True,
+                ).get("entries", [])
+                measure(
+                    f"color_legend_entries_all_{scheme}", f"api/odb/{project}/color-code/legend-entries",
+                    params, collect_json=True,
+                )
+                visible = [e for e in entries if int(e.get("face_count") or 0) > 0
+                           and e.get("legend_key") not in {None, "", "(none)", "(unknown)", "other"}]
+                if not visible:
+                    print(f"[{version['name']}] {scheme}: no visible named region; region tests skipped")
+                    version["skipped_color_regions"].append(scheme)
+                    continue
+                # Select an actual internal key, never a user-facing display name.
+                # Largest visible region is deterministic and avoids tiny/empty samples.
+                region = str(sorted(visible, key=lambda e: (-int(e["face_count"]), str(e["legend_key"])))[0]["legend_key"])
+                version["color_code_regions"][scheme] = region
+                for suffix, name in (("region-mesh-edges", "region_mesh_edges"),
+                                     ("region-outline", "region_outline")):
+                    measure(f"{name}_{scheme}", color_path + "/" + suffix,
+                            {**params, "region": region})
     return rows
 
 
@@ -765,7 +809,14 @@ def _summary(rows: list[dict[str, Any]], versions: list[dict[str, Any]]) -> list
                 "server_repeat": _median(repeat_server),
                 "server_p95": _p95(repeat_server),
                 "bytes": max((int(r["bytes"]) for r in selected), default=0),
+                "edge_counts": sorted({int(r["edge_count"]) for r in selected
+                                       if r.get("edge_count") not in (None, "")}),
+                "regions": sorted({str(r["region"]) for r in selected if r.get("region")}),
             }
+        entry["comparable"] = (
+            entry[names[0]]["edge_counts"] == entry[names[1]]["edge_counts"]
+            and entry[names[0]]["regions"] == entry[names[1]]["regions"]
+        )
         output.append(entry)
     return output
 
@@ -781,7 +832,7 @@ def _write_outputs(
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = output_dir / f"{file_tag}_raw_{stamp}.csv"
     md_path = output_dir / f"{file_tag}_report_{stamp}.md"
-    fields = ["version", "project_id", "case", "run", "temperature", "status", "elapsed_ms", "server_ms", "bytes", "cache"]
+    fields = ["version", "project_id", "case", "run", "temperature", "status", "elapsed_ms", "server_ms", "bytes", "cache", "edge_count", "region"]
     with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
@@ -815,6 +866,10 @@ def _write_outputs(
         measured = ", ".join(version["color_code_schemes"]) or "none"
         skipped = ", ".join(version.get("skipped_color_code_schemes", [])) or "none"
         lines.append(f"- {version['name']}: color-code measured: {measured}; unavailable/skipped: {skipped}.")
+        for scheme, region in version.get("color_code_regions", {}).items():
+            lines.append(f"  - {scheme}: region key `{region}` (largest visible region).")
+        if version.get("skipped_color_regions"):
+            lines.append(f"  - Region tests skipped (no visible named region): {', '.join(version['skipped_color_regions'])}.")
     lines += [
         "", "## Results", "",
         f"| Test | {names[0]} first | {names[1]} first | New/old | Improvement | "
@@ -831,7 +886,7 @@ def _write_outputs(
         )
         ratio = (
             new["first"] / old["first"] * 100.0
-            if (old["first"] and new["first"] is not None and not tiny_http_sample and
+            if (old["first"] and new["first"] is not None and not tiny_http_sample and item["comparable"] and
                 item["case"] not in NO_RATIO_CASES)
             else None
         )
@@ -855,7 +910,7 @@ def _write_outputs(
         new_repeat = new["server_repeat"]
         repeat_ratio = (
             new_repeat / old_repeat * 100.0
-            if (old_repeat and new_repeat is not None and
+            if (old_repeat and new_repeat is not None and item["comparable"] and
                 max(old_repeat, new_repeat) >= 10.0)
             else None
         )
@@ -863,13 +918,23 @@ def _write_outputs(
             100.0 - repeat_ratio if repeat_ratio is not None else None)
         repeat_delta = (
             new_repeat - old_repeat
-            if old_repeat is not None and new_repeat is not None else None)
+            if old_repeat is not None and new_repeat is not None and item["comparable"] else None)
         lines.append(
             f"| {item['case']} | {_human_time(old['server_first'])} | "
             f"{_human_time(new['server_first'])} | "
             f"{_human_time(old_repeat)} | {_human_time(new_repeat)} | "
             f"{_human_delta(repeat_delta)} | {_pct(repeat_improvement)} |"
         )
+    edge_checks = [item for item in summary if any(item[name]["edge_counts"] for name in names)]
+    if edge_checks:
+        lines += ["", "## Edge response checks", "",
+                  f"| Test | {names[0]} edge counts | {names[1]} edge counts | Check |",
+                  "|---|---:|---:|---|"]
+        for item in edge_checks:
+            old_counts = ", ".join(map(str, item[names[0]]["edge_counts"])) or "-"
+            new_counts = ", ".join(map(str, item[names[1]]["edge_counts"])) or "-"
+            check = "same count and region" if item["comparable"] else "DIFFERENT count/region: timing ratios suppressed"
+            lines.append(f"| {item['case']} | {old_counts} | {new_counts} | {check} |")
     lines += [
         "", "Notes:", "",
         "- `first` is the first request observed by this script; restart services or clear caches for a true cold test.",
@@ -884,6 +949,8 @@ def _write_outputs(
         "- `first` is a single sample. Versions with the unified L3 result cache share per-frame vertex displacements between `modal_shape`, `deformed_positions` and `modal_animation`; the cases run in that order, so the later two may reuse what `modal_shape` computed and their `first` is not fully cold.",
         "- `frame_colors_smooth` and `frame_colors_flat` use U/U1 by default. Color-code tests cover available non-elset schemes; absent material/section data is reported as skipped, not measured as an empty success. A simple model cannot represent the cost of many material/section regions.",
         "- A blank `X-Cache` value does not mean caching is disabled: frame-colors and color-code cache intermediate arrays without exposing a hit/miss response header. Compare backend repeat timings as well as HTTP timings.",
+        "- Legend, legend-entry statistics (per instance and all instances), region mesh edges and region outlines run after the primary color-code requests and may reuse their classification cache. Their `first` is not a cold classification test. Region keys come from measured legend entries; one largest visible region per scheme is sampled.",
+        "- Edge counts are recorded from `X-Edge-Count`. Different counts suppress timing ratios: returning an empty result is not a speed improvement. A zero outline can be valid for a closed region. Equal counts alone do not prove coordinates are identical.",
         "- `log_*` durations are derived from the first and last timestamps for that stage and have one-second precision.",
         "- Versions run sequentially to avoid CPU/disk contention; the second run may still benefit from the OS file cache.",
         "- Negative improvement means the new version was slower.", "",

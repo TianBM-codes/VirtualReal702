@@ -309,11 +309,15 @@ async def get_region_mesh_edges(
     node_in_region = np.zeros(len(coords_global), dtype=bool)
     node_in_region[region_vert_rows] = True
 
-    surface_h5 = os.path.join(idx.workspace, "l2", "geometry", f"{instance}_surface.h5")
-    if not os.path.exists(surface_h5):
+    geometry_dir = os.path.join(idx.workspace, "l2", "geometry")
+    edges_h5 = os.path.join(geometry_dir, f"{instance}_edges.h5")
+    surface_h5 = os.path.join(geometry_dir, f"{instance}_surface.h5")
+    # 两阶段 L2 的边数据在独立文件中；旧工作区仍可从 surface.h5 读取。
+    edge_source = edges_h5 if os.path.isfile(edges_h5) else surface_h5
+    if not os.path.exists(edge_source):
         return _empty()
 
-    with h5py.File(surface_h5, "r") as f:
+    with h5py.File(edge_source, "r") as f:
         if "element_mesh_edges/edge_nodes" not in f:
             return _empty()
         edge_nodes = f["element_mesh_edges/edge_nodes"][:]   # [E, 2] int32
