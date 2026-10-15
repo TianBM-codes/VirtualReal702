@@ -11,6 +11,8 @@ import argparse
 import copy
 import hashlib
 import json
+import shutil
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +24,34 @@ if __package__:
     from . import benchmark_versions as bench
 else:
     import benchmark_versions as bench
+
+
+def stage_odb(source: Path, output: Path):
+    """Give the service a verified private copy: legacy upgrades replace inputs."""
+    started = time.perf_counter()
+    before = source.stat()
+    inputs = output / "inputs"
+    inputs.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix="odb-input-", dir=inputs))
+    destination = directory / source.name
+    shutil.copy2(source, destination)
+
+    def digest(path):
+        value = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                value.update(chunk)
+        return value.hexdigest()
+
+    original_hash = digest(source)
+    if original_hash != digest(destination):
+        raise RuntimeError("Staged ODB does not match the original")
+    after = source.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError("Source ODB changed while staging")
+    source_info = {"path": str(source), "bytes": before.st_size,
+                   "mtime_ns": before.st_mtime_ns, "sha256": original_hash}
+    return destination, source_info, (time.perf_counter() - started) * 1000
 
 
 def download(session, url, timeout):
@@ -126,6 +156,7 @@ def main():
         "All instances, serial HTTP downloads; excludes browser parsing, GPU upload and drawing.",
         "Downloads include streaming SHA-256 verification time, also recorded per response.",
         "Repeat opens share the same service; import time excludes model-update database work.",
+        "ODB input is copied and verified per version before timing; automatic upgrade changes only the private copy.",
     ], "versions": [], "models": {}, "rows": []}
 
     def save():
@@ -148,19 +179,21 @@ def main():
                 source = bench._config_path(odb, config_path.parent)
                 if not source.is_file():
                     raise ValueError(f"ODB does not exist: {source}")
-                stat = source.stat()
-                source_info = {"path": str(source), "bytes": stat.st_size,
-                               "mtime_ns": stat.st_mtime_ns}
+                staged, source_info, staging_ms = stage_odb(source, output)
                 if report.get("source", source_info) != source_info:
                     raise RuntimeError("Source ODB changed between versions")
                 report["source"] = source_info
+                version_meta["staged_odb_path"] = str(staged)
+                report["rows"].append({"version": version["name"], "case": "odb_input_staging",
+                                       "elapsed_ms": staging_ms})
+                save()
                 project = bench._project_status(version, 30)
                 if project.get("geom_status") != "not_found":
                     raise ValueError("Fresh ODB benchmark requires a new project ID/data directory")
                 started = time.perf_counter()
                 bench._json_request(version["base_url"], "api/projects", 60, method="POST",
                                     payload={"project_id": version["project_id"],
-                                             "source_path": str(source), "source_type": "odb"})
+                                             "source_path": str(staged), "source_type": "odb"})
                 project, ready = bench._wait_for_geometry(version, settings)
                 if project["geom_status"] != "ready":
                     raise RuntimeError("ODB import failed; inspect runner log")

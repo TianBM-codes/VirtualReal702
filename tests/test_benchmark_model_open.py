@@ -1,5 +1,6 @@
 """First-open timings must cover all surfaces and reject invalid speedups."""
 from contextlib import nullcontext
+import hashlib
 
 import pytest
 
@@ -54,3 +55,31 @@ def test_invalid_or_changed_geometry_cannot_be_reported_as_speedup(monkeypatch, 
     with pytest.raises(RuntimeError, match=message):
         B.measure_open({"name": "new", "project_id": "bench", "base_url": "http://localhost"},
                        {"repeat": 2})
+
+
+def test_odb_upgrade_only_receives_an_independent_verified_copy(tmp_path):
+    original = tmp_path / "model.odb"
+    original.write_bytes(b"original odb bytes")
+    before = original.stat()
+    staged, info, _elapsed = B.stage_odb(original, tmp_path / "results")
+    assert staged != original and staged.name == original.name
+    assert staged.is_relative_to(tmp_path / "results")
+    assert info["sha256"] == hashlib.sha256(original.read_bytes()).hexdigest()
+    staged.write_bytes(b"upgraded bytes")  # What the legacy service may do.
+    assert original.read_bytes() == b"original odb bytes"
+    assert original.stat().st_mtime_ns == before.st_mtime_ns
+
+
+@pytest.mark.parametrize("corrupt_original", [False, True])
+def test_changed_or_corrupt_source_copy_is_rejected(tmp_path, monkeypatch, corrupt_original):
+    original = tmp_path / "model.odb"
+    original.write_bytes(b"original odb bytes")
+    copy = B.shutil.copy2
+
+    def faulty_copy(source, destination):
+        copy(source, destination)
+        (source if corrupt_original else destination).write_bytes(b"corrupt")
+
+    monkeypatch.setattr(B.shutil, "copy2", faulty_copy)
+    with pytest.raises(RuntimeError, match="Staged ODB does not match"):
+        B.stage_odb(original, tmp_path / "results")

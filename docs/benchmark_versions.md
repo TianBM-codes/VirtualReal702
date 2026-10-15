@@ -136,7 +136,10 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 python tools/benchmark_model_open.py --config tools/benchmark_model_open.local.json
 ```
 
-工具依次导入两版 ODB，各自保留独立的注册库和数据目录。导入就绪后重启测试服务，以
+工具先为每版复制独立的 ODB 副本并比对 SHA-256，再依次导入，各自保留独立的注册库
+和数据目录。历史服务的版本转换流程会原地替换输入文件，因此服务只接收测试副本路径，
+不接收用户原始文件。副本准备及校验耗时记录为 `odb_input_staging`，不计入导入就绪耗时；
+需要的 Abaqus 版本转换仍属于正常导入流程。导入就绪后重启测试服务，以
 `APP_PRELOAD_PROJECTS=0`、`APP_WARMUP=0` 启动，让首个模型信息请求承担模型索引的实际
 加载开销。之后在同一服务中重复打开，区分首次请求和重复请求。该条件用于定位首次请求
 瓶颈，不等于默认开启启动预加载和后台预热时的所有使用场景。
