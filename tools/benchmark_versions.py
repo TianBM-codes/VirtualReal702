@@ -353,6 +353,9 @@ def _benchmark_version(version: dict[str, Any], settings: dict[str, Any]) -> lis
             return first_json
 
         for case_name, path, params in _cases(ctx, settings):
+            if case_name in settings.get("exclude_cases", []):
+                print(f"[{version['name']}] {case_name}: explicitly excluded for this model")
+                continue
             measure(case_name, path, params)
         if bool(settings.get("include_color_details", True)):
             project = quote(ctx["project_id"], safe="")

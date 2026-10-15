@@ -1,0 +1,40 @@
+{
+  "versions": [
+    {
+      "name": "old",
+      "base_url": "http://127.0.0.1:5099",
+      "project_id": "bench_odb_old_unique_run",
+      "commit": "9139bdd6ade261ff7115a07b698194f60f464e7d",
+      "worktree_path": "../tmp/benchmark-old-9139bdd"
+    },
+    {
+      "name": "new",
+      "base_url": "http://127.0.0.1:5099",
+      "project_id": "bench_odb_new_unique_run",
+      "repo_path": ".."
+    }
+  ],
+  "sources": {
+    "odb_path": "D:/models/model.odb"
+  },
+  "benchmark": {
+    "repeat": 3,
+    "timeout_seconds": 1800,
+    "watch_timeout_seconds": 21600,
+    "poll_seconds": 1,
+    "output_dir": "../benchmark_results/model_open",
+    "include_endpoint_suite": false,
+    "include_op2": true,
+    "include_color_details": true,
+    "frame": "last",
+    "suite_instance": "largest_surface",
+    "skip_nonmodal_animations": true,
+    "n_frames": 4
+  },
+  "automation": {
+    "repository_path": "..",
+    "runtime_root": "../tmp/benchmark_runtime",
+    "startup_timeout_seconds": 300,
+    "runner_poll_seconds": 1
+  }
+}

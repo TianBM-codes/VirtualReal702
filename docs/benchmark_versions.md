@@ -122,3 +122,42 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 两版顺序执行可以避免同时争抢 CPU、内存和磁盘，但后运行的新版仍可能受益于 Windows 的
 文件缓存。日常判断可直接使用本报告；如果结果要用于正式对外结论，建议重启电脑后再跑一轮，
 或交换新旧顺序复测，确认导入提升不是缓存造成的。
+
+## 首次打开模型及 ODB 对比
+
+`tools/benchmark_model_open.py` 补测模型信息、全部实例的特征边和前端实际使用的
+`render-buffers-chunked`。原基准中的 `model_load` 只读取一个实例的非分块几何，且此前的
+项目状态轮询和元信息发现已经把模型索引加载进内存，不能覆盖完整的首次打开开销。
+
+复制 `tools/benchmark_model_open.json.example` 为本机 `.json`，填写两版代码位置、唯一的
+非数字测试项目号和 ODB 路径，然后运行：
+
+```powershell
+python tools/benchmark_model_open.py --config tools/benchmark_model_open.local.json
+```
+
+工具依次导入两版 ODB，各自保留独立的注册库和数据目录。导入就绪后重启测试服务，以
+`APP_PRELOAD_PROJECTS=0`、`APP_WARMUP=0` 启动，让首个模型信息请求承担模型索引的实际
+加载开销。之后在同一服务中重复打开，区分首次请求和重复请求。该条件用于定位首次请求
+瓶颈，不等于默认开启启动预加载和后台预热时的所有使用场景。
+
+若复用第一轮 BDF/OP2 已解析的数据，去掉 `sources.odb_path`，在每版的 `env` 中指定该轮
+`APP_DATA_ROOT`、`APP_REGISTRY_DB_PATH`，并使用原测试项目号。这样不会再次导入模型。
+工具不会删除这些数据，后续可继续排查或复测。
+
+结果为 `model_open_时间戳.json`，记录各请求耗时、响应字节数、面数/边数以及 SHA-256
+校验值；每版保存一次，出错时也保存已有结果。相同版本的重复打开必须返回相同内容，
+全部实例均未返回表面面片时直接报错，避免把空模型列为提速。跨版本校验值不同时需要
+继续核查，不能只凭耗时认定优化正确。下载计时包含客户端流式校验，额外记录
+`sha256_ms`，便于识别校验本身的开销。
+
+`open_outline_http_total` 从元信息请求开始，止于全部特征边下载完成；
+`open_surface_http_total` 再加上全部分块表面几何下载。请求串行执行，便于分离后端开销；
+浏览器可能并发请求，因此这些总时间**不是浏览器实际显示时间**，也不包含 JavaScript
+解析、显卡上传、绘制以及梁/点/耦合等辅助几何的加载。操作系统文件缓存不清空。
+
+`include_endpoint_suite=true` 可在打开测试之后继续运行原接口基准。ODB 已有结果组，
+此处 `include_op2=true` 仅表示原基准启用结果读取，不会追加导入 OP2。
+`suite_instance=largest_surface` 选择表面面片最多的实例；`frame=last` 使用所选载荷步的
+最后一帧，避开静力初始零帧。默认跳过非 FREQUENCY/BUCKLE 步的模态振型与谐波动画，
+仍测变形与云图。也可通过 `exclude_cases` 显式排除不适用的主测试项；分类明细不受此项影响。

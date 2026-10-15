@@ -48,6 +48,25 @@ class ElemSubsetRequest(BaseModel):
     elem_labels: List[int]
 
 
+def _read_render_geometry(idx, instance: str, render_h5: str):
+    """Reuse ModelIndex's immutable L2 buffers; retain the legacy disk fallback.
+
+    Loading the index already reads these arrays. Reading them again on the
+    first geometry request adds HDF5 decompression and another large allocation.
+    Set filtering and chunk building gather into new arrays, so the resident
+    buffers can be shared without modifying them.
+    """
+    positions = getattr(idx, "render_positions", {}).get(instance)
+    indices = getattr(idx, "render_indices", {}).get(instance)
+    if positions is None or indices is None:
+        with h5py.File(render_h5, "r") as f:
+            if positions is None:
+                positions = np.ascontiguousarray(f["render/positions"][:])
+            if indices is None and "render/indices" in f:
+                indices = np.ascontiguousarray(f["render/indices"][:])
+    return positions, indices
+
+
 def _compact_by_render_rows(
     positions: np.ndarray,
     indices: np.ndarray,
@@ -226,10 +245,7 @@ async def get_render_buffers(
             {"instance": instance},
         )
 
-    with h5py.File(render_h5, "r") as f:
-        positions = np.ascontiguousarray(f["render/positions"][:])   # [Nv, 3]
-        indices   = np.ascontiguousarray(f["render/indices"][:]) \
-                    if "render/indices" in f else None
+    positions, indices = _read_render_geometry(idx, instance, render_h5)
 
     # ── Set filtering ──────────────────────────────────────────────────────
     if set_name is not None and indices is not None:
@@ -322,10 +338,7 @@ async def get_render_buffers_chunked(
             headers={"X-Chunk-Count": str(K), "X-Face-Count": str(Nt)},
         )
 
-    with h5py.File(render_h5, "r") as f:
-        positions = np.ascontiguousarray(f["render/positions"][:])
-        indices   = np.ascontiguousarray(f["render/indices"][:]) \
-                    if "render/indices" in f else None
+    positions, indices = _read_render_geometry(idx, instance, render_h5)
 
     if indices is None:
         sections, K, Nt = _build_chunked_payload(_empty_pos, _empty_idx)
@@ -455,8 +468,10 @@ async def get_feature_edges(odb_id: str, instance: str):
             )
 
         edge_nodes = f["feature_edges/edge_nodes"][:]   # [E, 2] int32 — node row indices
-    with h5py.File(surface_h5, "r") as f:
-        coords = f["nodes/coords_global"][:]            # [N, 3] float32
+    coords = getattr(idx, "coords_global", {}).get(instance)
+    if coords is None:
+        with h5py.File(surface_h5, "r") as f:
+            coords = f["nodes/coords_global"][:]        # [N, 3] float32
 
     # Convert (row_a, row_b) pairs → interleaved position pairs [E*2, 3]
     E = len(edge_nodes)
