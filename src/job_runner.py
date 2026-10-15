@@ -1049,6 +1049,23 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
         logger.warning("[%s] _adopt_odb_result_group: registry update failed: %s", project_id, exc)
 
 
+def _queue_model_update_import(project_id, kind, workspace, payload, result_group=None):
+    try:
+        int(project_id)
+    except (TypeError, ValueError):
+        _log_job(project_id, "warn", "非数字测试项目只处理可视化，不自动导入模型修正数据",
+                 stage="mu_background_" + kind)
+        return None
+    try:
+        from src.model_update_tasks import enqueue_import
+        return enqueue_import(REGISTRY_DB, project_id, kind, workspace, payload, result_group=result_group)
+    except Exception as exc:
+        _log_job(project_id, "warn", f"模型修正任务排队失败：{_esc(str(exc))}；可视化解析继续",
+                 stage="mu_background_" + kind)
+        logger.exception("[%s] enqueue model-update import failed", project_id)
+        return None
+
+
 def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
     if not bdf_path:
         msg = "No BDF path stored for project {}".format(project_id)
@@ -1126,22 +1143,10 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
         _log_job(project_id, "step", _good("L2 高级索引完成"),
                  stage="l2_advanced", percent=90)
 
-    # ── Auto model-update BDF import ──────────────────────────────────────────
-    _log_job(project_id, "step",
-             f"{_kw('自动导入 BDF')} 到 model_update",
-             stage="mu_import_bdf", percent=90)
-    try:
-        from services.model_update.importers.bdf_service import import_bdf_data
-        import_bdf_data(bdf_path, int(project_id), clear_before_insert=True)
-        _log_job(project_id, "step",
-                 _good("BDF 导入 model_update 完成"),
-                 stage="mu_import_bdf", percent=100)
-        logger.info("[%s] model_update BDF import done", project_id)
-    except Exception as exc:
-        _log_job(project_id, "warn",
-                 f"{_ws('model_update BDF 导入失败（非致命）')}：{_esc(str(exc))}",
-                 stage="mu_import_bdf", percent=100)
-        logger.warning("[%s] model_update BDF import failed: %s", project_id, exc)
+    # Only queue metadata here; MySQL and the legacy BDF importer run off-loop.
+    _queue_model_update_import(project_id, "bdf", workspace, {"bdf_path": bdf_path})
+    _log_job(project_id, "step", _good("BDF可视化处理完成；追加结果无需等待模型修正导入"),
+             stage="l2_done", percent=100)
 
     return True
 
@@ -1636,64 +1641,26 @@ def _run_op2_result_group(project_id: str, result_group: str,
              f"[{_kw(result_group)}] {_good('OP2 结果打包完成')}", stage="rg_op2")
     logger.info("[%s] OP2 result_group '%s' ready", project_id, result_group)
 
-    # ── Auto model-update OP2 modal import ────────────────────────────────────
+    # Automatic model-update imports share their own serial queue, so the BDF
+    # import cannot clear data while this project's modal import is writing it.
     modal_cfg = _normalize_op2_modal_import_config(parse_options_json)
     if modal_cfg is not None:
-        _log_job(project_id, "step",
-                 f"[{_kw(result_group)}] 自动导入 OP2 模态到 model_update",
-                 stage="mu_import_op2_modal")
         try:
-            # bdf_path: modal_cfg 里可显式指定，否则从 projects.inp_path 取
-            raw_bdf_path_mu = modal_cfg.get("bdf_path")
-            if not raw_bdf_path_mu:
-                with _connect() as _c:
-                    _row = _c.execute(
-                        "SELECT inp_path FROM projects WHERE project_id=?", (project_id,)
-                    ).fetchone()
-                    raw_bdf_path_mu = _row["inp_path"] if _row else None
-            bdf_path_mu = _resolve_model_update_bdf_path(raw_bdf_path_mu, workspace)
-            from services.model_update.importers.op2_service import build_modal_import_payload
-            from services.model_update.analysis.inp_service import import_fe_modal_results
-            from webapi.background_jobs import submit_background_task
-
-            def _do_import():
-                payload = build_modal_import_payload(
-                    op2_path=op2_path,
-                    bdf_path=bdf_path_mu,
-                    subcase_id=modal_cfg.get("subcase_id"),
-                    mode_numbers=modal_cfg.get("mode_numbers"),
-                    instance_name=modal_cfg.get("instance_name"),
-                    part_name=modal_cfg.get("part_name"),
-                )
-                import_fe_modal_results(
-                    project_id=int(project_id),
-                    overwrite=modal_cfg.get("overwrite", True),
-                    modes=payload["modes"],
-                )
-                return payload
-
-            if modal_cfg.get("async_submit", True):
-                submit_background_task(
-                    task_type="import.op2.modal.store",
-                    fn=lambda **_: _do_import(),
-                    kwargs={},
-                )
-                _log_job(project_id, "step",
-                         f"[{_kw(result_group)}] {_good('OP2 模态导入已异步提交')}",
-                         stage="mu_import_op2_modal")
-            else:
-                payload = _do_import()
-                _log_job(project_id, "step",
-                         f"[{_kw(result_group)}] {_good('OP2 模态导入 model_update 完成')}："
-                         f"{_num(str(len(payload.get('modes') or [])))}阶",
-                         stage="mu_import_op2_modal")
-                logger.info("[%s] model_update OP2 modal import done (modes=%d)",
-                            project_id, len(payload.get("modes") or []))
+            raw_bdf_path = modal_cfg.get("bdf_path")
+            if not raw_bdf_path:
+                with _connect() as conn:
+                    row = conn.execute("SELECT inp_path FROM projects WHERE project_id=?", (project_id,)).fetchone()
+                    raw_bdf_path = row["inp_path"] if row else None
+            bdf_path = _resolve_model_update_bdf_path(raw_bdf_path, workspace)
+            _queue_model_update_import(
+                project_id, "op2_modal", workspace,
+                {"op2_path": op2_path, "bdf_path": bdf_path, "config": modal_cfg},
+                result_group=result_group,
+            )
         except Exception as exc:
-            _log_job(project_id, "warn",
-                     f"[{_kw(result_group)}] {_ws('model_update OP2 模态导入失败（非致命）')}：{_esc(str(exc))}",
-                     stage="mu_import_op2_modal")
-            logger.warning("[%s] model_update OP2 modal import failed: %s", project_id, exc)
+            _log_job(project_id, "warn", f"OP2可视化结果已就绪；修正后台任务排队失败：{_esc(str(exc))}",
+                     stage="mu_background_op2_modal")
+            logger.exception("[%s] enqueue OP2 model-update import failed", label)
 
     return True
 
@@ -1894,6 +1861,8 @@ def main() -> None:
 
     _ensure_job_logs_schema()
     _recover_stuck_running_states()
+    from src.model_update_tasks import start_worker
+    start_worker(REGISTRY_DB)
 
     # Start heartbeat daemon
     t = threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat")
@@ -1926,6 +1895,7 @@ def main() -> None:
                 did_work = True
                 label = "{}/{}".format(project_id, rg)
                 logger.info("Claimed result_group %s", label)
+                _log_job(project_id, "step", f"[{_kw(rg)}] 主解析队列已领取结果组，开始解析", stage="rg_start")
                 try:
                     _cleanup_result_group(ws, rg)
                     src = _materialize_runner_source(src, ws, source_file)
