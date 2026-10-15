@@ -78,3 +78,24 @@ def test_missing_resident_indices_retains_legacy_soup_fallback(tmp_path):
     result_positions, result_indices = G._read_render_geometry(idx, "PART", str(render))
     assert result_positions is positions
     assert result_indices is None
+
+
+@pytest.mark.parametrize("indices", [
+    [[4, 5, 6], [4, 6, 7]],           # Dense offset interval: subtraction path.
+    [[7, 4, 6], [6, 5, 7]],           # Dense but shuffled: preserve input order.
+    [[0, 2, 3], [0, 3, 5]],           # Gaps: must retain sorted-unique mapping.
+    [[0, 100, 200], [0, 200, 300]],   # Sparse interval: avoid a large histogram.
+])
+@pytest.mark.parametrize("chunk_size", [1, 2])
+def test_chunk_mapping_matches_sorted_unique_for_dense_and_sparse_ids(indices, chunk_size):
+    indices = np.asarray(indices, dtype=np.int32)
+    positions = np.arange(301 * 3, dtype=np.float32).reshape(301, 3)
+    chunks = G._build_render_chunks(positions, indices, chunk_size)
+    for k, chunk in enumerate(chunks):
+        original = indices[k * chunk_size:(k + 1) * chunk_size]
+        expected_ids, inverse = np.unique(original.ravel(), return_inverse=True)
+        np.testing.assert_array_equal(chunk["vertex_global_id"], expected_ids)
+        np.testing.assert_array_equal(chunk["indices"], inverse.reshape(-1, 3))
+        np.testing.assert_array_equal(chunk["positions"], positions[expected_ids])
+        np.testing.assert_array_equal(
+            chunk["positions"][chunk["indices"]], positions[original])

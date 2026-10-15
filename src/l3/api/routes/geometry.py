@@ -116,9 +116,19 @@ def _build_render_chunks(positions: np.ndarray, indices: np.ndarray,
     for start in range(0, Nt, step):
         end = min(start + step, Nt)
         sub_indices = indices[start:end]                                # [Nt_k, 3]
-        unique_verts, remapped = np.unique(
-            sub_indices.ravel(), return_inverse=True
-        )
+        flat = sub_indices.ravel()
+        lo, hi = int(flat.min()), int(flat.max())
+        span = hi - lo + 1
+        # L2 normally writes face-local vertices in consecutive order. When
+        # this chunk uses the whole interval, subtraction is the exact same
+        # mapping as sorted np.unique, without sorting every triangle corner.
+        # Bound the histogram by the input size for sparse/global vertex IDs.
+        local = flat - lo if lo >= 0 and span <= flat.size else None
+        if local is not None and np.all(np.bincount(local, minlength=span)):
+            unique_verts = np.arange(lo, hi + 1, dtype=flat.dtype)
+            remapped = local
+        else:
+            unique_verts, remapped = np.unique(flat, return_inverse=True)
         chunks.append({
             "positions":        np.ascontiguousarray(positions[unique_verts]),
             "indices":          remapped.reshape(-1, 3).astype(np.int32),
