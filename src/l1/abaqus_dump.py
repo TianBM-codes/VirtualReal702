@@ -18,6 +18,7 @@ from __future__ import print_function
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -512,6 +513,27 @@ def mkdirs(path):
         os.makedirs(path)
 
 
+def _copy_assembly_set_files(raw_dir, relative_paths):
+    """Reuse the completed assembly dump instead of revisiting ODB entities.
+
+    Both assembly.h5 and sets.h5 need the same per-instance set memberships.
+    Copying their raw arrays preserves labels, dtypes and ordering byte for byte.
+    The caller only enables this after dump_assembly finished in this process.
+    """
+    source_root = os.path.join(raw_dir, 'assembly', 'asmsets')
+    if not all(os.path.isfile(os.path.join(source_root, name))
+               for name in relative_paths):
+        return False
+    count = 0
+    for relative in relative_paths:
+        target = os.path.join(raw_dir, 'sets', 'asmsets', relative)
+        mkdirs(os.path.dirname(target))
+        shutil.copyfile(os.path.join(source_root, relative), target)
+        count += 1
+    print("    Reused {} assembly set file(s)".format(count))
+    return True
+
+
 def jdump(path, obj):
     with open(path, 'w') as f:
         json.dump(obj, f, indent=2)
@@ -808,13 +830,17 @@ def dump_assembly(odb, raw_dir, meta):
 
     meta['instances'] = inst_meta
 
+    assembly_set_files = []
+    assembly_sets_reusable = True
+    assembly_sets_root = os.path.join(asm_dir, 'asmsets')
     # Assembly node sets (per-instance split)
     for set_name, ns in assembly.nodeSets.items():
         for inst_n, labels in _set_nodes_by_inst(ns).items():
             d = os.path.join(asm_dir, 'asmsets', safe(set_name), safe(inst_n))
             mkdirs(d)
-            npsave(os.path.join(d, 'node_labels.npy'),
-                   np.array(sorted(labels), dtype=np.int32))
+            path = os.path.join(d, 'node_labels.npy')
+            npsave(path, np.array(sorted(labels), dtype=np.int32))
+            assembly_set_files.append(os.path.relpath(path, assembly_sets_root))
 
     # Assembly element sets (per-instance split)
     for set_name, es in assembly.elementSets.items():
@@ -822,8 +848,17 @@ def dump_assembly(odb, raw_dir, meta):
             d = os.path.join(asm_dir, 'asmsets', safe(set_name), safe(inst_n))
             mkdirs(d)
             path = os.path.join(d, 'elem_labels.npy')
+            relative = os.path.relpath(path, assembly_sets_root)
             if not os.path.exists(path):
                 npsave(path, np.array(sorted(labels), dtype=np.int32))
+                assembly_set_files.append(relative)
+            elif relative not in assembly_set_files:
+                # An existing file from an earlier attempt is not a verified
+                # export from this call. Keep the original canonical-set scan.
+                assembly_sets_reusable = False
+
+    # Internal handoff only; dump_sets consumes/removes it before dump_meta.json.
+    meta['_assembly_set_files'] = assembly_set_files if assembly_sets_reusable else None
 
     # Datum coordinate systems — written to datum_csyses.json for l1_pack.py
     datum_csyses = {}
@@ -1212,22 +1247,25 @@ def dump_sets(odb, raw_dir, meta):
     t0 = time.time()
     print("  Sets ...")
 
-    # Assembly sets (already written partially in dump_assembly for assembly.h5;
-    # here we write the canonical copy for sets.h5)
-    for set_name, ns in assembly.nodeSets.items():
-        for inst_n, labels in _set_nodes_by_inst(ns).items():
-            d = os.path.join(sets_dir, 'asmsets', safe(set_name), safe(inst_n))
-            mkdirs(d)
-            npsave(os.path.join(d, 'node_labels.npy'),
-                   np.array(sorted(labels), dtype=np.int32))
+    # Assembly membership arrays have already been exported for assembly.h5.
+    # Keep standalone dump_sets calls compatible: unverified/absent raw files
+    # still use the original ODB iteration, never an old workspace's arrays.
+    assembly_files = meta.pop('_assembly_set_files', None)
+    if not (assembly_files is not None and _copy_assembly_set_files(raw_dir, assembly_files)):
+        for set_name, ns in assembly.nodeSets.items():
+            for inst_n, labels in _set_nodes_by_inst(ns).items():
+                d = os.path.join(sets_dir, 'asmsets', safe(set_name), safe(inst_n))
+                mkdirs(d)
+                npsave(os.path.join(d, 'node_labels.npy'),
+                       np.array(sorted(labels), dtype=np.int32))
 
-    for set_name, es in assembly.elementSets.items():
-        for inst_n, labels in _set_elems_by_inst(es).items():
-            d = os.path.join(sets_dir, 'asmsets', safe(set_name), safe(inst_n))
-            mkdirs(d)
-            p = os.path.join(d, 'elem_labels.npy')
-            if not os.path.exists(p):
-                npsave(p, np.array(sorted(labels), dtype=np.int32))
+        for set_name, es in assembly.elementSets.items():
+            for inst_n, labels in _set_elems_by_inst(es).items():
+                d = os.path.join(sets_dir, 'asmsets', safe(set_name), safe(inst_n))
+                mkdirs(d)
+                p = os.path.join(d, 'elem_labels.npy')
+                if not os.path.exists(p):
+                    npsave(p, np.array(sorted(labels), dtype=np.int32))
 
     # Part sets (via instance node/element sets — one per part)
     seen_parts = set()
