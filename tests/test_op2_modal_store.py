@@ -122,6 +122,8 @@ def test_preview_route_auto_stores_modal_results_when_project_id_is_provided(mon
 
     monkeypatch.setattr(solver, "preview_op2_modal", fake_preview_op2_modal)
     monkeypatch.setattr(solver, "_store_op2_modal_job", fake_store_op2_modal_job)
+    # This unit test exercises dispatch, not real project-file resolution.
+    monkeypatch.setattr(solver, "_resolve_project_local_input_with_fallback", lambda **kwargs: kwargs["explicit_path"])
 
     app = FastAPI()
     app.include_router(solver.router)

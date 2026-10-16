@@ -509,6 +509,8 @@ class RegistryRepo:
 
     def delete_project(self, project_id: str) -> None:
         with self._connect() as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_update_import_tasks'").fetchone():
+                conn.execute("DELETE FROM model_update_import_tasks WHERE project_id=?", (project_id,))
             conn.execute("DELETE FROM job_logs WHERE odb_id=?", (project_id,))
             conn.execute("DELETE FROM result_groups WHERE project_id=?", (project_id,))
             conn.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
@@ -560,7 +562,7 @@ class RegistryRepo:
             ).fetchall()
 
     def project_has_active_tasks(self, project_id: str) -> bool:
-        """Return True if project geometry or any result group is queued/running."""
+        """Include model-update imports so deletion/cloning cannot race a writer."""
         with self._connect() as conn:
             proj = conn.execute(
                 "SELECT geom_status FROM projects WHERE project_id=?", (project_id,)
@@ -574,7 +576,14 @@ class RegistryRepo:
                 " WHERE project_id=? AND status IN ('pending', 'running') LIMIT 1",
                 (project_id,),
             ).fetchone()
-            return row is not None
+            if row is not None:
+                return True
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_update_import_tasks'").fetchone():
+                return conn.execute(
+                    "SELECT 1 FROM model_update_import_tasks WHERE project_id=? AND status IN ('pending','running') LIMIT 1",
+                    (project_id,),
+                ).fetchone() is not None
+            return False
 
     def has_active_tasks(self) -> bool:
         """全局：是否有任何解析任务在排队/运行（项目几何、结果组、旧版 ODB job）。
@@ -586,6 +595,7 @@ class RegistryRepo:
                 "SELECT 1 FROM projects WHERE geom_status IN ('pending','running') LIMIT 1",
                 "SELECT 1 FROM result_groups WHERE status IN ('pending','running') LIMIT 1",
                 "SELECT 1 FROM odb_jobs WHERE status IN ('submitted','l1_running','l2_running') LIMIT 1",
+                "SELECT 1 FROM model_update_import_tasks WHERE status IN ('pending','running') LIMIT 1",
             ):
                 try:
                     if conn.execute(sql).fetchone() is not None:

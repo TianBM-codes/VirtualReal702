@@ -304,7 +304,7 @@ def _build_bdf_octree_node_data(bdf_parser):
     }
 
 
-def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=True):
+def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=True, *, progress=None):
     """
     将 BDF 解析结果写入数据库
 
@@ -314,15 +314,24 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
     :param clear_before_insert: 是否先按 pid 清空 FEM 相关表
     :return:
     """
+    def phase(name, message):
+        if progress is not None:
+            progress(name, message)
+
+    phase("database_init", "检查模型修正数据库连接和表结构")
     ensure_tables_exist()
 
+    phase("read_bdf", "读取BDF并整理模型修正节点（沿用现有解析器，不是可视化重跑）")
     bdf_parser = BDFParser(file_path)
     bdf_parser.parse()
+    phase("catalog", "整理材料、属性、约束和可修正集合")
     bdf_info = bdf_parser.GetDatabaseData()
     quantity_set_capabilities = _build_bdf_property_set_capabilities(bdf_parser)
     compact_capability_rows, capability_detail_rows = split_capability_rows(quantity_set_capabilities)
+    phase("node_data", "整理节点匹配索引的输入数据")
     octree_node_data = _build_bdf_octree_node_data(bdf_parser)
 
+    phase("write_mysql", "写入模型修正材料、属性和约束到MySQL")
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -615,6 +624,7 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
             current_value = VALUES(current_value),
             extra_json = VALUES(extra_json)
         """
+        phase("write_detail", "保存集合明细到现有H5文件并登记集合目录")
         capability_detail_h5 = write_capability_detail_h5(
             int(project_id),
             capability_detail_rows,
@@ -640,12 +650,14 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
                 _json_dumps(item.get("extra_json") or {}),
             ))
 
+        phase("node_index", "构建并保存节点匹配索引（现有NPZ存储）")
         cache_path = _save_octree_cache(
             int(project_id),
             os.path.abspath(file_path),
             octree_node_data,
             force_rebuild=True,
         )
+        phase("register_index", "登记节点索引、模型尺寸和项目配置")
         cursor.execute(
             """
             INSERT INTO t_mt_py_fem_node_octree_cache
@@ -684,6 +696,7 @@ def import_bdf_data(file_path, project_id, file_id=None, clear_before_insert=Tru
             cursor=cursor,
         )
 
+        phase("commit", "提交模型修正数据库事务")
         conn.commit()
 
         density_defined_count = sum(

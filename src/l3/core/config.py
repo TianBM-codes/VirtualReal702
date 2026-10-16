@@ -82,6 +82,11 @@ class Settings:
 
         # Compression: APP_ENABLE_GZIP=1 — wrap all responses with HTTP gzip
         self.enable_gzip = _get(cfg, "APP_ENABLE_GZIP", "0") == "1"
+        # Large render buffers should not wait for gzip's default level 9.
+        # Level 1 preserves the payload, trading a little bandwidth for latency.
+        self.gzip_compresslevel = int(_get(cfg, "APP_GZIP_COMPRESSLEVEL", "1"))
+        if not 1 <= self.gzip_compresslevel <= 9:
+            raise ValueError("APP_GZIP_COMPRESSLEVEL must be between 1 and 9")
 
         # Result-scalar LRU cache cap (MB, per worker process). frame-scalars /
         # frame-scalar-range cache computed per-vertex scalars and legend ranges
@@ -146,6 +151,7 @@ def log_startup_config() -> None:
         f"  max_loaded_projects: {settings.max_loaded_projects}   (LRU cap)",
         f"  log_level         : {settings.log_level}",
         f"  enable_gzip       : {settings.enable_gzip}",
+        f"  gzip_compresslevel: {settings.gzip_compresslevel}",
         f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (RAM, 0 = off)",
         f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off)",
         f"  enable_warmup     : {settings.enable_warmup}",

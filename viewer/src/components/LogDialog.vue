@@ -13,8 +13,19 @@
           </div>
         </div>
 
-        <!-- 进度条 -->
+        <div class="task-summary" data-testid="pipeline-status">
+          <div><strong>可视化解析</strong> · 几何：{{ statusText(pipeline?.geometry) }}<span v-for="r in pipeline?.results || []" :key="r.result_group"> · 结果 {{ r.result_group }}：{{ statusText(r.status) }}</span></div>
+          <div class="mu-tasks" data-testid="model-update-status">
+            <strong>模型修正后台</strong><span v-if="!modelUpdateTasks.length"> · 暂无任务记录</span>
+            <div v-for="task in modelUpdateTasks" :key="task.id" :class="{ 'task-failed': task.status === 'failed' }">
+              {{ task.kind === 'bdf' ? 'BDF修正数据' : `OP2修正数据[${task.result_group}]` }}：{{ statusText(task.status) }} · {{ task.message }}<span v-if="task.status === 'running'">（已用{{ elapsedSeconds(task.started_at) }}秒）</span><span v-if="task.error"> · {{ task.error }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Last reported phase percentage, not combined model-update progress. -->
         <div class="progress-wrap">
+          <span class="progress-caption">最近阶段进度</span>
           <div class="progress-track">
             <div
               class="progress-fill"
@@ -69,6 +80,10 @@ const logAreaRef = ref(null)
 const logs       = ref([])
 const loading    = ref(false)
 const currentPercent = ref(null)
+const pipeline = ref(null)
+const modelUpdateTasks = ref([])
+const observedAt = ref(Date.now())
+let requestGeneration = 0
 
 let sinceId   = 0
 let pollTimer = null
@@ -91,6 +106,15 @@ function badgeText(level) {
     ?? level.slice(0, 4).toUpperCase()
 }
 
+function statusText(status) {
+  return { pending: '排队中', running: '执行中', ready: '已就绪', error: '失败', failed: '失败', l2_pending: '等待重建' }[status] ?? '—'
+}
+
+function elapsedSeconds(startedAt) {
+  const start = Date.parse(startedAt)
+  return Number.isFinite(start) ? Math.max(0, Math.floor((observedAt.value - start) / 1000)) : 0
+}
+
 function isNearBottom() {
   const el = logAreaRef.value
   return el ? el.scrollTop + el.clientHeight >= el.scrollHeight - 32 : true
@@ -108,6 +132,7 @@ function scrollToBottom() {
 async function fetchLogs(reset = false) {
   const id = props.projectId
   if (!id) return
+  const generation = requestGeneration
   if (reset) { logs.value = []; sinceId = 0 }
   loading.value = true
   const atBottom = reset || isNearBottom()
@@ -115,13 +140,15 @@ async function fetchLogs(reset = false) {
     const url  = `${store.value.baseUrl}/api/projects/${id}/logs?since_id=${sinceId}&limit=500`
     const res  = await http.get(url)
     const data = res.data
+    if (id !== props.projectId || generation !== requestGeneration) return
+    pipeline.value = data.pipeline ?? null
+    modelUpdateTasks.value = data.model_update_tasks ?? []
+    observedAt.value = Date.now()
     if (data.logs?.length) {
       logs.value.push(...data.logs)
       sinceId = data.next_since_id
     }
-    if (data.current_percent !== null && data.current_percent !== undefined) {
-      currentPercent.value = data.current_percent
-    }
+    currentPercent.value = data.current_percent ?? null
     if (atBottom) scrollToBottom()
   } catch (e) {
     store.value.setStatus('日志加载失败：' + e.message, 'err')
@@ -166,7 +193,10 @@ function stopPolling() {
 // ── 生命周期 ──────────────────────────────────────────────────────────────────
 
 watch(() => props.projectId, async (id) => {
+  requestGeneration++
   stopPolling()
+  pipeline.value = null
+  modelUpdateTasks.value = []
   if (id) {
     await fetchLogs(true)
     startPolling()
@@ -303,6 +333,12 @@ onUnmounted(stopPolling)
   min-width: 34px;
   text-align: right;
 }
+
+.task-summary { padding: 10px 14px; font-size: 12px; color: #c9d1d9; border-bottom: 1px solid #30363d; max-height: 170px; overflow: auto; }
+.mu-tasks { margin-top: 6px; color: #8b949e; }
+.mu-tasks > div { margin-top: 4px; }
+.task-failed { color: #ff7b72; }
+.progress-caption { font-size: 11px; color: #8b949e; white-space: nowrap; }
 
 /* ── 日志区 ────────────────────────────────────────────────────────────────── */
 .log-area {

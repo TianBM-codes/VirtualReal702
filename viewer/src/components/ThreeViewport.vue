@@ -11,13 +11,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, inject, markRaw } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { useViewerStore } from '../store/viewer'
 import { useOdbApi } from '../composables/useOdbApi'
 import { parseL3BE } from '../composables/useL3BE'
 import http from '../utils/request'
+import { buildEdgeVertexIndex as _buildEdgeVtxIndex, syncEdgePositions } from '../utils/edgeBinding'
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh'
 
 // Patch Three.js so every BufferGeometry/Mesh automatically supports BVH raycasting.
@@ -29,6 +30,12 @@ THREE.Mesh.prototype.raycast                      = acceleratedRaycast
 
 const store = useViewerStore()
 const api   = useOdbApi()
+// Only the standalone load benchmark provides this observer. Normal viewer
+// sessions keep the same loading/rendering path without collecting timings.
+const loadDiagnostics = inject('viewerLoadDiagnostics', null)
+const loadMark = (name, detail) => loadDiagnostics?.mark(name, detail)
+const loadClock = () => loadDiagnostics ? performance.now() : 0
+const loadDuration = (name, started) => loadDiagnostics?.duration(name, performance.now() - started)
 const emit  = defineEmits(['pick-result', 'bbox-result', 'colors-loaded', 'model-loaded', 'deform-anim-frame'])
 
 const viewportEl    = ref(null)
@@ -257,6 +264,7 @@ function animate() {
 
   if (moving || needsRender) {
     renderer.render(scene, camera)
+    loadDiagnostics?.afterRender(renderer)
     needsRender = false
   }
 }
@@ -790,13 +798,15 @@ function resolveFace(im, globalFi) {
 }
 
 function _buildChunkedInstance(inst, sections) {
+  const buildStarted = loadClock()
   const K = sections.chunk_count.data[0]
-  const positionsConcat  = new Float32Array(sections.positions_concat.data)
-  const positionsOffsets = new Int32Array(sections.positions_offsets.data)
-  const indicesConcat    = new Int32Array(sections.indices_concat.data)
-  const indicesOffsets   = new Int32Array(sections.indices_offsets.data)
-  const faceIdxBase      = new Int32Array(sections.face_idx_base.data)
-  const vertexGlobalId   = new Int32Array(sections.vertex_global_id.data)
+  // parseL3BE already returns typed views. Only mutable per-chunk buffers need copies.
+  const positionsConcat  = sections.positions_concat.data
+  const positionsOffsets = sections.positions_offsets.data
+  const indicesConcat    = sections.indices_concat.data
+  const indicesOffsets   = sections.indices_offsets.data
+  const faceIdxBase      = sections.face_idx_base.data
+  const vertexGlobalId   = sections.vertex_global_id.data
 
   // Determine global vertex count for [Nv_global, 3] addressing (deform / scalars)
   let maxV = -1
@@ -853,8 +863,12 @@ function _buildChunkedInstance(inst, sections) {
     const colorAttr = new THREE.BufferAttribute(cols, 3)
     geo.setAttribute('color', colorAttr)
 
+    const normalsStarted = loadClock()
     geo.computeVertexNormals()
+    loadDuration('vertex_normals_ms', normalsStarted)
+    const bvhStarted = loadClock()
     geo.computeBoundsTree({ indirect: true })
+    loadDuration('picking_index_ms', bvhStarted)
 
     const mat = new THREE.MeshPhongMaterial({ map: colormapTexture, vertexColors: false, side: THREE.DoubleSide, flatShading: false, shininess: 30, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
     if (clipPlane) mat.clippingPlanes = [clipPlane]
@@ -871,11 +885,15 @@ function _buildChunkedInstance(inst, sections) {
     totalFaces += Nt_k
   }
 
-  return { group, chunks, colorMode: 'uv', numFaces: totalFaces, numVertsGlobal, globalPositions, globalIndices }
+  loadDuration('build_chunks_ms', buildStarted)
+  // Three.js owns these mutable buffers and indexes. Vue observes the instance
+  // entry, not every geometry/BVH property, including after filtered reloads.
+  return markRaw({ group, chunks, colorMode: 'uv', numFaces: totalFaces, numVertsGlobal, globalPositions, globalIndices })
 }
 
 // ── Load Geometry ─────────────────────────────────────────────────────────
 async function loadGeometry(instances) {
+  loadMark('surface_start')
   // Dispose old
   // Mesh/feature edges may have been loaded BEFORE the geometry (edges-first loading, so the
   // outline shows up while the big surface buffers are still downloading). Keep edges that
@@ -899,15 +917,18 @@ async function loadGeometry(instances) {
 
   await Promise.all(instances.map(async inst => {
     try {
+      const requestStarted = loadClock()
       const res = await http.get(store.getApiUrl(`geometry/${encodeURIComponent(inst)}/render-buffers-chunked`), { responseType: 'arraybuffer' })
+      loadDuration('surface_http_ms', requestStarted)
+      const parseStarted = loadClock()
       const sections = parseL3BE(res.data)
+      loadDuration('parse_envelope_ms', parseStarted)
 
       const im = _buildChunkedInstance(inst, sections)
       modelGroup.add(im.group)
       store.instanceMeshes[inst] = im
       origPositions[inst] = im.globalPositions.slice()  // save for deform reset
       totalTris += im.numFaces
-      _bindEdgesToInstance(inst)
 
       const box = new THREE.Box3()
       for (const c of im.chunks) {
@@ -929,6 +950,7 @@ async function loadGeometry(instances) {
     emit('model-loaded', { bbox: { min: combinedBox.min.toArray(), max: combinedBox.max.toArray(), axMin: combinedBox.min, axMax: combinedBox.max } })
   }
   store.setStatus(`Loaded ${instances.length} instance(s) — ${totalTris} triangles total`, 'ok')
+  loadMark('surface_ready', { triangles: totalTris, instances: Object.keys(store.instanceMeshes).length })
   await Promise.all([
     loadLineElements(instances),
     loadPointElements(instances),
@@ -936,6 +958,7 @@ async function loadGeometry(instances) {
     loadOrientations(combinedBox),
   ])
   requestRender()
+  loadMark('auxiliary_ready')
 }
 
 // ── Line Elements (beam / truss) ──────────────────────────────────────────
@@ -1061,36 +1084,24 @@ async function loadOrientations(bbox) {
 }
 
 // ── Edge vertex index helpers ─────────────────────────────────────────────
-// Build a map: rounded XYZ string → vertex index in the mesh position buffer.
-// Used to sync edge endpoint positions after deformation.
-function _buildEdgeVtxIndex(edgePosArr, meshPosArr) {
-  const lookup = new Map()
-  const Nv = meshPosArr.length / 3
-  for (let i = 0; i < Nv; i++) {
-    const k = `${Math.round(meshPosArr[i*3]*1e4)},${Math.round(meshPosArr[i*3+1]*1e4)},${Math.round(meshPosArr[i*3+2]*1e4)}`
-    if (!lookup.has(k)) lookup.set(k, i)
-  }
-  const Ne = edgePosArr.length / 3
-  const idx = new Uint32Array(Ne)
-  for (let i = 0; i < Ne; i++) {
-    const k = `${Math.round(edgePosArr[i*3]*1e4)},${Math.round(edgePosArr[i*3+1]*1e4)},${Math.round(edgePosArr[i*3+2]*1e4)}`
-    idx[i] = lookup.get(k) ?? 0
-  }
-  return idx
-}
-
+// Associations are created on first deformation and discarded on reload.
 // Copy deformed vertex positions to edge endpoint buffer via stored vertex indices.
 function _syncEdgesForInst(instName, edgeLines, edgeVtxIdxs) {
   const line = edgeLines[instName]; if (!line) return
-  const idxs = edgeVtxIdxs[instName]; if (!idxs) return
-  const im   = store.instanceMeshes[instName]; if (!im) return
-  const src  = im.globalPositions
-  const dst  = line.geometry.attributes.position.array
-  for (let i = 0; i < idxs.length; i++) {
-    const vi = idxs[i]
-    dst[i*3]=src[vi*3]; dst[i*3+1]=src[vi*3+1]; dst[i*3+2]=src[vi*3+2]
-  }
+  const im = store.instanceMeshes[instName]; if (!im) return
+  const originalMesh = origPositions[instName]
+  const originalEdges = line.userData.origPositions
+  if (!originalMesh || !originalEdges) return
+  const started = loadClock()
+  edgeVtxIdxs[instName] = syncEdgePositions(
+    line.geometry.attributes.position.array, originalEdges, originalMesh,
+    im.globalPositions, edgeVtxIdxs[instName],
+  )
+  loadDuration('sync_edges_ms', started)
   line.geometry.attributes.position.needsUpdate = true
+  loadDiagnostics?.edgesSynced?.({ instance: instName, positions: im.globalPositions,
+    originalPositions: originalMesh, edges: line.geometry.attributes.position.array,
+    originalEdges, indices: edgeVtxIdxs[instName] })
 }
 
 // Sync region highlight lines for one instance (keys are `${instName}__${region}`).
@@ -1148,18 +1159,6 @@ function _retainEdgesForReload(linesMap, idxsMap, instances) {
   }
 }
 
-// Build the edge→mesh vertex index map (needed for edges to follow deformation) for
-// edges that were displayed before this instance's mesh was loaded.
-function _bindEdgesToInstance(instName) {
-  const im = store.instanceMeshes[instName]; if (!im) return
-  for (const [linesMap, idxsMap] of [[meshEdgesLines, meshEdgeVtxIdxs], [featureEdgesLines, featureEdgeVtxIdxs]]) {
-    const line = linesMap[instName]
-    if (!line || idxsMap[instName]) continue
-    // match against undeformed mesh positions (edges are undeformed too)
-    idxsMap[instName] = _buildEdgeVtxIndex(line.userData.origPositions, origPositions[instName] ?? im.globalPositions)
-  }
-}
-
 // ── Load Edges ────────────────────────────────────────────────────────────
 // Edges don't depend on the surface geometry, so they can be loaded first (much smaller
 // payload → the model outline appears quickly), then loadGeometry(). Pass `instances`
@@ -1212,9 +1211,8 @@ async function loadEdges(type, instances) {
       totalEdges += edgePosArr.length / 6
       geo.computeBoundingBox(); edgeBox.union(geo.boundingBox)
 
-      // Build vertex index map so edges can follow deformation. If the mesh isn't loaded
-      // yet, loadGeometry() builds it when the instance arrives (_bindEdgesToInstance).
-      _bindEdgesToInstance(instName)
+      // Static edges need no vertex association. First deformation binds lazily
+      // against the saved undeformed mesh, then later frames reuse that mapping.
       requestRender()
     } catch { /* instance has no edge data */ }
   }))
@@ -1226,6 +1224,7 @@ async function loadEdges(type, instances) {
 
   const label = type === 'mesh' ? 'Mesh grid' : 'Feature edges'
   store.setStatus(`${label} loaded: ${totalEdges} edges`, 'ok')
+  if (type === 'feature') loadMark('outline_ready', { edges: totalEdges })
   requestRender()
 }
 

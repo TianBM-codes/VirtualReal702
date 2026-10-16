@@ -7,6 +7,7 @@ GET    /api/projects/{project_id}                 — 查询 project + result_gr
 PATCH  /api/projects/{project_id}/results/{rg}    — 修改 result_group 显示名
 DELETE /api/projects/{project_id}                 — 删除 project（文件夹 + 注册表）
 """
+import html
 import json
 import os
 import shutil
@@ -609,7 +610,7 @@ async def clone_project(source_project_id: str, body: CloneProjectRequest):
         raise ConflictError(f"Project '{new_project_id}' already exists")
     if repo.project_has_active_tasks(source_project_id):
         raise ConflictError(
-            "Cannot clone a project while geometry or result parsing is pending/running"
+            "Cannot clone a project while geometry/result parsing or model-update import is pending/running"
         )
 
     source_workspace = project_workspace(settings.data_root, source_project_id)
@@ -627,7 +628,7 @@ async def clone_project(source_project_id: str, body: CloneProjectRequest):
 
         if repo.project_has_active_tasks(source_project_id):
             raise ConflictError(
-                "Cannot clone a project while geometry or result parsing is pending/running"
+                "Cannot clone a project while geometry/result parsing or model-update import is pending/running"
             )
 
         tmp_workspace.rename(target_workspace)
@@ -716,6 +717,11 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
             parse_options=parse_options_json,
         )
 
+    repo.append_job_log(
+        project_id, "step",
+        f"结果组 {html.escape(body.result_group)} 已接收，等待可视化解析主队列领取；模型修正导入使用独立后台队列",
+        stage="rg_queued",
+    )
     return ok({
         "project_id": project_id,
         "result_group": body.result_group,
@@ -734,19 +740,28 @@ async def get_project_logs(
     """
     返回 project 的解析进度日志，支持增量轮询。
 
-    覆盖范围：几何管道（INP/ODB L1+L2）和所有结果组（result_group）的解析日志。
+    覆盖范围：几何/结果组解析，以及独立模型修正后台任务。
+    pipeline 与 model_update_tasks 分别反映实时状态，current_percent 仅为最近阶段记录。
     result_group 相关行的 stage 以 'rg_' 开头，message 中包含结果组名称。
 
     level 取值：step / info / warn / error
     """
     repo = _repo()
-    if repo.get_project(project_id) is None:
+    project = repo.get_project(project_id)
+    if project is None:
         raise NotFoundError(f"Project '{project_id}' not found")
     rows = repo.get_job_logs(project_id, since_id=since_id, limit=limit)
     items = [dict(r) for r in rows]
     next_since = items[-1]["id"] if items else since_id
     current_percent = repo.get_current_percent(project_id)
-    return ok({"logs": items, "next_since_id": next_since, "current_percent": current_percent})
+    from src.model_update_tasks import list_imports
+    pipeline = {
+        "geometry": project["geom_status"],
+        "results": [{"result_group": r["result_group"], "status": r["status"]}
+                    for r in repo.list_result_groups(project_id)],
+    }
+    return ok({"logs": items, "next_since_id": next_since, "current_percent": current_percent,
+               "pipeline": pipeline, "model_update_tasks": list_imports(repo.db_path, project_id)})
 
 
 @router.post("/{project_id}/logs/clear")
@@ -907,7 +922,7 @@ async def delete_project(project_id: str):
     workspace_exists = workspace.exists() or workspace.is_symlink()
     if proj is not None and repo.project_has_active_tasks(project_id):
         raise ConflictError(
-            f"Cannot delete project '{project_id}' while geometry or result parsing is pending/running"
+            f"Cannot delete project '{project_id}' while geometry/result parsing or model-update import is pending/running"
         )
     mysql_purge = _purge_project_mysql_records(project_id)
     if proj is None:

@@ -324,7 +324,8 @@ app = FastAPI(
 
 # Allow browser requests from any origin (file://, localhost variants, etc.)
 if settings.enable_gzip:
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    app.add_middleware(GZipMiddleware, minimum_size=1000,
+                       compresslevel=settings.gzip_compresslevel)
 
 app.add_middleware(
     CORSMiddleware,

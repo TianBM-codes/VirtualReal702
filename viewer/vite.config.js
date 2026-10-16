@@ -5,4 +5,12 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   base: '/odb-viewer/',
+  build: {
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        loadBenchmark: 'load-benchmark.html',
+      },
+    },
+  },
 })

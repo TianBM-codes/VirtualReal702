@@ -25,6 +25,10 @@ def _make_projects_app(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(projects.settings, "data_root", str(data_root))
     monkeypatch.setattr(projects.settings, "registry_db_path", str(registry_db))
+    # Route dependencies are lazy; fixtures that insert rows need the schema
+    # before the first HTTP request.
+    from src.l3.infra.registry_repo import RegistryRepo
+    RegistryRepo(str(registry_db))
 
     app = FastAPI()
     app.include_router(projects.router)

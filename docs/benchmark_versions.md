@@ -1,5 +1,35 @@
 # 版本性能自动对比
 
+## 已解析模型的页面体验测试（2026-10-15）
+
+已经解析好的项目直接复用工作区与注册库；不要为补测页面重复执行下方 `--mode auto`
+导入流程。页面测试使用 `viewer/load-benchmark.html`，与正常页面共用 `ThreeViewport.vue`。
+它只列出 `bench_` 开头且几何 ready 的测试项目，加载与变形使用 GET，拾取使用现有 POST 查询。
+不会创建项目或提交解析任务。
+测试按钮自动串联读取模型信息、特征边、完整表面、辅助几何；正常 Viewer 中对应的手动
+操作间隔不计入等待。计时结束后刷新页面再开始下一次，避免上一轮画面影响观察。
+
+启动专用 API 时，将 `APP_DATA_ROOT`、`APP_REGISTRY_DB_PATH` 指向现有测试数据，
+设 `APP_EMBEDDED_RUNNER=0`、`APP_PRELOAD_PROJECTS=0`、`APP_WARMUP=0`，
+确认注册库没有排队或运行中的任务。不要把业务注册库交给测试任务进程。
+前端用 `npm run build` 生成生产页面，通过静态服务器打开 `/odb-viewer/load-benchmark.html`，
+填写专用 API 地址。固定窗口、显卡、可见状态；记录重启 API 后第一次及刷新页面后的重复样本，
+不要将开发服务器与生产包混作一组。
+
+`outline_presented` 表示轮廓绘制已提交，GPU 完成后再经过一个浏览器帧；
+`surface_presented` 对完整表面采用同一口径，是可自动测量的页面显示近似值，
+不等于精确的显示器出光时刻。截图核对非空模型、三角面与边数。
+`completed` 还等待辅助几何；两者可能不同。
+“验证变形和恢复”会选择现有 ready 结果组、最后一帧，检查有限坐标、非零变形、轮廓同步及恢复；
+没有合适结果的模型应标为不适用，不能拿空结果证明通过。
+
+HTTP 压缩必须记入条件：原接口脚本用 `Accept-Encoding: identity` 测未压缩数据；
+浏览器会请求 gzip，两种计时不能混用。本次增加 `APP_GZIP_COMPRESSLEVEL`（1～9，默认 1），
+`APP_ENABLE_GZIP` 开关保持原配置。旧默认是中间件的 9。改变压缩档位后，要验证解压体哈希相同，
+同时报告传输字节增加量。跨源资源计时未开放的首字节时间、传输字节记 `null`，不能把 0 当真实测量。
+
+本次页面对比见 `docs/交付/ODB-Viewer页面体验测试-20261015.md`。
+
 `tools/benchmark_versions.py` 可以在不操作前端的情况下，依次测试旧版和新版。
 自动模式会完成以下流程：
 
@@ -122,3 +152,45 @@ python tools\benchmark_versions.py --config tools\benchmark_versions.50w.json.ex
 两版顺序执行可以避免同时争抢 CPU、内存和磁盘，但后运行的新版仍可能受益于 Windows 的
 文件缓存。日常判断可直接使用本报告；如果结果要用于正式对外结论，建议重启电脑后再跑一轮，
 或交换新旧顺序复测，确认导入提升不是缓存造成的。
+
+## 首次打开模型及 ODB 对比
+
+`tools/benchmark_model_open.py` 补测模型信息、全部实例的特征边和前端实际使用的
+`render-buffers-chunked`。原基准中的 `model_load` 只读取一个实例的非分块几何，且此前的
+项目状态轮询和元信息发现已经把模型索引加载进内存，不能覆盖完整的首次打开开销。
+
+复制 `tools/benchmark_model_open.json.example` 为本机 `.json`，填写两版代码位置、唯一的
+非数字测试项目号和 ODB 路径，然后运行：
+
+```powershell
+python tools/benchmark_model_open.py --config tools/benchmark_model_open.local.json
+```
+
+工具先为每版复制独立的 ODB 副本并比对 SHA-256，再依次导入，各自保留独立的注册库
+和数据目录。历史服务的版本转换流程会原地替换输入文件，因此服务只接收测试副本路径，
+不接收用户原始文件。副本准备及校验耗时记录为 `odb_input_staging`，不计入导入就绪耗时；
+需要的 Abaqus 版本转换仍属于正常导入流程。导入就绪后重启测试服务，以
+`APP_PRELOAD_PROJECTS=0`、`APP_WARMUP=0` 启动，让首个模型信息请求承担模型索引的实际
+加载开销。之后在同一服务中重复打开，区分首次请求和重复请求。该条件用于定位首次请求
+瓶颈，不等于默认开启启动预加载和后台预热时的所有使用场景。
+
+若复用第一轮 BDF/OP2 已解析的数据，去掉 `sources.odb_path`，在每版的 `env` 中指定该轮
+`APP_DATA_ROOT`、`APP_REGISTRY_DB_PATH`，并使用原测试项目号。这样不会再次导入模型。
+工具不会删除这些数据，后续可继续排查或复测。
+
+结果为 `model_open_时间戳.json`，记录各请求耗时、响应字节数、面数/边数以及 SHA-256
+校验值；每版保存一次，出错时也保存已有结果。相同版本的重复打开必须返回相同内容，
+全部实例均未返回表面面片时直接报错，避免把空模型列为提速。跨版本校验值不同时需要
+继续核查，不能只凭耗时认定优化正确。下载计时包含客户端流式校验，额外记录
+`sha256_ms`，便于识别校验本身的开销。
+
+`open_outline_http_total` 从元信息请求开始，止于全部特征边下载完成；
+`open_surface_http_total` 再加上全部分块表面几何下载。请求串行执行，便于分离后端开销；
+浏览器可能并发请求，因此这些总时间**不是浏览器实际显示时间**，也不包含 JavaScript
+解析、显卡上传、绘制以及梁/点/耦合等辅助几何的加载。操作系统文件缓存不清空。
+
+`include_endpoint_suite=true` 可在打开测试之后继续运行原接口基准。ODB 已有结果组，
+此处 `include_op2=true` 仅表示原基准启用结果读取，不会追加导入 OP2。
+`suite_instance=largest_surface` 选择表面面片最多的实例；`frame=last` 使用所选载荷步的
+最后一帧，避开静力初始零帧。默认跳过非 FREQUENCY/BUCKLE 步的模态振型与谐波动画，
+仍测变形与云图。也可通过 `exclude_cases` 显式排除不适用的主测试项；分类明细不受此项影响。
