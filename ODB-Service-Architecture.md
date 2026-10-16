@@ -560,8 +560,17 @@ with h5py.File(result_path, 'w') as f:
         data_this_frame = extract_nodal_frame(frame, inst_name, field_name)  # [N, ncomp]
         ds[frame_idx, :, :] = data_this_frame   # 一次 IO 写一帧
 
-# 内存峰值：仅一帧数据，如 [50000, 6] float32 = 1.2 MB（可控）
+# 小模型示例仅说明逐帧布局；大模型的一帧也可能超过剩余内存。
 ```
+
+**实际导出实现（2026-10-16）**：L1 阶段 1 先发现编号和维度，不为结构扫描重排完整结果。
+原始结果与派生不变量按最多 65,536 条采样记录处理，直接填入 `.npy` 磁盘映射文件，
+一帧完成并关闭后才发布；保留截面点隔离、局部节点顺序和缺失位置的既有规则。
+阶段 2 只读映射这些文件，按约 4 MiB 分块写 HDF5 并汇总有限值范围。
+上述多帧 dataset 布局不变，避免的是完整结果副本和大范围临时索引同时常驻。
+Abaqus 自身数据块的读取仍可能占用较多内存，不构成任意模型的固定内存上限保证。
+runner 同时校验 `ODB_DUMP_COMPLETE` 标记，防止 Windows 启动器返回码失真后继续打包。
+详见 `docs/l1/abaqus_dump_guide.md` 的“大 ODB 的低内存处理”。
 
 **参见**：Section 9.2 有完整的 bulkDataBlocks 遍历骨架；Section 9.5 有 HDF5 chunk shape 策略；Section 5.2 有读取侧的维度切片代码（`frame_idx, :, sp_idx, ip_idx, comp_idx`）。
 

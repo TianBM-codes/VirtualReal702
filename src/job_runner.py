@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -366,15 +367,37 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
         _log_job(odb_id, "error", msg, stage=label)
         return 1, msg
 
-    stderr_lines = []
+    stderr_lines = deque(maxlen=50)
+    is_odb_dump = str(DUMP_SCRIPT) in [str(part) for part in cmd]
+    dump_complete = dump_failed = dump_memory_error = False
+    dump_version_error = False
     for line in proc.stdout:
         line = line.rstrip()
         if line:
+            if is_odb_dump:
+                dump_complete |= line == 'ODB_DUMP_COMPLETE'
+                dump_failed |= line.startswith('ODB_DUMP_FAILED:')
+                dump_memory_error |= 'MemoryError:' in line or line.strip() == 'MemoryError'
+                dump_version_error |= line.startswith('ODB_VERSION_ERROR:')
             logger.info("[%s] %s: %s", odb_id, label, line)
             stderr_lines.append(line)
             _log_job(odb_id, "info", line, stage=label)
     proc.wait()
-    return proc.returncode, "\n".join(stderr_lines[-50:])
+    rc = proc.returncode
+    if is_odb_dump and dump_version_error:
+        # Keep the upgrade signal even when subsequent launcher output is long.
+        stderr_lines.append('ODB_VERSION_ERROR: source needs Abaqus upgrade')
+        return 2, "\n".join(stderr_lines)
+    if is_odb_dump and (dump_failed or dump_memory_error or (rc == 0 and not dump_complete)):
+        rc = rc or 1
+        reason = ("ODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，"
+                  "检查 Windows 虚拟内存，或换用内存更大的机器重试。"
+                  if dump_memory_error else
+                  "ODB 提取未完整结束：没有收到完成标记，已停止后续打包。")
+        logger.error("[%s] %s: %s", odb_id, label, reason)
+        _log_job(odb_id, "error", reason, stage=label)
+        stderr_lines.append(reason)
+    return rc, "\n".join(stderr_lines)
 
 
 # ── ODB version upgrade helpers ───────────────────────────────────────────────
@@ -1738,7 +1761,7 @@ def _run_result_group(project_id: str, result_group: str,
         extract_cmd += ["--invariants", "full"]
     _append_extract_filters(extract_cmd, parse_opts)
     rc, tail = _run_streaming(extract_cmd, project_id, "rg_extract")
-    if _is_consistency_fail(rc, tail):
+    if "ODB_CONSISTENCY_FAIL:" in tail:
         msg = "consistency check failed: " + tail[-500:]
         _update_result_group_status(project_id, result_group, "error", msg)
         _log_job(project_id, "error",
