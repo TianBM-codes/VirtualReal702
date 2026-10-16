@@ -401,12 +401,16 @@ def _resolve_region_side_instances(odb, token):
                 continue
             try:
                 obj = repo[cand]
+            except MemoryError:
+                raise
             except Exception:
                 continue
             insts = set()
             try:
                 for nm in list(getattr(obj, 'instanceNames', None) or []):
                     insts.add(_canon_inst(nm))
+            except MemoryError:
+                raise
             except Exception:
                 pass
             if not insts:
@@ -416,6 +420,8 @@ def _resolve_region_side_instances(odb, token):
                     for arr in (getattr(obj, 'nodes', None) or ()):
                         if len(arr) > 0:
                             insts.add(_canon_inst(arr[0].instanceName))
+                except MemoryError:
+                    raise
                 except Exception:
                     pass
             if insts:
@@ -430,6 +436,8 @@ def _resolve_region_side_instances(odb, token):
                     continue
                 try:
                     repo[cand]
+                except MemoryError:
+                    raise
                 except Exception:
                     continue
                 return set([_canon_inst(iname)])
@@ -629,6 +637,8 @@ def get_instance_transform(instance):
             T[:3, :3] = rot
             T[:3, 3]  = origin
             return T
+        except MemoryError:
+            raise
         except Exception as e:
             print("WARNING: localCsys read failed for {}: {}".format(instance.name, e))
             return np.eye(4, dtype=np.float64)
@@ -683,249 +693,10 @@ def _block_data_2d(block):
     Scalar fields (e.g. STATUS) may return a 1D array [N] in some Abaqus
     versions.  Always promote to [N, 1] so callers can use .shape[1] safely.
     """
-    d = np.asarray(block.data, dtype=np.float32)
+    d = np.array(block.data, dtype=np.float32)
     if d.ndim == 1:
         d = d.reshape(-1, 1)
     return d
-
-
-# Bound temporary arrays by raw result rows, including local nodes/IPs.
-_RESULT_CHUNK_ROWS = 65536
-_U32_SEARCH_CHUNK_ROWS = 8192
-_UINT32_MAX = 4294967295
-
-
-def _require_u32_length(length, name):
-    # The insertion position len(labels), as well as valid rows, must fit.
-    if length < 0 or length > _UINT32_MAX:
-        raise OverflowError('{} exceeds uint32 index capacity'.format(name))
-
-
-def _searchsorted_u32(sorted_values, queries, unique=False):
-    """Left insertion positions created as uint32, without intp conversion.
-
-    Inputs are sorted integer labels. `unique` is true only for canonical
-    labels written by np.unique; it avoids search buffers for dense labels.
-    Sparse/duplicate labels use vectorized binary search with bounded buffers.
-    """
-    size = len(sorted_values)
-    _require_u32_length(size, 'Canonical labels')
-    result = np.zeros(len(queries), dtype=np.uint32)
-    if not size or not len(queries):
-        return result
-    first, last = int(sorted_values[0]), int(sorted_values[-1])
-    if unique and last - first == size - 1:
-        # Subtraction writes straight into the uint32 destination. Exclude
-        # out-of-range queries before subtracting to avoid unsigned underflow.
-        inside = queries >= first
-        np.logical_and(inside, queries <= last, out=inside)
-        np.subtract(queries, first, out=result, where=inside, casting='unsafe')
-        result[queries > last] = np.uint32(size)
-        return result
-
-    one = np.uint32(1)
-    last_row = np.uint32(size - 1)
-    for start in range(0, len(queries), _U32_SEARCH_CHUNK_ROWS):
-        end = min(start + _U32_SEARCH_CHUNK_ROWS, len(queries))
-        low = result[start:end]
-        high = np.full(end - start, size, dtype=np.uint32)
-        middle = np.empty(end - start, dtype=np.uint32)
-        needles = queries[start:end]
-        while True:
-            active = low < high
-            if not np.any(active):
-                break
-            # low + (high-low)//2 avoids unsigned addition overflow.
-            np.subtract(high, low, out=middle)
-            np.right_shift(middle, one, out=middle)
-            np.add(middle, low, out=middle)
-            # Converged rows can equal size; never gather outside the array.
-            np.minimum(middle, last_row, out=middle)
-            right = sorted_values[middle] < needles
-            np.logical_and(right, active, out=right)
-            np.copyto(high, middle, where=active & ~right)
-            np.add(middle, one, out=middle, where=right)
-            np.copyto(low, middle, where=right)
-    return result
-
-
-def _cyclic_indices_u32(start, length, modulus):
-    """IP cycle without creating an int64 arange, even when start > 2**32."""
-    _require_u32_length(length, 'Index chunk')
-    _require_u32_length(modulus, 'Integration-point count')
-    if modulus == 0:
-        raise ValueError('Integration-point count must be positive')
-    result = np.arange(length, dtype=np.uint32)
-    np.remainder(result, np.uint32(modulus), out=result)
-    offset = int(start) % modulus
-    if offset:
-        # Split the wrap before addition, so intermediate uint32 values fit.
-        limit = np.uint32(modulus - offset)
-        wrap = result >= limit
-        result[wrap] -= limit
-        result[~wrap] += np.uint32(offset)
-    return result
-
-
-def _block_ncomp(block):
-    """Discover width without copying a complete result block."""
-    width = getattr(block, 'width', None)
-    if width is not None and int(width) > 0:
-        return int(width)
-    components = getattr(block, 'componentLabels', None)
-    if components:
-        return len(components)
-    data = block.data
-    if not len(data):
-        return 1
-    return int(np.size(data[0]))
-
-
-def _ip_block_layout(block):
-    """Read labels only; structure discovery must not reshape tensor data."""
-    labels = np.asarray(block.elementLabels, dtype=np.int32)
-    elems = np.unique(labels)
-    ip_raw = getattr(block, 'integrationPoints', None)
-    if ip_raw is None:
-        n_ip = len(labels) // len(elems) if len(elems) else 1
-        ips = np.arange(1, n_ip + 1, dtype=np.int32)
-    else:
-        ips = np.unique(np.asarray(ip_raw, dtype=np.int32))
-    return elems, ips, _block_sp_num(block)
-
-
-def _en_block_layout(block):
-    labels = np.asarray(block.elementLabels, dtype=np.int32)
-    elems, counts = np.unique(labels, return_counts=True)
-    if len(counts) and np.any(counts != counts[0]):
-        raise ValueError('Unequal ELEMENT_NODAL row counts within one block')
-    return elems, int(counts[0]) if len(counts) else 0
-
-
-def _local_node_indices(rows, counts):
-    """Occurrence per element, preserving input order even across chunks."""
-    _require_u32_length(len(rows), 'Local-node chunk')
-    if rows.dtype != np.dtype('uint32') or counts.dtype != np.dtype('uint32'):
-        raise TypeError('Local-node indices and counts must be uint32')
-    result = np.arange(len(rows), dtype=np.uint32)
-    if not len(rows):
-        return result
-    if np.all(rows[1:] >= rows[:-1]):
-        # Normal Abaqus element-major order: no sorting/permutation array.
-        starts = np.empty(len(rows), dtype=bool)
-        starts[0] = True
-        starts[1:] = rows[1:] != rows[:-1]
-        run_start = np.arange(len(rows), dtype=np.uint32)
-        np.copyto(run_start, np.uint32(0), where=~starts)
-        np.maximum.accumulate(run_start, dtype=np.uint32, out=run_start)
-        np.subtract(result, run_start, out=result)
-        base = counts[rows]
-        if np.any(base > np.uint32(_UINT32_MAX - 1) - result):
-            raise OverflowError('Local-node counter exceeds uint32 capacity')
-        np.add(result, base, out=result)
-        ends = np.empty(len(rows), dtype=bool)
-        ends[:-1] = starts[1:]
-        ends[-1] = True
-        counts[rows[ends]] = result[ends] + np.uint32(1)
-    else:
-        # Unordered/interleaved blocks need stable occurrence order. Count
-        # directly instead of allocating intp argsort and return_counts arrays.
-        for index, row in enumerate(rows):
-            count = int(counts[row])
-            if count >= _UINT32_MAX:
-                raise OverflowError('Local-node counter exceeds uint32 capacity')
-            result[index] = count
-            counts[row] = count + 1
-    return result
-
-
-def _write_frame_blocks(path, canon, position, blocks, shape, ip_labels=None,
-                        invariant=None, is_strain=False, fill_value=0):
-    """Write a standard .npy through a disk mapping, one bounded chunk at a time.
-
-    No list of reshaped tensors or frame-sized merge array is retained. The
-    temporary file is closed before publishing (also required on Windows).
-    """
-    _require_u32_length(len(canon), 'Canonical labels')
-    if position in ('ELEMENT_NODAL', 'INTEGRATION_POINT'):
-        _require_u32_length(shape[1], 'Local-node/integration-point count')
-    if not all(shape):
-        npsave(path, np.full(shape, fill_value, dtype=np.float32))
-        return
-    temp_path = path + '.partial.npy'
-    out = None
-    try:
-        out = np.lib.format.open_memmap(temp_path, mode='w+', dtype=np.float32,
-                                        shape=shape)
-        for start in range(0, shape[0], _RESULT_CHUNK_ROWS):
-            out[start:start + _RESULT_CHUNK_ROWS] = fill_value
-        for block in blocks:
-            labels = (block.nodeLabels if position == 'NODAL'
-                      else block.elementLabels)
-            data = block.data
-            if len(labels) != len(data):
-                raise ValueError('Result labels/data row count mismatch')
-            ips = (getattr(block, 'integrationPoints', None)
-                   if position == 'INTEGRATION_POINT' else None)
-            if ips is not None and len(ips) != len(labels):
-                raise ValueError('Integration-point labels/data row count mismatch')
-            counts = (np.zeros(len(canon), dtype=np.uint32)
-                      if position == 'ELEMENT_NODAL' else None)
-            for start in range(0, len(labels), _RESULT_CHUNK_ROWS):
-                end = min(start + _RESULT_CHUNK_ROWS, len(labels))
-                lbl = np.asarray(labels[start:end], dtype=np.int32)
-                rows = _searchsorted_u32(canon, lbl, unique=True)
-                valid = rows < len(canon)
-                valid[valid] &= canon[rows[valid]] == lbl[valid]
-                if not np.any(valid):
-                    continue
-                values = np.asarray(data[start:end], dtype=np.float32)
-                if values.ndim == 1:
-                    values = values.reshape(-1, 1)
-                if invariant is not None:
-                    values = _compute_invariants_numpy(values, invariant, is_strain)
-                    if values is None:
-                        continue
-                if values.shape[1] != shape[-1]:
-                    raise ValueError('Result component count changed between blocks/frames')
-                target_rows = rows[valid]
-                if position == 'INTEGRATION_POINT':
-                    if ips is None:
-                        point_rows = _cyclic_indices_u32(start, end - start, len(ip_labels))
-                    else:
-                        point_rows = _searchsorted_u32(
-                            ip_labels, np.asarray(ips[start:end], dtype=np.int32), unique=True)
-                        if (np.any(point_rows >= len(ip_labels)) or
-                                np.any(ip_labels[point_rows] != ips[start:end])):
-                            raise ValueError('Unknown integration-point label')
-                    out[target_rows, point_rows[valid]] = values[valid]
-                elif position == 'ELEMENT_NODAL':
-                    node_rows = _local_node_indices(target_rows, counts)
-                    if np.any(node_rows >= shape[1]):
-                        raise ValueError('ELEMENT_NODAL local-node count changed')
-                    out[target_rows, node_rows] = values[valid]
-                else:
-                    out[target_rows] = values[valid]
-            # Abaqus may expose a full native buffer/tuple. Never retain it
-            # while opening the next block.
-            values = None
-            del data, labels, ips, counts
-        out.flush()
-    except BaseException:
-        if out is not None:
-            out._mmap.close()
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise
-    else:
-        out._mmap.close()
-        replace = getattr(os, 'replace', None)
-        if replace is not None:
-            replace(temp_path, path)
-        else:  # Abaqus Python 2.7 has no os.replace.
-            if os.path.exists(path):
-                os.remove(path)
-            os.rename(temp_path, path)
 
 
 def reshape_ip_block(block):
@@ -970,8 +741,8 @@ def reshape_ip_block(block):
     u_ips   = np.unique(ip_flat)
     M, n_ip = len(u_elems), len(u_ips)
 
-    e_idx  = _searchsorted_u32(u_elems, labels_flat, unique=True)
-    ip_idx = _searchsorted_u32(u_ips, ip_flat, unique=True)
+    e_idx  = np.searchsorted(u_elems, labels_flat)
+    ip_idx = np.searchsorted(u_ips,   ip_flat)
     data_nd = np.zeros((M, n_ip, ncomp), dtype=np.float32)
     data_nd[e_idx, ip_idx] = data_flat
 
@@ -988,9 +759,12 @@ def reshape_element_nodal_block(block):
     M        = len(u_elems)
     n_enodes = len(labels_flat) // M
 
-    e_idx    = _searchsorted_u32(u_elems, labels_flat, unique=True)
-    counts   = np.zeros(M, dtype=np.uint32)
-    node_idx = _local_node_indices(e_idx, counts)
+    e_idx    = np.searchsorted(u_elems, labels_flat)
+    node_idx = np.zeros(len(labels_flat), dtype=np.int32)
+    counts   = np.zeros(M, dtype=np.int32)
+    for i, ei in enumerate(e_idx):
+        node_idx[i] = counts[ei]
+        counts[ei] += 1
 
     data_nd = np.zeros((M, n_enodes, ncomp), dtype=np.float32)
     data_nd[e_idx, node_idx] = data_flat
@@ -1131,6 +905,8 @@ def dump_assembly(odb, raw_dir, meta):
                     'point_a': [origin[i] + e1[i] for i in range(3)],
                     'point_b': [origin[i] + e2[i] for i in range(3)],
                 }
+            except MemoryError:
+                raise
             except Exception as ex:
                 print("WARNING: datumCsys '{}' read failed: {}".format(dc_name, ex))
     if datum_csyses:
@@ -1352,6 +1128,8 @@ def dump_geometry(odb, raw_dir, meta):
                 npsave(os.path.join(isd, safe(_rname) + '.npy'), _lbls)
                 isets_elem[_rname] = len(_lbls)
                 _isets_sec_labels[_rname] = _lbls
+            except MemoryError:
+                raise
             except Exception as _e:
                 print("    [warn] internal set '{}': {}".format(_rname, _e))
 
@@ -1420,6 +1198,8 @@ def dump_geometry(odb, raw_dir, meta):
                     entry['material_name'] = _section_material_name(sec)
                     if hasattr(sec, 'thickness'):
                         entry['thickness'] = float(sec.thickness)
+                except MemoryError:
+                    raise
                 except Exception:
                     pass
                 sections_info.append(entry)
@@ -1436,6 +1216,8 @@ def dump_geometry(odb, raw_dir, meta):
                 if hasattr(mat, 'elastic'):
                     try:
                         entry['elastic_table'] = [list(row) for row in mat.elastic.table]
+                    except MemoryError:
+                        raise
                     except Exception:
                         pass
                 materials_info[mat_name] = entry
@@ -1856,7 +1638,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
         # staying physically valid (Mises ≥ 0). Extrapolating the IP-computed
         # scalar invariant instead overshoots (negative Mises) — see
         # docs/l2/HighOrder-Midside-Subdivision-Design.md.
-        tensor_en = {}     # (iname, etype, sp) -> native blocks; no copied tensors
+        tensor_en = {}     # (iname, etype, sp) → [(u_elems, tensor_nd[N,nnode,ncomp]), ...]
         if en_blocks and _ELEM_NODAL_CONST is not None:
             try:
                 ten_en_field = field_out.getSubset(position=_ELEM_NODAL_CONST)
@@ -1866,14 +1648,15 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     et = (getattr(b, 'elementType', None)
                           or getattr(b, 'baseElementType', None))
                     key = (_canon_inst(b.instance.name), et, _block_sp_num(b))
-                    tensor_en.setdefault(key, []).append(b)
+                    u_e, ten_nd = reshape_element_nodal_block(b)
+                    tensor_en.setdefault(key, []).append((u_e, ten_nd))
             except MemoryError:
                 raise
             except Exception as exc:
                 if frame_idx == 0:
                     print("    [inv] getSubset(ELEMENT_NODAL) tensor failed: {}".format(exc))
 
-        tensor_nodal = {}  # (iname, etype, sp) -> native blocks
+        tensor_nodal = {}  # (iname, etype, sp) → [(nodeLabels, tensor_nd[N,ncomp]), ...]
         if nodal_blocks and _NODAL_CONST is not None:
             try:
                 ten_nodal_field = field_out.getSubset(position=_NODAL_CONST)
@@ -1883,7 +1666,8 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     et = (getattr(b, 'elementType', None)
                           or getattr(b, 'baseElementType', None))
                     key = (_canon_inst(b.instance.name), et, _block_sp_num(b))
-                    tensor_nodal.setdefault(key, []).append(b)
+                    lbls = np.array(b.nodeLabels, dtype=np.int32)
+                    tensor_nodal.setdefault(key, []).append((lbls, _block_data_2d(b)))
             except MemoryError:
                 raise
             except Exception as exc:
@@ -1911,7 +1695,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
 
         # ── IP 张量: 仅当存在 numpy-only 不变量(无 getScalarField 常量, 如 ──
         # MAX_INPLANE_PRINCIPAL_ABS)时才取, 供其 IP 位置从张量算。
-        tensor_ip = {}     # (iname, etype, sp) -> native blocks
+        tensor_ip = {}   # (iname, etype, sp) → [(u_elems, data_nd[N,n_ip,ncomp]), ...]
         _need_ip_tensor = any(n in _NUMPY_ONLY_INVS for n, _ in active_invs)
         if _need_ip_tensor and _IP_CONST is not None:
             try:
@@ -1922,15 +1706,14 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     et = (getattr(b, 'elementType', None)
                           or getattr(b, 'baseElementType', None))
                     key = (_canon_inst(b.instance.name), et, _block_sp_num(b))
-                    tensor_ip.setdefault(key, []).append(b)
+                    u_e, _u_i, _sp, data_nd = reshape_ip_block(b)
+                    tensor_ip.setdefault(key, []).append((u_e, data_nd))
             except MemoryError:
                 raise
             except Exception as exc:
                 if frame_idx == 0:
                     print("    [inv] getSubset(INTEGRATION_POINT) tensor failed: {}".format(exc))
 
-        scalar_field = None
-        ip_scalar_blocks = {}
         for inv_name, _ in active_invs:
             inv_const  = _INV_CONSTANTS.get(inv_name)
             numpy_name = _NUMPY_INV_NAME.get(inv_name, inv_name)
@@ -1939,11 +1722,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
             # IP: getScalarField is correct at integration points (no extrapolation,
             # so no overshoot). EN/NODAL use method B below. numpy-only invariants
             # (no getScalarField constant) compute IP from tensor_ip further down.
-            # Drop the previous scalar's native buffers before asking Abaqus
-            # to allocate the next one.
-            source = fr_blocks = block = None
-            ip_scalar_blocks = {}
-            scalar_field = None
+            ip_scalar_blocks = {}  # (iname, etype, sp) → list of blocks
             if inv_const is not None and inv_name not in _NUMPY_ONLY_INVS:
                 try:
                     scalar_field = field_out.getScalarField(invariant=inv_const)
@@ -1976,12 +1755,17 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_inv_parts.append('sp{}'.format(sp_num_key))
                 fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
+                out = np.full((M_c, n_enodes, 1), np.nan, dtype=np.float32)
                 # 面内/面外类不变量: 非壳/膜块保持 NaN(实体置灰), 与 Abaqus 一致。
-                source = ([] if shell_only and (iname, etype) not in shell_keys
-                          else tensor_en.get((iname, etype, sp_num_key), []))
-                _write_frame_blocks(fr_path, canon, 'ELEMENT_NODAL', source,
-                                    (M_c, n_enodes, 1), invariant=numpy_name,
-                                    is_strain=is_strain, fill_value=np.nan)
+                if not (shell_only and (iname, etype) not in shell_keys):
+                    for (u_e, ten_nd) in tensor_en.get((iname, etype, sp_num_key), []):
+                        inv_nd = _compute_invariants_numpy(ten_nd, numpy_name, is_strain)  # [N,nnode,1]
+                        if inv_nd is None:
+                            continue
+                        rows  = np.searchsorted(canon, u_e)
+                        valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                        out[rows[valid]] = inv_nd[valid]
+                npsave(fr_path, out)
 
             # ── Write INTEGRATION_POINT invariant data (getScalarField) ──────
             for (iname, etype, sp_num_key), info in ip_blocks.items():
@@ -1997,21 +1781,35 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_parts.append('sp{}'.format(sp_num_key))
                 fr_path = os.path.join(*(bd_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
+                out = np.full((M_c, n_ip, 1), np.nan, dtype=np.float32)
+
                 if inv_name in _NUMPY_ONLY_INVS:
                     # 无 getScalarField 常量: IP 也从张量自算(壳/膜专属, 实体保持 NaN 置灰)
-                    source = ([] if shell_only and (iname, etype) not in shell_keys
-                              else tensor_ip.get((iname, etype, sp_num_key), []))
-                    _write_frame_blocks(fr_path, canon, 'INTEGRATION_POINT', source,
-                                        (M_c, n_ip, 1), ip_labels=ip_labels,
-                                        invariant=numpy_name, is_strain=is_strain,
-                                        fill_value=np.nan)
+                    if not (shell_only and (iname, etype) not in shell_keys):
+                        for (u_e, ip_nd) in tensor_ip.get((iname, etype, sp_num_key), []):
+                            inv_ip = _compute_invariants_numpy(ip_nd, numpy_name, is_strain)  # [N,n_ip,1]
+                            if inv_ip is None:
+                                continue
+                            rows  = np.searchsorted(canon, u_e)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                            out[rows[valid]] = inv_ip[valid]
+                    npsave(fr_path, out)
                     continue
 
                 # getScalarField 口径: 实体块对面内不变量本就无数据 → 留 NaN 置灰。
                 fr_blocks = ip_scalar_blocks.get((iname, etype, sp_num_key), [])
-                _write_frame_blocks(fr_path, canon, 'INTEGRATION_POINT', fr_blocks,
-                                    (M_c, n_ip, 1), ip_labels=ip_labels,
-                                    fill_value=np.nan)
+                if not fr_blocks:
+                    npsave(fr_path, out)
+                    continue
+                for b in fr_blocks:
+                    u_e, _, sp, data_nd = reshape_ip_block(b)
+                    # data_nd shape: [N_elem, n_ip, 1] (scalar)
+                    if data_nd.ndim == 2:
+                        data_nd = data_nd[:, :, np.newaxis]
+                    rows  = np.searchsorted(canon, u_e)
+                    valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                    out[rows[valid]] = data_nd[valid]
+                npsave(fr_path, out)
 
             # ── Write NODAL invariant data (method B: from NODAL tensor) ─────
             for (iname, etype, sp_num_key), info in nodal_blocks.items():
@@ -2025,16 +1823,17 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
                     bd_inv_parts.append('sp{}'.format(sp_num_key))
                 fr_path = os.path.join(*(bd_inv_parts + ['f{:04d}.npy'.format(frame_idx)]))
 
+                out = np.full((M_c, 1), np.nan, dtype=np.float32)
                 # 面内/面外类不变量: 非壳/膜块保持 NaN(实体置灰), 与 Abaqus 一致。
-                source = ([] if shell_only and (iname, etype) not in shell_keys
-                          else tensor_nodal.get((iname, etype, sp_num_key), []))
-                _write_frame_blocks(fr_path, canon, 'NODAL', source, (M_c, 1),
-                                    invariant=numpy_name, is_strain=is_strain,
-                                    fill_value=np.nan)
-        tensor_en = tensor_nodal = tensor_ip = {}
-        ten_en_field = ten_nodal_field = ten_ip_field = _ipf = None
-        scalar_field = source = fr_blocks = b = block = None
-        ip_scalar_blocks = {}
+                if not (shell_only and (iname, etype) not in shell_keys):
+                    for (lbls, ten2d) in tensor_nodal.get((iname, etype, sp_num_key), []):
+                        inv2d = _compute_invariants_numpy(ten2d, numpy_name, is_strain)  # [N,1]
+                        if inv2d is None:
+                            continue
+                        rows  = np.searchsorted(canon, lbls)
+                        valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == lbls)
+                        out[rows[valid]] = inv2d[valid]
+                npsave(fr_path, out)
 
     # ── Write meta.json for each synthetic invariant field ────────────────────
     for inv_name, _ in active_invs:
@@ -2239,6 +2038,8 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             _canon_inst(b.instance.name)
                             for b in _ff.bulkDataBlocks
                             if b.instance is not None)
+                    except MemoryError:
+                        raise
                     except Exception:
                         _blk_insts = set()
                     if not (_blk_insts - _hidden):
@@ -2294,8 +2095,6 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     raise
                 except Exception:
                     pass
-                finally:
-                    _probe = None
 
             safe_step  = safe(step_name)
             safe_field = safe(field_name)
@@ -2340,9 +2139,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     # reads). Never fall back to _auto naming here.
                     elem_type = elem_type or ''
                 elif elem_type is None:
+                    _d = np.array(block.data)
                     _n = len(getattr(block, 'elementLabels',
                              getattr(block, 'nodeLabels', [])))
-                    elem_type = '_auto_{}x{}'.format(_n, _block_ncomp(block))
+                    elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
                 sp_num = _block_sp_num(block)
                 key    = (inst_name, position, elem_type, sp_num)
                 key_to_disc_blocks.setdefault(key, []).append(block)
@@ -2350,7 +2150,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
             for key, key_blocks in key_to_disc_blocks.items():
                 inst_name, position, elem_type, sp_num = key
                 bd    = get_block_dir(inst_name, position, elem_type, sp_num)
-                ncomp = _block_ncomp(key_blocks[0])
+                ncomp = _block_data_2d(key_blocks[0]).shape[1]
                 info  = {
                     'inst_name': inst_name,
                     'position':  position,
@@ -2370,7 +2170,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     all_u_ips   = []
                     blk_sp_num  = None
                     for b in key_blocks:
-                        u_e, u_i, sp = _ip_block_layout(b)
+                        u_e, u_i, sp, _ = reshape_ip_block(b)
                         all_u_elems.append(u_e)
                         all_u_ips.append(u_i)
                         if sp is not None:
@@ -2392,12 +2192,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     all_u_elems = []
                     n_enodes    = None
                     for b in key_blocks:
-                        u_e, block_n_enodes = _en_block_layout(b)
+                        u_e, d_nd = reshape_element_nodal_block(b)
                         all_u_elems.append(u_e)
                         if n_enodes is None:
-                            n_enodes = block_n_enodes
-                        elif n_enodes != block_n_enodes:
-                            raise ValueError('ELEMENT_NODAL local-node count differs between blocks')
+                            n_enodes = d_nd.shape[1]
                     u_elems = np.unique(np.concatenate(all_u_elems))
                     npsave(os.path.join(bd, 'labels.npy'), u_elems)
                     info['n_entities'] = len(u_elems)
@@ -2436,9 +2234,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                         elem_type = (getattr(block, 'elementType', None)
                                      or getattr(block, 'baseElementType', None))
                         if elem_type is None:
+                            _d = np.array(block.data)
                             _n = len(getattr(block, 'elementLabels', []))
                             elem_type = '_auto_{}x{}'.format(
-                                _n, _block_ncomp(block))
+                                _n, _d.shape[1] if _d.ndim > 1 else 1)
                         sp_num = _block_sp_num(block)
                         key = (inst_name, position, elem_type, sp_num)
                         if key in block_struct:
@@ -2447,16 +2246,14 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     for key, en_blocks in _en_disc_blocks.items():
                         inst_name, position, elem_type, sp_num = key
                         bd    = get_block_dir(inst_name, position, elem_type, sp_num)
-                        ncomp = _block_ncomp(en_blocks[0])
+                        ncomp = _block_data_2d(en_blocks[0]).shape[1]
                         all_u_elems = []
                         n_enodes    = None
                         for b in en_blocks:
-                            u_e, block_n_enodes = _en_block_layout(b)
+                            u_e, d_nd = reshape_element_nodal_block(b)
                             all_u_elems.append(u_e)
                             if n_enodes is None:
-                                n_enodes = block_n_enodes
-                            elif n_enodes != block_n_enodes:
-                                raise ValueError('ELEMENT_NODAL local-node count differs between blocks')
+                                n_enodes = d_nd.shape[1]
                         u_elems = np.unique(np.concatenate(all_u_elems))
                         npsave(os.path.join(bd, 'labels.npy'), u_elems)
                         block_struct[key] = {
@@ -2474,17 +2271,6 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                 except Exception as _e:
                     print("    [warn] getSubset(ELEMENT_NODAL) structure failed: {}".format(_e))
                     _extrapolate_en = False
-                    # Discovery can fail after some groups were added. Do not
-                    # advertise extrapolated groups whose frames won't be written.
-                    for en_key in list(block_struct):
-                        if en_key[1] == 'ELEMENT_NODAL' and en_key[0] not in _en_insts:
-                            del block_struct[en_key]
-                finally:
-                    _en_first = None
-                    _en_disc_blocks = {}
-                    en_blocks = None
-            key_to_disc_blocks = {}
-            key_blocks = None
 
             # ── Per-frame data ────────────────────────────────────────────────
             # Group blocks by key before writing so that multiple chunks for the
@@ -2515,9 +2301,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     if position == 'NODAL':
                         elem_type = elem_type or ''   # keep /NODAL/<inst> path
                     elif elem_type is None:
+                        _d = np.array(block.data)
                         _n = len(getattr(block, 'elementLabels',
                                  getattr(block, 'nodeLabels', [])))
-                        elem_type = '_auto_{}x{}'.format(_n, _block_ncomp(block))
+                        elem_type = '_auto_{}x{}'.format(_n, _d.shape[1] if _d.ndim > 1 else 1)
                     fr_sp_num = _block_sp_num(block)
                     key       = (inst_name, position, elem_type, fr_sp_num)
                     if key not in block_struct:
@@ -2529,23 +2316,62 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                     inst_name, position, elem_type, fr_sp_num = key
                     bd      = get_block_dir(inst_name, position, elem_type, fr_sp_num)
                     fr_path = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
-                    canon   = np.load(os.path.join(bd, 'labels.npy'), mmap_mode='r')
+                    canon   = np.load(os.path.join(bd, 'labels.npy'))
                     M_c     = len(canon)
 
-                    info = block_struct[key]
-                    shape = (M_c, info['ncomp'])
-                    ip_labels = None
-                    if position == 'INTEGRATION_POINT':
-                        ip_labels = np.load(os.path.join(bd, 'ip_labels.npy'))
-                        shape = (M_c, len(ip_labels), info['ncomp'])
-                        if fr_sp_num is not None:
-                            has_section = 1
+                    if position == 'NODAL':
+                        ncomp_d = _block_data_2d(fr_blocks[0]).shape[1]
+                        out = np.zeros((M_c, ncomp_d), dtype=np.float32)
+                        for b in fr_blocks:
+                            lbls  = np.array(b.nodeLabels, dtype=np.int32)
+                            dflat = _block_data_2d(b)
+                            rows  = np.searchsorted(canon, lbls)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == lbls)
+                            out[rows[valid]] = dflat[valid]
+                        npsave(fr_path, out)
+
+                    elif position == 'INTEGRATION_POINT':
+                        n_ip_d = ncomp_d = None
+                        pieces = []
+                        for b in fr_blocks:
+                            u_e, _, sp, data_nd = reshape_ip_block(b)
+                            if sp is not None:
+                                has_section = 1
+                            if n_ip_d is None:
+                                n_ip_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                            pieces.append((u_e, data_nd))
+                        out = np.zeros((M_c, n_ip_d, ncomp_d), dtype=np.float32)
+                        for u_e, data_nd in pieces:
+                            rows  = np.searchsorted(canon, u_e)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                            out[rows[valid]] = data_nd[valid]
+                        npsave(fr_path, out)
+
                     elif position == 'ELEMENT_NODAL':
-                        shape = (M_c, info['n_enodes'], info['ncomp'])
-                    _write_frame_blocks(fr_path, canon, position, fr_blocks,
-                                        shape, ip_labels=ip_labels)
-                key_to_fr_blocks = {}
-                fr_blocks = None
+                        n_en_d = ncomp_d = None
+                        pieces = []
+                        for b in fr_blocks:
+                            u_e, data_nd = reshape_element_nodal_block(b)
+                            if n_en_d is None:
+                                n_en_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                            pieces.append((u_e, data_nd))
+                        out = np.zeros((M_c, n_en_d, ncomp_d), dtype=np.float32)
+                        for u_e, data_nd in pieces:
+                            rows  = np.searchsorted(canon, u_e)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                            out[rows[valid]] = data_nd[valid]
+                        npsave(fr_path, out)
+
+                    else:  # WHOLE_ELEMENT
+                        ncomp_d = _block_data_2d(fr_blocks[0]).shape[1]
+                        out = np.zeros((M_c, ncomp_d), dtype=np.float32)
+                        for b in fr_blocks:
+                            raw_lbl  = np.array(b.elementLabels, dtype=np.int32)
+                            raw_data = _block_data_2d(b)
+                            rows  = np.searchsorted(canon, raw_lbl)
+                            valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == raw_lbl)
+                            out[rows[valid]] = raw_data[valid]
+                        npsave(fr_path, out)
 
                 # ── Write extrapolated ELEMENT_NODAL data for this frame ──────
                 if _extrapolate_en:
@@ -2562,9 +2388,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             elem_type = (getattr(block, 'elementType', None)
                                          or getattr(block, 'baseElementType', None))
                             if elem_type is None:
+                                _d = np.array(block.data)
                                 _n = len(getattr(block, 'elementLabels', []))
                                 elem_type = '_auto_{}x{}'.format(
-                                    _n, _block_ncomp(block))
+                                    _n, _d.shape[1] if _d.ndim > 1 else 1)
                             sp_num = _block_sp_num(block)
                             key = (inst_name, position, elem_type, sp_num)
                             if key not in block_struct:
@@ -2574,22 +2401,25 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
                             inst_name, position, elem_type, sp_num = key
                             bd      = get_block_dir(inst_name, position, elem_type, sp_num)
                             fr_path = os.path.join(bd, 'f{:04d}.npy'.format(frame_idx))
-                            canon   = np.load(os.path.join(bd, 'labels.npy'), mmap_mode='r')
+                            canon   = np.load(os.path.join(bd, 'labels.npy'))
                             M_c     = len(canon)
-                            info = block_struct[key]
-                            _write_frame_blocks(
-                                fr_path, canon, position, en_blocks,
-                                (M_c, info['n_enodes'], info['ncomp']))
+                            n_en_d = ncomp_d = None
+                            pieces  = []
+                            for b in en_blocks:
+                                u_e, data_nd = reshape_element_nodal_block(b)
+                                if n_en_d is None:
+                                    n_en_d, ncomp_d = data_nd.shape[1], data_nd.shape[2]
+                                pieces.append((u_e, data_nd))
+                            out = np.zeros((M_c, n_en_d, ncomp_d), dtype=np.float32)
+                            for u_e, data_nd in pieces:
+                                rows  = np.searchsorted(canon, u_e)
+                                valid = (rows < M_c) & (canon[np.minimum(rows, M_c - 1)] == u_e)
+                                out[rows[valid]] = data_nd[valid]
+                            npsave(fr_path, out)
                     except MemoryError:
                         raise
                     except Exception as _e:
-                        # Once EN structure was advertised, publishing zero or
-                        # stale EN frames would silently change contour values.
-                        raise RuntimeError('ELEMENT_NODAL frame export failed: {}'.format(_e))
-                    finally:
-                        _en_out = None
-                        key_to_en_fr_blocks = {}
-                        en_blocks = None
+                        pass  # per-frame EN extrapolation failure is non-fatal
 
             # Write field meta.json
             jdump(os.path.join(field_dir, 'meta.json'), {
@@ -2793,6 +2623,8 @@ def _extract_sections_to_dir(odb, out_dir):
                     entry['material_name'] = _section_material_name(sec)
                     if hasattr(sec, 'thickness'):
                         entry['thickness'] = float(sec.thickness)
+                except MemoryError:
+                    raise
                 except Exception:
                     pass
                 sections_info.append(entry)
@@ -2968,6 +2800,8 @@ def _consistency_check_inline(odb, workspace, result_group, check_mode, geom_sou
             "SELECT instance_name, node_count, elem_count FROM instances"
         ).fetchall()
         _conn.close()
+    except MemoryError:
+        raise
     except Exception as _e:
         print("  WARNING: cannot read manifest.db ({}), skipping validation".format(_e))
         return
@@ -3093,6 +2927,8 @@ def _run_extract(args, odb_path, workspace):
     # l1_pack will use this to patch sections into INP-derived geometry H5 files.
     try:
         _extract_sections_to_dir(odb, raw_dir)
+    except MemoryError:
+        raise
     except Exception:
         print("  WARNING: sections extraction failed (non-fatal):")
         traceback.print_exc()

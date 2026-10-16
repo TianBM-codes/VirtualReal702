@@ -657,30 +657,6 @@ def pack_sets(raw_dir, workspace, meta, db_conn):
 
 # ─── Pack results ─────────────────────────────────────────────────────────────
 
-def _pack_result_frame(ds, frame_idx, path):
-    """Copy .npy to HDF5 and reduce its range without whole-frame copies."""
-    frame = np.load(path, mmap_mode='r')
-    low, high = float('inf'), float('-inf')
-    try:
-        if frame.shape != ds.shape[1:]:
-            print("    WARNING: frame {} shape {} != expected {}, skipped".format(
-                frame_idx, frame.shape, ds.shape[1:]))
-            return low, high
-        row_bytes = max(1, int(np.prod(frame.shape[1:])) * frame.dtype.itemsize)
-        chunk_rows = max(1, min(65536, (4 * 1024 * 1024) // row_bytes))
-        for start in range(0, len(frame), chunk_rows):
-            end = min(start + chunk_rows, len(frame))
-            chunk = frame[start:end]
-            ds[frame_idx, start:end] = chunk
-            finite = chunk[np.isfinite(chunk)]
-            if finite.size:
-                low = min(low, float(finite.min()))
-                high = max(high, float(finite.max()))
-    finally:
-        frame._mmap.close()
-    return low, high
-
-
 def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
     """
     Pack result npy files into HDF5 and write manifest rows.
@@ -880,13 +856,22 @@ def pack_results(raw_dir, workspace, meta, db_conn, result_group=None):
                     )
 
                 # Write per-frame data
+                expected_shape = ds.shape[1:]
                 for fi in range(num_frames):
                     fr_path = os.path.join(bd, 'f{:04d}.npy'.format(fi))
                     if not os.path.exists(fr_path):
                         continue
-                    frame_min, frame_max = _pack_result_frame(ds, fi, fr_path)
-                    global_min = min(global_min, frame_min)
-                    global_max = max(global_max, frame_max)
+                    frame_data = nload(fr_path)
+                    if frame_data.shape != expected_shape:
+                        print("    WARNING: frame {} shape {} != expected {}, skipped".format(
+                            fi, frame_data.shape, expected_shape))
+                        continue
+                    ds[fi] = frame_data
+
+                    finite = frame_data[np.isfinite(frame_data)]
+                    if finite.size > 0:
+                        global_min = min(global_min, float(finite.min()))
+                        global_max = max(global_max, float(finite.max()))
 
                 # manifest.db: result_blocks（sp_num 入主键，区分同 elem_type 的多个截面点块）
                 db_conn.execute(
