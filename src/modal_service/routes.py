@@ -12,12 +12,12 @@ POST  /api/model/testMesh/syncAnimation
 
 import logging
 
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 from fastapi import APIRouter
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from . import service
+from . import service, wireframe
 from ..l3.api.response import ok
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,30 @@ class SyncAnimationRequest(AnimationRequest):
     coefficient: float = 1.0
     component: str = "usum"
     include_frames: bool = True
+
+
+class FemWireframeGeometryRequest(_ProjectRequest):
+    unmatched_policy: Literal["disconnect", "nearest"] = "disconnect"
+
+
+class FemWireframeAnimationRequest(SyncAnimationRequest):
+    unmatched_policy: Literal["disconnect", "nearest"] = "disconnect"
+    geometry_version: Optional[str] = None
+
+
+@router.post("/femWireframe/geometry")
+def fem_wireframe_geometry(req: FemWireframeGeometryRequest):
+    return ok(wireframe.get_geometry(req.project_id, req.unmatched_policy))
+
+
+@router.post("/femWireframe/animation")
+def fem_wireframe_animation(req: FemWireframeAnimationRequest):
+    return ok(wireframe.get_animation(
+        req.project_id, req.order, req.unmatched_policy, req.geometry_version,
+        step=req.step, fem_frame=req.fem_frame, result_group=req.result_group,
+        n_frames=req.n_frames, coefficient=req.coefficient, component=req.component,
+        flip=req.flip,
+    ))
 
 
 @router.post("/geometry")
