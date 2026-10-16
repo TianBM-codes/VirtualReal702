@@ -1,0 +1,277 @@
+{
+  "files_before": 45,
+  "files_after": 45,
+  "files": {
+    "l1/assembly.h5": {
+      "equal": true,
+      "datasets_before": 23,
+      "datasets_after": 23,
+      "different_datasets": []
+    },
+    "l1/geometry/PART-1-1.h5": {
+      "equal": true,
+      "datasets_before": 35,
+      "datasets_after": 35,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__AC_YIELD.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_MAX_INPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_MAX_INPLANE_PRINCIPAL_ABS.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_MAX_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_MAX_PRINCIPAL_ABS.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_MID_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_MIN_INPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_MIN_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__LE_OUTOFPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PEEQ.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PEMAG.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_MAX_INPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_MAX_INPLANE_PRINCIPAL_ABS.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_MAX_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_MAX_PRINCIPAL_ABS.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_MID_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_MIN_INPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_MIN_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__PE_OUTOFPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__RF.h5": {
+      "equal": true,
+      "datasets_before": 10,
+      "datasets_after": 10,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__RM.h5": {
+      "equal": true,
+      "datasets_before": 10,
+      "datasets_after": 10,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_INV3.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MAX_INPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MAX_INPLANE_PRINCIPAL_ABS.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MAX_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MAX_PRINCIPAL_ABS.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MID_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MIN_INPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MIN_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_MISES.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_OUTOFPLANE_PRINCIPAL.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_PRESS.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__S_TRESCA.h5": {
+      "equal": true,
+      "datasets_before": 31,
+      "datasets_after": 31,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__U.h5": {
+      "equal": true,
+      "datasets_before": 10,
+      "datasets_after": 10,
+      "different_datasets": []
+    },
+    "l1/results/Step-1__UR.h5": {
+      "equal": true,
+      "datasets_before": 10,
+      "datasets_after": 10,
+      "different_datasets": []
+    },
+    "l1/sets/sets.h5": {
+      "equal": true,
+      "datasets_before": 34,
+      "datasets_after": 34,
+      "different_datasets": []
+    },
+    "l2/geometry/PART-1-1_edges.h5": {
+      "equal": true,
+      "datasets_before": 3,
+      "datasets_after": 3,
+      "different_datasets": []
+    },
+    "l2/geometry/PART-1-1_surface.h5": {
+      "equal": true,
+      "datasets_before": 2,
+      "datasets_after": 2,
+      "different_datasets": []
+    },
+    "l2/render/PART-1-1_advanced.h5": {
+      "equal": true,
+      "datasets_before": 17,
+      "datasets_after": 17,
+      "different_datasets": []
+    },
+    "l2/render/PART-1-1_render.h5": {
+      "equal": true,
+      "datasets_before": 10,
+      "datasets_after": 10,
+      "different_datasets": []
+    }
+  },
+  "equal": true
+}

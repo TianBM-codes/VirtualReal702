@@ -1,0 +1,851 @@
+{
+  "started_at": "2026-10-16T11:50:05+08:00",
+  "source": "E:\\code\\odb-service-design\\model_v2\\1440w-dof_grav_v3.odb",
+  "source_bytes": 3299640452,
+  "source_mtime_ns": 1768376234000000000,
+  "source_sha256": "cf96c259c01760ea5b88422348dfb581dbd2100d53164fb725c6bab377e49267",
+  "host": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+    "memory": {
+      "total": 34204610560,
+      "available": 19784536064,
+      "percent": 42.2,
+      "used": 14420074496,
+      "free": 19784536064
+    },
+    "disk": {
+      "total": 499903361024,
+      "used": 327860633600,
+      "free": 172042727424
+    },
+    "python": "E:\\tools\\anaconda3\\python.exe",
+    "psutil": "7.0.0",
+    "numpy": "2.3.5",
+    "h5py": "3.15.1",
+    "thread_env": {
+      "OMP_NUM_THREADS": null,
+      "MKL_NUM_THREADS": null,
+      "OPENBLAS_NUM_THREADS": null
+    }
+  },
+  "method": {
+    "sampling_interval_seconds": 0.25,
+    "order": [
+      "before",
+      "after"
+    ],
+    "invariants": "full",
+    "all_steps_and_frames": true,
+    "upgrade_and_copy_excluded_from_pipeline_time": true,
+    "api_warmup_and_model_preloading": "not started",
+    "os_file_cache_flushed": false,
+    "mysql_and_http_queue_excluded": true
+  },
+  "versions": {
+    "before": {
+      "commit": "982b82aac094a18d52bfdb988baef55e2fcfb49c",
+      "files": {
+        "src/l1/abaqus_dump.py": "ae957ef783ebe292474a83a25b25098fed53e205",
+        "src/l1/l1_pack.py": "265ea3e0f09edf1ee72a746093ec652a6356a6c2",
+        "src/l1/manifest_schema.py": "8578e838f144faac2aa16b604d99862c87c62911",
+        "src/l2/ingest.py": "4d621dcf6252f452453d6152e7082f627e6a6b9f"
+      },
+      "snapshot": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\source",
+      "input_copy_seconds": 1.5211869000049774,
+      "input_sha256": "f650eb06b5dd2a9c26579efe6270bfd6a1ca52c5fefdf5600934e1e3aa9caa41",
+      "workspace": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\workspace",
+      "stages": [
+        {
+          "version": "before",
+          "stage": "dump",
+          "command": [
+            "C:\\SIMULIA\\Commands\\abaqus.bat",
+            "python",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\source\\src\\l1\\abaqus_dump.py",
+            "--odb",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\input.odb",
+            "--out",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\workspace",
+            "--invariants",
+            "full"
+          ],
+          "cwd": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before",
+          "started_at": "2026-10-16T11:53:05+08:00",
+          "log": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\dump.log",
+          "samples": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\dump_memory.csv",
+          "peak_tree_rss_bytes": 10506362880,
+          "peak_tree_private_bytes": 10513559552,
+          "peak_process_os_wset_bytes": 10600734720,
+          "peak_process_os_pagefile_bytes": 10594148352,
+          "min_host_available_bytes": 8659185664,
+          "sample_interval_seconds": 0.25,
+          "elapsed_seconds": 2543.6271744999976,
+          "finished_at": "2026-10-16T12:35:28+08:00",
+          "returncode": 0,
+          "timed_out": false,
+          "tail": [
+            "=== Layer 1 Phase 1: ODB -> npy (full) ===",
+            "  ODB:       E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\input.odb",
+            "  Workspace: E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\workspace",
+            "Opening ODB ...",
+            "  ODB opened. (0.1s)",
+            "  Assembly ...",
+            "    done. (1m 48.4s)",
+            "  Geom: PART-1-1 ...",
+            "    2417383 nodes, 2419250 elems (5m 43.4s)",
+            "  Geometry done. (5m 43.4s total)",
+            "  Sets ...",
+            "    Reused 21 assembly set file(s)",
+            "    done. (2m 20.5s)",
+            "  Step 'Step-1' (2 frames) ...",
+            "    Field 'AC YIELD' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 1m 35.5s)",
+            "    Field 'LE' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 1m 59.6s)",
+            "    [inv] extracted 8 invariant(s): MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL, MAX_PRINCIPAL, MID_PRINCIPAL, MIN_PRINCIPAL, MAX_PRINCIPAL_ABS, MAX_INPLANE_PRINCIPAL_ABS",
+            "    Field 'PE' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 2m 14.6s)",
+            "    [inv] extracted 8 invariant(s): MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL, MAX_PRINCIPAL, MID_PRINCIPAL, MIN_PRINCIPAL, MAX_PRINCIPAL_ABS, MAX_INPLANE_PRINCIPAL_ABS",
+            "    Field 'PEEQ' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 1m 35.9s)",
+            "    Field 'PEMAG' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 1m 38.3s)",
+            "    Field 'RF' ...",
+            "      done (1 blocks, 5.0s)",
+            "    Field 'RM' ...",
+            "      done (1 blocks, 1.5s)",
+            "    Field 'S' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 2m 3.2s)",
+            "    [inv] extracted 12 invariant(s): MISES, MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL, MAX_PRINCIPAL, MID_PRINCIPAL, MIN_PRINCIPAL, TRESCA, PRESS, INV3, MAX_PRINCIPAL_ABS, MAX_INPLANE_PRINCIPAL_ABS",
+            "    Field 'U' ...",
+            "      done (1 blocks, 1.0s)",
+            "    Field 'UR' ...",
+            "      done (1 blocks, 0.9s)",
+            "  Step 'Step-1' done. (32m 4.4s)",
+            "  Results done. (32m 27.6s total)",
+            "=== Phase 1 complete in 42m 21.8s. Run l1_pack.py next. ==="
+          ],
+          "signals": {
+            "error": false,
+            "complete": false,
+            "memory_error": false
+          },
+          "ok": true,
+          "fresh_metadata_present": true
+        },
+        {
+          "version": "before",
+          "stage": "pack",
+          "command": [
+            "E:\\tools\\anaconda3\\python.exe",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\source\\src\\l1\\l1_pack.py",
+            "--workspace",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\workspace"
+          ],
+          "cwd": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before",
+          "started_at": "2026-10-16T12:35:28+08:00",
+          "log": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\pack.log",
+          "samples": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\pack_memory.csv",
+          "peak_tree_rss_bytes": 1128091648,
+          "peak_tree_private_bytes": 1113243648,
+          "peak_process_os_wset_bytes": 1120108544,
+          "peak_process_os_pagefile_bytes": 1112023040,
+          "min_host_available_bytes": 17560133632,
+          "sample_interval_seconds": 0.25,
+          "elapsed_seconds": 115.01957999999286,
+          "finished_at": "2026-10-16T12:37:23+08:00",
+          "returncode": 0,
+          "timed_out": false,
+          "tail": [
+            "    Step-1/PEEQ ...",
+            "      done. (0.7s)",
+            "    Step-1/PEMAG ...",
+            "      done. (0.6s)",
+            "    Step-1/PE_MAX_INPLANE_PRINCIPAL ...",
+            "      done. (1.0s)",
+            "    Step-1/PE_MAX_INPLANE_PRINCIPAL_ABS ...",
+            "      done. (1.2s)",
+            "    Step-1/PE_MAX_PRINCIPAL ...",
+            "      done. (1.2s)",
+            "    Step-1/PE_MAX_PRINCIPAL_ABS ...",
+            "      done. (1.4s)",
+            "    Step-1/PE_MID_PRINCIPAL ...",
+            "      done. (1.3s)",
+            "    Step-1/PE_MIN_INPLANE_PRINCIPAL ...",
+            "      done. (1.3s)",
+            "    Step-1/PE_MIN_PRINCIPAL ...",
+            "      done. (1.3s)",
+            "    Step-1/PE_OUTOFPLANE_PRINCIPAL ...",
+            "      done. (1.3s)",
+            "    Step-1/RF ...",
+            "      done. (0.2s)",
+            "    Step-1/RM ...",
+            "      done. (0.2s)",
+            "    Step-1/S ...",
+            "      done. (7.9s)",
+            "    Step-1/S_INV3 ...",
+            "      done. (2.3s)",
+            "    Step-1/S_MAX_INPLANE_PRINCIPAL ...",
+            "      done. (2.5s)",
+            "    Step-1/S_MAX_INPLANE_PRINCIPAL_ABS ...",
+            "      done. (2.5s)",
+            "    Step-1/S_MAX_PRINCIPAL ...",
+            "      done. (1.9s)",
+            "    Step-1/S_MAX_PRINCIPAL_ABS ...",
+            "      done. (2.6s)",
+            "    Step-1/S_MID_PRINCIPAL ...",
+            "      done. (1.8s)",
+            "    Step-1/S_MIN_INPLANE_PRINCIPAL ...",
+            "      done. (2.5s)",
+            "    Step-1/S_MIN_PRINCIPAL ...",
+            "      done. (2.5s)",
+            "    Step-1/S_MISES ...",
+            "      done. (2.5s)",
+            "    Step-1/S_OUTOFPLANE_PRINCIPAL ...",
+            "      done. (1.2s)",
+            "    Step-1/S_PRESS ...",
+            "      done. (2.4s)",
+            "    Step-1/S_TRESCA ...",
+            "      done. (2.4s)",
+            "    Step-1/U ...",
+            "      done. (0.5s)",
+            "    Step-1/UR ...",
+            "      done. (0.5s)",
+            "  Results done. (1m 17.2s total)",
+            "  meta: node_count=2417383, instance_count=1",
+            "Cleaning up l1_raw/ ...",
+            "  l1_raw/ deleted.",
+            "=== Layer 1 Phase 2 complete in 1m 49.8s ===",
+            "    workspace: E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\workspace"
+          ],
+          "signals": {
+            "error": false,
+            "complete": false,
+            "memory_error": false
+          },
+          "ok": true
+        },
+        {
+          "version": "before",
+          "stage": "l2",
+          "command": [
+            "E:\\tools\\anaconda3\\python.exe",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\source\\src\\l2\\ingest.py",
+            "--workspace",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\workspace"
+          ],
+          "cwd": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before",
+          "started_at": "2026-10-16T12:37:23+08:00",
+          "log": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\l2.log",
+          "samples": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\l2_memory.csv",
+          "peak_tree_rss_bytes": 1814540288,
+          "peak_tree_private_bytes": 1841205248,
+          "peak_process_os_wset_bytes": 2156044288,
+          "peak_process_os_pagefile_bytes": 2145320960,
+          "min_host_available_bytes": 17122832384,
+          "sample_interval_seconds": 0.25,
+          "elapsed_seconds": 60.09135669999523,
+          "finished_at": "2026-10-16T12:38:23+08:00",
+          "returncode": 0,
+          "timed_out": false,
+          "tail": [
+            "2026-10-16 12:37:27,775 INFO: === Layer 2 Preprocessing (all) ===",
+            "2026-10-16 12:37:27,776 INFO:   Workspace: E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\before\\workspace",
+            "2026-10-16 12:37:27,804 INFO: Processing core geometry for instance: PART-1-1 ...",
+            "2026-10-16 12:37:29,982 INFO:   2419250 surface faces",
+            "2026-10-16 12:37:31,702 INFO:   9676424 vertices, 4837924 triangles (indexed)",
+            "2026-10-16 12:37:31,792 INFO:   0 line elements (beam/truss)",
+            "2026-10-16 12:37:31,792 INFO:   0 point elements (MASS/ROTARYI)",
+            "2026-10-16 12:37:31,792 INFO:   0 coupling segments (RBE2)",
+            "2026-10-16 12:37:33,114 INFO:   Done in 5.31s",
+            "2026-10-16 12:37:33,160 INFO: Processing advanced indexes for instance: PART-1-1 ...",
+            "2026-10-16 12:38:07,033 INFO:   2419250 surface elements, 66 domains, 4855948 adjacency edges",
+            "2026-10-16 12:38:09,225 INFO:   29556 feature edges, 4836592 element mesh edges",
+            "2026-10-16 12:38:23,308 INFO:   Octree: 19034 nodes",
+            "2026-10-16 12:38:23,491 INFO:   Advanced indexes done in 50.33s",
+            "2026-10-16 12:38:23,572 INFO: === Layer 2 all Complete ==="
+          ],
+          "signals": {
+            "error": false,
+            "complete": false,
+            "memory_error": false
+          },
+          "ok": true
+        }
+      ],
+      "ok": true,
+      "pipeline_seconds": 2718.7381111999857,
+      "peak_tree_rss_bytes": 10506362880,
+      "peak_tree_private_bytes": 10513559552,
+      "input_unchanged": true
+    },
+    "after": {
+      "commit": "cbe40746d6ffd786ec7164684564a2faa6a89423",
+      "files": {
+        "src/l1/abaqus_dump.py": "1439eb3e4c3239e4bd18ed19ea986e7aba410d13",
+        "src/l1/l1_pack.py": "a3d73a0521688327c2469fdd30886949e946aa33",
+        "src/l1/manifest_schema.py": "8578e838f144faac2aa16b604d99862c87c62911",
+        "src/l2/ingest.py": "4d621dcf6252f452453d6152e7082f627e6a6b9f"
+      },
+      "snapshot": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\source",
+      "input_copy_seconds": 1.8699950000154786,
+      "input_sha256": "f650eb06b5dd2a9c26579efe6270bfd6a1ca52c5fefdf5600934e1e3aa9caa41",
+      "workspace": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\workspace",
+      "stages": [
+        {
+          "version": "after",
+          "stage": "dump",
+          "command": [
+            "C:\\SIMULIA\\Commands\\abaqus.bat",
+            "python",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\source\\src\\l1\\abaqus_dump.py",
+            "--odb",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\input.odb",
+            "--out",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\workspace",
+            "--invariants",
+            "full"
+          ],
+          "cwd": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after",
+          "started_at": "2026-10-16T12:38:36+08:00",
+          "log": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\dump.log",
+          "samples": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\dump_memory.csv",
+          "peak_tree_rss_bytes": 6466002944,
+          "peak_tree_private_bytes": 6502973440,
+          "peak_process_os_wset_bytes": 6454050816,
+          "peak_process_os_pagefile_bytes": 6496706560,
+          "min_host_available_bytes": 12916121600,
+          "sample_interval_seconds": 0.25,
+          "elapsed_seconds": 3214.2241057000065,
+          "finished_at": "2026-10-16T13:32:10+08:00",
+          "returncode": 0,
+          "timed_out": false,
+          "tail": [
+            "=== Layer 1 Phase 1: ODB -> npy (full) ===",
+            "  ODB:       E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\input.odb",
+            "  Workspace: E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\workspace",
+            "Opening ODB ...",
+            "  ODB opened. (0.2s)",
+            "  Assembly ...",
+            "    done. (2m 13.3s)",
+            "  Geom: PART-1-1 ...",
+            "    2417383 nodes, 2419250 elems (6m 17.9s)",
+            "  Geometry done. (6m 17.9s total)",
+            "  Sets ...",
+            "    Reused 21 assembly set file(s)",
+            "    done. (2m 49.6s)",
+            "  Step 'Step-1' (2 frames) ...",
+            "    Field 'AC YIELD' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 58.8s)",
+            "    Field 'LE' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 1m 28.1s)",
+            "    [inv] extracted 8 invariant(s): MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL, MAX_PRINCIPAL, MID_PRINCIPAL, MIN_PRINCIPAL, MAX_PRINCIPAL_ABS, MAX_INPLANE_PRINCIPAL_ABS",
+            "    Field 'PE' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 1m 25.5s)",
+            "    [inv] extracted 8 invariant(s): MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL, MAX_PRINCIPAL, MID_PRINCIPAL, MIN_PRINCIPAL, MAX_PRINCIPAL_ABS, MAX_INPLANE_PRINCIPAL_ABS",
+            "    Field 'PEEQ' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 53.3s)",
+            "    Field 'PEMAG' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 57.1s)",
+            "    Field 'RF' ...",
+            "      done (1 blocks, 5.1s)",
+            "    Field 'RM' ...",
+            "      done (1 blocks, 4.1s)",
+            "    Field 'S' ...",
+            "    [EN extrapolation] discovered 4 EN block(s)",
+            "      done (8 blocks, 1m 32.9s)",
+            "    [inv] extracted 12 invariant(s): MISES, MAX_INPLANE_PRINCIPAL, MIN_INPLANE_PRINCIPAL, OUTOFPLANE_PRINCIPAL, MAX_PRINCIPAL, MID_PRINCIPAL, MIN_PRINCIPAL, TRESCA, PRESS, INV3, MAX_PRINCIPAL_ABS, MAX_INPLANE_PRINCIPAL_ABS",
+            "    Field 'U' ...",
+            "      done (1 blocks, 4.1s)",
+            "    Field 'UR' ...",
+            "      done (1 blocks, 4.1s)",
+            "  Step 'Step-1' done. (41m 39.9s)",
+            "  Results done. (42m 4.3s total)",
+            "=== Phase 1 complete in 53m 27.5s. Run l1_pack.py next. ===",
+            "ODB_DUMP_COMPLETE"
+          ],
+          "signals": {
+            "error": false,
+            "complete": true,
+            "memory_error": false
+          },
+          "ok": true,
+          "fresh_metadata_present": true
+        },
+        {
+          "version": "after",
+          "stage": "pack",
+          "command": [
+            "E:\\tools\\anaconda3\\python.exe",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\source\\src\\l1\\l1_pack.py",
+            "--workspace",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\workspace"
+          ],
+          "cwd": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after",
+          "started_at": "2026-10-16T13:32:10+08:00",
+          "log": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\pack.log",
+          "samples": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\pack_memory.csv",
+          "peak_tree_rss_bytes": 1128497152,
+          "peak_tree_private_bytes": 1113538560,
+          "peak_process_os_wset_bytes": 1120284672,
+          "peak_process_os_pagefile_bytes": 1112309760,
+          "min_host_available_bytes": 18080194560,
+          "sample_interval_seconds": 0.25,
+          "elapsed_seconds": 133.24984770000447,
+          "finished_at": "2026-10-16T13:34:23+08:00",
+          "returncode": 0,
+          "timed_out": false,
+          "tail": [
+            "    Step-1/PEEQ ...",
+            "      done. (1.5s)",
+            "    Step-1/PEMAG ...",
+            "      done. (1.6s)",
+            "    Step-1/PE_MAX_INPLANE_PRINCIPAL ...",
+            "      done. (2.0s)",
+            "    Step-1/PE_MAX_INPLANE_PRINCIPAL_ABS ...",
+            "      done. (1.9s)",
+            "    Step-1/PE_MAX_PRINCIPAL ...",
+            "      done. (1.8s)",
+            "    Step-1/PE_MAX_PRINCIPAL_ABS ...",
+            "      done. (1.7s)",
+            "    Step-1/PE_MID_PRINCIPAL ...",
+            "      done. (1.8s)",
+            "    Step-1/PE_MIN_INPLANE_PRINCIPAL ...",
+            "      done. (1.8s)",
+            "    Step-1/PE_MIN_PRINCIPAL ...",
+            "      done. (1.8s)",
+            "    Step-1/PE_OUTOFPLANE_PRINCIPAL ...",
+            "      done. (1.8s)",
+            "    Step-1/RF ...",
+            "      done. (0.3s)",
+            "    Step-1/RM ...",
+            "      done. (0.3s)",
+            "    Step-1/S ...",
+            "      done. (9.5s)",
+            "    Step-1/S_INV3 ...",
+            "      done. (2.8s)",
+            "    Step-1/S_MAX_INPLANE_PRINCIPAL ...",
+            "      done. (2.8s)",
+            "    Step-1/S_MAX_INPLANE_PRINCIPAL_ABS ...",
+            "      done. (2.8s)",
+            "    Step-1/S_MAX_PRINCIPAL ...",
+            "      done. (2.4s)",
+            "    Step-1/S_MAX_PRINCIPAL_ABS ...",
+            "      done. (2.9s)",
+            "    Step-1/S_MID_PRINCIPAL ...",
+            "      done. (2.6s)",
+            "    Step-1/S_MIN_INPLANE_PRINCIPAL ...",
+            "      done. (3.1s)",
+            "    Step-1/S_MIN_PRINCIPAL ...",
+            "      done. (3.0s)",
+            "    Step-1/S_MISES ...",
+            "      done. (3.2s)",
+            "    Step-1/S_OUTOFPLANE_PRINCIPAL ...",
+            "      done. (1.9s)",
+            "    Step-1/S_PRESS ...",
+            "      done. (3.2s)",
+            "    Step-1/S_TRESCA ...",
+            "      done. (3.1s)",
+            "    Step-1/U ...",
+            "      done. (0.5s)",
+            "    Step-1/UR ...",
+            "      done. (0.6s)",
+            "  Results done. (1m 42.7s total)",
+            "  meta: node_count=2417383, instance_count=1",
+            "Cleaning up l1_raw/ ...",
+            "  l1_raw/ deleted.",
+            "=== Layer 1 Phase 2 complete in 2m 11.7s ===",
+            "    workspace: E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\workspace"
+          ],
+          "signals": {
+            "error": false,
+            "complete": false,
+            "memory_error": false
+          },
+          "ok": true
+        },
+        {
+          "version": "after",
+          "stage": "l2",
+          "command": [
+            "E:\\tools\\anaconda3\\python.exe",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\source\\src\\l2\\ingest.py",
+            "--workspace",
+            "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\workspace"
+          ],
+          "cwd": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after",
+          "started_at": "2026-10-16T13:34:23+08:00",
+          "log": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\l2.log",
+          "samples": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\l2_memory.csv",
+          "peak_tree_rss_bytes": 2028183552,
+          "peak_tree_private_bytes": 2108760064,
+          "peak_process_os_wset_bytes": 2156920832,
+          "peak_process_os_pagefile_bytes": 2146361344,
+          "min_host_available_bytes": 16879116288,
+          "sample_interval_seconds": 0.25,
+          "elapsed_seconds": 62.136796100006904,
+          "finished_at": "2026-10-16T13:35:25+08:00",
+          "returncode": 0,
+          "timed_out": false,
+          "tail": [
+            "2026-10-16 13:34:26,176 INFO: === Layer 2 Preprocessing (all) ===",
+            "2026-10-16 13:34:26,176 INFO:   Workspace: E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\after\\workspace",
+            "2026-10-16 13:34:26,207 INFO: Processing core geometry for instance: PART-1-1 ...",
+            "2026-10-16 13:34:28,517 INFO:   2419250 surface faces",
+            "2026-10-16 13:34:30,389 INFO:   9676424 vertices, 4837924 triangles (indexed)",
+            "2026-10-16 13:34:30,480 INFO:   0 line elements (beam/truss)",
+            "2026-10-16 13:34:30,480 INFO:   0 point elements (MASS/ROTARYI)",
+            "2026-10-16 13:34:30,480 INFO:   0 coupling segments (RBE2)",
+            "2026-10-16 13:34:31,821 INFO:   Done in 5.61s",
+            "2026-10-16 13:34:31,873 INFO: Processing advanced indexes for instance: PART-1-1 ...",
+            "2026-10-16 13:35:08,630 INFO:   2419250 surface elements, 66 domains, 4855948 adjacency edges",
+            "2026-10-16 13:35:11,092 INFO:   29556 feature edges, 4836592 element mesh edges",
+            "2026-10-16 13:35:25,364 INFO:   Octree: 19034 nodes",
+            "2026-10-16 13:35:25,552 INFO:   Advanced indexes done in 53.68s",
+            "2026-10-16 13:35:25,627 INFO: === Layer 2 all Complete ==="
+          ],
+          "signals": {
+            "error": false,
+            "complete": false,
+            "memory_error": false
+          },
+          "ok": true
+        }
+      ],
+      "ok": true,
+      "pipeline_seconds": 3409.610749500018,
+      "peak_tree_rss_bytes": 6466002944,
+      "peak_tree_private_bytes": 6502973440,
+      "input_unchanged": true
+    }
+  },
+  "preparation": {
+    "version": "prepare",
+    "stage": "upgrade",
+    "command": [
+      "C:\\SIMULIA\\Commands\\abaqus.bat",
+      "-upgrade",
+      "-job",
+      "upgraded_model",
+      "-odb",
+      "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\prepare\\original_copy.odb"
+    ],
+    "cwd": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\prepare",
+    "started_at": "2026-10-16T11:50:15+08:00",
+    "log": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\prepare\\upgrade.log",
+    "samples": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\20261016_odb1440w_memory_ab\\prepare\\upgrade_memory.csv",
+    "peak_tree_rss_bytes": 102522880,
+    "peak_tree_private_bytes": 51793920,
+    "peak_process_os_wset_bytes": 79929344,
+    "peak_process_os_pagefile_bytes": 41979904,
+    "min_host_available_bytes": 18439995392,
+    "sample_interval_seconds": 0.25,
+    "elapsed_seconds": 156.56320340000093,
+    "finished_at": "2026-10-16T11:52:52+08:00",
+    "returncode": 0,
+    "timed_out": false,
+    "tail": [
+      "Abaqus Warning: The .odb extension has been removed from the odb identifier",
+      "ODB FILE UPGRADE COMPLETED"
+    ],
+    "signals": {
+      "error": false,
+      "complete": false,
+      "memory_error": false
+    },
+    "ok": true
+  },
+  "upgraded_sha256": "f650eb06b5dd2a9c26579efe6270bfd6a1ca52c5fefdf5600934e1e3aa9caa41",
+  "source_unchanged": true,
+  "comparison": {
+    "files_before": 45,
+    "files_after": 45,
+    "files": {
+      "l1/assembly.h5": {
+        "equal": true,
+        "datasets_before": 23,
+        "datasets_after": 23,
+        "different_datasets": []
+      },
+      "l1/geometry/PART-1-1.h5": {
+        "equal": true,
+        "datasets_before": 35,
+        "datasets_after": 35,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__AC_YIELD.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_MAX_INPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_MAX_INPLANE_PRINCIPAL_ABS.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_MAX_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_MAX_PRINCIPAL_ABS.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_MID_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_MIN_INPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_MIN_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__LE_OUTOFPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PEEQ.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PEMAG.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_MAX_INPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_MAX_INPLANE_PRINCIPAL_ABS.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_MAX_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_MAX_PRINCIPAL_ABS.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_MID_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_MIN_INPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_MIN_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__PE_OUTOFPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__RF.h5": {
+        "equal": true,
+        "datasets_before": 10,
+        "datasets_after": 10,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__RM.h5": {
+        "equal": true,
+        "datasets_before": 10,
+        "datasets_after": 10,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_INV3.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MAX_INPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MAX_INPLANE_PRINCIPAL_ABS.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MAX_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MAX_PRINCIPAL_ABS.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MID_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MIN_INPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MIN_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_MISES.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_OUTOFPLANE_PRINCIPAL.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_PRESS.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__S_TRESCA.h5": {
+        "equal": true,
+        "datasets_before": 31,
+        "datasets_after": 31,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__U.h5": {
+        "equal": true,
+        "datasets_before": 10,
+        "datasets_after": 10,
+        "different_datasets": []
+      },
+      "l1/results/Step-1__UR.h5": {
+        "equal": true,
+        "datasets_before": 10,
+        "datasets_after": 10,
+        "different_datasets": []
+      },
+      "l1/sets/sets.h5": {
+        "equal": true,
+        "datasets_before": 34,
+        "datasets_after": 34,
+        "different_datasets": []
+      },
+      "l2/geometry/PART-1-1_edges.h5": {
+        "equal": true,
+        "datasets_before": 3,
+        "datasets_after": 3,
+        "different_datasets": []
+      },
+      "l2/geometry/PART-1-1_surface.h5": {
+        "equal": true,
+        "datasets_before": 2,
+        "datasets_after": 2,
+        "different_datasets": []
+      },
+      "l2/render/PART-1-1_advanced.h5": {
+        "equal": true,
+        "datasets_before": 17,
+        "datasets_after": 17,
+        "different_datasets": []
+      },
+      "l2/render/PART-1-1_render.h5": {
+        "equal": true,
+        "datasets_before": 10,
+        "datasets_after": 10,
+        "different_datasets": []
+      }
+    },
+    "equal": true
+  },
+  "finished_at": "2026-10-16T13:38:08+08:00",
+  "ok": true
+}
