@@ -1,0 +1,62 @@
+# ODB 解析内存与耗时对比
+
+`tools/benchmark_odb_memory.py` 用同一份 ODB，顺序运行两个固定 Git 版本的完整文件处理流水线：
+Abaqus 原始数据提取（全部步骤、帧、字段和派生不变量）→ HDF5 打包 → L2 几何预处理。
+不启动 Web 服务、项目预加载或缓存预热，不连接模型修正 MySQL，也不包含 HTTP 排队和目录导入。
+因此记录的是文件解析流水线，不能直接当作正式项目从提交到页面显示的耗时。
+
+## 执行方式
+
+要求运行环境已有 `psutil`、`numpy`、`h5py`、`scipy`，且能使用 Abaqus Python。
+
+```powershell
+& 'E:\tools\anaconda3\python.exe' -X utf8 -u tools/benchmark_odb_memory.py `
+  --source 'E:\code\odb-service-design\model_v2\1440w-dof_grav_v3.odb' `
+  --before 982b82a --after af01ab2 `
+  --output benchmark_results/odb_memory_独立目录
+```
+
+输出目录必须是本次新目录；脚本不会覆盖已有测试。版本先解析成完整提交号，再从 Git 导出
+实际运行的 `abaqus_dump.py`、`l1_pack.py`、`manifest_schema.py`、`ingest.py`，记录各自 Git 对象。
+源码副本和工作区互相隔离，不切换或修改当前工作区的业务源码。
+
+源 ODB 先记录 SHA-256、大小和修改时间，再复制到测试目录升级。两版各从同一个升级产物复制
+独立输入，开始前和运行后校验哈希。复制、升级不计入解析流水线耗时，准备阶段单独记录。
+原始源文件不传给升级命令，运行结束再次核对原文件。
+
+## 内存口径
+
+每 0.25 秒采样启动器及其子进程，保留已发现子进程的引用，即使中间启动器先退出，也继续
+采样实际的 Abaqus Python 进程。每个阶段分别保存：
+
+- `peak_tree_rss_bytes`：进程树物理工作集之和的采样峰值；共享 DLL/文件页可能重复计算。
+- `peak_tree_private_bytes`：进程树私有提交内存之和的采样峰值；磁盘映射文件页不等同于私有内存。
+- `peak_process_os_wset_bytes`：观测到的单进程 Windows 累计工作集峰值，用于补充采样间隙。
+- `peak_process_os_pagefile_bytes`：观测到的单进程 Windows 累计 pagefile/提交峰值。
+- `min_host_available_bytes`：本阶段观测到的整机最小可用物理内存。
+
+总流水线内存峰值取提取、打包、L2 三个阶段峰值的最大值，不把顺序执行的内存峰值相加。
+Windows 的 pagefile 指标不是“磁盘上实际写了多少交换文件”，不要把它当作磁盘换页流量。
+采样有间隔，极短尖峰可能漏掉；不能把私有提交内存简单等同于最低物理内存配置要求。
+
+## 产物与正确性
+
+- `run.json`：固定版本、源文件证明、环境、准备步骤和全部阶段结果。
+- `status.json`：运行中的最新阶段、耗时、内存峰值与最后一条业务日志。
+- `<before|after>/<阶段>.log`：原始业务输出。
+- `<before|after>/<阶段>_memory.csv`：完整内存曲线；保留物理工作集、私有内存和整机可用量。
+- `<before|after>/<阶段>_summary.json`：阶段汇总。
+- `output_comparison.json`：全部 L1/L2 HDF5 文件的数据集清单、形状、类型和逐值 SHA-256 对比。
+
+旧版即使返回 0，也必须没有致命错误并生成本次全新 `dump_meta.json` 才会继续打包；新版还必须
+打印 `ODB_DUMP_COMPLETE`。一版失败会保留失败证据，再运行另一版；不将失败运行称为完整解析。
+正确性核验比较 HDF5 数据集，不比较 HDF5 文件的二进制布局、属性和 SQLite 全表内容。
+
+## 结果边界
+
+两个版本顺序执行，操作系统文件缓存不清空。单轮耗时差异是本机样本，不能全部归因为代码；
+需要稳定速度结论时应补反向次序、多次运行。大数组是否实际减少可结合阶段内存曲线和私有峰值判断。
+全部内存、耗时和数据一致性都要分别报告，不能用少提取字段、跳过派生结果换取表面上的改善。
+
+32 GB 机器上的正常解析不等于在 16 GB 机器、只余 4 GB 可用时也能完成。模拟限制和真实机器复测
+是不同任务，本脚本不会为了制造低内存环境而额外占满整机内存。
