@@ -231,6 +231,9 @@ def _build_project_response(proj, repo) -> dict:
     """Build the full project dict (including result_groups) from a projects row."""
     project_id = proj["project_id"]
     workspace  = _resolve_workspace(proj["workspace"], project_id)
+    # A failed/pending extraction may not have a manifest yet. Opening SQLite
+    # here would create an empty DB and break later result-catalog requests.
+    has_manifest = os.path.isfile(os.path.join(workspace, "manifest.db"))
     rg_rows    = repo.list_result_groups(project_id)
     source_type = proj["source_type"] if "source_type" in proj.keys() else "inp"
     advanced_status = "pending"
@@ -252,8 +255,8 @@ def _build_project_response(proj, repo) -> dict:
 
         consistency_check = "count-only"
         try:
-            manifest = ManifestRepo(workspace)
-            meta = manifest.get_result_group_meta(rg_name)
+            manifest = ManifestRepo(workspace) if has_manifest else None
+            meta = manifest.get_result_group_meta(rg_name) if manifest else None
             if meta and meta["consistency_check"]:
                 consistency_check = meta["consistency_check"]
             elif rg["parse_options"]:
@@ -263,7 +266,7 @@ def _build_project_response(proj, repo) -> dict:
             pass
 
         steps = []
-        if status == "ready":
+        if status == "ready" and has_manifest:
             try:
                 manifest = ManifestRepo(workspace)
                 overview = manifest.get_overview(result_group=rg_name)

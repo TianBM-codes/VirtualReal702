@@ -14,6 +14,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from src.l3.infra.manifest_repo import ManifestRepo
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -168,12 +170,10 @@ def test_memory_failure_reaches_project_response_without_manifest(tmp_path):
                         'original_inp_path': None, 'inp_path': str(odb)})
         repo = SimpleNamespace(list_result_groups=lambda _: conn.execute(
             'SELECT * FROM result_groups').fetchall())
-        def missing_manifest(_):
-            raise FileNotFoundError('extraction failed before manifest creation')
         api = _load_functions('src/l3/api/routes/projects.py',
                               {'_build_project_response'}, {
             'os': os, 'json': json, '_resolve_workspace': lambda path, _: path,
-            'ManifestRepo': missing_manifest,
+            'ManifestRepo': ManifestRepo,
         })
         response = api['_build_project_response'](project, repo)
         assert response['geom_status'] == 'error'
@@ -182,5 +182,6 @@ def test_memory_failure_reaches_project_response_without_manifest(tmp_path):
         assert '内存不足' in group['error_message']
         assert '已停止后续打包' in group['error_message']
         assert 'dump_meta.json not found' not in group['error_message']
+        assert not (tmp_path / 'manifest.db').exists()
     finally:
         conn.close()
