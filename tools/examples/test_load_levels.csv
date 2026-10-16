@@ -1,0 +1,10 @@
+sensor,load_level,value,unit,remark
+DEMO_P01,0,0,mm,example only
+DEMO_P01,1,0.1,mm,example only
+DEMO_P01,2,0.2,mm,example only
+DEMO_P02,0,0,mm,example only
+DEMO_P02,1,0.15,mm,example only
+DEMO_P02,2,0.3,mm,example only
+DEMO_P03,0,0,mm,example only
+DEMO_P03,1,0.08,mm,example only
+DEMO_P03,2,0.16,mm,example only

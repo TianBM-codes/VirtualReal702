@@ -1,4 +1,7 @@
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
+from services.model_update.analysis.sensor_node_history_service import get_sensor_node_history
+from ..models import SensorNodeHistoryRequest
 
 from services.model_update.analysis.inp_service import (
     evaluate_static_correlation,
@@ -35,6 +38,19 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
+
+
+@router.post("/get/sensor_node_history")
+async def get_sensor_node_history_api(request: Request, body: SensorNodeHistoryRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = await run_in_threadpool(get_sensor_node_history, **model_to_dict(body))
+        return success_response(result, "测点节点时程获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/pair/node_point")

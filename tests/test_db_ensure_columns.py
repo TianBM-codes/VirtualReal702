@@ -24,6 +24,9 @@ class _FakeCursor:
             else:
                 self._fetchone = (1,)
             self._fetchall = []
+        elif normalized.startswith("SHOW COLUMNS FROM") and "LIKE 'point'" in normalized:
+            self._fetchone = ("point", "varchar(100)")
+            self._fetchall = []
         elif "FROM information_schema.TABLES" in normalized:
             self._fetchone = (1,)
             self._fetchall = []
@@ -85,3 +88,5 @@ def test_ensure_tables_exist_adds_modal_correlation_columns_when_missing(monkeyp
     assert len(measuring_x_sql) == 1
     assert len(measuring_y_sql) == 1
     assert len(measuring_z_sql) == 1
+    assert any("CREATE TABLE IF NOT EXISTS t_mt_py_test_load_level_data" in sql
+               for sql, _ in fake_cursor.executed)

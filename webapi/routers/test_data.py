@@ -1,4 +1,7 @@
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
+from services.model_update.analysis.sensor_curve_service import get_sensor_curve
+from ..models import SensorCurveRequest
 
 from services.model_update.analysis.test_unit_service import (
     convert_test_unit_system,
@@ -36,6 +39,19 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
+
+
+@router.post("/get/sensor_load_level_curve")
+async def get_sensor_load_level_curve_api(request: Request, body: SensorCurveRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        result = await run_in_threadpool(get_sensor_curve, **model_to_dict(body))
+        return success_response(result, "传感器曲线获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 def _resolve_unv_download_dir(project_id: int = None) -> str:
