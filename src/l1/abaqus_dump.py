@@ -691,6 +691,80 @@ def _block_data_2d(block):
 
 # Bound temporary arrays by raw result rows, including local nodes/IPs.
 _RESULT_CHUNK_ROWS = 65536
+_U32_SEARCH_CHUNK_ROWS = 8192
+_UINT32_MAX = 4294967295
+
+
+def _require_u32_length(length, name):
+    # The insertion position len(labels), as well as valid rows, must fit.
+    if length < 0 or length > _UINT32_MAX:
+        raise OverflowError('{} exceeds uint32 index capacity'.format(name))
+
+
+def _searchsorted_u32(sorted_values, queries, unique=False):
+    """Left insertion positions created as uint32, without intp conversion.
+
+    Inputs are sorted integer labels. `unique` is true only for canonical
+    labels written by np.unique; it avoids search buffers for dense labels.
+    Sparse/duplicate labels use vectorized binary search with bounded buffers.
+    """
+    size = len(sorted_values)
+    _require_u32_length(size, 'Canonical labels')
+    result = np.zeros(len(queries), dtype=np.uint32)
+    if not size or not len(queries):
+        return result
+    first, last = int(sorted_values[0]), int(sorted_values[-1])
+    if unique and last - first == size - 1:
+        # Subtraction writes straight into the uint32 destination. Exclude
+        # out-of-range queries before subtracting to avoid unsigned underflow.
+        inside = queries >= first
+        np.logical_and(inside, queries <= last, out=inside)
+        np.subtract(queries, first, out=result, where=inside, casting='unsafe')
+        result[queries > last] = np.uint32(size)
+        return result
+
+    one = np.uint32(1)
+    last_row = np.uint32(size - 1)
+    for start in range(0, len(queries), _U32_SEARCH_CHUNK_ROWS):
+        end = min(start + _U32_SEARCH_CHUNK_ROWS, len(queries))
+        low = result[start:end]
+        high = np.full(end - start, size, dtype=np.uint32)
+        middle = np.empty(end - start, dtype=np.uint32)
+        needles = queries[start:end]
+        while True:
+            active = low < high
+            if not np.any(active):
+                break
+            # low + (high-low)//2 avoids unsigned addition overflow.
+            np.subtract(high, low, out=middle)
+            np.right_shift(middle, one, out=middle)
+            np.add(middle, low, out=middle)
+            # Converged rows can equal size; never gather outside the array.
+            np.minimum(middle, last_row, out=middle)
+            right = sorted_values[middle] < needles
+            np.logical_and(right, active, out=right)
+            np.copyto(high, middle, where=active & ~right)
+            np.add(middle, one, out=middle, where=right)
+            np.copyto(low, middle, where=right)
+    return result
+
+
+def _cyclic_indices_u32(start, length, modulus):
+    """IP cycle without creating an int64 arange, even when start > 2**32."""
+    _require_u32_length(length, 'Index chunk')
+    _require_u32_length(modulus, 'Integration-point count')
+    if modulus == 0:
+        raise ValueError('Integration-point count must be positive')
+    result = np.arange(length, dtype=np.uint32)
+    np.remainder(result, np.uint32(modulus), out=result)
+    offset = int(start) % modulus
+    if offset:
+        # Split the wrap before addition, so intermediate uint32 values fit.
+        limit = np.uint32(modulus - offset)
+        wrap = result >= limit
+        result[wrap] -= limit
+        result[~wrap] += np.uint32(offset)
+    return result
 
 
 def _block_ncomp(block):
@@ -730,18 +804,38 @@ def _en_block_layout(block):
 
 def _local_node_indices(rows, counts):
     """Occurrence per element, preserving input order even across chunks."""
-    order = np.argsort(rows, kind='mergesort')
-    ordered = rows[order]
-    offsets = np.arange(len(rows))
-    starts = np.empty(len(rows), dtype=bool)
-    starts[0] = True
-    starts[1:] = ordered[1:] != ordered[:-1]
-    ranks = offsets - np.maximum.accumulate(np.where(starts, offsets, 0))
-    result = np.empty(len(rows), dtype=np.intp)
-    result[order] = ranks
-    result += counts[rows]
-    unique, increments = np.unique(rows, return_counts=True)
-    counts[unique] += increments
+    _require_u32_length(len(rows), 'Local-node chunk')
+    if rows.dtype != np.dtype('uint32') or counts.dtype != np.dtype('uint32'):
+        raise TypeError('Local-node indices and counts must be uint32')
+    result = np.arange(len(rows), dtype=np.uint32)
+    if not len(rows):
+        return result
+    if np.all(rows[1:] >= rows[:-1]):
+        # Normal Abaqus element-major order: no sorting/permutation array.
+        starts = np.empty(len(rows), dtype=bool)
+        starts[0] = True
+        starts[1:] = rows[1:] != rows[:-1]
+        run_start = np.arange(len(rows), dtype=np.uint32)
+        np.copyto(run_start, np.uint32(0), where=~starts)
+        np.maximum.accumulate(run_start, dtype=np.uint32, out=run_start)
+        np.subtract(result, run_start, out=result)
+        base = counts[rows]
+        if np.any(base > np.uint32(_UINT32_MAX - 1) - result):
+            raise OverflowError('Local-node counter exceeds uint32 capacity')
+        np.add(result, base, out=result)
+        ends = np.empty(len(rows), dtype=bool)
+        ends[:-1] = starts[1:]
+        ends[-1] = True
+        counts[rows[ends]] = result[ends] + np.uint32(1)
+    else:
+        # Unordered/interleaved blocks need stable occurrence order. Count
+        # directly instead of allocating intp argsort and return_counts arrays.
+        for index, row in enumerate(rows):
+            count = int(counts[row])
+            if count >= _UINT32_MAX:
+                raise OverflowError('Local-node counter exceeds uint32 capacity')
+            result[index] = count
+            counts[row] = count + 1
     return result
 
 
@@ -752,6 +846,9 @@ def _write_frame_blocks(path, canon, position, blocks, shape, ip_labels=None,
     No list of reshaped tensors or frame-sized merge array is retained. The
     temporary file is closed before publishing (also required on Windows).
     """
+    _require_u32_length(len(canon), 'Canonical labels')
+    if position in ('ELEMENT_NODAL', 'INTEGRATION_POINT'):
+        _require_u32_length(shape[1], 'Local-node/integration-point count')
     if not all(shape):
         npsave(path, np.full(shape, fill_value, dtype=np.float32))
         return
@@ -772,12 +869,12 @@ def _write_frame_blocks(path, canon, position, blocks, shape, ip_labels=None,
                    if position == 'INTEGRATION_POINT' else None)
             if ips is not None and len(ips) != len(labels):
                 raise ValueError('Integration-point labels/data row count mismatch')
-            counts = (np.zeros(len(canon), dtype=np.int32)
+            counts = (np.zeros(len(canon), dtype=np.uint32)
                       if position == 'ELEMENT_NODAL' else None)
             for start in range(0, len(labels), _RESULT_CHUNK_ROWS):
                 end = min(start + _RESULT_CHUNK_ROWS, len(labels))
                 lbl = np.asarray(labels[start:end], dtype=np.int32)
-                rows = np.searchsorted(canon, lbl)
+                rows = _searchsorted_u32(canon, lbl, unique=True)
                 valid = rows < len(canon)
                 valid[valid] &= canon[rows[valid]] == lbl[valid]
                 if not np.any(valid):
@@ -794,10 +891,10 @@ def _write_frame_blocks(path, canon, position, blocks, shape, ip_labels=None,
                 target_rows = rows[valid]
                 if position == 'INTEGRATION_POINT':
                     if ips is None:
-                        point_rows = np.arange(start, end) % len(ip_labels)
+                        point_rows = _cyclic_indices_u32(start, end - start, len(ip_labels))
                     else:
-                        point_rows = np.searchsorted(
-                            ip_labels, np.asarray(ips[start:end], dtype=np.int32))
+                        point_rows = _searchsorted_u32(
+                            ip_labels, np.asarray(ips[start:end], dtype=np.int32), unique=True)
                         if (np.any(point_rows >= len(ip_labels)) or
                                 np.any(ip_labels[point_rows] != ips[start:end])):
                             raise ValueError('Unknown integration-point label')
@@ -873,8 +970,8 @@ def reshape_ip_block(block):
     u_ips   = np.unique(ip_flat)
     M, n_ip = len(u_elems), len(u_ips)
 
-    e_idx  = np.searchsorted(u_elems, labels_flat)
-    ip_idx = np.searchsorted(u_ips,   ip_flat)
+    e_idx  = _searchsorted_u32(u_elems, labels_flat, unique=True)
+    ip_idx = _searchsorted_u32(u_ips, ip_flat, unique=True)
     data_nd = np.zeros((M, n_ip, ncomp), dtype=np.float32)
     data_nd[e_idx, ip_idx] = data_flat
 
@@ -891,12 +988,9 @@ def reshape_element_nodal_block(block):
     M        = len(u_elems)
     n_enodes = len(labels_flat) // M
 
-    e_idx    = np.searchsorted(u_elems, labels_flat)
-    node_idx = np.zeros(len(labels_flat), dtype=np.int32)
-    counts   = np.zeros(M, dtype=np.int32)
-    for i, ei in enumerate(e_idx):
-        node_idx[i] = counts[ei]
-        counts[ei] += 1
+    e_idx    = _searchsorted_u32(u_elems, labels_flat, unique=True)
+    counts   = np.zeros(M, dtype=np.uint32)
+    node_idx = _local_node_indices(e_idx, counts)
 
     data_nd = np.zeros((M, n_enodes, ncomp), dtype=np.float32)
     data_nd[e_idx, node_idx] = data_flat

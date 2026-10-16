@@ -38,13 +38,104 @@ def exporter():
     return _load_functions('src/l1/abaqus_dump.py', {
         'npsave', '_block_ncomp', '_block_sp_num', '_ip_block_layout',
         '_en_block_layout', '_local_node_indices', '_write_frame_blocks',
+        '_require_u32_length', '_searchsorted_u32', '_cyclic_indices_u32',
         '_compute_invariants_numpy', '_main_checked',
         'mkdirs', 'jdump', 'safe', '_canon_inst', '_fmt_t', '_pos_str',
         'split_region_field', 'dump_results',
     }, {'np': np, 'os': os, 'sys': sys, 'traceback': traceback,
         'json': json, 'time': time, '_RESULT_CHUNK_ROWS': 5,
+        '_U32_SEARCH_CHUNK_ROWS': 3, '_UINT32_MAX': 4294967295,
         'PROCEDURE_MAP': {'STATIC': 'STATIC'}, '_INV_CONSTANTS': {},
         '_ELEM_NODAL_CONST': None})
+
+
+@pytest.mark.parametrize('labels,queries,unique', [
+    ([], [-1, 0, 9], True),
+    ([10], [-1, 9, 10, 11, 100], True),
+    ([10, 11, 12], [-2147483648, 9, 10, 11, 12, 13, 2147483647], True),
+    ([-2147483648, -2147483647], [-2147483648, -2147483647, 0, 2147483647], True),
+    ([-5, -1, 7, 100], [-10, -5, -2, -1, 0, 7, 99, 100, 101], True),
+    ([1, 1, 3], [-1, 0, 1, 2, 3, 4], False),
+    ([1, 1, 1], [0, 1, 2], False),
+    ([0, 3, 9], [], True),
+])
+def test_direct_u32_search_matches_left_insertion_positions(exporter, labels, queries, unique):
+    labels = np.array(labels, dtype=np.int32)
+    queries = np.array(queries, dtype=np.int32)
+    result = exporter['_searchsorted_u32'](labels, queries, unique=unique)
+    assert result.dtype == np.dtype('uint32')
+    np.testing.assert_array_equal(result, np.searchsorted(labels, queries, side='left'))
+
+
+def test_direct_u32_search_handles_unsigned_label_boundary(exporter):
+    labels = np.array([4294967293, 4294967294, 4294967295], dtype=np.uint32)
+    queries = np.array([-1, 0, 4294967292, 4294967293, 4294967295, 4294967296], dtype=np.int64)
+    result = exporter['_searchsorted_u32'](labels, queries, unique=True)
+    assert result.dtype == np.dtype('uint32')
+    np.testing.assert_array_equal(result, [0, 0, 0, 0, 2, 3])
+
+
+def test_direct_u32_search_random_sparse_and_duplicate_labels(exporter):
+    rng = np.random.RandomState(20261016)
+    for size in (0, 1, 3, 32, 97):
+        labels = np.sort(rng.randint(-300, 300, size=size).astype(np.int32))
+        queries = rng.randint(-400, 400, size=43).astype(np.int32)
+        result = exporter['_searchsorted_u32'](labels, queries)
+        assert result.dtype == np.dtype('uint32')
+        np.testing.assert_array_equal(result, np.searchsorted(labels, queries))
+
+
+def test_u32_helpers_never_call_default_index_generators(exporter):
+    class U32Numpy:
+        def __getattr__(self, name):
+            if name in ('searchsorted', 'argsort', 'unique'):
+                raise AssertionError('Default-width index generator used: ' + name)
+            value = getattr(np, name)
+            if name in ('zeros', 'full', 'empty', 'arange'):
+                def allocate(*args, **kwargs):
+                    assert np.dtype(kwargs['dtype']) in (np.dtype('uint32'), np.dtype('bool'))
+                    return value(*args, **kwargs)
+                return allocate
+            return value
+    exporter['np'] = U32Numpy()
+    labels = np.array([10, 30, 80], dtype=np.int32)
+    queries = np.array([80, 10, 30, 10, 80, 30, 10], dtype=np.int32)
+    rows = exporter['_searchsorted_u32'](labels, queries, unique=True)
+    assert rows.dtype == np.dtype('uint32')
+    counts = np.zeros(3, dtype=np.uint32)
+    local = exporter['_local_node_indices'](rows, counts)
+    np.testing.assert_array_equal(local, [0, 0, 0, 1, 1, 1, 2])
+    # Exercise the sorted, vectorized local-node path too.
+    local = exporter['_local_node_indices'](np.array([0, 0, 2], dtype=np.uint32), counts)
+    np.testing.assert_array_equal(local, [3, 4, 2])
+    cycle = exporter['_cyclic_indices_u32'](4294967298, 7, 3)
+    assert cycle.dtype == np.dtype('uint32')
+    np.testing.assert_array_equal(cycle, [0, 1, 2, 0, 1, 2, 0])
+
+
+@pytest.mark.parametrize('start,length,modulus', [
+    (4, 9, 3), (4294967298, 7, 3), (4294967294, 5, 4294967295),
+])
+def test_u32_ip_cycle_avoids_unsigned_overflow(exporter, start, length, modulus):
+    result = exporter['_cyclic_indices_u32'](start, length, modulus)
+    assert result.dtype == np.dtype('uint32')
+    np.testing.assert_array_equal(result, [(start + offset) % modulus for offset in range(length)])
+
+
+def test_u32_capacity_and_local_counter_overflow_fail_explicitly(exporter):
+    exporter['_require_u32_length'](4294967295, 'test')
+    with pytest.raises(OverflowError):
+        exporter['_require_u32_length'](4294967296, 'test')
+    class TooManyLabels:
+        def __len__(self):
+            return 4294967296
+        def __getitem__(self, key):
+            raise AssertionError('Overflow should be checked before reading labels')
+    with pytest.raises(OverflowError):
+        exporter['_searchsorted_u32'](TooManyLabels(), np.array([1], dtype=np.int32))
+    with pytest.raises(OverflowError):
+        exporter['_local_node_indices'](np.array([0], dtype=np.uint32),
+                                         np.array([4294967295], dtype=np.uint32))
 
 
 class _ChunkOnlyData:
