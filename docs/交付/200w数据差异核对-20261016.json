@@ -1,0 +1,30 @@
+{
+  "feature_edges_equal_unordered": true,
+  "feature_edge_count": 2514,
+  "material_source_line": "MAT1*    1              2.1+11          8.07692+10      .3",
+  "actual_fast_fields": [
+    "MAT1",
+    "1",
+    "",
+    "2.1+11",
+    "",
+    "8.07692+",
+    "10",
+    ".3"
+  ],
+  "long_field_tokens": [
+    "MAT1*",
+    "1",
+    "2.1+11",
+    "8.07692+10",
+    ".3"
+  ],
+  "expected_elastic_table": [
+    [
+      210000000000.0,
+      0.3
+    ]
+  ],
+  "section_partition": "one region in both; internal section IDs renumbered 1 to 0; memberships equal",
+  "material_defect": "MAT1* uses 16-character fields but fast scanner splits into 8; E and nu become zero"
+}
