@@ -244,6 +244,14 @@ def _bdf_fields(line):
         return []
     if "," in text:
         fields = [field.strip() for field in text.split(",")]
+    elif "*" in text[:8]:
+        # Large-field cards keep the 8-column name, followed by four
+        # 16-column values. Columns 73-80 identify the continuation, not data.
+        # MAT1's MID/E/G/NU are all on this first line; its continuation holds
+        # properties that the L1 elastic_table does not store.
+        fields = [text[:8].strip()]
+        fields.extend(text[i:i + 16].strip()
+                      for i in range(8, min(len(text), 72), 16))
     else:
         fields = [text[i:i + 8].strip() for i in range(0, len(text), 8)]
     while fields and fields[-1] == "":
