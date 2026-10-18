@@ -38,6 +38,8 @@ import os
 import re
 import shutil
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections import OrderedDict
 from typing import Optional, Tuple
 
@@ -58,6 +60,32 @@ _LEGACY_DIRS = (
     "deformed_payloads", "modal_payloads",
 )
 _SMALL_CACHE_MAX = 4096
+_required_entries = ContextVar("required_cache_entries", default=None)
+
+
+@contextmanager
+def require_persistent_cache():
+    """Runner 首屏准备：必须落盘，写失败/容量不足不能伪装成预热成功。"""
+    if not disk_enabled():
+        raise RuntimeError("首屏缓存需要 APP_SCALAR_CACHE_MB 和 APP_SCALAR_DISK_CACHE_MB 均大于 0")
+    entries = set()
+    token = _required_entries.set(entries)
+    try:
+        yield
+        evict_workspace = {workspace for workspace, _path in entries}
+        for workspace in evict_workspace:
+            evict(workspace)
+        missing = [path for _workspace, path in entries if not os.path.isfile(path)]
+        if missing:
+            raise RuntimeError("首屏缓存未完整保留，请检查磁盘空间、权限和 APP_SCALAR_DISK_CACHE_MB：" + missing[0])
+    finally:
+        _required_entries.reset(token)
+
+
+def _require_entry(workspace, path):
+    entries = _required_entries.get()
+    if entries is not None:
+        entries.add((workspace, path))
 
 
 # ─── 开关与签名 ───────────────────────────────────────────────────────────────
@@ -126,6 +154,8 @@ def _nbytes(value) -> int:
 
 def mem_get(key: tuple):
     """大值内存层：命中返回值，未命中返回 None。"""
+    if _required_entries.get() is not None:
+        return None  # runner 的内存不能供另一个 Web 进程复用，必须核查磁盘层
     with _LOCK:
         item = _BIG.get(key)
         if item is not None:
@@ -152,6 +182,8 @@ def mem_put(key: tuple, value) -> None:
 
 def small_get(key: tuple):
     """小值内存层：命中返回值（可能是 None），未命中返回 MISS。"""
+    if _required_entries.get() is not None:
+        return MISS
     with _LOCK:
         if key in _SMALL:
             _SMALL.move_to_end(key)
@@ -234,6 +266,8 @@ def _atomic_write(path: str, write_fn) -> bool:
             os.remove(tmp)
         except OSError:
             pass
+        if _required_entries.get() is not None:
+            raise
         return False
 
 
@@ -268,7 +302,10 @@ def evict(workspace: str, cap_bytes: Optional[int] = None) -> None:
 
 
 def _fits(nbytes: int) -> bool:
-    return disk_enabled() and nbytes <= _disk_cap_bytes()
+    fits = disk_enabled() and nbytes <= _disk_cap_bytes()
+    if not fits and _required_entries.get() is not None:
+        raise RuntimeError("首屏缓存单项超过磁盘缓存容量，请增大 APP_SCALAR_DISK_CACHE_MB")
+    return fits
 
 
 def arrays_get(workspace: str, bucket: str, key: tuple) -> Optional[dict]:
@@ -285,6 +322,7 @@ def arrays_get(workspace: str, bucket: str, key: tuple) -> Optional[dict]:
         _drop(path)
         return None
     _touch(path)
+    _require_entry(workspace, path)
     for arr in arrays.values():
         arr.setflags(write=False)
     return arrays
@@ -294,6 +332,7 @@ def arrays_put(workspace: str, bucket: str, key: tuple, arrays: dict) -> None:
     if not _fits(sum(int(np.asarray(a).nbytes) for a in arrays.values())):
         return
     path = _entry_path(workspace, bucket, "arrays", key, ".npz")
+    _require_entry(workspace, path)
     if os.path.exists(path):
         return
     if _atomic_write(path, lambda fh: np.savez(fh, **arrays)):
@@ -314,6 +353,7 @@ def json_get(workspace: str, bucket: str, key: tuple):
         _drop(path)
         return MISS
     _touch(path)
+    _require_entry(workspace, path)
     return value
 
 
@@ -322,6 +362,7 @@ def json_put(workspace: str, bucket: str, key: tuple, value) -> None:
     if not disk_enabled():
         return
     path = _entry_path(workspace, bucket, "json", key, ".json")
+    _require_entry(workspace, path)
     if os.path.exists(path):
         return
     data = json.dumps({"v": value}, ensure_ascii=False).encode("utf-8")
@@ -342,6 +383,7 @@ def payload_get(workspace: str, bucket: str, key: tuple) -> Optional[bytes]:
         _drop(path)
         return None
     _touch(path)
+    _require_entry(workspace, path)
     return data
 
 
@@ -349,6 +391,7 @@ def payload_put(workspace: str, bucket: str, key: tuple, payload: bytes) -> None
     if not _fits(len(payload)):
         return
     path = _entry_path(workspace, bucket, "payloads", key, ".bin")
+    _require_entry(workspace, path)
     if os.path.exists(path):
         return
     if _atomic_write(path, lambda fh: fh.write(payload)):

@@ -124,15 +124,18 @@ class _WarmLock:
     进程退出时操作系统自动释放，不会因崩溃留下死锁。
     """
 
-    def __init__(self, workspace: str):
+    def __init__(self, workspace: str, strict: bool = False):
         self.path = os.path.join(cache_store.cache_root(workspace), _LOCK_NAME)
         self.fd = None
+        self.strict = strict
 
     def acquire(self) -> bool:
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
         except OSError:
+            if self.strict:
+                raise
             return True          # 建不了锁文件（只读盘等）就不加锁，照常预热
         try:
             if sys.platform == "win32":

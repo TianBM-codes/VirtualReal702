@@ -1092,7 +1092,7 @@ def _compute_labels_and_legend(
     return face_ids, legend
 
 
-def warm_color_codes(idx: ModelIndex) -> int:
+def warm_color_codes(idx: ModelIndex, strict: bool = False) -> int:
     """预计算所有 instance × 可用 scheme（除 elset）的面分类编码，返回成功个数。"""
     n = 0
     for inst in sorted(idx.source_elem_etype.keys()):
@@ -1103,6 +1103,8 @@ def warm_color_codes(idx: ModelIndex) -> int:
         try:
             schemes = get_schemes(idx, inst)["schemes"]
         except Exception:
+            if strict:
+                raise
             schemes = ["etype"]
         for scheme in schemes:
             if scheme == "elset":
@@ -1111,6 +1113,8 @@ def warm_color_codes(idx: ModelIndex) -> int:
                 _face_codes(idx, inst, scheme, None, etype_arr, elem_row_arr)
                 n += 1
             except Exception:
+                if strict:
+                    raise
                 pass
     return n
 

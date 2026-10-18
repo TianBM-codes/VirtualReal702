@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.l3.services.readiness_service import prepare_registered as _prepare_registered
 from src.utils.file_fetch import (
     materialize_source_file,
     resolve_runner_source,
@@ -185,6 +186,12 @@ class EmbeddedRunner:
     # ── Job status helpers ─────────────────────────────────────────────────────
 
     def _update_status(self, odb_id: str, status: str, **fields) -> None:
+        if status == "ready":
+            try:
+                _prepare_registered(self._connect, self.data_root, odb_id, kind="job")
+            except Exception as exc:
+                self._update_status(odb_id, "error", error_msg=str(exc))
+                raise
         allowed = {
             "l1_started_at", "l1_done_at",
             "l2_started_at", "l2_done_at",
@@ -358,70 +365,33 @@ class EmbeddedRunner:
 
     # ── L2 pipeline ───────────────────────────────────────────────────────────
 
-    def _run_project_l2_staged(self, project_id: str, workspace: str) -> bool:
-        """Publish core geometry first, then build optional advanced indexes."""
+    def _run_project_l2_staged(self, project_id: str, workspace: str,
+                               publish: bool = True) -> bool:
         for phase in ("core", "advanced"):
             ret = subprocess.run(
                 [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
-                 "--phase", phase],
-                capture_output=True, encoding="utf-8", errors="replace",
-            )
+                 "--phase", phase], capture_output=True, encoding="utf-8", errors="replace")
             if ret.returncode != 0:
-                if phase == "core":
-                    msg = "L2 core ingest failed: " + ret.stderr[-2000:]
-                    self._update_project_geom_status(project_id, "error", msg)
-                    logger.error("[%s] L2 core failed (rc=%d)",
-                                 project_id, ret.returncode)
-                    return False
-                logger.warning(
-                    "[%s] L2 advanced indexes failed but core geometry remains ready: %s",
-                    project_id, ret.stderr[-500:],
-                )
-                return True
-            if phase == "core":
-                self._update_project_geom_status(project_id, "ready")
-                logger.info("[%s] Core geometry ready; building advanced indexes",
-                            project_id)
-        logger.info("[%s] Advanced L2 indexes ready", project_id)
+                msg = f"L2 {phase} ingest failed: " + ret.stderr[-2000:]
+                self._update_project_geom_status(project_id, "error", msg)
+                return False
+        if publish:
+            self._update_project_geom_status(project_id, "ready")
         return True
 
     def _run_l2(self, odb_id: str, workspace: str) -> bool:
         if not _INGEST_SCRIPT.exists():
-            logger.info("[%s] L2 script not found, skipping — marking ready", odb_id)
-            self._update_status(odb_id, "ready", l2_done_at=_now_iso())
-            return True
-
-        self._update_status(odb_id, "l2_running", l2_started_at=_now_iso())
-        logger.info("[%s] L2: ingest.py", odb_id)
-
-        _win_flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-        ret = subprocess.run(
-            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
-             "--phase", "core"],
-            capture_output=True, encoding='utf-8', errors='replace',
-            creationflags=_win_flags,
-        )
-        if ret.returncode != 0:
-            self._update_status(odb_id, "error",
-                error_msg="[L2] ingest failed: " + ret.stderr[-2000:])
-            logger.error("[%s] L2 failed (rc=%d)", odb_id, ret.returncode)
+            self._update_status(odb_id, "error", error_msg="L2 脚本不存在，无法准备模型")
             return False
-
+        self._update_status(odb_id, "l2_running", l2_started_at=_now_iso())
+        for phase in ("core", "advanced"):
+            ret = subprocess.run(
+                [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
+                 "--phase", phase], capture_output=True, encoding="utf-8", errors="replace")
+            if ret.returncode != 0:
+                self._update_status(odb_id, "error", error_msg=f"[L2 {phase}] " + ret.stderr[-2000:])
+                return False
         self._update_status(odb_id, "ready", l2_done_at=_now_iso())
-        logger.info("[%s] core geometry ready", odb_id)
-        advanced = subprocess.run(
-            [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
-             "--phase", "advanced"],
-            capture_output=True, encoding='utf-8', errors='replace',
-            creationflags=_win_flags,
-        )
-        if advanced.returncode != 0:
-            logger.warning(
-                "[%s] advanced L2 failed but core geometry remains ready: %s",
-                odb_id, advanced.stderr[-500:],
-            )
-        else:
-            logger.info("[%s] advanced L2 indexes ready", odb_id)
         return True
 
     # ── Project / result_group helpers ────────────────────────────────────────
@@ -455,17 +425,32 @@ class EmbeddedRunner:
 
     def _update_project_geom_status(self, project_id: str, status: str,
                                     error_message: str = None):
+        if status == "ready":
+            try:
+                _prepare_registered(self._connect, self.data_root, project_id, kind="project")
+            except Exception as exc:
+                self._update_project_geom_status(project_id, "error", str(exc))
+                raise
         with self._connect() as conn:
+            if status == "ready":
+                conn.execute(
+                    "UPDATE result_groups SET status='ready', error_message=NULL, updated_at=?"
+                    " WHERE project_id=? AND result_group='default_result' AND status='running'"
+                    " AND EXISTS (SELECT 1 FROM projects WHERE project_id=?"
+                    " AND geom_status='running' AND source_type IN ('odb','rst'))",
+                    (_now_iso(), project_id, project_id),
+                )
             conn.execute(
-                "UPDATE projects SET geom_status=?, updated_at=? WHERE project_id=?",
-                (status, _now_iso(), project_id),
+                "UPDATE projects SET geom_status=?, error_message=?, updated_at=? WHERE project_id=?",
+                (status, error_message if status == "error" else None, _now_iso(), project_id),
             )
             if status == "error" and error_message:
                 conn.execute(
                     "UPDATE result_groups SET status='error', error_message=?, updated_at=?"
-                    " WHERE project_id=? AND status='pending'",
+                    " WHERE project_id=? AND status IN ('pending','running')",
                     (error_message, _now_iso(), project_id),
                 )
+
 
     def _claim_pending_result_group(self):
         """认领一个 pending result_group（要求其 project geom_status='ready'）。
@@ -501,6 +486,26 @@ class EmbeddedRunner:
 
     def _update_result_group_status(self, project_id: str, result_group: str,
                                     status: str, error_message: str = None):
+        if status == "ready":
+            try:
+                with self._connect() as conn:
+                    row = conn.execute("SELECT workspace FROM projects WHERE project_id=?", (project_id,)).fetchone()
+                workspace = row["workspace"]
+                if not os.path.isabs(workspace):
+                    workspace = os.path.join(self.data_root, workspace)
+                marker = Path(workspace, "l1", "geometry", ".sections_patched")
+                if marker.exists():
+                    ret = subprocess.run(
+                        [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
+                        capture_output=True, encoding="utf-8", errors="replace")
+                    if ret.returncode != 0:
+                        raise RuntimeError("L2 截面索引重建失败：" + ret.stderr[-2000:])
+                    marker.unlink()
+                    Path(workspace, "l2", "render", ".reload_needed").touch()
+                _prepare_registered(self._connect, self.data_root, project_id, kind="group", result_group=result_group)
+            except Exception as exc:
+                self._update_result_group_status(project_id, result_group, "error", str(exc))
+                raise
         with self._connect() as conn:
             conn.execute(
                 "UPDATE result_groups SET status=?, error_message=?, updated_at=?"
@@ -587,12 +592,10 @@ class EmbeddedRunner:
             return False
 
         logger.info("[%s] Project ODB: staged ingest.py (L2)", project_id)
-        if not self._run_project_l2_staged(project_id, workspace):
+        if not self._run_project_l2_staged(project_id, workspace, publish=False):
             return False
-        try:
-            self._adopt_odb_default_results(project_id, odb_path, workspace)
-        except Exception:
-            logger.exception("[%s] Failed to auto-register default result_group", project_id)
+        self._adopt_odb_default_results(project_id, odb_path, workspace)
+        self._update_project_geom_status(project_id, "ready")
         return True
 
     def _adopt_odb_default_results(self, project_id: str, odb_path: str, workspace: str):
@@ -626,7 +629,7 @@ class EmbeddedRunner:
                     " (project_id, result_group, display_name, source_path, source_file,"
                     "  original_source_path, original_source_file,"
                     "  status, parse_options, created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,'ready',NULL,?,?)",
+                    " VALUES (?,?,?,?,?,?,?,'running',NULL,?,?)",
                     (
                         project_id,
                         rg_name,
@@ -639,6 +642,10 @@ class EmbeddedRunner:
                         now,
                     ),
                 )
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE result_groups SET status='running', error_message=NULL, updated_at=?"
+                    " WHERE project_id=? AND result_group=?", (_now_iso(), project_id, rg_name))
             logger.info("[%s] Adopted ODB results as result_group='default_result'", project_id)
 
     def _run_project(self, project_id: str, source_path: str,
@@ -869,13 +876,13 @@ class EmbeddedRunner:
                 try:
                     source_path = _materialize_runner_source(source_path, ws, source_file)
                     self._run_project(project_id, source_path, source_type, ws)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Runner: error in project geom %s", project_id)
                     try:
                         self._update_project_geom_status(
                             project_id, "error",
-                            "Unhandled runner exception — check server logs")
-                    except Exception:
+                            str(exc))
+                    except Exception as exc:
                         pass
 
             # ── 2. Result group tasks (ODB) ───────────────────────────────────
@@ -889,13 +896,13 @@ class EmbeddedRunner:
                     self._cleanup_result_group(ws, rg)
                     src = _materialize_runner_source(src, ws, source_file)
                     self._run_result_group(project_id, rg, src, parse_opts, ws)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Runner: error in result_group %s", label)
                     try:
                         self._update_result_group_status(
                             project_id, rg, "error",
-                            "Unhandled runner exception — check server logs")
-                    except Exception:
+                            str(exc))
+                    except Exception as exc:
                         pass
 
             # ── 3. Legacy ODB jobs ────────────────────────────────────────────
@@ -908,12 +915,12 @@ class EmbeddedRunner:
                     ok = self._run_l1(odb_id, odb_path, workspace)
                     if ok:
                         self._run_l2(odb_id, workspace)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Runner: unhandled error processing %s", odb_id)
                     try:
                         self._update_status(odb_id, "error",
-                            error_msg="Unhandled runner exception — check server logs")
-                    except Exception:
+                            error_msg=str(exc))
+                    except Exception as exc:
                         pass
 
             if not did_work:

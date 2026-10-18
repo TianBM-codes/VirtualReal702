@@ -145,14 +145,14 @@ def test_memory_failure_reaches_project_response_without_manifest(tmp_path):
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript('''
-            CREATE TABLE projects (project_id TEXT, geom_status TEXT, updated_at TEXT);
+            CREATE TABLE projects (project_id TEXT, geom_status TEXT, updated_at TEXT, error_message TEXT);
             CREATE TABLE result_groups (
                 project_id TEXT, result_group TEXT, display_name TEXT, status TEXT,
                 error_message TEXT, updated_at TEXT, parse_options TEXT,
                 original_source_file TEXT, source_file TEXT,
                 original_source_path TEXT, source_path TEXT
             );
-            INSERT INTO projects VALUES ('589', 'running', '');
+            INSERT INTO projects VALUES ('589', 'running', '', NULL);
             INSERT INTO result_groups VALUES (
                 '589', 'default_result', 'default', 'pending', NULL, '', NULL,
                 NULL, 'source.odb', NULL, 'source.odb'
@@ -177,6 +177,7 @@ def test_memory_failure_reaches_project_response_without_manifest(tmp_path):
         })
         response = api['_build_project_response'](project, repo)
         assert response['geom_status'] == 'error'
+        assert '内存不足' in response['error_message']
         group = response['result_groups'][0]
         assert group['status'] == 'error'
         assert '内存不足' in group['error_message']

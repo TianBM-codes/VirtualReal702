@@ -65,13 +65,18 @@ def element_mesh_edges_payload(workspace: str, instance: str) -> Optional[Tuple[
     return payload, E, False
 
 
-def warm_element_mesh_edges(idx) -> int:
+def warm_element_mesh_edges(idx, strict: bool = False) -> int:
     """预计算所有 instance 的单元边线响应包，返回成功个数。"""
     n = 0
     for inst in sorted(idx.source_elem_etype.keys()):
         try:
-            if element_mesh_edges_payload(idx.workspace, inst) is not None:
+            payload = element_mesh_edges_payload(idx.workspace, inst)
+            if payload is not None:
                 n += 1
+            elif strict and len(idx.render_source_elem_row.get(inst, ())):
+                raise RuntimeError(f"实例 {inst} 缺少单元边线数据")
         except Exception:
+            if strict:
+                raise
             pass
     return n

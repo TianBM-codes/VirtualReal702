@@ -37,6 +37,7 @@ REPO_ROOT     = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.l3.services.readiness_service import prepare_registered as _prepare_registered
 from src.utils.file_fetch import (
     materialize_source_file,
     resolve_runner_source,
@@ -249,6 +250,12 @@ def _connect() -> sqlite3.Connection:
 
 
 def _update_status(odb_id: str, status: str, **fields) -> None:
+    if status == "ready":
+        try:
+            _prepare_registered(_connect, DATA_ROOT, odb_id, kind="job")
+        except Exception as exc:
+            _update_status(odb_id, "error", error_msg=str(exc))
+            raise
     allowed = {
         "l1_started_at", "l1_done_at",
         "l2_started_at", "l2_done_at",
@@ -623,12 +630,8 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
     Returns True on success.
     """
     if not INGEST_SCRIPT.exists():
-        logger.info("[%s] L2 script not found, skipping L2 - marking ready", odb_id)
-        _log_job(odb_id, "warn",
-                 _ws("L2 脚本不存在，跳过 L2，直接标记就绪"),
-                 stage="l2_ingest", percent=100)
-        _update_status(odb_id, "ready", l2_done_at=_now_iso())
-        return True
+        _update_status(odb_id, "error", error_msg="L2 脚本不存在，无法准备模型")
+        return False
 
     _update_status(odb_id, "l2_running", l2_started_at=_now_iso())
     logger.info("[%s] L2 core: ingest.py", odb_id)
@@ -649,25 +652,18 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
         logger.error("[%s] L2 failed (rc=%d)", odb_id, rc)
         return False
 
-    _update_status(odb_id, "ready", l2_done_at=_now_iso())
-    _log_job(odb_id, "step", _good("基础几何已就绪"),
-             stage="l2_done", percent=85)
-    logger.info("[%s] core geometry ready", odb_id)
-
     rc_advanced, tail_advanced = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace,
          "--phase", "advanced"],
         odb_id, "l2_advanced",
     )
     if rc_advanced != 0:
-        _log_job(odb_id, "warn",
-                 f"{_ws('高级索引失败（基础几何仍可用）')}："
-                 f"{_esc(tail_advanced[-500:])}",
-                 stage="l2_advanced", percent=100)
-        logger.warning("[%s] advanced L2 failed (rc=%d)", odb_id, rc_advanced)
-    else:
-        _log_job(odb_id, "step", _good("高级索引完成"),
-                 stage="l2_advanced", percent=100)
+        _update_status(odb_id, "error", error_msg="[L2 advanced] " + tail_advanced[-2000:])
+        _log_job(odb_id, "error", "高级索引失败：" + _esc(tail_advanced[-500:]), stage="l2_advanced")
+        return False
+    _log_job(odb_id, "step", "开始首屏缓存准备", stage="cache_prepare", percent=95)
+    _update_status(odb_id, "ready", l2_done_at=_now_iso())
+    _log_job(odb_id, "step", _good("解析、索引和首屏缓存全部就绪"), stage="ready", percent=100)
     return True
 
 
@@ -720,6 +716,7 @@ def _run_l2_rerun(project_id: str, workspace: str) -> None:
         logger.error("[%s] L2 rerun failed (rc=%d)", project_id, rc)
         return
 
+    Path(workspace, "l2", "render", ".reload_needed").touch()
     _update_project_geom_status(project_id, "ready")
     _log_job(project_id, "step",
              _good("L2 重新预处理完成，已就绪"),
@@ -757,17 +754,34 @@ def _claim_pending_project() -> tuple:
 
 def _update_project_geom_status(project_id: str, status: str,
                                  error_message: str = None) -> None:
+    if status == "ready":
+        _log_job(project_id, "step", "基础解析和高级索引完成，开始首屏缓存准备", stage="cache_prepare", percent=95)
+        try:
+            _prepare_registered(_connect, DATA_ROOT, project_id, kind="project")
+        except Exception as exc:
+            _update_project_geom_status(project_id, "error", str(exc))
+            _log_job(project_id, "error", _esc(str(exc)), stage="cache_prepare")
+            raise
     with _connect() as conn:
+        if status == "ready":
+            conn.execute(
+                "UPDATE result_groups SET status='ready', error_message=NULL, updated_at=?"
+                " WHERE project_id=? AND result_group='default_result' AND status='running'"
+                " AND EXISTS (SELECT 1 FROM projects WHERE project_id=?"
+                " AND geom_status='running' AND source_type IN ('odb','rst'))",
+                (_now_iso(), project_id, project_id),
+            )
         conn.execute(
-            "UPDATE projects SET geom_status=?, updated_at=? WHERE project_id=?",
-            (status, _now_iso(), project_id),
+            "UPDATE projects SET geom_status=?, error_message=?, updated_at=? WHERE project_id=?",
+            (status, error_message if status == "error" else None, _now_iso(), project_id),
         )
         if status == "error" and error_message:
             conn.execute(
                 "UPDATE result_groups SET status='error', error_message=?, updated_at=?"
-                " WHERE project_id=? AND status='pending'",
+                " WHERE project_id=? AND status IN ('pending','running')",
                 (error_message, _now_iso(), project_id),
             )
+
 
 
 def _run_geom_project(project_id: str, inp_path: str, workspace: str) -> bool:
@@ -972,18 +986,18 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         logger.error("[%s] Project ODB L2 failed (rc=%d)", project_id, rc_l2)
         return False
 
+    _adopt_odb_result_group(project_id, odb_path, workspace)
     _update_project_geom_status(project_id, "ready")
     _log_job(project_id, "step",
              _good("ODB 解析全部完成，已就绪"),
              stage="l2_done", percent=100)
     logger.info("[%s] Project ODB ready", project_id)
-    _adopt_odb_result_group(project_id, odb_path, workspace)
     return True
 
 
 def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> None:
     """
-    ODB 全量解析完成后立即注册 result_group='default_result'（status='ready'）。
+    ODB 全量解析完成后立即注册 result_group='default_result'（status='running'）。
     等效于 runner_thread._adopt_odb_default_results，避免依赖 L3 服务类。
     """
     rg_name = "default_result"
@@ -1032,6 +1046,7 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
                         _log_job(project_id, "warn",
                                  "result_group 打标失败：表 {} — {}".format(tbl, exc),
                                  stage="adopt_result_group")
+                        raise
                 # result_group_meta
                 try:
                     conn.execute(
@@ -1043,9 +1058,9 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
                 except Exception:
                     pass
         except Exception as exc:
-            logger.warning("[%s] _adopt_odb_result_group: manifest update failed: %s", project_id, exc)
+            raise RuntimeError("ODB 默认结果组登记失败：" + str(exc)) from exc
 
-    # Step 2: 在 registry.db 里插入 result_groups 行（status='ready'）
+    # Step 2: 在 registry.db 里插入 result_groups 行（status='running'）
     try:
         now = _now_iso()
         with _connect() as conn:
@@ -1054,7 +1069,7 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
                 " (project_id, result_group, display_name, source_path, source_file,"
                 "  original_source_path, original_source_file,"
                 "  status, parse_options, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,'ready',NULL,?,?)",
+                " VALUES (?,?,?,?,?,?,?,'running',NULL,?,?)",
                 (
                     project_id,
                     rg_name,
@@ -1067,9 +1082,14 @@ def _adopt_odb_result_group(project_id: str, odb_path: str, workspace: str) -> N
                     now,
                 ),
             )
-        logger.info("[%s] Registered result_group='%s' (status=ready)", project_id, rg_name)
+        # 崩溃恢复后可能已存在 pending 行；这是本次初始导入的默认组，仍由本流水线发布。
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE result_groups SET status='running', error_message=NULL, updated_at=?"
+                " WHERE project_id=? AND result_group=?", (_now_iso(), project_id, rg_name))
+        logger.info("[%s] Registered result_group='%s' (status=running)", project_id, rg_name)
     except Exception as exc:
-        logger.warning("[%s] _adopt_odb_result_group: registry update failed: %s", project_id, exc)
+        raise RuntimeError("ODB 默认结果组注册失败：" + str(exc)) from exc
 
 
 def _queue_model_update_import(project_id, kind, workspace, payload, result_group=None):
@@ -1141,30 +1161,18 @@ def _run_bdf_project(project_id: str, bdf_path: str, workspace: str) -> bool:
         logger.error("[%s] BDF project L2 core failed (rc=%d)", project_id, rc2)
         return False
 
-    _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step",
-             _good("BDF 基础几何已就绪，高级索引转入后台阶段"),
-             stage="l2_done", percent=85)
-    logger.info("[%s] BDF project core geometry ready", project_id)
-
-    _log_job(project_id, "step",
-             f"{_kw('L2 高级索引')}启动：邻接域、边线与 Octree",
-             stage="l2_advanced", percent=86)
+    _log_job(project_id, "step", "L2 高级索引生成中", stage="l2_advanced", percent=86)
     rc_advanced, tail_advanced = _run_streaming(
         [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace,
          "--phase", "advanced"],
         project_id, "l2_advanced",
     )
     if rc_advanced != 0:
-        _log_job(project_id, "warn",
-                 f"{_ws('L2 高级索引失败（基础几何仍可用）')}："
-                 f"{_esc(tail_advanced[-500:])}",
-                 stage="l2_advanced", percent=90)
-        logger.warning("[%s] BDF project advanced L2 failed (rc=%d)",
-                       project_id, rc_advanced)
-    else:
-        _log_job(project_id, "step", _good("L2 高级索引完成"),
-                 stage="l2_advanced", percent=90)
+        msg = "[L2 advanced] " + tail_advanced[-2000:]
+        _update_project_geom_status(project_id, "error", msg)
+        _log_job(project_id, "error", "高级索引失败：" + _esc(msg), stage="l2_advanced")
+        return False
+    _update_project_geom_status(project_id, "ready")
 
     # Only queue metadata here; MySQL and the legacy BDF importer run off-loop.
     _queue_model_update_import(project_id, "bdf", workspace, {"bdf_path": bdf_path})
@@ -1246,7 +1254,6 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
         logger.error("[%s] OP2 project L2 failed (rc=%d)", project_id, rc2)
         return False
 
-    _update_project_geom_status(project_id, "ready")
     _log_job(project_id, "step",
              f"{_good('几何就绪')}，自动追加 OP2 结果组",
              stage="l2_done", percent=75)
@@ -1271,8 +1278,11 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
             )
     ok = _run_op2_result_group(project_id, rg_name, op2_path, workspace)
     if ok:
+        _update_project_geom_status(project_id, "ready")
         _log_job(project_id, "step", _good("解析全部完成，已就绪"),
                  stage="l2_done", percent=100)
+    else:
+        _update_project_geom_status(project_id, "error", "初始 OP2 结果组准备失败，请查看结果组 error_message")
     return ok
 
 
@@ -1400,10 +1410,9 @@ def _run_rst_project(project_id: str, rst_path: str, workspace: str) -> bool:
         logger.error("[%s] RST project L2 failed (rc=%d)", project_id, rc2)
         return False
 
-    _update_project_geom_status(project_id, "ready")
 
     # rst_pack 已把结果写进 manifest（result_group='default_result'），
-    # 这里只需在 registry.db 登记 result_group 行（status='ready'）让前端可见。
+    # 这里只需在 registry.db 登记 result_group 行（status='running'）让前端可见。
     rg_name = "default_result"
     display_name = os.path.splitext(os.path.basename(rst_path))[0]
     source_file = os.path.basename(rst_path)
@@ -1414,13 +1423,18 @@ def _run_rst_project(project_id: str, rst_path: str, workspace: str) -> bool:
                 "INSERT OR IGNORE INTO result_groups"
                 " (project_id, result_group, display_name, source_path, source_file,"
                 "  status, parse_options, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,'ready',NULL,?,?)",
+                " VALUES (?,?,?,?,?,'running',NULL,?,?)",
                 (project_id, rg_name, display_name, rst_path, source_file, now, now),
             )
-        logger.info("[%s] Registered result_group='%s' (status=ready)", project_id, rg_name)
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE result_groups SET status='running', error_message=NULL, updated_at=?"
+                " WHERE project_id=? AND result_group=?", (_now_iso(), project_id, rg_name))
+        logger.info("[%s] Registered result_group='%s' (status=running)", project_id, rg_name)
     except Exception as exc:
-        logger.warning("[%s] RST result_group registration failed: %s", project_id, exc)
+        raise RuntimeError("RST 默认结果组注册失败：" + str(exc)) from exc
 
+    _update_project_geom_status(project_id, "ready")
     _log_job(project_id, "step", _good("RST 几何+结果解析完成，已就绪"),
              stage="l2_done", percent=85)
     logger.info("[%s] RST project ready", project_id)
@@ -1527,6 +1541,14 @@ def _claim_pending_result_group() -> tuple:
 
 def _update_result_group_status(project_id: str, result_group: str,
                                  status: str, error_message: str = None) -> None:
+    if status == "ready":
+        _log_job(project_id, "step", "基础解析和高级索引完成，开始首屏缓存准备", stage="cache_prepare", percent=95)
+        try:
+            _prepare_registered(_connect, DATA_ROOT, project_id, kind="group", result_group=result_group)
+        except Exception as exc:
+            _update_result_group_status(project_id, result_group, "error", str(exc))
+            _log_job(project_id, "error", _esc(str(exc)), stage="cache_prepare")
+            raise
     with _connect() as conn:
         conn.execute(
             "UPDATE result_groups SET status=?, error_message=?, updated_at=?"
@@ -1815,11 +1837,10 @@ def _run_result_group(project_id: str, result_group: str,
             project_id, "rg_rerun_l2",
         )
         if rc_l2r != 0:
-            _log_job(project_id, "warn",
-                     f"[{_kw(result_group)}] {_ws('L2 重跑失败（非致命，平均域可能不完整）')}：{_esc(tail_l2r[-300:])}",
-                     stage="rg_rerun_l2")
-            logger.warning("[%s] L2 re-run failed (rc=%d), averaging domains may be incomplete",
-                           label, rc_l2r)
+            msg = "[L2 截面索引重建失败] " + tail_l2r[-2000:]
+            _update_result_group_status(project_id, result_group, "error", msg)
+            _log_job(project_id, "error", _esc(msg), stage="rg_rerun_l2")
+            return False
         else:
             _log_job(project_id, "step",
                      f"[{_kw(result_group)}] {_good('L2 重跑完成，平均域已更新')}",
@@ -1903,13 +1924,13 @@ def main() -> None:
                 try:
                     source_path = _materialize_runner_source(source_path, ws, source_file)
                     _run_project(project_id, source_path, source_type, ws)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Error in project geom %s", project_id)
                     try:
                         _update_project_geom_status(
                             project_id, "error",
-                            "Unhandled runner exception - check server logs")
-                    except Exception:
+                            str(exc))
+                    except Exception as exc:
                         pass
 
             # 2. Result groups (ODB, requires project geom_status='ready')
@@ -1923,13 +1944,13 @@ def main() -> None:
                     _cleanup_result_group(ws, rg)
                     src = _materialize_runner_source(src, ws, source_file)
                     _run_result_group(project_id, rg, src, parse_opts, ws)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Error in result_group %s", label)
                     try:
                         _update_result_group_status(
                             project_id, rg, "error",
-                            "Unhandled runner exception - check server logs")
-                    except Exception:
+                            str(exc))
+                    except Exception as exc:
                         pass
 
             # 3. Legacy ODB jobs
@@ -1940,12 +1961,12 @@ def main() -> None:
                 try:
                     odb_path = materialize_source_file(odb_path, workspace)
                     _run_job(odb_id, odb_path, workspace)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Error in job %s", odb_id)
                     try:
                         _update_status(odb_id, "error",
-                                       error_msg="Unhandled runner exception - check server logs")
-                    except Exception:
+                                       error_msg=str(exc))
+                    except Exception as exc:
                         pass
 
             # 4. L2 rerun requests (triggered by POST /api/projects/{id}/rerun-l2)
@@ -1955,16 +1976,16 @@ def main() -> None:
                 logger.info("Claimed L2 rerun %s", project_id)
                 try:
                     _run_l2_rerun(project_id, ws)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Error in L2 rerun %s", project_id)
                     try:
                         _update_project_geom_status(
                             project_id, "error",
-                            "Unhandled runner exception - check server logs")
-                    except Exception:
+                            str(exc))
+                    except Exception as exc:
                         pass
 
-        except Exception:
+        except Exception as exc:
             logger.exception("Unexpected error in runner main loop - continuing")
             did_work = False
 

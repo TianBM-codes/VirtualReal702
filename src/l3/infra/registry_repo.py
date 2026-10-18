@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS projects (
     original_source_file TEXT,
     source_type  TEXT NOT NULL DEFAULT 'inp',
     geom_status  TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -113,6 +114,7 @@ class RegistryRepo:
                 "ALTER TABLE projects ADD COLUMN source_file TEXT",
                 "ALTER TABLE projects ADD COLUMN original_inp_path TEXT",
                 "ALTER TABLE projects ADD COLUMN original_source_file TEXT",
+                "ALTER TABLE projects ADD COLUMN error_message TEXT",
                 "ALTER TABLE result_groups ADD COLUMN original_source_path TEXT",
                 "ALTER TABLE result_groups ADD COLUMN original_source_file TEXT",
                 "ALTER TABLE job_logs ADD COLUMN percent INTEGER",
@@ -396,14 +398,14 @@ class RegistryRepo:
                                    error_message: Optional[str] = None) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE projects SET geom_status=?, updated_at=? WHERE project_id=?",
-                (status, _now_iso(), project_id),
+                "UPDATE projects SET geom_status=?, error_message=?, updated_at=? WHERE project_id=?",
+                (status, error_message if status == "error" else None, _now_iso(), project_id),
             )
             if status == "error" and error_message is not None:
-                # 批量把该 project 下所有 pending result_groups 置为 error
+                # 未发布的结果组一起反馈失败，包括初始 ODB/RST 的 running 默认组。
                 conn.execute(
                     "UPDATE result_groups SET status='error', error_message=?, updated_at=?"
-                    " WHERE project_id=? AND status='pending'",
+                    " WHERE project_id=? AND status IN ('pending','running')",
                     (error_message, _now_iso(), project_id),
                 )
 
@@ -411,7 +413,7 @@ class RegistryRepo:
         """原子将 geom_status 从 ready/error 改为 l2_pending，交由 job_runner 执行。"""
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE projects SET geom_status='l2_pending', updated_at=?"
+                "UPDATE projects SET geom_status='l2_pending', error_message=NULL, updated_at=?"
                 " WHERE project_id=? AND geom_status IN ('ready','error')",
                 (_now_iso(), project_id),
             )
@@ -493,7 +495,7 @@ class RegistryRepo:
         with self._connect() as conn:
             conn.execute("DELETE FROM job_logs WHERE odb_id=?", (project_id,))
             conn.execute(
-                "UPDATE projects SET geom_status='pending', inp_path=?, source_file=?,"
+                "UPDATE projects SET geom_status='pending', error_message=NULL, inp_path=?, source_file=?,"
                 " original_inp_path=?, original_source_file=?, source_type=?,"
                 " updated_at=? WHERE project_id=? AND geom_status='error'",
                 (

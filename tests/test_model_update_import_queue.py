@@ -41,6 +41,8 @@ def test_slow_bdf_import_does_not_block_op2_visualization_and_modal_waits(queued
     db, repo, bdf, op2, workspace = queued_project
     monkeypatch.setattr(job_runner, "REGISTRY_DB", db)
     monkeypatch.setattr(job_runner, "_run_streaming", lambda *args, **kwargs: (0, ""))
+    # 本用例只隔离验证修正导入队列；解析/首屏准备由就绪屏障测试覆盖。
+    monkeypatch.setattr(job_runner, "_prepare_registered", lambda *args, **kwargs: None)
     enqueue_bdf(queued_project)
     entered, release = threading.Event(), threading.Event()
 
@@ -193,6 +195,7 @@ def test_bdf_pipeline_queues_import_without_calling_importer(queued_project, mon
     db, _, bdf, _, workspace = queued_project
     monkeypatch.setattr(job_runner, "REGISTRY_DB", db)
     monkeypatch.setattr(job_runner, "_run_streaming", lambda *args, **kwargs: (0, ""))
+    monkeypatch.setattr(job_runner, "_prepare_registered", lambda *args, **kwargs: None)
     monkeypatch.setattr(job_runner, "_log_elem_type_summary", lambda *args: None)
     assert job_runner._run_bdf_project("18", str(bdf), str(workspace))
     assert queue.list_imports(db, "18")[0]["status"] == "pending"

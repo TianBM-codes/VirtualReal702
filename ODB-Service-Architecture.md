@@ -4,6 +4,8 @@
 **版本**：v5
 **核心原则**：三层分离；L1 忠实转储 ODB 原始结构；查询效率优先；多 ODB Job 队列管理
 
+**2026-10-18 就绪语义更新**：新导入/重跑必须完成 L1、L2 core、L2 advanced 和约定的首屏磁盘缓存，才对外提交 `ready`；任一步失败返回 `error` 和原因。追加结果组单独判定。runner 同步准备且不等待自动预热队列，见 [统一就绪判定](docs/l3/Ready-Barrier-Design.md)。下文历史示例涉及提前 ready 的，以本更新为准。
+
 ---
 
 ## 目录
@@ -1114,10 +1116,11 @@ Step 2：ingest.py（纯 Python，不依赖 Abaqus license）
   · 三角化（面定义 → 三角片，建立三层索引）
   · 表面提取（剔除内部面）
   · core：表面提取、三角化并写 surface.h5 / render.h5
-  · registry.db status → ready，基础模型可立即显示
+  · registry.db 保持 running / l2_running，基础完成不提前发布 ready
   · advanced：共享一次边拓扑排序，生成均化域、Feature Edges、单元网格边和八叉树
   · 原子写 advanced.h5 / edges.h5，再把 advanced_status.json 置为 ready
-  · L3 轮询后给驻留模型补载高级数据；高级阶段失败不撤销基础几何 ready
+  · runner 用局部索引同步准备首屏磁盘缓存，不依赖对外 ready 或自动预热让路队列
+  · 准备成功后 registry.db → ready；高级索引或缓存准备失败 → error + error_message
 ```
 
 ---
@@ -1206,7 +1209,7 @@ l1_done    ──可响应 L1 raw 查询，但无渲染──
 l2_running  ──(ingest.py 失败)──→  l1_done（L2 失败不影响 L1 可用性）
   │
   ▼ L2 完成
-ready      ──所有 API 全部可用──
+ready      ──基础解析、高级索引和约定首屏缓存已准备成功；其他视图按需计算──
 ```
 
 **说明**：

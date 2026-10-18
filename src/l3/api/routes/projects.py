@@ -289,6 +289,7 @@ def _build_project_response(proj, repo) -> dict:
         "project_id": project_id,
         "source_type": source_type,
         "geom_status": proj["geom_status"],
+        "error_message": proj["error_message"] if "error_message" in proj.keys() else None,
         "advanced_status": advanced_status,
         "source_file": proj["original_source_file"] or proj["source_file"],
         "source_path": proj["original_inp_path"] or proj["inp_path"],
@@ -317,6 +318,7 @@ def _build_project_result_catalog(proj, repo) -> dict:
         "project_id": project_id,
         "source_type": source_type,
         "geom_status": proj["geom_status"],
+        "error_message": proj["error_message"] if "error_message" in proj.keys() else None,
         "workspace": workspace,
         "result_groups": [],
     }
