@@ -3,6 +3,54 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, model_validator
 
 
+class SensorHistoryPoint(BaseModel):
+    name: str = Field(min_length=1)
+    direction: List[float] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_point(self):
+        import math
+        self.name = self.name.strip()
+        norm = math.hypot(*self.direction)
+        if not self.name or not all(math.isfinite(x) for x in self.direction) or not math.isfinite(norm) or norm == 0:
+            raise ValueError("测点名称不能为空，方向必须是有限的非零三维向量")
+        self.direction = [x / norm for x in self.direction]
+        return self
+
+
+class SensorNodeHistoryRequest(BaseModel):
+    project_id: int
+    sensors: List[SensorHistoryPoint] = Field(min_length=1)
+    fields: str = "U"
+    result_group: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_history(self):
+        names = [point.name for point in self.sensors]
+        if len(names) != len(set(names)):
+            raise ValueError("测点名称不能重复")
+        self.fields = self.fields.strip().upper()
+        if self.fields not in {"U", "S", "E", "LE"}:
+            raise ValueError("fields 必须是 U、S、E、LE 中的一个变量")
+        if self.result_group is not None:
+            self.result_group = self.result_group.strip()
+            if not self.result_group:
+                raise ValueError("result_group 不能为空")
+        return self
+
+
+class SensorCurveRequest(BaseModel):
+    project_id: int
+    sensor: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_sensor(self):
+        self.sensor = self.sensor.strip()
+        if not self.sensor:
+            raise ValueError("sensor 不能为空")
+        return self
+
+
 class ImportUnvRequest(BaseModel):
     file_path: str
     project_id: Optional[int] = None

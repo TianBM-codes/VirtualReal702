@@ -12,7 +12,24 @@ except ImportError:  # pragma: no cover - local direct run fallback
 
 logger = logging.getLogger(__name__)
 
+CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS t_mt_py_test_load_level_data (
+        id BIGINT NOT NULL AUTO_INCREMENT,
+        project_id BIGINT NOT NULL COMMENT '工程ID',
+        sensor VARCHAR(100) NOT NULL COMMENT '传感器名称',
+        load_level DECIMAL(20,8) NOT NULL COMMENT '加载级，曲线横坐标',
+        reading_value DOUBLE NULL COMMENT '实测值，缺失时为NULL',
+        unit VARCHAR(32) NULL COMMENT '读数单位',
+        remark VARCHAR(255) NULL COMMENT '备注',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_project_sensor_level (project_id, sensor, load_level)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='加载级试验数据表';
+"""
+
 CREATE_TABLE_SQL_LIST = [
+    CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL,
     """
     CREATE TABLE IF NOT EXISTS t_mt_py_console_log (
         pid BIGINT NOT NULL COMMENT '工程ID',
