@@ -1,0 +1,122 @@
+{
+  "source": "E:\\code\\odb-service-design\\model_v2\\door.odb",
+  "source_before": {
+    "size": 125433564,
+    "mtime_ns": 1776480190374956500,
+    "sha256": "f3382bc5476e920de80a0a05a99362fe404b5bb98611acaa601769749aca41c9"
+  },
+  "source_after": {
+    "size": 125433564,
+    "mtime_ns": 1776480190374956500,
+    "sha256": "f3382bc5476e920de80a0a05a99362fe404b5bb98611acaa601769749aca41c9"
+  },
+  "source_unchanged": true,
+  "input_copy_seconds": 0.05967600003350526,
+  "git_commit": "3e8ae17e288e82dd54030a90560360be9f2c855e",
+  "python": "E:\\tools\\anaconda3\\python.exe",
+  "project_id": "bench_door_ready_20261018_145713",
+  "workspace": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\door_ready_20261018_145713\\data\\bench_door_ready_20261018_145713",
+  "invariants": "full",
+  "total_ready_seconds": 258.11031899997033,
+  "model": {
+    "instances": [
+      {
+        "instance_name": "PART-1-1",
+        "node_count": 37828,
+        "elem_count": 33986
+      }
+    ],
+    "fields": 49,
+    "steps": [
+      {
+        "result_group": "default_result",
+        "step_name": "eigenfrequency",
+        "num_frames": 6
+      },
+      {
+        "result_group": "default_result",
+        "step_name": "sag",
+        "num_frames": 21
+      }
+    ]
+  },
+  "cache_file_count": 158,
+  "cache_bytes": 70728084,
+  "final": {
+    "project_id": "bench_door_ready_20261018_145713",
+    "source_type": "odb",
+    "geom_status": "ready",
+    "error_message": null,
+    "advanced_status": "ready",
+    "source_file": "door.odb",
+    "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\door_ready_20261018_145713\\input\\door.odb",
+    "result_groups": [
+      {
+        "result_group": "default_result",
+        "display_name": "door",
+        "status": "ready",
+        "consistency_check": "count-only",
+        "error_message": null,
+        "steps": [
+          "eigenfrequency",
+          "sag"
+        ],
+        "source_file": "door.odb",
+        "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\door_ready_20261018_145713\\input\\door.odb"
+      }
+    ]
+  },
+  "stages": [
+    {
+      "stage": "l1_dump",
+      "seconds": 186.34162590000778,
+      "started_seconds": 0.10443369997665286,
+      "ended_seconds": 186.4460614999989,
+      "returncode": 0
+    },
+    {
+      "stage": "l1_pack",
+      "seconds": 32.443707899947185,
+      "started_seconds": 186.4541792999953,
+      "ended_seconds": 218.8978889999562,
+      "returncode": 0
+    },
+    {
+      "stage": "l2_ingest",
+      "seconds": 2.0678931000293233,
+      "started_seconds": 237.51926659996388,
+      "ended_seconds": 239.58716089994414,
+      "returncode": 0
+    },
+    {
+      "stage": "cache_prepare",
+      "seconds": 18.183273000002373,
+      "started_seconds": 239.67138789995806,
+      "ended_seconds": 257.85466449998785,
+      "returncode": 0
+    }
+  ],
+  "other_seconds": 19.073819099983666,
+  "polling": {
+    "count": 950,
+    "early_ready_count": 0
+  },
+  "l2_events": [
+    {
+      "seconds": 238.81228199996985,
+      "stage": "l2_ingest",
+      "message": "2026-10-18 15:01:18,224 INFO: Processing core geometry for instance: PART-1-1 ..."
+    },
+    {
+      "seconds": 239.00897379999515,
+      "stage": "l2_ingest",
+      "message": "2026-10-18 15:01:18,388 INFO: Processing advanced indexes for instance: PART-1-1 ..."
+    },
+    {
+      "seconds": 239.5064238999621,
+      "stage": "l2_ingest",
+      "message": "2026-10-18 15:01:18,936 INFO: === Layer 2 all Complete ==="
+    }
+  ],
+  "scope": "Fresh private input and workspace; real HTTP POST/GET and standalone runner; full invariants; no browser timing or numeric-project MySQL import."
+}
