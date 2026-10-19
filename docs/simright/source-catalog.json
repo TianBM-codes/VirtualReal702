@@ -1,0 +1,2415 @@
+{
+  "sources": [
+    {
+      "file": "packages\\apidoc-simright\\DATA-API.md",
+      "sha256": "e6ab3cbd60c11742dab6ea77911c1661d8dcc777108dcbe4ce32e0c2c9568179"
+    },
+    {
+      "file": "packages\\接口功能说明-仿真数据获取.xlsx",
+      "sha256": "d726ef78b21b5400d794866a9596b19e56cf01e063183ac1ab7ba7129cb18c62"
+    }
+  ],
+  "operations": [
+    {
+      "name": "extremeValue",
+      "title": "获取最值",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename            | String  | 文件名                         | 是   | \"/u/test1/model.odb\"                                                |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "coordSystemType",
+          "type": "Integer",
+          "description": "坐标系类型",
+          "required": false,
+          "exampleText": "1 全局，2 局部，默认全局",
+          "sourceRow": "| coordSystemType | Integer | 坐标系类型                                                                                    | 否   | 1 全局，2 局部，默认全局     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "stateIds",
+          "type": "Array",
+          "description": "帧数数组",
+          "required": false,
+          "exampleText": "[1, 2, 3]，[] = 全部帧数，默认[]，[-1]-最后一帧",
+          "sourceRow": "| stateIds        | Array   | 帧数数组                                                                                      | 否   | [1, 2, 3]，[] = 全部帧数，默认[]，[-1]-最后一帧                                             |"
+        },
+        {
+          "name": "rtype",
+          "type": "String",
+          "description": "极值类型(min/max)",
+          "required": true,
+          "exampleText": "\"max\"",
+          "sourceRow": "| rtype           | String  | 极值类型(min/max)                                                                             | 是   | \"max\"                                                                                       |"
+        },
+        {
+          "name": "entityType",
+          "type": "String",
+          "description": "对象类型",
+          "required": false,
+          "exampleText": "Part/Set，默认 Part",
+          "sourceRow": "| entityType      | String  | 对象类型                                                                                      | 否   | Part/Set，默认 Part                                                                         |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 id",
+          "required": false,
+          "exampleText": "[]，[] = 所有零件，默认[]",
+          "sourceRow": "| entitiesIds     | Array   | 对象 id                                                                                       | 否   | []，[] = 所有零件，默认[]                                                                   |"
+        },
+        {
+          "name": "entitiesNames",
+          "type": "Array",
+          "description": "对象名称",
+          "required": false,
+          "exampleText": "[\"setName\"]，当 entityType 是 Set 时，entitiesNames 是必填项，不支持空数组,目前只支持节点集",
+          "sourceRow": "| entitiesNames   | Array   | 对象名称                                                                                      | 否   | [\"setName\"]，当 entityType 是 Set 时，entitiesNames 是必填项，不支持空数组,目前只支持节点集 |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"Step-1\"(默认第一个工况)",
+          "sourceRow": "| loadcaseName        | String  | 工况名           | 否   | \"Step-1\"(默认第一个工况)                                           |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex       | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        }
+      ],
+      "example": {
+        "name": "extremeValue",
+        "args": {
+          "filename": "p/test/model.odb",
+          "rtype": "max",
+          "varName": "S.EL.VonMises",
+          "stateIds": [
+            -1
+          ]
+        }
+      },
+      "sourceLine": 101,
+      "uncertain": false
+    },
+    {
+      "name": "measureValue",
+      "title": "获取测量结果值",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename    | String  | 文件名               | 是   | \"/u/test1/model.odb\"                                               |"
+        },
+        {
+          "name": "measureType",
+          "type": "Number",
+          "description": "对象类型",
+          "required": true,
+          "exampleText": "1: 距离,2: 角度,3: 相对角度测量",
+          "sourceRow": "| measureType | Number  | 对象类型             | 是   | 1: 距离,2: 角度,3: 相对角度测量                                    |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 ID",
+          "required": true,
+          "exampleText": "[{partId:1,nodeId: 123}, {...}] 以列表形式传参，返回两 node 间距离",
+          "sourceRow": "| entitiesIds | Array   | 对象 ID              | 是   | [{partId:1,nodeId: 123}, {...}] 以列表形式传参，返回两 node 间距离 |"
+        },
+        {
+          "name": "stateId",
+          "type": "Integer",
+          "description": "帧数，全况中第几帧",
+          "required": true,
+          "exampleText": "1,2,3...，",
+          "sourceRow": "| stateId     | Integer | 帧数，全况中第几帧   | 是   | 1,2,3...，                                                         |"
+        },
+        {
+          "name": "baseStateId",
+          "type": "Integer",
+          "description": "相对角度测量的基准帧",
+          "required": false,
+          "exampleText": "0",
+          "sourceRow": "| baseStateId | Integer | 相对角度测量的基准帧 | 否   | 0                                                                  |"
+        },
+        {
+          "name": "dispScale",
+          "type": "Number",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 1",
+          "sourceRow": "| dispScale           | Number        | 缩放系数                                                     | 否   | 默认 1 |"
+        },
+        {
+          "name": "dispOpts",
+          "type": "Object",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }",
+          "sourceRow": "| dispOpts            | Object        | 缩放系数                                                     | 否   | 默认 { scaleX: 1, scaleY: 1, scaleZ: 1 } |"
+        }
+      ],
+      "example": {
+        "name": "measureValue",
+        "args": {
+          "filename": "p/test/model.odb",
+          "measureType": 1,
+          "entitiesIds": [
+            {
+              "partId": 0,
+              "nodeId": 1
+            },
+            {
+              "partId": 0,
+              "nodeId": 2
+            }
+          ],
+          "stateId": 1
+        }
+      },
+      "sourceLine": 174,
+      "uncertain": false
+    },
+    {
+      "name": "contourImage",
+      "title": "获取云图",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename            | String  | 文件名                         | 是   | \"/u/test1/model.odb\"                                                |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"Step-1\"(默认第一个工况)",
+          "sourceRow": "| loadcaseName        | String  | 工况名           | 否   | \"Step-1\"(默认第一个工况)                                           |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex       | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "stateId",
+          "type": "Integer",
+          "description": "帧数，工况中第几帧",
+          "required": false,
+          "exampleText": "1,2,3...，默认最后一帧",
+          "sourceRow": "| stateId             | Integer | 帧数，工况中第几帧             | 否    | 1,2,3...，默认最后一帧                                              |"
+        },
+        {
+          "name": "entityType",
+          "type": "String",
+          "description": "对象类型",
+          "required": false,
+          "exampleText": "\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")",
+          "sourceRow": "| entityType          | String  | 对象类型         | 否   | \"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")       |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 ID（oriId）",
+          "required": false,
+          "exampleText": "[1,2,3]([]表示不显示,不设置显示全部)",
+          "sourceRow": "| entitiesIds         | Array   | 对象 ID（oriId）         | 否   | [1,2,3]([]表示不显示,不设置显示全部)                               |"
+        },
+        {
+          "name": "entitiesNames",
+          "type": "Array",
+          "description": "对象名称",
+          "required": false,
+          "exampleText": "['part'](不设置显示全部, 优先级低于 entitiesIds)",
+          "sourceRow": "| entitiesNames       | Array   | 对象名称         | 否   | ['part'](不设置显示全部, 优先级低于 entitiesIds)                   |"
+        },
+        {
+          "name": "transparentEntities",
+          "type": "Array",
+          "description": "设置透明的零件",
+          "required": false,
+          "exampleText": "[1,2](默认[])",
+          "sourceRow": "| transparentEntities | Array   | 设置透明的零件   | 否   | [1,2](默认[])                                                      |"
+        },
+        {
+          "name": "partDisplayMode",
+          "type": "Integer",
+          "description": "零件渲染模式",
+          "required": false,
+          "exampleText": "1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)",
+          "sourceRow": "| partDisplayMode     | Integer | 零件渲染模式     | 否   | 1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)    |"
+        },
+        {
+          "name": "cameraViewport",
+          "type": "String",
+          "description": "标准视角",
+          "required": false,
+          "exampleText": "\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。",
+          "sourceRow": "| cameraViewport      | String        | 标准视角                                                     | 否   | \"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。|"
+        },
+        {
+          "name": "cameraZoomLevel",
+          "type": "Number",
+          "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1",
+          "required": false,
+          "exampleText": "\"2\": 放大两倍",
+          "sourceRow": "| cameraZoomLevel     | Number        | 视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1 | 否   | \"2\": 放大两倍 |"
+        },
+        {
+          "name": "dispScale",
+          "type": "Number",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 1",
+          "sourceRow": "| dispScale           | Number        | 缩放系数                                                     | 否   | 默认 1 |"
+        },
+        {
+          "name": "dispOpts",
+          "type": "Object",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }",
+          "sourceRow": "| dispOpts            | Object        | 缩放系数                                                     | 否   | 默认 { scaleX: 1, scaleY: 1, scaleZ: 1 } |"
+        },
+        {
+          "name": "scalarEntities",
+          "type": "Array<Number>",
+          "description": "设置显示云图的零件oriId",
+          "required": false,
+          "exampleText": "默认显示全部",
+          "sourceRow": "| scalarEntities      | Array<Number> | 设置显示云图的零件oriId                                          | 否   | 默认显示全部                     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "legendVisile",
+          "type": "Number",
+          "description": "图例是否显示，默认显示",
+          "required": false,
+          "exampleText": "1-显示， 0-不显示，默认 1",
+          "sourceRow": "| legendVisile        | Number        | 图例是否显示，默认显示                                       | 否   | 1-显示， 0-不显示，默认 1  |"
+        },
+        {
+          "name": "gProbeNode",
+          "type": "Object",
+          "description": "生成探针的节点信息",
+          "required": false,
+          "exampleText": "{\"nsetNames\": [\"RESPONSE\"]}，节点集名称",
+          "sourceRow": "| gProbeNode          | Object        | 生成探针的节点信息                                           | 否   | {\"nsetNames\": [\"RESPONSE\"]}，节点集名称 |"
+        },
+        {
+          "name": "annotations",
+          "type": "Array<Object>",
+          "description": "批注信息",
+          "required": false,
+          "exampleText": "[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称",
+          "sourceRow": "| annotations         | Array<Object> | 批注信息                                                     | 否   | [{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称       |"
+        },
+        {
+          "name": "legendConfig",
+          "type": "Object",
+          "description": "图例设置",
+          "required": false,
+          "exampleText": "{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法",
+          "sourceRow": "| legendConfig        | Object        | 图例设置                                                     | 否   | {\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法 |"
+        },
+        {
+          "name": "displayExtremeProbe",
+          "type": "Integer",
+          "description": "是否显示最值探针",
+          "required": false,
+          "exampleText": "0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0",
+          "sourceRow": "| displayExtremeProbe | Integer       | 是否显示最值探针                                             | 否   | 0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0   |"
+        },
+        {
+          "name": "sceneName",
+          "type": "String",
+          "description": "自定义视图名称",
+          "required": false,
+          "exampleText": "\"test\"",
+          "sourceRow": "| sceneName           | String  | 自定义视图名称   | 否   | \"test\"                                                             |"
+        },
+        {
+          "name": "preserveScene",
+          "type": "Boolean",
+          "description": "是否保存截图视图",
+          "required": false,
+          "exampleText": "true/false(默认 false)",
+          "sourceRow": "| preserveScene       | Boolean | 是否保存截图视图 | 否   | true/false(默认 false)                                             |"
+        },
+        {
+          "name": "switchMaxFrame",
+          "type": "Integer",
+          "description": "是否跳转到最大值探针所在帧, 支持extremeValue参数",
+          "required": false,
+          "exampleText": "0-不跳转，1-跳转，默认 0",
+          "sourceRow": "| switchMaxFrame      | Integer       | 是否跳转到最大值探针所在帧, 支持extremeValue参数                              | 否   | 0-不跳转，1-跳转，默认 0  |"
+        }
+      ],
+      "example": {
+        "name": "contourImage",
+        "args": {
+          "filename": "p/test/model.odb",
+          "varName": "S.EL.VonMises"
+        }
+      },
+      "sourceLine": 240,
+      "uncertain": false
+    },
+    {
+      "name": "modelImage",
+      "title": "获取模型截图",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename            | String  | 文件名                         | 是   | \"/u/test1/model.odb\"                                                |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"Step-1\"(默认第一个工况)",
+          "sourceRow": "| loadcaseName        | String  | 工况名           | 否   | \"Step-1\"(默认第一个工况)                                           |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex       | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "stateId",
+          "type": "Integer",
+          "description": "帧数，工况中第几帧",
+          "required": false,
+          "exampleText": "1,2,3...，默认最后一帧",
+          "sourceRow": "| stateId             | Integer | 帧数，工况中第几帧             | 否    | 1,2,3...，默认最后一帧                                              |"
+        },
+        {
+          "name": "entityType",
+          "type": "String",
+          "description": "对象类型",
+          "required": false,
+          "exampleText": "\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")",
+          "sourceRow": "| entityType          | String  | 对象类型         | 否   | \"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")       |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 ID（oriId）",
+          "required": false,
+          "exampleText": "[1,2,3]([]表示不显示,不设置显示全部)",
+          "sourceRow": "| entitiesIds         | Array   | 对象 ID（oriId）         | 否   | [1,2,3]([]表示不显示,不设置显示全部)                               |"
+        },
+        {
+          "name": "entitiesNames",
+          "type": "Array",
+          "description": "对象名称",
+          "required": false,
+          "exampleText": "['part'](不设置显示全部, 优先级低于 entitiesIds)",
+          "sourceRow": "| entitiesNames       | Array   | 对象名称         | 否   | ['part'](不设置显示全部, 优先级低于 entitiesIds)                   |"
+        },
+        {
+          "name": "transparentEntities",
+          "type": "Array",
+          "description": "设置透明的零件",
+          "required": false,
+          "exampleText": "[1,2](默认[])",
+          "sourceRow": "| transparentEntities | Array   | 设置透明的零件   | 否   | [1,2](默认[])                                                      |"
+        },
+        {
+          "name": "partDisplayMode",
+          "type": "Integer",
+          "description": "零件渲染模式",
+          "required": false,
+          "exampleText": "1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)",
+          "sourceRow": "| partDisplayMode     | Integer | 零件渲染模式     | 否   | 1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)    |"
+        },
+        {
+          "name": "cameraViewport",
+          "type": "String",
+          "description": "标准视角",
+          "required": false,
+          "exampleText": "\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。",
+          "sourceRow": "| cameraViewport      | String        | 标准视角                                                     | 否   | \"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。|"
+        },
+        {
+          "name": "cameraZoomLevel",
+          "type": "Number",
+          "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1",
+          "required": false,
+          "exampleText": "\"2\": 放大两倍",
+          "sourceRow": "| cameraZoomLevel     | Number        | 视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1 | 否   | \"2\": 放大两倍 |"
+        },
+        {
+          "name": "dispScale",
+          "type": "Number",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 1",
+          "sourceRow": "| dispScale           | Number        | 缩放系数                                                     | 否   | 默认 1 |"
+        },
+        {
+          "name": "dispOpts",
+          "type": "Object",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }",
+          "sourceRow": "| dispOpts            | Object        | 缩放系数                                                     | 否   | 默认 { scaleX: 1, scaleY: 1, scaleZ: 1 } |"
+        },
+        {
+          "name": "scalarEntities",
+          "type": "Array<Number>",
+          "description": "设置显示云图的零件oriId",
+          "required": false,
+          "exampleText": "默认显示全部",
+          "sourceRow": "| scalarEntities      | Array<Number> | 设置显示云图的零件oriId                                          | 否   | 默认显示全部                     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "legendVisile",
+          "type": "Number",
+          "description": "图例是否显示，默认显示",
+          "required": false,
+          "exampleText": "1-显示， 0-不显示，默认 1",
+          "sourceRow": "| legendVisile        | Number        | 图例是否显示，默认显示                                       | 否   | 1-显示， 0-不显示，默认 1  |"
+        },
+        {
+          "name": "gProbeNode",
+          "type": "Object",
+          "description": "生成探针的节点信息",
+          "required": false,
+          "exampleText": "{\"nsetNames\": [\"RESPONSE\"]}，节点集名称",
+          "sourceRow": "| gProbeNode          | Object        | 生成探针的节点信息                                           | 否   | {\"nsetNames\": [\"RESPONSE\"]}，节点集名称 |"
+        },
+        {
+          "name": "annotations",
+          "type": "Array<Object>",
+          "description": "批注信息",
+          "required": false,
+          "exampleText": "[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称",
+          "sourceRow": "| annotations         | Array<Object> | 批注信息                                                     | 否   | [{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称       |"
+        },
+        {
+          "name": "legendConfig",
+          "type": "Object",
+          "description": "图例设置",
+          "required": false,
+          "exampleText": "{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法",
+          "sourceRow": "| legendConfig        | Object        | 图例设置                                                     | 否   | {\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法 |"
+        },
+        {
+          "name": "displayExtremeProbe",
+          "type": "Integer",
+          "description": "是否显示最值探针",
+          "required": false,
+          "exampleText": "0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0",
+          "sourceRow": "| displayExtremeProbe | Integer       | 是否显示最值探针                                             | 否   | 0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0   |"
+        },
+        {
+          "name": "sceneName",
+          "type": "String",
+          "description": "自定义视图名称",
+          "required": false,
+          "exampleText": "\"test\"",
+          "sourceRow": "| sceneName           | String  | 自定义视图名称   | 否   | \"test\"                                                             |"
+        },
+        {
+          "name": "preserveScene",
+          "type": "Boolean",
+          "description": "是否保存截图视图",
+          "required": false,
+          "exampleText": "true/false(默认 false)",
+          "sourceRow": "| preserveScene       | Boolean | 是否保存截图视图 | 否   | true/false(默认 false)                                             |"
+        }
+      ],
+      "example": {
+        "name": "modelImage",
+        "args": {
+          "filename": "p/test/model.odb",
+          "stateId": 1
+        }
+      },
+      "sourceLine": 295,
+      "uncertain": false
+    },
+    {
+      "name": "animationGif",
+      "title": "获取云图动画",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename            | String  | 文件名                         | 是   | \"/u/test1/model.odb\"                                                |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"Step-1\"(默认第一个工况)",
+          "sourceRow": "| loadcaseName        | String  | 工况名           | 否   | \"Step-1\"(默认第一个工况)                                           |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex       | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "stateId",
+          "type": "Integer",
+          "description": "帧数，工况中第几帧",
+          "required": false,
+          "exampleText": "1,2,3...，默认最后一帧",
+          "sourceRow": "| stateId             | Integer | 帧数，工况中第几帧             | 否    | 1,2,3...，默认最后一帧                                              |"
+        },
+        {
+          "name": "entityType",
+          "type": "String",
+          "description": "对象类型",
+          "required": false,
+          "exampleText": "\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")",
+          "sourceRow": "| entityType          | String  | 对象类型         | 否   | \"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")       |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 ID（oriId）",
+          "required": false,
+          "exampleText": "[1,2,3]([]表示不显示,不设置显示全部)",
+          "sourceRow": "| entitiesIds         | Array   | 对象 ID（oriId）         | 否   | [1,2,3]([]表示不显示,不设置显示全部)                               |"
+        },
+        {
+          "name": "entitiesNames",
+          "type": "Array",
+          "description": "对象名称",
+          "required": false,
+          "exampleText": "['part'](不设置显示全部, 优先级低于 entitiesIds)",
+          "sourceRow": "| entitiesNames       | Array   | 对象名称         | 否   | ['part'](不设置显示全部, 优先级低于 entitiesIds)                   |"
+        },
+        {
+          "name": "transparentEntities",
+          "type": "Array",
+          "description": "设置透明的零件",
+          "required": false,
+          "exampleText": "[1,2](默认[])",
+          "sourceRow": "| transparentEntities | Array   | 设置透明的零件   | 否   | [1,2](默认[])                                                      |"
+        },
+        {
+          "name": "partDisplayMode",
+          "type": "Integer",
+          "description": "零件渲染模式",
+          "required": false,
+          "exampleText": "1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)",
+          "sourceRow": "| partDisplayMode     | Integer | 零件渲染模式     | 否   | 1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)    |"
+        },
+        {
+          "name": "cameraViewport",
+          "type": "String",
+          "description": "标准视角",
+          "required": false,
+          "exampleText": "\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。",
+          "sourceRow": "| cameraViewport      | String        | 标准视角                                                     | 否   | \"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。|"
+        },
+        {
+          "name": "cameraZoomLevel",
+          "type": "Number",
+          "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1",
+          "required": false,
+          "exampleText": "\"2\": 放大两倍",
+          "sourceRow": "| cameraZoomLevel     | Number        | 视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1 | 否   | \"2\": 放大两倍 |"
+        },
+        {
+          "name": "dispScale",
+          "type": "Number",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 1",
+          "sourceRow": "| dispScale           | Number        | 缩放系数                                                     | 否   | 默认 1 |"
+        },
+        {
+          "name": "dispOpts",
+          "type": "Object",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }",
+          "sourceRow": "| dispOpts            | Object        | 缩放系数                                                     | 否   | 默认 { scaleX: 1, scaleY: 1, scaleZ: 1 } |"
+        },
+        {
+          "name": "scalarEntities",
+          "type": "Array<Number>",
+          "description": "设置显示云图的零件oriId",
+          "required": false,
+          "exampleText": "默认显示全部",
+          "sourceRow": "| scalarEntities      | Array<Number> | 设置显示云图的零件oriId                                          | 否   | 默认显示全部                     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "legendVisile",
+          "type": "Number",
+          "description": "图例是否显示，默认显示",
+          "required": false,
+          "exampleText": "1-显示， 0-不显示，默认 1",
+          "sourceRow": "| legendVisile        | Number        | 图例是否显示，默认显示                                       | 否   | 1-显示， 0-不显示，默认 1  |"
+        },
+        {
+          "name": "gProbeNode",
+          "type": "Object",
+          "description": "生成探针的节点信息",
+          "required": false,
+          "exampleText": "{\"nsetNames\": [\"RESPONSE\"]}，节点集名称",
+          "sourceRow": "| gProbeNode          | Object        | 生成探针的节点信息                                           | 否   | {\"nsetNames\": [\"RESPONSE\"]}，节点集名称 |"
+        },
+        {
+          "name": "annotations",
+          "type": "Array<Object>",
+          "description": "批注信息",
+          "required": false,
+          "exampleText": "[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称",
+          "sourceRow": "| annotations         | Array<Object> | 批注信息                                                     | 否   | [{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称       |"
+        },
+        {
+          "name": "legendConfig",
+          "type": "Object",
+          "description": "图例设置",
+          "required": false,
+          "exampleText": "{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法",
+          "sourceRow": "| legendConfig        | Object        | 图例设置                                                     | 否   | {\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法 |"
+        },
+        {
+          "name": "displayExtremeProbe",
+          "type": "Integer",
+          "description": "是否显示最值探针",
+          "required": false,
+          "exampleText": "0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0",
+          "sourceRow": "| displayExtremeProbe | Integer       | 是否显示最值探针                                             | 否   | 0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0   |"
+        },
+        {
+          "name": "sceneName",
+          "type": "String",
+          "description": "自定义视图名称",
+          "required": false,
+          "exampleText": "\"test\"",
+          "sourceRow": "| sceneName           | String  | 自定义视图名称   | 否   | \"test\"                                                             |"
+        },
+        {
+          "name": "preserveScene",
+          "type": "Boolean",
+          "description": "是否保存截图视图",
+          "required": false,
+          "exampleText": "true/false(默认 false)",
+          "sourceRow": "| preserveScene       | Boolean | 是否保存截图视图 | 否   | true/false(默认 false)                                             |"
+        }
+      ],
+      "example": {
+        "name": "animationGif",
+        "args": {
+          "filename": "p/test/model.odb",
+          "varName": "S.EL.VonMises"
+        }
+      },
+      "sourceLine": 347,
+      "uncertain": false
+    },
+    {
+      "name": "XYCurveData1",
+      "title": "获取节点随时间相关的 XY 曲线值 1",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename        | String  | 文件名           | 是   | \"/u/test1/model.odb\"                                                                                                   |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "coordSystemType",
+          "type": "Integer",
+          "description": "坐标系类型",
+          "required": false,
+          "exampleText": "1 全局，2 局部，默认全局",
+          "sourceRow": "| coordSystemType | Integer | 坐标系类型                                                                                    | 否   | 1 全局，2 局部，默认全局     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": true,
+          "exampleText": "Step-1",
+          "sourceRow": "| loadcaseName    | String  | 工况名           | 是   | Step-1                                                                                                                 |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex       | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "nodeIds",
+          "type": "Array",
+          "description": "节点 id 数组",
+          "required": true,
+          "exampleText": "[12715, 23223]",
+          "sourceRow": "| nodeIds         | Array   | 节点 id 数组     | 是   | [12715, 23223]                                                                                                         |"
+        },
+        {
+          "name": "yVarName",
+          "type": "String",
+          "description": "y 轴结果变量名称",
+          "required": true,
+          "exampleText": "根据用户 vkigen.json 配置里面的变量名称",
+          "sourceRow": "| yVarName        | String  | y 轴结果变量名称 | 是   | 根据用户 vkigen.json 配置里面的变量名称                                                                                |"
+        },
+        {
+          "name": "xVarName",
+          "type": "String",
+          "description": "x 轴结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置里面的变量名称 , 不传是根据当前工况使用时间 var_time 或者频率 var_frequency 或者模态 var_mode",
+          "sourceRow": "| xVarName        | String  | x 轴结果变量名称 | 否   | 根据用户 vkigen.json 配置里面的变量名称 , 不传是根据当前工况使用时间 var_time 或者频率 var_frequency 或者模态 var_mode |"
+        },
+        {
+          "name": "stateIds",
+          "type": "Array",
+          "description": "帧数数组",
+          "required": false,
+          "exampleText": "[1, 2, 3]，[] = 全部零件，默认[]",
+          "sourceRow": "| stateIds        | Array   | 帧数数组         | 否   | [1, 2, 3]，[] = 全部零件，默认[]                                                                                       |"
+        }
+      ],
+      "example": {
+        "name": "XYCurveData1",
+        "args": {
+          "filename": "p/test/model.odb",
+          "nodeIds": [
+            1
+          ],
+          "yVarName": "D.N.X",
+          "xVarName": "var_time",
+          "stateIds": [
+            1
+          ],
+          "loadcaseName": "Step-1"
+        }
+      },
+      "sourceLine": 397,
+      "uncertain": false
+    },
+    {
+      "name": "freqValue",
+      "title": "获取模态",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename   | String  | 文件名                      | 是   | \"/u/test1/model.odb\"                            |"
+        },
+        {
+          "name": "method",
+          "type": "String",
+          "description": "根据 阶数/频率范围 截取模态",
+          "required": true,
+          "exampleText": "order/freq",
+          "sourceRow": "| method     | String  | 根据 阶数/频率范围 截取模态 | 是   | order/freq                                      |"
+        },
+        {
+          "name": "range",
+          "type": "Array",
+          "description": "阶数范围",
+          "required": true,
+          "exampleText": "[1,3]",
+          "sourceRow": "| range      | Array   | 阶数范围                    | 是   | [1,3]                                           |"
+        },
+        {
+          "name": "modalIndex",
+          "type": "Integer",
+          "description": "模态分析步",
+          "required": false,
+          "exampleText": "0，1，2，默认为 0，（仅在 method=order 是生效）",
+          "sourceRow": "| modalIndex | Integer | 模态分析步                  | 否   | 0，1，2，默认为 0，（仅在 method=order 是生效） |"
+        }
+      ],
+      "example": {
+        "name": "freqValue",
+        "args": {
+          "filename": "p/test/model.odb",
+          "method": "order",
+          "range": [
+            1,
+            3
+          ],
+          "modalIndex": 0
+        }
+      },
+      "sourceLine": 474,
+      "uncertain": false
+    },
+    {
+      "name": "freqGif",
+      "title": "获取模态动画",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename            | String  | 文件名                         | 是   | \"/u/test1/model.odb\"                                                |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"Step-1\"(默认第一个工况)",
+          "sourceRow": "| loadcaseName        | String  | 工况名           | 否   | \"Step-1\"(默认第一个工况)                                           |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex       | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "stateId",
+          "type": "Integer",
+          "description": "帧数，工况中第几帧",
+          "required": false,
+          "exampleText": "1,2,3...，默认最后一帧",
+          "sourceRow": "| stateId             | Integer | 帧数，工况中第几帧             | 否    | 1,2,3...，默认最后一帧                                              |"
+        },
+        {
+          "name": "entityType",
+          "type": "String",
+          "description": "对象类型",
+          "required": false,
+          "exampleText": "\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")",
+          "sourceRow": "| entityType          | String  | 对象类型         | 否   | \"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")       |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 ID（oriId）",
+          "required": false,
+          "exampleText": "[1,2,3]([]表示不显示,不设置显示全部)",
+          "sourceRow": "| entitiesIds         | Array   | 对象 ID（oriId）         | 否   | [1,2,3]([]表示不显示,不设置显示全部)                               |"
+        },
+        {
+          "name": "entitiesNames",
+          "type": "Array",
+          "description": "对象名称",
+          "required": false,
+          "exampleText": "['part'](不设置显示全部, 优先级低于 entitiesIds)",
+          "sourceRow": "| entitiesNames       | Array   | 对象名称         | 否   | ['part'](不设置显示全部, 优先级低于 entitiesIds)                   |"
+        },
+        {
+          "name": "transparentEntities",
+          "type": "Array",
+          "description": "设置透明的零件",
+          "required": false,
+          "exampleText": "[1,2](默认[])",
+          "sourceRow": "| transparentEntities | Array   | 设置透明的零件   | 否   | [1,2](默认[])                                                      |"
+        },
+        {
+          "name": "partDisplayMode",
+          "type": "Integer",
+          "description": "零件渲染模式",
+          "required": false,
+          "exampleText": "1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)",
+          "sourceRow": "| partDisplayMode     | Integer | 零件渲染模式     | 否   | 1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)    |"
+        },
+        {
+          "name": "cameraViewport",
+          "type": "String",
+          "description": "标准视角",
+          "required": false,
+          "exampleText": "\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。",
+          "sourceRow": "| cameraViewport      | String        | 标准视角                                                     | 否   | \"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。|"
+        },
+        {
+          "name": "cameraZoomLevel",
+          "type": "Number",
+          "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1",
+          "required": false,
+          "exampleText": "\"2\": 放大两倍",
+          "sourceRow": "| cameraZoomLevel     | Number        | 视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1 | 否   | \"2\": 放大两倍 |"
+        },
+        {
+          "name": "dispScale",
+          "type": "Number",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 1",
+          "sourceRow": "| dispScale           | Number        | 缩放系数                                                     | 否   | 默认 1 |"
+        },
+        {
+          "name": "dispOpts",
+          "type": "Object",
+          "description": "缩放系数",
+          "required": false,
+          "exampleText": "默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }",
+          "sourceRow": "| dispOpts            | Object        | 缩放系数                                                     | 否   | 默认 { scaleX: 1, scaleY: 1, scaleZ: 1 } |"
+        },
+        {
+          "name": "scalarEntities",
+          "type": "Array<Number>",
+          "description": "设置显示云图的零件oriId",
+          "required": false,
+          "exampleText": "默认显示全部",
+          "sourceRow": "| scalarEntities      | Array<Number> | 设置显示云图的零件oriId                                          | 否   | 默认显示全部                     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "legendVisile",
+          "type": "Number",
+          "description": "图例是否显示，默认显示",
+          "required": false,
+          "exampleText": "1-显示， 0-不显示，默认 1",
+          "sourceRow": "| legendVisile        | Number        | 图例是否显示，默认显示                                       | 否   | 1-显示， 0-不显示，默认 1  |"
+        },
+        {
+          "name": "gProbeNode",
+          "type": "Object",
+          "description": "生成探针的节点信息",
+          "required": false,
+          "exampleText": "{\"nsetNames\": [\"RESPONSE\"]}，节点集名称",
+          "sourceRow": "| gProbeNode          | Object        | 生成探针的节点信息                                           | 否   | {\"nsetNames\": [\"RESPONSE\"]}，节点集名称 |"
+        },
+        {
+          "name": "annotations",
+          "type": "Array<Object>",
+          "description": "批注信息",
+          "required": false,
+          "exampleText": "[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称",
+          "sourceRow": "| annotations         | Array<Object> | 批注信息                                                     | 否   | [{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称       |"
+        },
+        {
+          "name": "legendConfig",
+          "type": "Object",
+          "description": "图例设置",
+          "required": false,
+          "exampleText": "{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法",
+          "sourceRow": "| legendConfig        | Object        | 图例设置                                                     | 否   | {\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法 |"
+        },
+        {
+          "name": "displayExtremeProbe",
+          "type": "Integer",
+          "description": "是否显示最值探针",
+          "required": false,
+          "exampleText": "0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0",
+          "sourceRow": "| displayExtremeProbe | Integer       | 是否显示最值探针                                             | 否   | 0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0   |"
+        },
+        {
+          "name": "sceneName",
+          "type": "String",
+          "description": "自定义视图名称",
+          "required": false,
+          "exampleText": "\"test\"",
+          "sourceRow": "| sceneName           | String  | 自定义视图名称   | 否   | \"test\"                                                             |"
+        },
+        {
+          "name": "preserveScene",
+          "type": "Boolean",
+          "description": "是否保存截图视图",
+          "required": false,
+          "exampleText": "true/false(默认 false)",
+          "sourceRow": "| preserveScene       | Boolean | 是否保存截图视图 | 否   | true/false(默认 false)                                             |"
+        },
+        {
+          "name": "order",
+          "type": "Integer",
+          "description": "阶数",
+          "required": false,
+          "exampleText": "默认 1",
+          "sourceRow": "| order    | Integer | 阶数   | 否   | 默认 1                  |"
+        },
+        {
+          "name": "modalIndex",
+          "type": "Integer",
+          "description": "模态分析步",
+          "required": false,
+          "exampleText": "0，1，2，默认为 0，（仅在 method=order 是生效）",
+          "sourceRow": "| modalIndex | Integer | 模态分析步                  | 否   | 0，1，2，默认为 0，（仅在 method=order 是生效） |"
+        }
+      ],
+      "example": {
+        "name": "freqGif",
+        "args": {
+          "filename": "p/test/model.odb",
+          "order": 1
+        }
+      },
+      "sourceLine": 532,
+      "uncertain": false
+    },
+    {
+      "name": "loadcases",
+      "title": "获取工况列表",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename | String | 文件名 | 是   | \"/u/test1/model.odb\" |"
+        }
+      ],
+      "example": {
+        "name": "loadcases",
+        "args": {
+          "filename": "p/test/model.odb"
+        }
+      },
+      "sourceLine": 584,
+      "uncertain": false
+    },
+    {
+      "name": "variables",
+      "title": "获取变量列表",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename     | String | 文件名 | 是   | \"/u/test1/model.odb\" |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "文件名",
+          "required": false,
+          "exampleText": "\"Modal Analysis 1\"",
+          "sourceRow": "| loadcaseName | String | 文件名 | 否   | \"Modal Analysis 1\"   |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex       | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        }
+      ],
+      "example": {
+        "name": "variables",
+        "args": {
+          "filename": "p/test/model.odb"
+        }
+      },
+      "sourceLine": 635,
+      "uncertain": false
+    },
+    {
+      "name": "curveInfo",
+      "title": "获取曲线变量",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"p/test/binout/binout0000\"",
+          "sourceRow": "| filename | String | 文件名                   | 是   | \"p/test/binout/binout0000\"                          |"
+        },
+        {
+          "name": "dataPath",
+          "type": "String",
+          "description": "请求加载的当前目录",
+          "required": false,
+          "exampleText": "默认为\"/\", 也可以指定为\"/group1/group1.1\"这样的路径",
+          "sourceRow": "| dataPath | String | 请求加载的当前目录       | 否   | 默认为\"/\", 也可以指定为\"/group1/group1.1\"这样的路径 |"
+        },
+        {
+          "name": "level",
+          "type": "Number",
+          "description": "加载 hdf5 目录结构的深度",
+          "required": false,
+          "exampleText": "默认为-1 ,递归完全的 tree",
+          "sourceRow": "| level    | Number | 加载 hdf5 目录结构的深度 | 否   | 默认为-1 ,递归完全的 tree                           |"
+        }
+      ],
+      "example": {
+        "name": "curveInfo",
+        "args": {
+          "filename": "p/test/model.odb",
+          "dataPath": "/",
+          "level": -1
+        }
+      },
+      "sourceLine": 694,
+      "uncertain": false
+    },
+    {
+      "name": "curveData",
+      "title": "获取曲线变量数值",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"p/test/binout/binout0000\"",
+          "sourceRow": "| filename | String        | 文件名   | 是   | \"p/test/binout/binout0000\"                                                                                                   |"
+        },
+        {
+          "name": "dataPath",
+          "type": "Array<String>",
+          "description": "变量列表",
+          "required": true,
+          "exampleText": "[\"/loadstep/glstat/Mem_avl_GB_node644\", \"/loadstep/glstat/time\"]，是变量列表接口叶子节点的 path 字段，仅支持叶子节点上的变量",
+          "sourceRow": "| dataPath | Array<String> | 变量列表 | 是   | [\"/loadstep/glstat/Mem_avl_GB_node644\", \"/loadstep/glstat/time\"]，是变量列表接口叶子节点的 path 字段，仅支持叶子节点上的变量 |"
+        }
+      ],
+      "example": {
+        "name": "curveData",
+        "args": {
+          "filename": "p/test/model.odb",
+          "dataPath": [
+            "/loadstep/glstat/time"
+          ]
+        }
+      },
+      "sourceLine": 761,
+      "uncertain": false
+    },
+    {
+      "name": "hitEntities",
+      "title": "碰撞检测",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"p/yangshuo/ER.odb\"",
+          "sourceRow": "| filename   | String       | 文件名         | 是   | \"p/yangshuo/ER.odb\"                                                                   |"
+        },
+        {
+          "name": "stateId",
+          "type": "Number",
+          "description": "测试模型所在帧",
+          "required": true,
+          "exampleText": "4",
+          "sourceRow": "| stateId    | Number       | 测试模型所在帧 | 是   | 4                                                                                     |"
+        },
+        {
+          "name": "box",
+          "type": "Arra<Number>",
+          "description": "测试包围盒",
+          "required": true,
+          "exampleText": "[0 ,0 , 0, 2040, 2099, 2305],参数说明前面三个为包围盒中心位置，后面三个为包围盒长宽高",
+          "sourceRow": "| box        | Arra<Number> | 测试包围盒     | 是   | [0 ,0 , 0, 2040, 2099, 2305],参数说明前面三个为包围盒中心位置，后面三个为包围盒长宽高 |"
+        },
+        {
+          "name": "checkLevel",
+          "type": "Number",
+          "description": "测试级别",
+          "required": false,
+          "exampleText": "默认 1， 0: 只测试零件包围盒 1: 测试零件顶点",
+          "sourceRow": "| checkLevel | Number       | 测试级别       | 否   | 默认 1， 0: 只测试零件包围盒 1: 测试零件顶点                                          |"
+        },
+        {
+          "name": "contained",
+          "type": "bool",
+          "description": "是否包含",
+          "required": false,
+          "exampleText": "默认 false，部分包含",
+          "sourceRow": "| contained  | bool         | 是否包含       | 否   | 默认 false，部分包含                                                                  |"
+        }
+      ],
+      "example": {
+        "name": "hitEntities",
+        "args": {
+          "filename": "p/test/model.odb",
+          "stateId": 1,
+          "box": [
+            0,
+            0,
+            0,
+            10,
+            10,
+            10
+          ]
+        }
+      },
+      "sourceLine": 826,
+      "uncertain": false
+    },
+    {
+      "name": "nodeId",
+      "title": "根据位置获取 nodeId",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"p/test/ER.odb\"",
+          "sourceRow": "| filename     | String     | 文件名     | 是   | \"p/test/ER.odb\" |"
+        },
+        {
+          "name": "nodePosList",
+          "type": "Number[][]",
+          "description": "位置坐标",
+          "required": true,
+          "exampleText": "[[100,100,100]]",
+          "sourceRow": "| nodePosList  | Number[][] | 位置坐标   | 是   | [[100,100,100]] |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"\"",
+          "sourceRow": "| loadcaseName | String     | 工况名     | 否   | \"\"              |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex   | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "stateId",
+          "type": "Number",
+          "description": "模型所在帧",
+          "required": false,
+          "exampleText": "4",
+          "sourceRow": "| stateId      | Number     | 模型所在帧 | 否   | 4               |"
+        }
+      ],
+      "example": {
+        "name": "nodeId",
+        "args": {
+          "filename": "p/test/model.odb",
+          "nodePosList": [
+            [
+              1,
+              2,
+              3
+            ]
+          ],
+          "stateId": 1
+        }
+      },
+      "sourceLine": 869,
+      "uncertain": false
+    },
+    {
+      "name": "probeGroupByPos",
+      "title": "根据位置生成探针组",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"p/test/ER.odb\"",
+          "sourceRow": "| filename     | String     | 文件名     | 是   | \"p/test/ER.odb\" |"
+        },
+        {
+          "name": "nodePosList",
+          "type": "Number[][]",
+          "description": "位置坐标",
+          "required": true,
+          "exampleText": "[[100,100,100]]",
+          "sourceRow": "| nodePosList  | Number[][] | 位置坐标   | 是   | [[100,100,100]] |"
+        },
+        {
+          "name": "namePrefix",
+          "type": "String",
+          "description": "探针名称前缀",
+          "required": false,
+          "exampleText": "\"test\"",
+          "sourceRow": "| namePrefix   | String     | 探针名称前缀  | 否   | \"test\" |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"\"",
+          "sourceRow": "| loadcaseName | String     | 工况名     | 否   | \"\"              |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex   | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "stateId",
+          "type": "Number",
+          "description": "模型所在帧",
+          "required": false,
+          "exampleText": "4",
+          "sourceRow": "| stateId      | Number     | 模型所在帧 | 否   | 4               |"
+        }
+      ],
+      "example": {
+        "name": "probeGroupByPos",
+        "args": {
+          "filename": "p/test/model.odb",
+          "nodePosList": [
+            [
+              1,
+              2,
+              3
+            ]
+          ],
+          "namePrefix": "sensor",
+          "stateId": 1
+        }
+      },
+      "sourceLine": 912,
+      "uncertain": false
+    },
+    {
+      "name": "nodeInfo",
+      "title": "获取节点信息",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename            | String  | 文件名                         | 是   | \"/u/test1/model.odb\"                                                |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "coordSystemType",
+          "type": "Integer",
+          "description": "坐标系类型",
+          "required": false,
+          "exampleText": "1 全局，2 局部，默认全局",
+          "sourceRow": "| coordSystemType | Integer | 坐标系类型                                                                                    | 否   | 1 全局，2 局部，默认全局     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "stateIds",
+          "type": "Array",
+          "description": "帧数数组",
+          "required": false,
+          "exampleText": "[1, 2, 3]，[] = 全部帧数，默认[]",
+          "sourceRow": "| stateIds | Array | 帧数数组 | 否   | [1, 2, 3]，[] = 全部帧数，默认[] |"
+        },
+        {
+          "name": "nodeIds",
+          "type": "Array",
+          "description": "节点 ID",
+          "required": true,
+          "exampleText": "[1204]",
+          "sourceRow": "| nodeIds  | Array | 节点 ID  | 是   | [1204]                           |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"\"",
+          "sourceRow": "| loadcaseName | String     | 工况名     | 否   | \"\"              |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex   | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "entityType",
+          "type": "String",
+          "description": "对象类型",
+          "required": false,
+          "exampleText": "\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")",
+          "sourceRow": "| entityType          | String  | 对象类型         | 否   | \"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")       |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 ID（oriId）",
+          "required": false,
+          "exampleText": "[1,2,3]([]表示不显示,不设置显示全部)",
+          "sourceRow": "| entitiesIds         | Array   | 对象 ID（oriId）         | 否   | [1,2,3]([]表示不显示,不设置显示全部)                               |"
+        },
+        {
+          "name": "entitiesNames",
+          "type": "Array",
+          "description": "对象名称",
+          "required": false,
+          "exampleText": "['part'](不设置显示全部, 优先级低于 entitiesIds)",
+          "sourceRow": "| entitiesNames       | Array   | 对象名称         | 否   | ['part'](不设置显示全部, 优先级低于 entitiesIds)                   |"
+        }
+      ],
+      "example": {
+        "name": "nodeInfo",
+        "args": {
+          "filename": "p/test/model.odb",
+          "nodeIds": [
+            1
+          ],
+          "varName": "S.EL.11",
+          "stateIds": [
+            1
+          ]
+        }
+      },
+      "sourceLine": 1015,
+      "uncertain": false
+    },
+    {
+      "name": "elementInfo",
+      "title": "获取单元信息",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"/u/test1/model.odb\"",
+          "sourceRow": "| filename            | String  | 文件名                         | 是   | \"/u/test1/model.odb\"                                                |"
+        },
+        {
+          "name": "varName",
+          "type": "String",
+          "description": "结果变量名称",
+          "required": false,
+          "exampleText": "根据用户 vkigen.json 配置",
+          "sourceRow": "| varName             | String  | 结果变量名称                   | 否   | 根据用户 vkigen.json 配置                                           |"
+        },
+        {
+          "name": "coordSystemType",
+          "type": "Integer",
+          "description": "坐标系类型",
+          "required": false,
+          "exampleText": "1 全局，2 局部，默认全局",
+          "sourceRow": "| coordSystemType | Integer | 坐标系类型                                                                                    | 否   | 1 全局，2 局部，默认全局     |"
+        },
+        {
+          "name": "coordSystemName",
+          "type": "String",
+          "description": "坐标系名称",
+          "required": false,
+          "exampleText": "\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId",
+          "sourceRow": "| coordSystemName     | String        | 坐标系名称                                                   | 否   | \"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId |"
+        },
+        {
+          "name": "coordSystemId",
+          "type": "String",
+          "description": "坐标系 Id",
+          "required": false,
+          "exampleText": "\"1\",\"global\",\"analysis\"",
+          "sourceRow": "| coordSystemId       | String        | 坐标系 Id                                                    | 否   | \"1\",\"global\",\"analysis\"      |"
+        },
+        {
+          "name": "useCornerData",
+          "type": "Integer",
+          "description": "角点数据",
+          "required": false,
+          "exampleText": "0:不用角点数据, 1:用角点数据(默认 0)",
+          "sourceRow": "| useCornerData       | Integer | 角点数据         | 否   | 0:不用角点数据, 1:用角点数据(默认 0)                               |"
+        },
+        {
+          "name": "shellLayer",
+          "type": "String",
+          "description": "壳单元层",
+          "required": false,
+          "exampleText": "\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")",
+          "sourceRow": "| shellLayer          | String  | 壳单元层         | 否   | \"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")                            |"
+        },
+        {
+          "name": "nodeAverage",
+          "type": "Float",
+          "description": "节点平均值",
+          "required": false,
+          "exampleText": "0~1 区间(默认 0.75)",
+          "sourceRow": "| nodeAverage         | Float   | 节点平均值       | 否   | 0~1 区间(默认 0.75)                                                |"
+        },
+        {
+          "name": "avgMethod",
+          "type": "String",
+          "description": "节点平均方法",
+          "required": false,
+          "exampleText": "'none' | 'simple' | 'max' | 'min'，默认'none'",
+          "sourceRow": "| avgMethod           | String  | 节点平均方法     | 否   | 'none' | 'simple' | 'max' | 'min'，默认'none'                            |"
+        },
+        {
+          "name": "avgRegion",
+          "type": "String",
+          "description": "节点平均范围",
+          "required": false,
+          "exampleText": "'model' | 'part' ,默认'model'",
+          "sourceRow": "| avgRegion           | String  | 节点平均范围     | 否   | 'model' | 'part' ,默认'model'                            |"
+        },
+        {
+          "name": "avgOrder",
+          "type": "String",
+          "description": "节点平均计算顺序",
+          "required": false,
+          "exampleText": "'pre' | 'post' ,默认'pre'",
+          "sourceRow": "| avgOrder           | String  | 节点平均计算顺序     | 否   | 'pre' | 'post' ,默认'pre'                            |"
+        },
+        {
+          "name": "stateIds",
+          "type": "Array",
+          "description": "帧数数组",
+          "required": false,
+          "exampleText": "[1, 2, 3]，[] = 全部帧数，默认[]",
+          "sourceRow": "| stateIds    | Array | 帧数数组 | 否   | [1, 2, 3]，[] = 全部帧数，默认[] |"
+        },
+        {
+          "name": "elemIds",
+          "type": "Array",
+          "description": "单元 ID",
+          "required": true,
+          "exampleText": "[12]",
+          "sourceRow": "| elemIds | Array | 单元 ID  | 是   | [12]                             |"
+        },
+        {
+          "name": "loadcaseName",
+          "type": "String",
+          "description": "工况名",
+          "required": false,
+          "exampleText": "\"\"",
+          "sourceRow": "| loadcaseName | String     | 工况名     | 否   | \"\"              |"
+        },
+        {
+          "name": "loadcaseIndex",
+          "type": "Integer",
+          "description": "工况索引",
+          "required": false,
+          "exampleText": "0，1，2...(默认第一个工况) ,优先级大于 loadcaseName",
+          "sourceRow": "| loadcaseIndex   | Integer | 工况索引         | 否   | 0，1，2...(默认第一个工况) ,优先级大于 loadcaseName                |"
+        },
+        {
+          "name": "entityType",
+          "type": "String",
+          "description": "对象类型",
+          "required": false,
+          "exampleText": "\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")",
+          "sourceRow": "| entityType          | String  | 对象类型         | 否   | \"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")       |"
+        },
+        {
+          "name": "entitiesIds",
+          "type": "Array",
+          "description": "对象 ID（oriId）",
+          "required": false,
+          "exampleText": "[1,2,3]([]表示不显示,不设置显示全部)",
+          "sourceRow": "| entitiesIds         | Array   | 对象 ID（oriId）         | 否   | [1,2,3]([]表示不显示,不设置显示全部)                               |"
+        },
+        {
+          "name": "entitiesNames",
+          "type": "Array",
+          "description": "对象名称",
+          "required": false,
+          "exampleText": "['part'](不设置显示全部, 优先级低于 entitiesIds)",
+          "sourceRow": "| entitiesNames       | Array   | 对象名称         | 否   | ['part'](不设置显示全部, 优先级低于 entitiesIds)                   |"
+        }
+      ],
+      "example": {
+        "name": "elementInfo",
+        "args": {
+          "filename": "p/test/model.odb",
+          "elemIds": [
+            1
+          ],
+          "varName": "S.EL.11",
+          "stateIds": [
+            1
+          ]
+        }
+      },
+      "sourceLine": 1091,
+      "uncertain": false
+    },
+    {
+      "name": "assemble",
+      "title": "获取装配树信息",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "文件名",
+          "required": true,
+          "exampleText": "\"p/test/ER.odb\"",
+          "sourceRow": "| filename | String | 文件名 | 是   | \"p/test/ER.odb\" |"
+        }
+      ],
+      "example": {
+        "name": "assemble",
+        "args": {
+          "filename": "p/test/model.odb"
+        }
+      },
+      "sourceLine": 1172,
+      "uncertain": false
+    },
+    {
+      "name": "modelDiff",
+      "title": "获取对比结果",
+      "fields": [
+        {
+          "name": "rdb1",
+          "type": "Object",
+          "description": "模型1信息",
+          "required": true,
+          "exampleText": "{\"rdbPath\": \"p/AT/convert/CAE_model/bdf/t1/Job-1000-1.inp\" }",
+          "sourceRow": "| rdb1 | Object | 模型1信息 | 是   |  {\"rdbPath\": \"p/AT/convert/CAE_model/bdf/t1/Job-1000-1.inp\" } |"
+        },
+        {
+          "name": "rdb2",
+          "type": "Object",
+          "description": "模型2信息",
+          "required": true,
+          "exampleText": "{\"rdbPath\": \"p/AT/convert/CAE_model/bdf/t1/Job-1000-2.inp\" }",
+          "sourceRow": "| rdb2 | Object | 模型2信息 | 是   |  {\"rdbPath\": \"p/AT/convert/CAE_model/bdf/t1/Job-1000-2.inp\" } |"
+        }
+      ],
+      "example": {
+        "name": "modelDiff",
+        "args": {
+          "rdb1": {
+            "rdbPath": "p/test/model1.odb"
+          },
+          "rdb2": {
+            "rdbPath": "p/test/model2.odb"
+          }
+        }
+      },
+      "sourceLine": 1269,
+      "uncertain": true
+    },
+    {
+      "name": "deleteModelFile",
+      "title": "删除指定模型文件",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "string",
+          "description": "模型参数",
+          "required": true,
+          "exampleText": "见[视图公共参数](#视图公共参数)",
+          "sourceRow": "| filename | string | 模型参数 | 是   | 见[视图公共参数](#视图公共参数) |"
+        }
+      ],
+      "example": {
+        "name": "deleteModelFile",
+        "args": {
+          "filename": "p/test/model.odb"
+        }
+      },
+      "sourceLine": 1456,
+      "uncertain": false
+    },
+    {
+      "name": "geometryParams",
+      "title": "根据颜色查询ids",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "string",
+          "description": "模型参数",
+          "required": true,
+          "exampleText": "见[视图公共参数](#视图公共参数)",
+          "sourceRow": "| filename | string | 模型参数 | 是   | 见[视图公共参数](#视图公共参数) |"
+        },
+        {
+          "name": "colors",
+          "type": "Array<Integer>",
+          "description": "RGB颜色列表",
+          "required": true,
+          "exampleText": "单个颜色：[255,0,0]， 多个颜色：[255,0,0,255,55,55]每3个代表一个颜色",
+          "sourceRow": "| colors   |Array<Integer>  | RGB颜色列表 | 是   | 单个颜色：[255,0,0]， 多个颜色：[255,0,0,255,55,55]每3个代表一个颜色|"
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "description": "查询类型",
+          "required": false,
+          "exampleText": "'part','face'，默认是'part'",
+          "sourceRow": "| type     | string | 查询类型 | 否   | 'part','face'，默认是'part' |"
+        }
+      ],
+      "example": {
+        "name": "geometryParams",
+        "args": {
+          "filename": "p/test/model.odb",
+          "type": "face",
+          "colors": [
+            255,
+            0,
+            0
+          ]
+        }
+      },
+      "sourceLine": 1498,
+      "uncertain": true
+    }
+  ],
+  "excelRows": [
+    {
+      "sheet": "Sheet1",
+      "row": 2,
+      "number": 1,
+      "path": "/applications/3dlite/api/v1/query/query",
+      "purpose": "可以通过不同的入参获取不同的返回结果",
+      "title": "获取仿真数据节点号",
+      "request": "{\n\"name\": \"nodeId\",\n\"args\": {\n\"fileName\": \"1-0\",\n\"nodePosList\": [[1,2,3]]}\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 3,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取温度数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"TEMP.EL\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 4,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取位移u1数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"D.N.X\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 5,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取位移u2数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"D.N.Y\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 6,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取位移u3数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"D.N.Z\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 7,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取应变Max_princioal对应花片a通道数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"E.EL.MaxPrincipal\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 8,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取应变Mid_princioal对应花片a通道数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"E.EL.Midrincipal\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 9,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取应力 s11数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"S.EL.11\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 10,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取应力 s22数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"S.EL.22\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 11,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "获取热流数据",
+      "request": "{\n \"name\": \"XYCurveData1\",\n \"args\": {\n  \"fileName\": \"1-0\",\n  \"nodeIds\": [\n   1,\n   2,\n   3\n  ],\n  \"xVarName\": \"var_time\",\n  \"yVarName\": \"HEAT_FLUX.EL.Mag\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 12,
+      "number": null,
+      "path": null,
+      "purpose": null,
+      "title": "删除模型文件",
+      "request": "{\n \"name\": \"deleteModelFile\",\n \"args\": {\n  \"fileName\": \"1-0\"\n }\n}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 13,
+      "number": 2,
+      "path": "/api/task/submit",
+      "purpose": "提交模型转换任务",
+      "title": null,
+      "request": "{\"modelPath\":\"/home/file/a.odb\",\"uuid\":\"1-0\"}"
+    },
+    {
+      "sheet": "Sheet1",
+      "row": 14,
+      "number": 3,
+      "path": "/api/task/query",
+      "purpose": "查询模型转换任务",
+      "title": null,
+      "request": "uuid=1-0"
+    }
+  ]
+}

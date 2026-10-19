@@ -67,3 +67,8 @@ viewer/.npmrc
 verification_examples/
 packages/
 offline_packages/
+
+# Reviewable SimRight API definitions and executable examples.
+!docs/simright/*.json
+!docs/simright/examples/*.json
+!tools/simright/requirements*.txt

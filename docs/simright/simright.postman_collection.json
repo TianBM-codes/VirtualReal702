@@ -1,0 +1,1170 @@
+{
+  "info": {
+    "name": "数巧 SimRight：文档接口、Excel 功能与六分量采集",
+    "description": "两个部署分组保持各自路径与参数拼写。删除/探针请求在手动执行时发出。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "filename",
+      "value": "p/test/model.odb"
+    },
+    {
+      "key": "uuid",
+      "value": "1-0"
+    },
+    {
+      "key": "modelPath",
+      "value": "/home/file/a.odb"
+    },
+    {
+      "key": "loadcaseName",
+      "value": "Step-1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Markdown 原生接口",
+      "item": [
+        {
+          "name": "获取最值 / extremeValue",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 101 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"extremeValue\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"rtype\": \"max\",\n    \"varName\": \"S.EL.VonMises\",\n    \"stateIds\": [\n      -1\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取测量结果值 / measureValue",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 174 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"measureValue\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"measureType\": 1,\n    \"entitiesIds\": [\n      {\n        \"partId\": 0,\n        \"nodeId\": 1\n      },\n      {\n        \"partId\": 0,\n        \"nodeId\": 2\n      }\n    ],\n    \"stateId\": 1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取云图 / contourImage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 240 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"contourImage\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"varName\": \"S.EL.VonMises\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取模型截图 / modelImage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 295 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"modelImage\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"stateId\": 1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取云图动画 / animationGif",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 347 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"animationGif\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"varName\": \"S.EL.VonMises\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取节点随时间相关的 XY 曲线值 1 / XYCurveData1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 397 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"yVarName\": \"D.N.X\",\n    \"xVarName\": \"var_time\",\n    \"stateIds\": [\n      1\n    ],\n    \"loadcaseName\": \"Step-1\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取模态 / freqValue",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 474 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"freqValue\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"method\": \"order\",\n    \"range\": [\n      1,\n      3\n    ],\n    \"modalIndex\": 0\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取模态动画 / freqGif",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 532 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"freqGif\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"order\": 1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取工况列表 / loadcases",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 584 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"loadcases\",\n  \"args\": {\n    \"filename\": \"{{filename}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取变量列表 / variables",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 635 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"variables\",\n  \"args\": {\n    \"filename\": \"{{filename}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取曲线变量 / curveInfo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 694 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"curveInfo\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"dataPath\": \"/\",\n    \"level\": -1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取曲线变量数值 / curveData",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 761 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"curveData\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"dataPath\": [\n      \"/loadstep/glstat/time\"\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "碰撞检测 / hitEntities",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 826 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"hitEntities\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"stateId\": 1,\n    \"box\": [\n      0,\n      0,\n      0,\n      10,\n      10,\n      10\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "根据位置获取 nodeId / nodeId",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 869 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"nodeId\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodePosList\": [\n      [\n        1,\n        2,\n        3\n      ]\n    ],\n    \"stateId\": 1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "根据位置生成探针组 / probeGroupByPos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 912 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"probeGroupByPos\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodePosList\": [\n      [\n        1,\n        2,\n        3\n      ]\n    ],\n    \"namePrefix\": \"sensor\",\n    \"stateId\": 1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取节点信息 / nodeInfo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 1015 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"nodeInfo\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"varName\": \"S.EL.11\",\n    \"stateIds\": [\n      1\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取单元信息 / elementInfo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 1091 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"elementInfo\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"elemIds\": [\n      1\n    ],\n    \"varName\": \"S.EL.11\",\n    \"stateIds\": [\n      1\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取装配树信息 / assemble",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 1172 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"assemble\",\n  \"args\": {\n    \"filename\": \"{{filename}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取对比结果 / modelDiff",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 1269 行；需要确认文档歧义",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"modelDiff\",\n  \"args\": {\n    \"rdb1\": {\n      \"rdbPath\": \"p/test/model1.odb\"\n    },\n    \"rdb2\": {\n      \"rdbPath\": \"p/test/model2.odb\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "删除指定模型文件 / deleteModelFile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 1456 行；原生接口；业务成功码为0",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"deleteModelFile\",\n  \"args\": {\n    \"filename\": \"{{filename}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "根据颜色查询ids / geometryParams",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "DATA-API.md 第 1498 行；需要确认文档歧义",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"geometryParams\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"type\": \"face\",\n    \"colors\": [\n      255,\n      0,\n      0\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Excel 功能与转换",
+      "item": [
+        {
+          "name": "获取仿真数据节点号",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第2行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"nodeId\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodePosList\": [\n      [\n        1,\n        2,\n        3\n      ]\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取温度数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第3行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"TEMP.EL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取位移u1数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第4行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"D.N.X\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取位移u2数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第5行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"D.N.Y\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取位移u3数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第6行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"D.N.Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取应变Max_princioal对应花片a通道数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第7行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.MaxPrincipal\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取应变Mid_princioal对应花片a通道数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第8行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.Midrincipal\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取应力 s11数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第9行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.11\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取应力 s22数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第10行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.22\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "获取热流数据",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第11行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\",\n    \"nodeIds\": [\n      1,\n      2,\n      3\n    ],\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"HEAT_FLUX.EL.Mag\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "删除模型文件",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query/query",
+            "description": "Excel Sheet1 第12行。变量拼写按原样保留；E.EL.Midrincipal 疑似笔误，先查 variables。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"deleteModelFile\",\n  \"args\": {\n    \"fileName\": \"{{uuid}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "提交模型转换（POST 方法待确认）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/task/submit",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"modelPath\": \"{{modelPath}}\",\n  \"uuid\": \"{{uuid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "查询模型转换（GET 方法待确认）",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/task/query?uuid={{uuid}}",
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "方向投影的六分量采集",
+      "item": [
+        {
+          "name": "应力11（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.11\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应力22（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.22\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应力33（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.33\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应力12（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.12\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应力13（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.13\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应力23（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"S.EL.23\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应变11（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.11\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应变22（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.22\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应变33（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.33\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应变12（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.12\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应变13（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.13\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "应变23（投影输入）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/api/v1/query",
+            "description": "变量名须以 variables 返回为准。六次请求须保持坐标系、工况、帧、平均与壳层一致；投影由 Python 本地计算。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYCurveData1\",\n  \"args\": {\n    \"filename\": \"{{filename}}\",\n    \"nodeIds\": [\n      1\n    ],\n    \"loadcaseName\": \"{{loadcaseName}}\",\n    \"xVarName\": \"var_time\",\n    \"yVarName\": \"E.EL.23\",\n    \"coordSystemType\": 1,\n    \"stateIds\": [\n      1,\n      2\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "其他接口",
+      "item": [
+        {
+          "name": "创建 Session（POST 方法待确认）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/applications/3dlite/create_session",
+            "description": "成功示例 code=1，不使用 DATA-API code=0 判断",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"viewLayout\": 1,\n  \"scenes\": [\n    {\n      \"id\": \"1\",\n      \"path\": \"{{filename}}\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

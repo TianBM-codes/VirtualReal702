@@ -1,0 +1,2481 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "数巧 SimRight 仿真数据接口",
+    "version": "1.0.0",
+    "description": "依据本地 DATA-API.md 与接口功能说明 Excel 整理；差异及未验证项见 README。投影是本地计算，不虚构服务端投影路由。"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "占位地址，导入后替换实际服务"
+    }
+  ],
+  "paths": {
+    "/applications/3dlite/api/v1/query": {
+      "post": {
+        "summary": "数巧 DATA-API（按 name 分发）",
+        "operationId": "simrightQuery",
+        "tags": [
+          "Markdown 原生接口"
+        ],
+        "description": "共享同一 POST 地址，用 name 区分操作；各操作示例可作为接口用例导入。filename 为 RDB 相对目录。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/extremeValue"
+                  },
+                  {
+                    "$ref": "#/components/schemas/measureValue"
+                  },
+                  {
+                    "$ref": "#/components/schemas/contourImage"
+                  },
+                  {
+                    "$ref": "#/components/schemas/modelImage"
+                  },
+                  {
+                    "$ref": "#/components/schemas/animationGif"
+                  },
+                  {
+                    "$ref": "#/components/schemas/XYCurveData1"
+                  },
+                  {
+                    "$ref": "#/components/schemas/freqValue"
+                  },
+                  {
+                    "$ref": "#/components/schemas/freqGif"
+                  },
+                  {
+                    "$ref": "#/components/schemas/loadcases"
+                  },
+                  {
+                    "$ref": "#/components/schemas/variables"
+                  },
+                  {
+                    "$ref": "#/components/schemas/curveInfo"
+                  },
+                  {
+                    "$ref": "#/components/schemas/curveData"
+                  },
+                  {
+                    "$ref": "#/components/schemas/hitEntities"
+                  },
+                  {
+                    "$ref": "#/components/schemas/nodeId"
+                  },
+                  {
+                    "$ref": "#/components/schemas/probeGroupByPos"
+                  },
+                  {
+                    "$ref": "#/components/schemas/nodeInfo"
+                  },
+                  {
+                    "$ref": "#/components/schemas/elementInfo"
+                  },
+                  {
+                    "$ref": "#/components/schemas/assemble"
+                  },
+                  {
+                    "$ref": "#/components/schemas/modelDiff"
+                  },
+                  {
+                    "$ref": "#/components/schemas/deleteModelFile"
+                  },
+                  {
+                    "$ref": "#/components/schemas/geometryParams"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "name"
+                }
+              },
+              "examples": {
+                "extremeValue": {
+                  "summary": "获取最值",
+                  "value": {
+                    "name": "extremeValue",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "rtype": "max",
+                      "varName": "S.EL.VonMises",
+                      "stateIds": [
+                        -1
+                      ]
+                    }
+                  }
+                },
+                "measureValue": {
+                  "summary": "获取测量结果值",
+                  "value": {
+                    "name": "measureValue",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "measureType": 1,
+                      "entitiesIds": [
+                        {
+                          "partId": 0,
+                          "nodeId": 1
+                        },
+                        {
+                          "partId": 0,
+                          "nodeId": 2
+                        }
+                      ],
+                      "stateId": 1
+                    }
+                  }
+                },
+                "contourImage": {
+                  "summary": "获取云图",
+                  "value": {
+                    "name": "contourImage",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "varName": "S.EL.VonMises"
+                    }
+                  }
+                },
+                "modelImage": {
+                  "summary": "获取模型截图",
+                  "value": {
+                    "name": "modelImage",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "stateId": 1
+                    }
+                  }
+                },
+                "animationGif": {
+                  "summary": "获取云图动画",
+                  "value": {
+                    "name": "animationGif",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "varName": "S.EL.VonMises"
+                    }
+                  }
+                },
+                "XYCurveData1": {
+                  "summary": "获取节点随时间相关的 XY 曲线值 1",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "nodeIds": [
+                        1
+                      ],
+                      "yVarName": "D.N.X",
+                      "xVarName": "var_time",
+                      "stateIds": [
+                        1
+                      ],
+                      "loadcaseName": "Step-1"
+                    }
+                  }
+                },
+                "freqValue": {
+                  "summary": "获取模态",
+                  "value": {
+                    "name": "freqValue",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "method": "order",
+                      "range": [
+                        1,
+                        3
+                      ],
+                      "modalIndex": 0
+                    }
+                  }
+                },
+                "freqGif": {
+                  "summary": "获取模态动画",
+                  "value": {
+                    "name": "freqGif",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "order": 1
+                    }
+                  }
+                },
+                "loadcases": {
+                  "summary": "获取工况列表",
+                  "value": {
+                    "name": "loadcases",
+                    "args": {
+                      "filename": "p/test/model.odb"
+                    }
+                  }
+                },
+                "variables": {
+                  "summary": "获取变量列表",
+                  "value": {
+                    "name": "variables",
+                    "args": {
+                      "filename": "p/test/model.odb"
+                    }
+                  }
+                },
+                "curveInfo": {
+                  "summary": "获取曲线变量",
+                  "value": {
+                    "name": "curveInfo",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "dataPath": "/",
+                      "level": -1
+                    }
+                  }
+                },
+                "curveData": {
+                  "summary": "获取曲线变量数值",
+                  "value": {
+                    "name": "curveData",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "dataPath": [
+                        "/loadstep/glstat/time"
+                      ]
+                    }
+                  }
+                },
+                "hitEntities": {
+                  "summary": "碰撞检测",
+                  "value": {
+                    "name": "hitEntities",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "stateId": 1,
+                      "box": [
+                        0,
+                        0,
+                        0,
+                        10,
+                        10,
+                        10
+                      ]
+                    }
+                  }
+                },
+                "nodeId": {
+                  "summary": "根据位置获取 nodeId",
+                  "value": {
+                    "name": "nodeId",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "nodePosList": [
+                        [
+                          1,
+                          2,
+                          3
+                        ]
+                      ],
+                      "stateId": 1
+                    }
+                  }
+                },
+                "probeGroupByPos": {
+                  "summary": "根据位置生成探针组",
+                  "value": {
+                    "name": "probeGroupByPos",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "nodePosList": [
+                        [
+                          1,
+                          2,
+                          3
+                        ]
+                      ],
+                      "namePrefix": "sensor",
+                      "stateId": 1
+                    }
+                  }
+                },
+                "nodeInfo": {
+                  "summary": "获取节点信息",
+                  "value": {
+                    "name": "nodeInfo",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "nodeIds": [
+                        1
+                      ],
+                      "varName": "S.EL.11",
+                      "stateIds": [
+                        1
+                      ]
+                    }
+                  }
+                },
+                "elementInfo": {
+                  "summary": "获取单元信息",
+                  "value": {
+                    "name": "elementInfo",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "elemIds": [
+                        1
+                      ],
+                      "varName": "S.EL.11",
+                      "stateIds": [
+                        1
+                      ]
+                    }
+                  }
+                },
+                "assemble": {
+                  "summary": "获取装配树信息",
+                  "value": {
+                    "name": "assemble",
+                    "args": {
+                      "filename": "p/test/model.odb"
+                    }
+                  }
+                },
+                "modelDiff": {
+                  "summary": "获取对比结果",
+                  "value": {
+                    "name": "modelDiff",
+                    "args": {
+                      "rdb1": {
+                        "rdbPath": "p/test/model1.odb"
+                      },
+                      "rdb2": {
+                        "rdbPath": "p/test/model2.odb"
+                      }
+                    }
+                  }
+                },
+                "deleteModelFile": {
+                  "summary": "删除指定模型文件",
+                  "value": {
+                    "name": "deleteModelFile",
+                    "args": {
+                      "filename": "p/test/model.odb"
+                    }
+                  }
+                },
+                "geometryParams": {
+                  "summary": "根据颜色查询ids",
+                  "value": {
+                    "name": "geometryParams",
+                    "args": {
+                      "filename": "p/test/model.odb",
+                      "type": "face",
+                      "colors": [
+                        255,
+                        0,
+                        0
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "HTTP 成功仍需检查业务 code；原生 code=0 成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "code": 0,
+                  "data": {},
+                  "message": "success"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/applications/3dlite/api/v1/query/query": {
+      "post": {
+        "summary": "Excel 部署的数据查询入口",
+        "operationId": "simrightExcelQuery",
+        "tags": [
+          "Excel 部署接口"
+        ],
+        "description": "使用 fileName；不得自动与原生路径混用。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "fileName"
+                    ],
+                    "properties": {
+                      "fileName": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": true
+                  }
+                }
+              },
+              "examples": {
+                "row2": {
+                  "summary": "获取仿真数据节点号",
+                  "value": {
+                    "name": "nodeId",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodePosList": [
+                        [
+                          1,
+                          2,
+                          3
+                        ]
+                      ]
+                    }
+                  }
+                },
+                "row3": {
+                  "summary": "获取温度数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "TEMP.EL"
+                    }
+                  }
+                },
+                "row4": {
+                  "summary": "获取位移u1数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "D.N.X"
+                    }
+                  }
+                },
+                "row5": {
+                  "summary": "获取位移u2数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "D.N.Y"
+                    }
+                  }
+                },
+                "row6": {
+                  "summary": "获取位移u3数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "D.N.Z"
+                    }
+                  }
+                },
+                "row7": {
+                  "summary": "获取应变Max_princioal对应花片a通道数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "E.EL.MaxPrincipal"
+                    }
+                  }
+                },
+                "row8": {
+                  "summary": "获取应变Mid_princioal对应花片a通道数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "E.EL.Midrincipal"
+                    }
+                  }
+                },
+                "row9": {
+                  "summary": "获取应力 s11数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "S.EL.11"
+                    }
+                  }
+                },
+                "row10": {
+                  "summary": "获取应力 s22数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "S.EL.22"
+                    }
+                  }
+                },
+                "row11": {
+                  "summary": "获取热流数据",
+                  "value": {
+                    "name": "XYCurveData1",
+                    "args": {
+                      "fileName": "1-0",
+                      "nodeIds": [
+                        1,
+                        2,
+                        3
+                      ],
+                      "xVarName": "var_time",
+                      "yVarName": "HEAT_FLUX.EL.Mag"
+                    }
+                  }
+                },
+                "row12": {
+                  "summary": "删除模型文件",
+                  "value": {
+                    "name": "deleteModelFile",
+                    "args": {
+                      "fileName": "1-0"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "HTTP 成功仍需检查业务 code；原生 code=0 成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "code": 0,
+                  "data": {},
+                  "message": "success"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/submit": {
+      "post": {
+        "summary": "提交模型转换任务（方法待确认）",
+        "operationId": "submitConversion",
+        "tags": [
+          "Excel 转换接口"
+        ],
+        "description": "Excel 仅给出地址与请求体；POST 为待确认约定，响应/完成状态未定义",
+        "x-method-unverified": true,
+        "responses": {
+          "200": {
+            "description": "未提供响应协议，原样保留 JSON",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "modelPath",
+                  "uuid"
+                ],
+                "properties": {
+                  "modelPath": {
+                    "type": "string"
+                  },
+                  "uuid": {
+                    "type": "string"
+                  }
+                }
+              },
+              "example": {
+                "modelPath": "/home/file/a.odb",
+                "uuid": "1-0"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/query": {
+      "get": {
+        "summary": "查询模型转换任务（方法待确认）",
+        "operationId": "queryConversion",
+        "tags": [
+          "Excel 转换接口"
+        ],
+        "description": "Excel 仅给出 uuid=1-0；GET 为待确认约定，响应/完成状态未定义",
+        "x-method-unverified": true,
+        "responses": {
+          "200": {
+            "description": "未提供响应协议，原样保留 JSON",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "1-0"
+          }
+        ]
+      }
+    },
+    "/applications/3dlite/create_session": {
+      "post": {
+        "summary": "创建多窗口 Session（方法待确认）",
+        "operationId": "createSession",
+        "tags": [
+          "其他接口"
+        ],
+        "x-method-unverified": true,
+        "description": "原文未声明 HTTP 方法；POST 为待确认约定。请求表与 scenes 示例有差异；成功示例 code=1。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "viewLayout"
+                ],
+                "properties": {
+                  "viewLayout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 12
+                  },
+                  "scenes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "viewLayout": 1,
+                "scenes": [
+                  {
+                    "id": "1",
+                    "path": "p/test/model.odb"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "原文示例 code=1, id 为 sessionId, msg 为提示信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "msg": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Envelope": {
+        "type": "object",
+        "required": [
+          "code",
+          "data"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "description": "数巧原生成功码为 0"
+          },
+          "data": {
+            "description": "随 name 变化，详见 API-reference.md；保留原始返回"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "extremeValue": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "extremeValue"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "coordSystemType": {
+                "type": "integer",
+                "description": "坐标系类型；示例/约定：1 全局，2 局部，默认全局"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "stateIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "帧数数组；示例/约定：[1, 2, 3]，[] = 全部帧数，默认[]，[-1]-最后一帧"
+              },
+              "rtype": {
+                "type": "string",
+                "description": "极值类型(min/max)；示例/约定：\"max\""
+              },
+              "entityType": {
+                "type": "string",
+                "description": "对象类型；示例/约定：Part/Set，默认 Part"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 id；示例/约定：[]，[] = 所有零件，默认[]"
+              },
+              "entitiesNames": {
+                "type": "array",
+                "items": {},
+                "description": "对象名称；示例/约定：[\"setName\"]，当 entityType 是 Set 时，entitiesNames 是必填项，不支持空数组,目前只支持节点集"
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"Step-1\"(默认第一个工况)"
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "rtype"
+            ]
+          }
+        },
+        "description": "获取最值"
+      },
+      "measureValue": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "measureValue"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "measureType": {
+                "type": "number",
+                "description": "对象类型；示例/约定：1: 距离,2: 角度,3: 相对角度测量"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 ID；示例/约定：[{partId:1,nodeId: 123}, {...}] 以列表形式传参，返回两 node 间距离"
+              },
+              "stateId": {
+                "type": "integer",
+                "description": "帧数，全况中第几帧；示例/约定：1,2,3...，"
+              },
+              "baseStateId": {
+                "type": "integer",
+                "description": "相对角度测量的基准帧；示例/约定：0"
+              },
+              "dispScale": {
+                "type": "number",
+                "description": "缩放系数；示例/约定：默认 1"
+              },
+              "dispOpts": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "缩放系数；示例/约定：默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "measureType",
+              "entitiesIds",
+              "stateId"
+            ]
+          }
+        },
+        "description": "获取测量结果值"
+      },
+      "contourImage": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "contourImage"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"Step-1\"(默认第一个工况)"
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "stateId": {
+                "type": "integer",
+                "description": "帧数，工况中第几帧；示例/约定：1,2,3...，默认最后一帧"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "对象类型；示例/约定：\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 ID（oriId）；示例/约定：[1,2,3]([]表示不显示,不设置显示全部)"
+              },
+              "entitiesNames": {
+                "type": "array",
+                "items": {},
+                "description": "对象名称；示例/约定：['part'](不设置显示全部, 优先级低于 entitiesIds)"
+              },
+              "transparentEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置透明的零件；示例/约定：[1,2](默认[])"
+              },
+              "partDisplayMode": {
+                "type": "integer",
+                "description": "零件渲染模式；示例/约定：1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)"
+              },
+              "cameraViewport": {
+                "type": "string",
+                "description": "标准视角；示例/约定：\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。"
+              },
+              "cameraZoomLevel": {
+                "type": "number",
+                "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1；示例/约定：\"2\": 放大两倍"
+              },
+              "dispScale": {
+                "type": "number",
+                "description": "缩放系数；示例/约定：默认 1"
+              },
+              "dispOpts": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "缩放系数；示例/约定：默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }"
+              },
+              "scalarEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置显示云图的零件oriId；示例/约定：默认显示全部"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "legendVisile": {
+                "type": "number",
+                "description": "图例是否显示，默认显示；示例/约定：1-显示， 0-不显示，默认 1"
+              },
+              "gProbeNode": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "生成探针的节点信息；示例/约定：{\"nsetNames\": [\"RESPONSE\"]}，节点集名称"
+              },
+              "annotations": {
+                "type": "array",
+                "items": {},
+                "description": "批注信息；示例/约定：[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称"
+              },
+              "legendConfig": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "图例设置；示例/约定：{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法"
+              },
+              "displayExtremeProbe": {
+                "type": "integer",
+                "description": "是否显示最值探针；示例/约定：0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0"
+              },
+              "sceneName": {
+                "type": "string",
+                "description": "自定义视图名称；示例/约定：\"test\""
+              },
+              "preserveScene": {
+                "type": "boolean",
+                "description": "是否保存截图视图；示例/约定：true/false(默认 false)"
+              },
+              "switchMaxFrame": {
+                "type": "integer",
+                "description": "是否跳转到最大值探针所在帧, 支持extremeValue参数；示例/约定：0-不跳转，1-跳转，默认 0"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取云图"
+      },
+      "modelImage": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "modelImage"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"Step-1\"(默认第一个工况)"
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "stateId": {
+                "type": "integer",
+                "description": "帧数，工况中第几帧；示例/约定：1,2,3...，默认最后一帧"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "对象类型；示例/约定：\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 ID（oriId）；示例/约定：[1,2,3]([]表示不显示,不设置显示全部)"
+              },
+              "entitiesNames": {
+                "type": "array",
+                "items": {},
+                "description": "对象名称；示例/约定：['part'](不设置显示全部, 优先级低于 entitiesIds)"
+              },
+              "transparentEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置透明的零件；示例/约定：[1,2](默认[])"
+              },
+              "partDisplayMode": {
+                "type": "integer",
+                "description": "零件渲染模式；示例/约定：1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)"
+              },
+              "cameraViewport": {
+                "type": "string",
+                "description": "标准视角；示例/约定：\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。"
+              },
+              "cameraZoomLevel": {
+                "type": "number",
+                "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1；示例/约定：\"2\": 放大两倍"
+              },
+              "dispScale": {
+                "type": "number",
+                "description": "缩放系数；示例/约定：默认 1"
+              },
+              "dispOpts": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "缩放系数；示例/约定：默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }"
+              },
+              "scalarEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置显示云图的零件oriId；示例/约定：默认显示全部"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "legendVisile": {
+                "type": "number",
+                "description": "图例是否显示，默认显示；示例/约定：1-显示， 0-不显示，默认 1"
+              },
+              "gProbeNode": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "生成探针的节点信息；示例/约定：{\"nsetNames\": [\"RESPONSE\"]}，节点集名称"
+              },
+              "annotations": {
+                "type": "array",
+                "items": {},
+                "description": "批注信息；示例/约定：[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称"
+              },
+              "legendConfig": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "图例设置；示例/约定：{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法"
+              },
+              "displayExtremeProbe": {
+                "type": "integer",
+                "description": "是否显示最值探针；示例/约定：0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0"
+              },
+              "sceneName": {
+                "type": "string",
+                "description": "自定义视图名称；示例/约定：\"test\""
+              },
+              "preserveScene": {
+                "type": "boolean",
+                "description": "是否保存截图视图；示例/约定：true/false(默认 false)"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取模型截图"
+      },
+      "animationGif": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "animationGif"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"Step-1\"(默认第一个工况)"
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "stateId": {
+                "type": "integer",
+                "description": "帧数，工况中第几帧；示例/约定：1,2,3...，默认最后一帧"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "对象类型；示例/约定：\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 ID（oriId）；示例/约定：[1,2,3]([]表示不显示,不设置显示全部)"
+              },
+              "entitiesNames": {
+                "type": "array",
+                "items": {},
+                "description": "对象名称；示例/约定：['part'](不设置显示全部, 优先级低于 entitiesIds)"
+              },
+              "transparentEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置透明的零件；示例/约定：[1,2](默认[])"
+              },
+              "partDisplayMode": {
+                "type": "integer",
+                "description": "零件渲染模式；示例/约定：1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)"
+              },
+              "cameraViewport": {
+                "type": "string",
+                "description": "标准视角；示例/约定：\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。"
+              },
+              "cameraZoomLevel": {
+                "type": "number",
+                "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1；示例/约定：\"2\": 放大两倍"
+              },
+              "dispScale": {
+                "type": "number",
+                "description": "缩放系数；示例/约定：默认 1"
+              },
+              "dispOpts": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "缩放系数；示例/约定：默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }"
+              },
+              "scalarEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置显示云图的零件oriId；示例/约定：默认显示全部"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "legendVisile": {
+                "type": "number",
+                "description": "图例是否显示，默认显示；示例/约定：1-显示， 0-不显示，默认 1"
+              },
+              "gProbeNode": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "生成探针的节点信息；示例/约定：{\"nsetNames\": [\"RESPONSE\"]}，节点集名称"
+              },
+              "annotations": {
+                "type": "array",
+                "items": {},
+                "description": "批注信息；示例/约定：[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称"
+              },
+              "legendConfig": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "图例设置；示例/约定：{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法"
+              },
+              "displayExtremeProbe": {
+                "type": "integer",
+                "description": "是否显示最值探针；示例/约定：0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0"
+              },
+              "sceneName": {
+                "type": "string",
+                "description": "自定义视图名称；示例/约定：\"test\""
+              },
+              "preserveScene": {
+                "type": "boolean",
+                "description": "是否保存截图视图；示例/约定：true/false(默认 false)"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取云图动画"
+      },
+      "XYCurveData1": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "XYCurveData1"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "coordSystemType": {
+                "type": "integer",
+                "description": "坐标系类型；示例/约定：1 全局，2 局部，默认全局"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：Step-1"
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "nodeIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "节点 id 数组；示例/约定：[12715, 23223]"
+              },
+              "yVarName": {
+                "type": "string",
+                "description": "y 轴结果变量名称；示例/约定：根据用户 vkigen.json 配置里面的变量名称"
+              },
+              "xVarName": {
+                "type": "string",
+                "description": "x 轴结果变量名称；示例/约定：根据用户 vkigen.json 配置里面的变量名称 , 不传是根据当前工况使用时间 var_time 或者频率 var_frequency 或者模态 var_mode"
+              },
+              "stateIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "帧数数组；示例/约定：[1, 2, 3]，[] = 全部零件，默认[]"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "loadcaseName",
+              "nodeIds",
+              "yVarName"
+            ]
+          }
+        },
+        "description": "获取节点随时间相关的 XY 曲线值 1"
+      },
+      "freqValue": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "freqValue"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "method": {
+                "type": "string",
+                "description": "根据 阶数/频率范围 截取模态；示例/约定：order/freq"
+              },
+              "range": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "阶数范围；示例/约定：[1,3]"
+              },
+              "modalIndex": {
+                "type": "integer",
+                "description": "模态分析步；示例/约定：0，1，2，默认为 0，（仅在 method=order 是生效）"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "method",
+              "range"
+            ]
+          }
+        },
+        "description": "获取模态"
+      },
+      "freqGif": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "freqGif"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"Step-1\"(默认第一个工况)"
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "stateId": {
+                "type": "integer",
+                "description": "帧数，工况中第几帧；示例/约定：1,2,3...，默认最后一帧"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "对象类型；示例/约定：\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 ID（oriId）；示例/约定：[1,2,3]([]表示不显示,不设置显示全部)"
+              },
+              "entitiesNames": {
+                "type": "array",
+                "items": {},
+                "description": "对象名称；示例/约定：['part'](不设置显示全部, 优先级低于 entitiesIds)"
+              },
+              "transparentEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置透明的零件；示例/约定：[1,2](默认[])"
+              },
+              "partDisplayMode": {
+                "type": "integer",
+                "description": "零件渲染模式；示例/约定：1:仅着色, 2:轮廓线, 3:着色+轮廓线, 4:网格线, 5:着色+网格线(默认 3)"
+              },
+              "cameraViewport": {
+                "type": "string",
+                "description": "标准视角；示例/约定：\"front\"/\"back\"/\"left\"/\"right\"/\"top\"/\"bottom\"/\"home\"/\"iso\" 默认\"home\",可支持\"front(0, 45, 0)\"格式调整视角旋转。三个数字参数分别表示绕 x,y,z 轴的旋转角度。"
+              },
+              "cameraZoomLevel": {
+                "type": "number",
+                "description": "视口缩放系数，大于 1 放大，小于 1 缩小，值必须大于 0，默认 1；示例/约定：\"2\": 放大两倍"
+              },
+              "dispScale": {
+                "type": "number",
+                "description": "缩放系数；示例/约定：默认 1"
+              },
+              "dispOpts": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "缩放系数；示例/约定：默认 { scaleX: 1, scaleY: 1, scaleZ: 1 }"
+              },
+              "scalarEntities": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "设置显示云图的零件oriId；示例/约定：默认显示全部"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "legendVisile": {
+                "type": "number",
+                "description": "图例是否显示，默认显示；示例/约定：1-显示， 0-不显示，默认 1"
+              },
+              "gProbeNode": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "生成探针的节点信息；示例/约定：{\"nsetNames\": [\"RESPONSE\"]}，节点集名称"
+              },
+              "annotations": {
+                "type": "array",
+                "items": {},
+                "description": "批注信息；示例/约定：[{\"nodeId\": 12333, \"title\": \"这里是标题\", \"content\": \"这里是正文\", \"attached\": true}, {\"setName\": \"SET-BALL\", \"title\": \"节点标题\", \"content\": \"这里是正文\", \"attached\": false}]，setName-节点集名称"
+              },
+              "legendConfig": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "图例设置；示例/约定：{\"defaultColorMap\": {\"11\": \"#969696\"},\"legendValDisplayExponential\": false }，defaultColorMap-默认颜色设置，如果是 12 色段，那最后一段的 key 是'11',key 就是段落索引，legendValDisplayExponential-是否是科学计数法"
+              },
+              "displayExtremeProbe": {
+                "type": "integer",
+                "description": "是否显示最值探针；示例/约定：0-不显示，1-全显示，2-仅显示 max，3-仅显示 min，默认 0"
+              },
+              "sceneName": {
+                "type": "string",
+                "description": "自定义视图名称；示例/约定：\"test\""
+              },
+              "preserveScene": {
+                "type": "boolean",
+                "description": "是否保存截图视图；示例/约定：true/false(默认 false)"
+              },
+              "order": {
+                "type": "integer",
+                "description": "阶数；示例/约定：默认 1"
+              },
+              "modalIndex": {
+                "type": "integer",
+                "description": "模态分析步；示例/约定：0，1，2，默认为 0，（仅在 method=order 是生效）"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取模态动画"
+      },
+      "loadcases": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "loadcases"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取工况列表"
+      },
+      "variables": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "variables"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"Modal Analysis 1\""
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取变量列表"
+      },
+      "curveInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "curveInfo"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"p/test/binout/binout0000\""
+              },
+              "dataPath": {
+                "type": "string",
+                "description": "请求加载的当前目录；示例/约定：默认为\"/\", 也可以指定为\"/group1/group1.1\"这样的路径"
+              },
+              "level": {
+                "type": "number",
+                "description": "加载 hdf5 目录结构的深度；示例/约定：默认为-1 ,递归完全的 tree"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取曲线变量"
+      },
+      "curveData": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "curveData"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"p/test/binout/binout0000\""
+              },
+              "dataPath": {
+                "type": "array",
+                "items": {},
+                "description": "变量列表；示例/约定：[\"/loadstep/glstat/Mem_avl_GB_node644\", \"/loadstep/glstat/time\"]，是变量列表接口叶子节点的 path 字段，仅支持叶子节点上的变量"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "dataPath"
+            ]
+          }
+        },
+        "description": "获取曲线变量数值"
+      },
+      "hitEntities": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "hitEntities"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"p/yangshuo/ER.odb\""
+              },
+              "stateId": {
+                "type": "number",
+                "description": "测试模型所在帧；示例/约定：4"
+              },
+              "box": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 6,
+                "maxItems": 6,
+                "description": "测试包围盒；示例/约定：[0 ,0 , 0, 2040, 2099, 2305],参数说明前面三个为包围盒中心位置，后面三个为包围盒长宽高"
+              },
+              "checkLevel": {
+                "type": "number",
+                "description": "测试级别；示例/约定：默认 1， 0: 只测试零件包围盒 1: 测试零件顶点"
+              },
+              "contained": {
+                "type": "boolean",
+                "description": "是否包含；示例/约定：默认 false，部分包含"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "stateId",
+              "box"
+            ]
+          }
+        },
+        "description": "碰撞检测"
+      },
+      "nodeId": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "nodeId"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"p/test/ER.odb\""
+              },
+              "nodePosList": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "description": "位置坐标；示例/约定：[[100,100,100]]"
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"\""
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "stateId": {
+                "type": "number",
+                "description": "模型所在帧；示例/约定：4"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "nodePosList"
+            ]
+          }
+        },
+        "description": "根据位置获取 nodeId"
+      },
+      "probeGroupByPos": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "probeGroupByPos"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"p/test/ER.odb\""
+              },
+              "nodePosList": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "description": "位置坐标；示例/约定：[[100,100,100]]"
+              },
+              "namePrefix": {
+                "type": "string",
+                "description": "探针名称前缀；示例/约定：\"test\""
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"\""
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "stateId": {
+                "type": "number",
+                "description": "模型所在帧；示例/约定：4"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "nodePosList"
+            ]
+          }
+        },
+        "description": "根据位置生成探针组"
+      },
+      "nodeInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "nodeInfo"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "coordSystemType": {
+                "type": "integer",
+                "description": "坐标系类型；示例/约定：1 全局，2 局部，默认全局"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "stateIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "帧数数组；示例/约定：[1, 2, 3]，[] = 全部帧数，默认[]"
+              },
+              "nodeIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "节点 ID；示例/约定：[1204]"
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"\""
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "对象类型；示例/约定：\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 ID（oriId）；示例/约定：[1,2,3]([]表示不显示,不设置显示全部)"
+              },
+              "entitiesNames": {
+                "type": "array",
+                "items": {},
+                "description": "对象名称；示例/约定：['part'](不设置显示全部, 优先级低于 entitiesIds)"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "nodeIds"
+            ]
+          }
+        },
+        "description": "获取节点信息"
+      },
+      "elementInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "elementInfo"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"/u/test1/model.odb\""
+              },
+              "varName": {
+                "type": "string",
+                "description": "结果变量名称；示例/约定：根据用户 vkigen.json 配置"
+              },
+              "coordSystemType": {
+                "type": "integer",
+                "description": "坐标系类型；示例/约定：1 全局，2 局部，默认全局"
+              },
+              "coordSystemName": {
+                "type": "string",
+                "description": "坐标系名称；示例/约定：\"坐标系 1\",\"global\",\"analysis\"， 优先级低于 coordSystemId"
+              },
+              "coordSystemId": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "description": "坐标系 Id；示例/约定：\"1\",\"global\",\"analysis\""
+              },
+              "useCornerData": {
+                "type": "integer",
+                "description": "角点数据；示例/约定：0:不用角点数据, 1:用角点数据(默认 0)"
+              },
+              "shellLayer": {
+                "type": "string",
+                "description": "壳单元层；示例/约定：\"bottom\"/\"top\"/n(第 n 层)(默认\"bottom\")"
+              },
+              "nodeAverage": {
+                "type": "number",
+                "description": "节点平均值；示例/约定：0~1 区间(默认 0.75)"
+              },
+              "avgMethod": {
+                "type": "string",
+                "description": "节点平均方法；示例/约定：'none' | 'simple' | 'max' | 'min'，默认'none'"
+              },
+              "avgRegion": {
+                "type": "string",
+                "description": "节点平均范围；示例/约定：'model' | 'part' ,默认'model'"
+              },
+              "avgOrder": {
+                "type": "string",
+                "description": "节点平均计算顺序；示例/约定：'pre' | 'post' ,默认'pre'"
+              },
+              "stateIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "帧数数组；示例/约定：[1, 2, 3]，[] = 全部帧数，默认[]"
+              },
+              "elemIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "单元 ID；示例/约定：[12]"
+              },
+              "loadcaseName": {
+                "type": "string",
+                "description": "工况名；示例/约定：\"\""
+              },
+              "loadcaseIndex": {
+                "type": "integer",
+                "description": "工况索引；示例/约定：0，1，2...(默认第一个工况) ,优先级大于 loadcaseName"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "对象类型；示例/约定：\"Part\"/\"Element\"/\"Set\"/\"Node\"(默认\"Part\",仅支持\"Part\"/\"Set\")"
+              },
+              "entitiesIds": {
+                "type": "array",
+                "items": {},
+                "description": "对象 ID（oriId）；示例/约定：[1,2,3]([]表示不显示,不设置显示全部)"
+              },
+              "entitiesNames": {
+                "type": "array",
+                "items": {},
+                "description": "对象名称；示例/约定：['part'](不设置显示全部, 优先级低于 entitiesIds)"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "elemIds"
+            ]
+          }
+        },
+        "description": "获取单元信息"
+      },
+      "assemble": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "assemble"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "文件名；示例/约定：\"p/test/ER.odb\""
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "获取装配树信息"
+      },
+      "modelDiff": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "modelDiff"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "rdb1": {
+                "type": "object",
+                "required": [
+                  "rdbPath"
+                ],
+                "properties": {
+                  "rdbPath": {
+                    "type": "string"
+                  }
+                },
+                "description": "模型1信息；示例/约定：{\"rdbPath\": \"p/AT/convert/CAE_model/bdf/t1/Job-1000-1.inp\" }"
+              },
+              "rdb2": {
+                "type": "object",
+                "required": [
+                  "rdbPath"
+                ],
+                "properties": {
+                  "rdbPath": {
+                    "type": "string"
+                  }
+                },
+                "description": "模型2信息；示例/约定：{\"rdbPath\": \"p/AT/convert/CAE_model/bdf/t1/Job-1000-2.inp\" }"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "rdb1",
+              "rdb2"
+            ]
+          }
+        },
+        "description": "获取对比结果；源文档存在歧义，见 README"
+      },
+      "deleteModelFile": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "deleteModelFile"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "模型参数；示例/约定：见[视图公共参数](#视图公共参数)"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename"
+            ]
+          }
+        },
+        "description": "删除指定模型文件"
+      },
+      "geometryParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "geometryParams"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "模型参数；示例/约定：见[视图公共参数](#视图公共参数)"
+              },
+              "colors": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "RGB颜色列表；示例/约定：单个颜色：[255,0,0]， 多个颜色：[255,0,0,255,55,55]每3个代表一个颜色"
+              },
+              "type": {
+                "type": "string",
+                "description": "查询类型；示例/约定：'part','face'，默认是'part'"
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "filename",
+              "colors"
+            ]
+          }
+        },
+        "description": "根据颜色查询ids；源文档存在歧义，见 README"
+      }
+    }
+  }
+}

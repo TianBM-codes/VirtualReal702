@@ -1,0 +1,14 @@
+{
+  "filename": "p/test/model.odb",
+  "node_ids": [1],
+  "direction": [1, 1, 0],
+  "kind": "stress",
+  "options": {
+    "loadcaseName": "Step-1",
+    "stateIds": [1, 2],
+    "xVarName": "var_time",
+    "coordSystemType": 1,
+    "avgMethod": "none",
+    "shellLayer": "bottom"
+  }
+}
