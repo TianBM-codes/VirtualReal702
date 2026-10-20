@@ -1,8 +1,10 @@
 """解析流水线的最终屏障：不依赖对外 ready，不使用自动预热的让路队列。"""
 import json
+import logging
 import os
 import time
 
+from ..core.errors import NotFoundError
 from ..core.state import ModelIndex, OdbRegistry
 from ..infra.manifest_repo import ManifestRepo
 from . import cache_store
@@ -13,6 +15,9 @@ from .result_service import (
     deform_scale_stats, frame_vertex_displacements,
 )
 from .warmup_service import _WarmLock, _last_frame
+
+
+logger = logging.getLogger(__name__)
 
 
 class PreparationError(RuntimeError):
@@ -91,10 +96,16 @@ def prepare_workspace(odb_id: str, workspace: str, result_group=None,
                     try:
                         # 梁/质量点实例没有表面三角形，云图缓存不适用，U 位移仍准备。
                         if len(idx.render_source_elem_row[instance]):
-                            compute_scalar_range(reg, odb_id, instance, step, field, frame, result_group=rg)
-                            frame_scalars(reg, odb_id, instance, step, field, frame, result_group=rg)
-                            frame_colors(reg, odb_id, instance, step, field, frame,
-                                         component="U1", result_group=rg)
+                            try:
+                                compute_scalar_range(reg, odb_id, instance, step, field, frame, result_group=rg)
+                                frame_scalars(reg, odb_id, instance, step, field, frame, result_group=rg)
+                                frame_colors(reg, odb_id, instance, step, field, frame,
+                                             component="U1", result_group=rg)
+                            except NotFoundError as exc:
+                                # 有结果块但全 NaN 是合法的"该实例无此量"（如实体实例的
+                                # 面内主应变 *_MAX_INPLANE_PRINCIPAL），接口对此返回空 payload
+                                # 置灰，首屏同样跳过；文件/块缺失已在上面硬校验过。
+                                logger.info("prepare %s/%s: no data, skipped (%s)", context, instance, exc)
                         if field == "U":
                             frame_vertex_displacements(reg, odb_id, instance, step, frame, result_group=rg)
                     except Exception as exc:
