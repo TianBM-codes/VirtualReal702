@@ -178,6 +178,20 @@ def test_declared_result_failure_is_not_skipped(prepared_model, monkeypatch):
         readiness.prepare_workspace("p", str(workspace))
 
 
+def test_instance_without_data_is_skipped_like_api(prepared_model, monkeypatch):
+    """实体实例的面内主应变等全 NaN 块：接口返回空 payload 置灰，首屏也不应失败。"""
+    workspace, _idx, calls = prepared_model
+    from src.l3.core.errors import NotFoundError
+
+    def no_data(*a, **kw):
+        raise NotFoundError("No result data (NODAL/ELEMENT_NODAL/INTEGRATION_POINT)")
+
+    monkeypatch.setattr(readiness, "compute_scalar_range", no_data)
+    readiness.prepare_workspace("p", str(workspace), "g", group_only=True)
+    # 云图三件套跳过，U 位移与变形统计照常准备
+    assert len(calls) == 2
+
+
 def test_missing_advanced_data_never_counts_as_success(prepared_model):
     workspace, idx, _calls = prepared_model
     del idx.averaging_data["B"]
