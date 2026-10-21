@@ -9,7 +9,7 @@ import pytest
 from src import job_runner
 from src.l3.infra import runner_thread
 from src.l3.infra.registry_repo import RegistryRepo
-from src.l3.services import cache_store, readiness_service as readiness
+from src.l3.services import cache_store, precompute_plan, readiness_service as readiness
 
 
 @pytest.fixture(params=[False, True], ids=["standalone", "embedded"])
@@ -150,7 +150,7 @@ def prepared_model(tmp_path, monkeypatch):
 
     for name in ("compute_scalar_range", "frame_scalars", "frame_colors",
                  "frame_vertex_displacements", "deform_scale_stats"):
-        monkeypatch.setattr(readiness, name, calculate)
+        monkeypatch.setattr(precompute_plan, name, calculate)
     monkeypatch.setattr(cache_store.settings, "scalar_cache_mb", 10)
     monkeypatch.setattr(cache_store.settings, "scalar_disk_cache_mb", 10)
     return tmp_path, idx, calls
@@ -161,9 +161,13 @@ def test_prepare_ignores_busy_queue_and_only_warms_instances_with_data(prepared_
     from src.l3.services import warmup_service
     monkeypatch.setattr(warmup_service, "parse_busy", lambda: pytest.fail("不得等待解析队列空闲"))
     readiness.prepare_workspace("p", str(workspace), "g", group_only=True)
-    assert len(calls) == 5
-    assert all(args[2] == "A" and args[-1] == 4 for args, _kw in calls[:4])
-    assert calls[4][0][2:5] == ("Step", 4, "g")
+    # 全量计划：每帧 range 1 + scalars smooth/flat 2 + frame-colors U1-3×2 6 + 位移 1，
+    # 共 2 帧；再加每帧变形比例 2。只有有结果块的实例 A，B 不算。
+    assert len(calls) == 22
+    per_instance = [args for args, _kw in calls[:-2]]
+    assert all(args[2] == "A" for args in per_instance)
+    assert {args[-1] for args in per_instance} == {0, 4}       # 第 0 帧也覆盖
+    assert [args[2:5] for args, _kw in calls[-2:]] == [("Step", 0, "g"), ("Step", 4, "g")]
     assert list((workspace / "l3_cache" / "groups" / "g" / "json").glob("*.json"))
 
 
@@ -173,23 +177,23 @@ def test_declared_result_failure_is_not_skipped(prepared_model, monkeypatch):
     def fail(*a, **kw):
         raise OSError("broken HDF5")
 
-    monkeypatch.setattr(readiness, "frame_scalars", fail)
+    monkeypatch.setattr(precompute_plan, "frame_scalars", fail)
     with pytest.raises(readiness.PreparationError, match="g/Step/U/A.*broken HDF5"):
         readiness.prepare_workspace("p", str(workspace))
 
 
 def test_instance_without_data_is_skipped_like_api(prepared_model, monkeypatch):
-    """实体实例的面内主应变等全 NaN 块：接口返回空 payload 置灰，首屏也不应失败。"""
+    """实体实例的面内主应变等全 NaN 块：接口返回空 payload 置灰，全量准备也不应失败。"""
     workspace, _idx, calls = prepared_model
     from src.l3.core.errors import NotFoundError
 
     def no_data(*a, **kw):
         raise NotFoundError("No result data (NODAL/ELEMENT_NODAL/INTEGRATION_POINT)")
 
-    monkeypatch.setattr(readiness, "compute_scalar_range", no_data)
+    monkeypatch.setattr(precompute_plan, "compute_scalar_range", no_data)
     readiness.prepare_workspace("p", str(workspace), "g", group_only=True)
-    # 云图三件套跳过，U 位移与变形统计照常准备
-    assert len(calls) == 2
+    # 无数据的范围逐项跳过（2 帧 × 1 个分量），其余照常准备
+    assert len(calls) == 20
 
 
 def test_missing_advanced_data_never_counts_as_success(prepared_model):

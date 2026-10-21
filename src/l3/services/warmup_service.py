@@ -1,9 +1,10 @@
 """
 缓存预热服务。
 
-目标：用户第一次点开云图就命中缓存。做法是在三个时机后台预算"每个 step 最后
-一帧的默认视图"（每个 result_group × step × field × instance，分量取默认模长/
-Mises；静力 step 的第 0 帧通常是加载前的初始状态，没有预算价值）：
+目标：用户第一次点开云图就命中缓存。做法是在以下时机后台执行全量预计算计划
+（services/precompute_plan.py：每个 result_group × step × field × instance 的全部帧、
+全部分量、smooth/flat，以及 frame-colors、U 位移与变形比例）。新导入由 runner 在
+ready 前严格执行同一计划；这里负责计划升级前就 ready 的旧项目补算和兜底：
 
   1. 模型加载完成（core.state 的 on_render_ready_loaded 回调，覆盖启动预载
      与首次访问按需加载）；
@@ -24,11 +25,11 @@ Mises；静力 step 的第 0 帧通常是加载前的初始状态，没有预算
 另外先预算只依赖模型几何的数据：按属性/截面/单元类型等分类着色（color-code
 各 scheme，elset 除外）的面分类编码、单元边线（element-mesh-edges）响应包。
 
-预热直接调 compute_scalar_range / frame_scalars，算完自然写入内存 + 磁盘
-缓存（见 result_service 的缓存层）；U 场再顺带预热变形家族的
-deform-suggest-scale 统计与各 instance 顶点位移向量（同为最后一帧）。已缓存的组合命中后立即返回，所以预热
-是幂等的，重复触发只补算新增的字段。整个过程单线程串行、daemon 线程执行，
-失败只记日志、不影响正常请求。
+计划内的计算直接调 result_service 的接口函数，算完自然写入内存 + 磁盘缓存。
+已缓存的组合命中后立即返回，所以预热是幂等的，重复触发只补算缺的部分；完成标记
+带计划版本（PLAN_VERSION），覆盖范围升级后旧项目会重新补算。整个过程单线程
+串行、daemon 线程执行，每项计算前检查是否需要给解析让路，失败只记日志、不影响
+正常请求。
 """
 import hashlib
 import json
@@ -44,13 +45,7 @@ from ..infra.manifest_repo import ManifestRepo
 from . import cache_store
 from .color_service import warm_color_codes
 from .mesh_edge_service import warm_element_mesh_edges
-from .result_service import (
-    compute_scalar_range,
-    frame_colors,
-    deform_scale_stats,
-    frame_scalars,
-    frame_vertex_displacements,
-)
+from .precompute_plan import PLAN_VERSION, list_targets, run_plan
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +183,7 @@ def _targets_signature(workspace: str) -> str:
         path = fp if (fp and os.path.isabs(fp)) else os.path.join(workspace, fp or "")
         items.append([rg, step, field, list(cache_store.file_sig(path) or ())])
     items.sort(key=lambda x: json.dumps(x, sort_keys=True, default=str))
+    items.append(["plan_version", PLAN_VERSION])
     return hashlib.sha1(json.dumps(items, default=str).encode()).hexdigest()
 
 
@@ -238,23 +234,6 @@ def _list_result_targets(manifest: ManifestRepo) -> list:
         return []
 
 
-def _last_frame(manifest: ManifestRepo, step: str, result_group) -> int:
-    """step 的最后一帧：优先 frames 表的最大 frame_idx，其次 steps.num_frames-1，都没有取 0。"""
-    try:
-        frames = manifest.get_frames(step, result_group)
-        idxs = [int(r["frame_idx"]) for r in frames if r["frame_idx"] is not None]
-        if idxs:
-            return max(idxs)
-    except Exception:
-        pass
-    info = manifest.get_step_info(step, result_group)
-    try:
-        n = int(info.get("num_frames")) if info else 0
-    except (TypeError, ValueError):
-        n = 0
-    return max(n - 1, 0)
-
-
 class _Yield(Exception):
     """预热途中解析任务开始了 → 中止让路。"""
 
@@ -262,7 +241,7 @@ class _Yield(Exception):
 def warm_odb_sync(odb_id: str, reason: str = "",
                   reg: Optional[OdbRegistry] = None,
                   yield_to_parse: bool = False) -> dict:
-    """同步预热一个模型各 step 最后一帧的默认视图。未加载的模型会先触发加载。
+    """同步执行一个模型的全量预计算计划。未加载的模型会先触发加载。
 
     yield_to_parse=True 时，每个组合开始前检查解析是否繁忙，繁忙则中止并返回
     status="yielded"（不记录 _warmed_targets，poll 稍后补做；已算的部分在缓存里）。
@@ -287,91 +266,37 @@ def warm_odb_sync(odb_id: str, reason: str = "",
 
     manifest = ManifestRepo(idx.workspace)
     targets = _list_result_targets(manifest)
-    instances = list(idx.source_node_rows.keys())
-    last_frames: Dict[tuple, int] = {}
-    for result_group, step, _field in targets:
-        if (result_group, step) not in last_frames:
-            last_frames[(result_group, step)] = _last_frame(manifest, step, result_group)
+    plan = list_targets(manifest, default_instances=list(idx.source_node_rows.keys()))
 
     def _check():
         if yield_to_parse and parse_busy():
             raise _Yield()
 
+    def _progress(message, _pct):
+        logger.info("Warmup[%s]: %s", odb_id, message)
+
     try:
-        n_ok, n_skip, n_deform = _warm_targets(
-            reg, odb_id, targets, instances, last_frames, _check)
+        stats = run_plan(reg, odb_id, idx, plan, strict=False, check=_check,
+                         progress=_progress)
     except _Yield:
         logger.info("Warmup[%s]: parse task started, yielding (%.1fs)",
                     odb_id, time.time() - t0)
         return {"odb_id": odb_id, "status": "yielded"}
     _warmed_targets[odb_id] = frozenset(targets)
+    by_kind = stats["by_kind"]
+    n_ok = by_kind.get("range", 0)
+    n_skip = stats["skipped"] + stats["failed"]
+    n_deform = by_kind.get("displacement", 0) + by_kind.get("deform_stats", 0)
 
     dt = time.time() - t0
-    logger.info("Warmup[%s]%s: %d color-code, %d mesh-edges, %d combo(s) warmed, "
-                "%d skipped, %d deform, %.1fs", odb_id, f" ({reason})" if reason else "",
-                n_color, n_edges, n_ok, n_skip, n_deform, dt)
+    logger.info("Warmup[%s]%s: %d color-code, %d mesh-edges, plan %d/%d done, "
+                "%d skipped, %d failed, %.1fs", odb_id, f" ({reason})" if reason else "",
+                n_color, n_edges, stats["done"], stats["total"], stats["skipped"],
+                stats["failed"], dt)
     return {"odb_id": odb_id, "status": "done",
             "color_warmed": n_color, "mesh_edges_warmed": n_edges,
             "warmed": n_ok, "skipped": n_skip,
             "deform_warmed": n_deform, "seconds": round(dt, 1)}
-
-
-def _warm_targets(reg, odb_id, targets, instances, last_frames, check):
-    n_ok = n_skip = 0
-    for result_group, step, field in targets:
-        check()
-        frame = last_frames[(result_group, step)]
-        for instance in instances:
-            try:
-                compute_scalar_range(
-                    registry=reg, odb_id=odb_id, instance=instance,
-                    step=step, field=field, frame_idx=frame,
-                    result_group=result_group,
-                )
-                frame_scalars(
-                    registry=reg, odb_id=odb_id, instance=instance,
-                    step=step, field=field, frame_idx=frame,
-                    result_group=result_group,
-                )
-                n_ok += 1
-            except Exception:
-                # 该 instance 没有这个字段/位置数据是常态，跳过即可
-                n_skip += 1
-                continue
-            try:
-                # 旧接口 frame-colors（前端用哪个未知，两个都覆盖）：路由默认分量 U1
-                frame_colors(
-                    registry=reg, odb_id=odb_id, instance=instance,
-                    step=step, field=field, frame_idx=frame, component="U1",
-                    result_group=result_group,
-                )
-            except Exception:
-                pass
-    # 变形家族顺带预热（U 场最后一帧）：deform-suggest-scale 统计 + 每 instance
-    # 顶点位移向量。deformed-positions 的整包按 scale 进缓存键、前端实际 scale
-    # 不可预知 → 不预热，留给首次请求填。
-    n_deform = 0
-    for result_group, step, field in targets:
-        if field != "U":
-            continue
-        check()
-        frame = last_frames[(result_group, step)]
-        try:
-            deform_scale_stats(reg, odb_id, step, frame, result_group)
-            n_deform += 1
-        except Exception:
-            pass
-        for instance in instances:
-            try:
-                frame_vertex_displacements(
-                    registry=reg, odb_id=odb_id, instance=instance,
-                    step=step, frame_idx=frame, result_group=result_group,
-                )
-                n_deform += 1
-            except Exception:
-                # 该 instance 无 vtx_node_row / 无 U 数据是常态，跳过
-                pass
-    return n_ok, n_skip, n_deform
 
 
 def warm_odb_async(odb_id: str, reason: str = "",

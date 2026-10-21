@@ -1,6 +1,6 @@
 # L3 预计算缓存方案（导入即算好、接口直接走缓存）
 
-> 更新时间：2026-10-21。新增 frame-scalars 缓存来源日志。新导入与重跑新增必需的同步首屏准备屏障，成功后才对外 ready；高级索引和缓存失败返回 error。见 [统一就绪判定](Ready-Barrier-Design.md)。原有自动/手动后台预热仍用于补算，其让路和跳过失败的规则不适用于必需准备。
+> 更新时间：2026-10-21。**预计算范围已从“每个 step 最后一帧”扩展为全量计划**（全部帧 × 全部分量 × smooth/flat、frame-colors U1-3、每帧 U 位移），新导入在 ready 前严格执行，旧项目由后台预热补算；实现在 `services/precompute_plan.py`，设计见 [全量预计算方案](L3-Full-Precompute-Cache-Proposal.md)，下文“最后一帧”的描述为历史记录。磁盘容量可设 `APP_SCALAR_DISK_CACHE_MB=-1` 不限容量；普通写入后的容量扫描改为每工作区最多 30 秒一次。新增 frame-scalars 缓存来源日志。新导入与重跑新增必需的同步首屏准备屏障，成功后才对外 ready；高级索引和缓存失败返回 error。见 [统一就绪判定](Ready-Barrier-Design.md)。原有自动/手动后台预热仍用于补算，其让路和跳过失败的规则不适用于必需准备。
 > 历史更新时间：2026-10-09。状态：第 1～7 步已全部实现并推送，待开发者本地跑测试 + 实测。
 > 前置背景：`docs/l3/Perf-Cache-Worklog.md`（frame-scalars 四步优化）、
 > `docs/近期效率优化与算例总览.md`（开发者 9c2afe2 引入的另一套整包缓存）。

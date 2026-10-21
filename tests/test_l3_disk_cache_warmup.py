@@ -198,8 +198,8 @@ def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
     assert r == (pytest.approx(0.0), pytest.approx(8.0))
 
 
-def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypatch):
-    """预热取每个 step 的最后一帧（frames 表最大 frame_idx），第 0 帧不预算。"""
+def test_warmup_covers_every_frame(workspace, make_registry, monkeypatch):
+    """全量计划：frames 表里的每一帧都预算，包括第 0 帧。"""
     registry, instance, _ = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
@@ -223,7 +223,7 @@ def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypat
     conn.close()
 
     report = warm_odb_sync("odb", reason="test", reg=registry)
-    assert report["status"] == "done" and report["warmed"] == 1
+    assert report["status"] == "done" and report["warmed"] == 2
 
     monkeypatch.setattr(h5py, "File", _boom)
     u, legend, _ = frame_scalars(
@@ -231,8 +231,8 @@ def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypat
         step="Step-1", field="U", frame_idx=1, component_idx=None,
     )
     assert legend[1] == pytest.approx(16.0)       # 第 1 帧数据 = 第 0 帧 × 2
-    with pytest.raises(AssertionError, match="cache miss"):
-        _call_frame_scalars(registry, instance)   # 第 0 帧未预算
+    _, legend0, _ = _call_frame_scalars(registry, instance)   # 第 0 帧同样命中
+    assert legend0[1] == pytest.approx(8.0)
 
 
 def test_frame_colors_cached_and_warmed(workspace, make_registry, monkeypatch):

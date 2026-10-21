@@ -661,9 +661,9 @@ def _run_l2(odb_id: str, workspace: str) -> bool:
         _update_status(odb_id, "error", error_msg="[L2 advanced] " + tail_advanced[-2000:])
         _log_job(odb_id, "error", "高级索引失败：" + _esc(tail_advanced[-500:]), stage="l2_advanced")
         return False
-    _log_job(odb_id, "step", "开始首屏缓存准备", stage="cache_prepare", percent=95)
+    _log_job(odb_id, "step", "开始全量缓存准备", stage="cache_prepare", percent=95)
     _update_status(odb_id, "ready", l2_done_at=_now_iso())
-    _log_job(odb_id, "step", _good("解析、索引和首屏缓存全部就绪"), stage="ready", percent=100)
+    _log_job(odb_id, "step", _good("解析、索引和全量缓存全部就绪"), stage="ready", percent=100)
     return True
 
 
@@ -755,7 +755,7 @@ def _claim_pending_project() -> tuple:
 def _update_project_geom_status(project_id: str, status: str,
                                  error_message: str = None) -> None:
     if status == "ready":
-        _log_job(project_id, "step", "基础解析和高级索引完成，开始首屏缓存准备", stage="cache_prepare", percent=95)
+        _log_job(project_id, "step", "基础解析和高级索引完成，开始全量缓存准备", stage="cache_prepare", percent=95)
         try:
             _prepare_registered(_connect, DATA_ROOT, project_id, kind="project")
         except Exception as exc:
@@ -1542,7 +1542,7 @@ def _claim_pending_result_group() -> tuple:
 def _update_result_group_status(project_id: str, result_group: str,
                                  status: str, error_message: str = None) -> None:
     if status == "ready":
-        _log_job(project_id, "step", "基础解析和高级索引完成，开始首屏缓存准备", stage="cache_prepare", percent=95)
+        _log_job(project_id, "step", "基础解析和高级索引完成，开始全量缓存准备", stage="cache_prepare", percent=95)
         try:
             _prepare_registered(_connect, DATA_ROOT, project_id, kind="group", result_group=result_group)
         except Exception as exc:

@@ -99,15 +99,17 @@ class Settings:
         # deform/animation payloads are persisted under <workspace>/l3_cache/ so
         # they survive restarts and are shared across worker processes. Cap is
         # for the whole l3_cache/ of one workspace, evicted oldest-mtime-first.
-        # Default 100 GB (final value to be decided). 0 = memory-only caching.
-        self.scalar_disk_cache_mb = max(
-            0, int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "102400")))
+        # Default 100 GB (final value to be decided). 0 = memory-only caching,
+        # negative (e.g. -1) = unlimited, never evict.
+        self.scalar_disk_cache_mb = int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "102400"))
+        if self.scalar_disk_cache_mb < 0:
+            self.scalar_disk_cache_mb = -1
 
-        # Cache warm-up: automatically precompute the default view of the LAST
-        # frame of every step (every field × instance, magnitude component) in
-        # a background thread when a model finishes loading or a new
-        # result_group becomes ready, so the
-        # first click hits a warm cache. 0 = no automatic warm-up (the manual
+        # Cache warm-up: automatically run the full precompute plan
+        # (services/precompute_plan.py: every frame × component × smooth/flat)
+        # in a background thread when a model finishes loading or a new
+        # result_group becomes ready; projects prepared under an older plan are
+        # backfilled this way. 0 = no automatic warm-up (the manual
         # POST /results/warmup endpoint still works).
         self.enable_warmup = _get(cfg, "APP_WARMUP", "1") == "1"
 
@@ -153,7 +155,7 @@ def log_startup_config() -> None:
         f"  enable_gzip       : {settings.enable_gzip}",
         f"  gzip_compresslevel: {settings.gzip_compresslevel}",
         f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (RAM, 0 = off)",
-        f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off)",
+        f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off, -1 = unlimited)",
         f"  enable_warmup     : {settings.enable_warmup}",
     ]
     if settings.odb_workspace:
