@@ -161,6 +161,30 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 生成基准快照（抽样：首末 step × 第 0/中间/最后帧 × 全部字段、分量、模式、实例），每完成一步优化就用同一批组合比对，
 要求逐字节一致（或 NaN 位置一致且误差为 0），并在单元测试里对比新旧实现。
 
+### 0.8 当前进度与接续（2026-10-21 收尾）
+
+已完成并推送：USUM √2 修复（`e8bfdb9`，已在开发者机器验证）→ 全量计划（`41e32e6`）→ 基准 tag `precompute-opt-baseline`（`fccb74d`）
+→ 优化第 1 步（`0cc0083`）、第 2 步（`e669422`）、第 3 步（`7e9dc81`）。**优化后的代码尚未在开发者机器上运行过。**
+
+开发者正在用 tag 版本生成基准快照 `baseline.npz`（项目 `202610211132`）。接续时按顺序：
+
+1. 确认 `baseline.npz` 已生成（必须用 tag 版本生成）。
+2. `git checkout main && git pull`，跑 `tests/test_en_range_optimization.py`、`test_precompute_parallel.py`、`test_precompute_plan.py`、
+   `test_pipeline_readiness.py`、`test_l3_disk_cache_warmup.py`、`test_l3_warmup_scheduling.py`、`test_l3_deform_cache.py`、
+   `test_stored_magnitude_col.py`，再跑全量 `tests/`（conftest 新增了 autouse 清理）。
+3. `python tools/snapshot_results.py --workspace <202610211132 工作区> --compare baseline.npz`：“不一致”必须为 0。
+4. 重跑 `tools/profile_precompute.py` 对比 §0.7 的耗时（注意它关闭缓存，看不到第 1 步效果）。
+5. 重启服务后导入一个小模型：看 `cache_prepare` 进度日志与进程数、ready 后切帧/分量耗时；对与基准相同的项目用
+   `snapshot_results.py --use-disk-cache --compare baseline.npz` 核对多进程写入的缓存内容。
+6. 用实测更新 §0.5/§0.7 的耗时估算；之后估算 1440 万自由度（约 3 GB）模型的规模。
+
+遗留问题：
+- `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
+- STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms，疑似不进缓存，未核对。
+- 手动 `POST /results/warmup` 不给解析让路，期间追加结果可能等缓存锁超时（300 s）。
+- 重启后旧项目被打开会在 Web 进程内单线程补算全量计划（可能数小时），如需避免可设 `APP_WARMUP=0`。
+- 后续可选：按内容去重相邻 step 交接帧（§0.4）、整块读取所有帧、任务账本、集合/区域/几何类最终响应等其他接口族。
+
 ## 1. 需求与结论
 
 用户当前要求：**能缓存的都缓存，需要遍历接口可能性进行缓存；暂不以磁盘存储量作为缩减覆盖范围的理由。**
