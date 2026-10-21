@@ -1,4 +1,4 @@
-"""
+r"""
 结果快照与比对：确认缓存/性能优化没有改变任何计算结果（不连服务、默认不写缓存）。
 
 推荐用法：基准代码放在独立的 git worktree 里，主目录（正在跑服务和解析）不用切换版本：
@@ -47,6 +47,10 @@ def _use_code_root(code_root):
     if not code_root:
         return
     root = os.path.abspath(code_root)
+    if not os.path.isfile(os.path.join(root, "src", "l3", "services", "result_service.py")):
+        sys.exit(f"--code-root {root} 下没有 src/l3 代码。请先在仓库目录执行：\n"
+                 f"    git worktree add {root} precompute-opt-baseline\n"
+                 f"然后用 git -C {root} log -1 --oneline 确认是 fccb74d。")
     sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _TOOL_REPO]
     sys.path.insert(0, root)
 
