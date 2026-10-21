@@ -113,6 +113,12 @@ class Settings:
         # POST /results/warmup endpoint still works).
         self.enable_warmup = _get(cfg, "APP_WARMUP", "1") == "1"
 
+        # Parallel worker processes for the strict full-cache preparation before
+        # ready (services/precompute_plan.run_plan_parallel). 0 = auto (physical
+        # cores, capped at 8 and by free memory measured after the first worker
+        # finishes a target); 1 = run in-process sequentially.
+        self.precompute_workers = max(0, int(_get(cfg, "APP_PRECOMPUTE_WORKERS", "0")))
+
         # Embedded runner: run L1+L2 job pipeline as a daemon thread inside
         # the web process.  Default: ON on Linux/macOS, OFF on Windows.
         # On Windows, numpy/MKL (Intel Fortran runtime) conflicts with
@@ -157,6 +163,7 @@ def log_startup_config() -> None:
         f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (RAM, 0 = off)",
         f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off, -1 = unlimited)",
         f"  enable_warmup     : {settings.enable_warmup}",
+        f"  precompute_workers: {settings.precompute_workers}   (0 = auto, 1 = sequential)",
     ]
     if settings.odb_workspace:
         lines.append(f"  [DEV] odb_workspace: {settings.odb_workspace}")

@@ -151,6 +151,12 @@ STATUS（WHOLE_ELEMENT）再次请求仍需约 190 ms，疑似不进缓存，实
 - 表面平均 `_en_per_vertex_averaged` 用的是不稳定排序，预排序会改变组内求和顺序、可能动到 float32 最后一位，**未改动**。
 - 假设：网格连接里的节点行号非负（L1 由 searchsorted 生成）。新实现按 (区域, 节点) 成对比较分组，旧实现按复合键分组，两者在此假设下等价。
 
+**第 3 步已实施**（2026-10-21）：严格准备按目标（结果组 × step × 字段）分给多个 worker 进程（`precompute_plan.run_plan_parallel`，
+worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessing，避免 Windows spawn 在子进程里重跑 app.py）。
+先起 1 个 worker，完成第一个目标后按其内存峰值与当前可用内存的 70% 决定总数（`APP_PRECOMPUTE_WORKERS`：0 = 自动，最多 8 且不超过物理核数；
+1 = 本进程串行；没有 psutil 时自动模式最多 4 个）。worker 只收集落盘条目，父进程合并后统一淘汰与核验；任一目标失败或 worker 退出即整体失败。
+后台预热（旧项目补算）仍在 Web 进程内单线程执行。`tools/snapshot_results.py --use-disk-cache` 可直接核对导入时写入的缓存内容。
+
 **防止改动计算结果**：优化前的代码打 tag `precompute-opt-baseline`。用 `tools/snapshot_results.py` 先在真实模型上
 生成基准快照（抽样：首末 step × 第 0/中间/最后帧 × 全部字段、分量、模式、实例），每完成一步优化就用同一批组合比对，
 要求逐字节一致（或 NaN 位置一致且误差为 0），并在单元测试里对比新旧实现。

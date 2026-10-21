@@ -153,6 +153,7 @@ def prepared_model(tmp_path, monkeypatch):
         monkeypatch.setattr(precompute_plan, name, calculate)
     monkeypatch.setattr(cache_store.settings, "scalar_cache_mb", 10)
     monkeypatch.setattr(cache_store.settings, "scalar_disk_cache_mb", 10)
+    monkeypatch.setattr(cache_store.settings, "precompute_workers", 1)   # 打桩只在本进程生效
     return tmp_path, idx, calls
 
 

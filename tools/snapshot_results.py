@@ -16,6 +16,9 @@
   - U 场：顶点位移向量与 deform-suggest-scale 统计。
 可用 --steps all、--frames all 扩大，--fields S,U 缩小。
 
+--use-disk-cache：不关缓存，直接读取全量准备写好的磁盘缓存（缺的条目会现算并写入
+l3_cache），用于核对“导入时（含多进程）写进缓存的内容”与基准一致。
+
 每项记录 SHA-256（逐字节一致性）和数值统计（NaN 个数、最小、最大、和）；
 前 --keep-arrays 项（默认 60）另存完整数组，比对不一致时能给出最大绝对误差。
 比对结果分三类：完全一致 / 数值等价（字节不同但 NaN 位置一致、最大误差 ≤ --atol）/ 不一致。
@@ -175,6 +178,8 @@ def main():
     ap.add_argument("--frames", choices=("ends", "all"), default="ends")
     ap.add_argument("--fields", default=None, help="逗号分隔，只抽这些字段")
     ap.add_argument("--keep-arrays", type=int, default=60)
+    ap.add_argument("--use-disk-cache", action="store_true",
+                    help="读取已有磁盘缓存（核对导入时写入的缓存内容），默认关闭缓存每项现算")
     ap.add_argument("--atol", type=float, default=0.0,
                     help="数值等价的最大绝对误差，默认 0（只允许 -0/+0 一类的字节差异）")
     args = ap.parse_args()
@@ -185,7 +190,11 @@ def main():
     from src.l3.infra.manifest_repo import ManifestRepo
     from src.l3.services.precompute_plan import list_targets
 
-    _disable_caches()
+    if args.use_disk_cache:
+        from src.l3.services import cache_store
+        cache_store.clear_memory()
+    else:
+        _disable_caches()
     reg, idx = _load(odb_id, workspace)
 
     if args.compare:

@@ -67,15 +67,21 @@ _required_entries = ContextVar("required_cache_entries", default=None)
 
 
 @contextmanager
-def require_persistent_cache():
-    """Runner 全量缓存准备：必须落盘，写失败/容量不足不能伪装成预热成功。"""
+def require_persistent_cache(*, verify: bool = True):
+    """Runner 全量缓存准备：必须落盘，写失败/容量不足不能伪装成预热成功。
+
+    yield 本轮需要的条目集合 {(workspace, path)}。verify=False 只收集不核验
+    （并行 worker 用），由父进程把各 worker 的条目并入自己的集合后统一淘汰与核验。
+    """
     if not disk_enabled():
         raise RuntimeError("全量缓存需要 APP_SCALAR_CACHE_MB 和 APP_SCALAR_DISK_CACHE_MB 均大于 0"
                            "（磁盘层也可设 -1 表示不限容量）")
     entries = set()
     token = _required_entries.set(entries)
     try:
-        yield
+        yield entries
+        if not verify:
+            return
         evict_workspace = {workspace for workspace, _path in entries}
         for workspace in evict_workspace:
             evict(workspace)

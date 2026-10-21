@@ -10,7 +10,7 @@ from ..infra.manifest_repo import ManifestRepo
 from . import cache_store
 from .color_service import warm_color_codes
 from .mesh_edge_service import warm_element_mesh_edges
-from .precompute_plan import list_targets, run_plan
+from .precompute_plan import list_targets, run_plan, run_plan_parallel, worker_limit
 from .warmup_service import _WarmLock
 
 
@@ -76,12 +76,18 @@ def prepare_workspace(odb_id: str, workspace: str, result_group=None,
             if unknown:
                 raise PreparationError(f"{t.context} 的实例不属于模型：{sorted(unknown)}")
 
-        with cache_store.require_persistent_cache():
+        with cache_store.require_persistent_cache() as entries:
             warm_color_codes(idx, strict=True)
             warm_element_mesh_edges(idx, strict=True)
             # 合法的全 NaN 结果（如实体实例的面内主应变）由计划记为跳过，与接口返回空
             # payload 置灰一致；文件/块缺失已在上面硬校验过。
-            stats = run_plan(reg, odb_id, idx, targets, strict=True, progress=progress)
+            workers = worker_limit()
+            if workers > 1 and len(targets) > 1:
+                # 子进程各自加载索引并计算，落盘条目并入 entries，退出本 with 时统一核验
+                stats = run_plan_parallel(odb_id, workspace, idx, targets, max_workers=workers,
+                                          entries=entries, progress=progress)
+            else:
+                stats = run_plan(reg, odb_id, idx, targets, strict=True, progress=progress)
         logger.info("prepare %s: full cache plan done %s", odb_id, stats)
     except Exception as exc:
         raise PreparationError(f"[全量缓存准备失败] {exc}") from exc
