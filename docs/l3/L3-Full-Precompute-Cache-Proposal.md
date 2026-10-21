@@ -181,6 +181,11 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
    `snapshot_results.py --use-disk-cache --compare baseline.npz` 核对多进程写入的缓存内容。
 6. 用实测更新 §0.5/§0.7 的耗时估算；之后估算 1440 万自由度（约 3 GB）模型的规模。
 
+**验证记录（2026-10-21）**：项目 `202610211530`（1440w 自由度，1 step × 2 帧，38 个字段），832 项抽样
+（frame-scalars / range / frame-colors / 位移 / 变形统计）。基准 `fccb74d` 与新代码 `ce3b37a`（含优化第 1～3 步）分别生成快照，
+`--diff` 结果 **完全一致 832，数值等价 0，不一致 0**。快照走的是进程内计算路径（`--cache memory`），覆盖第 1、2 步；
+第 3 步多进程严格准备的落盘内容尚待重启服务导入后用 `--cache disk` 核对。
+
 遗留问题：
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms，疑似不进缓存，未核对。
