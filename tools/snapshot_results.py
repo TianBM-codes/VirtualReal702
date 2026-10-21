@@ -6,6 +6,9 @@ r"""
     git worktree add ..\702-baseline precompute-opt-baseline      # 只需做一次
     python tools/snapshot_results.py --code-root ..\702-baseline --workspace E:\...\<项目> --out baseline.npz --procs 4
     python tools/snapshot_results.py --workspace E:\...\<项目> --compare baseline.npz --procs 4
+    或者两份同时生成、最后直接比对文件（不重算，几秒钟）：
+    python tools/snapshot_results.py --workspace E:\...\<项目> --out new.npz --procs 2
+    python tools/snapshot_results.py --diff baseline.npz new.npz
 
 --code-root：从这个目录导入计算代码（src/），工具本身用当前版本。不传则用工具所在仓库的代码。
 --procs：多进程并行（每个进程各自加载一份模型索引，大模型注意内存）。
@@ -222,6 +225,45 @@ def _units(tasks, keep_arrays):
     return list(groups.values())
 
 
+def diff_files(base_path, new_path, *, atol=0.0) -> int:
+    """比对两份快照：逐项比 SHA-256；不同且两边都存了数组的项给出误差。返回退出码。"""
+    def _read(path):
+        with np.load(path, allow_pickle=False) as z:
+            return json.loads(str(z["meta"])), {k: z[k] for k in z.files if k != "meta"}
+
+    (mb, ab), (mn, an) = _read(base_path), _read(new_path)
+    print(f"基准 {base_path}：代码 {mb.get('git', '?')}，{len(mb['tasks'])} 项，生成于 {mb['created']}")
+    print(f"新版 {new_path}：代码 {mn.get('git', '?')}，{len(mn['tasks'])} 项，生成于 {mn['created']}")
+    if mb["tasks"] != mn["tasks"]:
+        print("两份快照的抽样组合不同（工作区、--steps/--frames/--fields 或 manifest 不一致），无法逐项比对")
+        return 2
+    same = equiv = diff = 0
+    report = []
+    for i, task in enumerate(mb["tasks"]):
+        rb, rn = mb["records"][i], mn["records"][i]
+        if rb["sha256"] == rn["sha256"]:
+            same += 1
+            continue
+        prefix = f"a{i}_"
+        arr_b = {k[len(prefix):]: v for k, v in ab.items() if k.startswith(prefix)}
+        arr_n = {k[len(prefix):]: v for k, v in an.items() if k.startswith(prefix)}
+        if arr_b and arr_n:
+            ok, why = _compare_arrays(arr_b, arr_n, atol)
+        else:
+            ok, why = False, f"统计 {rb['stats']} → {rn['stats']}"
+        if ok:
+            equiv += 1
+        else:
+            diff += 1
+            report.append(f"[不一致] {_task_key(task)}：{why}")
+    print(f"\n比对完成：完全一致 {same}，数值等价 {equiv}，不一致 {diff}")
+    for line in report[:200]:
+        print(line)
+    if len(report) > 200:
+        print(f"……另有 {len(report) - 200} 项不一致")
+    return 1 if diff else 0
+
+
 def _git_rev(root):
     try:
         return subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
@@ -232,11 +274,13 @@ def _git_rev(root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--workspace", required=True)
+    ap.add_argument("--workspace", default=None, help="工作区目录（--diff 时不需要）")
     ap.add_argument("--odb-id", default=None)
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--out", help="生成基准快照到此文件（.npz）")
-    g.add_argument("--compare", help="与此基准快照比对")
+    g.add_argument("--compare", help="与此基准快照比对（用当前代码重算）")
+    g.add_argument("--diff", nargs=2, metavar=("BASE", "NEW"),
+                   help="直接比对两份已生成的快照文件，不重算（两份可以同时生成）")
     ap.add_argument("--code-root", default=None, help="从这个目录导入计算代码（例如基准 tag 的 worktree）")
     ap.add_argument("--procs", type=int, default=1)
     ap.add_argument("--cache", choices=("memory", "none", "disk"), default="memory")
@@ -249,6 +293,10 @@ def main():
                     help="数值等价的最大绝对误差，默认 0（只允许 -0/+0 一类的字节差异）")
     args = ap.parse_args()
     cache_mode = "disk" if args.use_disk_cache else args.cache
+    if args.diff:
+        sys.exit(diff_files(*args.diff, atol=args.atol))
+    if not args.workspace:
+        ap.error("--out / --compare 需要 --workspace")
 
     _use_code_root(args.code_root)
     code_root = os.path.abspath(args.code_root) if args.code_root else _TOOL_REPO
