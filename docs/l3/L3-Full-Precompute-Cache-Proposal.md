@@ -143,6 +143,14 @@ STATUS（WHOLE_ELEMENT）再次请求仍需约 190 ms，疑似不进缓存，实
 **第 1 步已实施**（2026-10-21）：`cache_store.small_get(..., intermediate=True)` 让严格准备期间全模型平均范围在进程内复用
 （缓存关闭时仍每次现算）；区域范围查表改为 `searchsorted`，单元测试 `tests/test_en_range_optimization.py` 对照旧实现逐位一致。
 
+**第 2 步已实施**（2026-10-21，范围计算部分）：
+- `_compute_en_global_range_uncached` 的网格部分（区域编号、含中节点的连接）按 (几何文件签名, 高阶文件签名, domain_version) 缓存；
+  两次稳定排序的下标按“参与的单元类型及 N/n_shared”布局缓存，每次只按本帧 NaN 掩码过滤。稳定排序保证“先过滤再排序”与
+  “先排序再过滤”序列相同，结果逐位一致。各缓存 2 项 LRU（大模型约数百 MB/进程）。
+- `_frame_slice`：原始结果帧按 (文件, 签名, dataset, 帧) 进程内复用（上限 256 MB，只读数组），frame-scalars、范围、frame-colors 共用。
+- 表面平均 `_en_per_vertex_averaged` 用的是不稳定排序，预排序会改变组内求和顺序、可能动到 float32 最后一位，**未改动**。
+- 假设：网格连接里的节点行号非负（L1 由 searchsorted 生成）。新实现按 (区域, 节点) 成对比较分组，旧实现按复合键分组，两者在此假设下等价。
+
 **防止改动计算结果**：优化前的代码打 tag `precompute-opt-baseline`。用 `tools/snapshot_results.py` 先在真实模型上
 生成基准快照（抽样：首末 step × 第 0/中间/最后帧 × 全部字段、分量、模式、实例），每完成一步优化就用同一批组合比对，
 要求逐字节一致（或 NaN 位置一致且误差为 0），并在单元测试里对比新旧实现。

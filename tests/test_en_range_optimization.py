@@ -1,7 +1,8 @@
 """
 全模型平均范围（_compute_en_global_range）的性能优化不得改变结果：
   1. 区域范围查表从 dict 循环改为 searchsorted 后，与旧实现逐位一致；
-  2. 严格准备期间同一帧同一分量只算一次（中间结果进程内复用），缓存关闭时照旧每次现算。
+  2. 严格准备期间同一帧同一分量只算一次（中间结果进程内复用），缓存关闭时照旧每次现算；
+  3. 按网格预建的稳定排序下标跨帧复用（NaN 掩码不同）仍逐位一致；原始帧只读一次且只读。
 """
 from types import SimpleNamespace
 
@@ -69,6 +70,35 @@ def test_vectorized_domain_lookup_matches_reference(tmp_path, seed, component_id
     ok = np.isfinite(vals)
     expected = _reference_range(np.repeat(sec, 8)[ok], conn.ravel()[ok], vals[ok], threshold)
     assert got == expected                               # 逐位相等，不放宽容差
+
+
+def test_cached_sort_index_matches_reference_across_frames(tmp_path):
+    """同一布局的排序下标建一次、多帧复用；第 1 帧没有 NaN、第 0 帧有，掩码不同也要逐位一致。"""
+    geom, res, conn, sec, data = _write_model(tmp_path, 7)
+    rs._EN_RANGE_INDEX.clear()
+    rs._EN_GEOM_CACHE.clear()
+    with h5py.File(res, "r") as f:
+        for frame in (0, 1, 0):
+            for comp in (None, 2):
+                got = rs._compute_en_global_range_uncached(
+                    f, str(geom), "PART", frame, comp, 0.75, None, 3)
+                sc = rs._extract_component(data[frame].reshape(-1, 6), comp)
+                vals = sc.reshape(400, 8).astype(np.float64).ravel()
+                ok = np.isfinite(vals)
+                assert got == _reference_range(np.repeat(sec, 8)[ok], conn.ravel()[ok], vals[ok], 0.75)
+    assert len(rs._EN_RANGE_INDEX) == 1                  # 只建了一次
+
+
+def test_frame_slice_returns_same_bytes_and_is_read_only(tmp_path):
+    _geom, res, _conn, _sec, data = _write_model(tmp_path, 3)
+    with h5py.File(res, "r") as f:
+        ds = f["ELEMENT_NODAL/PART/C3D8/data"]
+        a = rs._frame_slice(ds, 1)
+        b = rs._frame_slice(ds, 1)
+    assert a is b                                        # 第二次不再读文件
+    assert np.array_equal(a, data[1], equal_nan=True)
+    with pytest.raises(ValueError):
+        a[0, 0, 0] = 0.0                                 # 共享数组不允许被下游原地修改
 
 
 def test_strict_prepare_computes_range_once(tmp_path, monkeypatch):
