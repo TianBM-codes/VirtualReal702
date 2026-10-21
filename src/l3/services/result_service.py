@@ -91,7 +91,54 @@ def _range_disk_put(workspace: str, bucket: str, key: tuple, value) -> None:
 
 # ─── Generic component extraction ────────────────────────────────────────────
 
-def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.ndarray:
+_STORED_MAGNITUDE_COMPONENTS = ("USUM",)
+_STORED_MAG_MEMO: Dict[tuple, Optional[int]] = {}
+
+
+def stored_magnitude_col(f) -> Optional[int]:
+    """
+    结果文件自带的合量列下标（OP2 位移在 U1/U2/U3 后附了现成的 USUM 列），没有返回 None。
+
+    对这类数据求模长前必须先去掉该列，否则 √(U1²+U2²+U3²+USUM²) = √2·|U|。
+    只认 meta/components 里明确登记的名字，ODB 等不带合量列的文件不受影响。
+    """
+    if "meta/components" not in f:
+        return None
+    names = [c.decode() if isinstance(c, bytes) else str(c)
+             for c in f["meta/components"][()]]
+    for i, name in enumerate(names):
+        if name.upper() in _STORED_MAGNITUDE_COMPONENTS:
+            return i if len(names) > 1 else None
+    return None
+
+
+def drop_stored_magnitude(data: np.ndarray, mag_col: Optional[int]) -> np.ndarray:
+    """去掉 data 最后一维里的自带合量列，供求模长使用；mag_col 为 None 或不匹配时原样返回。"""
+    data = np.asarray(data)
+    if mag_col is None or data.ndim == 0 or data.shape[-1] < 2 or mag_col >= data.shape[-1]:
+        return data
+    return np.delete(data, mag_col, axis=-1)
+
+
+def _component_cache_token(h5_path: str, h5_sig, component_idx: Optional[int]):
+    """
+    缓存键里的分量部分。默认分量（None）在带自带合量列的文件上改为 "mag-excl-USUM"，
+    让修复 √2 合量 bug 之前写入的错误缓存不再命中；其他文件的键保持不变。
+    """
+    if component_idx is not None:
+        return int(component_idx)
+    memo_key = (h5_path, h5_sig)
+    if memo_key not in _STORED_MAG_MEMO:
+        try:
+            with h5py.File(h5_path, "r") as f:
+                _STORED_MAG_MEMO[memo_key] = stored_magnitude_col(f)
+        except OSError:
+            return None
+    return "mag-excl-USUM" if _STORED_MAG_MEMO[memo_key] is not None else None
+
+
+def _extract_component(data: np.ndarray, component_idx: Optional[int],
+                       mag_col: Optional[int] = None) -> np.ndarray:
     """
     Extract a scalar from the last axis of data.
 
@@ -99,6 +146,8 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.nda
     component_idx: int → use as direct index into last axis
                    None → magnitude (L2 norm) for vector fields, but the raw
                           signed value for scalar fields (ncomp == 1)
+    mag_col:       stored magnitude column (see stored_magnitude_col), excluded
+                   from the norm
     Returns float32 array with one fewer dimension.
     """
     if data.ndim == 1:
@@ -111,7 +160,7 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.nda
         # fields (U, RF, …) should collapse to a magnitude.
         if data.shape[-1] == 1:
             return data[..., 0].astype(np.float32)
-        return np.linalg.norm(data, axis=-1).astype(np.float32)
+        return np.linalg.norm(drop_stored_magnitude(data, mag_col), axis=-1).astype(np.float32)
     ci = int(component_idx)
     if ci < data.shape[-1]:
         return data[..., ci].astype(np.float32)
@@ -140,7 +189,7 @@ def _scalar_nodal_by_idx(f, instance: str, frame_idx: int,
     # Collapse extra dims (e.g. [N, 1, ncomp] from some exporters)
     while frame_data.ndim > 2:
         frame_data = frame_data.mean(axis=1)
-    return _extract_component(frame_data, component_idx), num_frames
+    return _extract_component(frame_data, component_idx, stored_magnitude_col(f)), num_frames
 
 
 def _expand_sparse_nodal_to_geometry_rows(
@@ -856,7 +905,7 @@ def compute_scalar_range(
     h5_sig = _result_h5_sig(h5_path)
     range_key = (
         "scalar_range", odb_id, instance, h5_path, h5_sig, int(frame_idx),
-        None if component_idx is None else int(component_idx),
+        _component_cache_token(h5_path, h5_sig, component_idx),
         float(average_threshold), advanced_version,
     )
     if h5_sig is not None:
@@ -1063,7 +1112,7 @@ def frame_scalars(
     vertex_key = (
         "frame_scalars", odb_id, instance, h5_path, h5_sig,
         cache_store.render_sig(idx.workspace, instance), int(frame_idx),
-        None if component_idx is None else int(component_idx),
+        _component_cache_token(h5_path, h5_sig, component_idx),
         effective_render_mode, fa_cache_key, float(average_threshold),
         bool(use_geometry_split), advanced_version,
     )

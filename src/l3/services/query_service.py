@@ -12,6 +12,7 @@ from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.hdf5_repo import HDF5Repo
 from ..infra.manifest_repo import ManifestRepo
+from .result_service import drop_stored_magnitude, stored_magnitude_col
 from src.l1.manifest_schema import canon_instance
 from ..schemas.query import PickOdbInfo, PickResponse, PickResultInfo, BBoxResponse, RenderFacesResponse, NearestFaceResponse, SurfacePatchRequest, SurfacePatchResponse, RayPickRequest
 
@@ -269,8 +270,8 @@ def _read_pick_result(
 
     ci, use_magnitude = _resolve_comp(component, component_idx)
 
-    def _scalar(row_data) -> float:
-        """Extract scalar from a 1-D or vector row."""
+    def _scalar(row_data, mag_col=None) -> float:
+        """Extract scalar from a 1-D or vector row; mag_col 为文件自带的合量列，求模长时排除。"""
         if row_data.ndim == 0:
             return float(row_data)
         # 标量场（ncomp==1，如 CPRESS/CSHEAR1/S_PRESS）必须保号：对单分量取
@@ -279,10 +280,10 @@ def _read_pick_result(
         if len(row_data) == 1:
             return float(row_data[0])
         if use_magnitude:
-            return float(np.linalg.norm(row_data))
+            return float(np.linalg.norm(drop_stored_magnitude(row_data, mag_col)))
         if ci is not None and ci < len(row_data):
             return float(row_data[ci])
-        return float(np.linalg.norm(row_data))
+        return float(np.linalg.norm(drop_stored_magnitude(row_data, mag_col)))
 
     try:
         with h5py.File(h5_path, "r") as f:
@@ -323,10 +324,12 @@ def _read_pick_result(
                 else:
                     data_rows = list(node_rows_to_read)
 
+                mag_col = stored_magnitude_col(f)
+
                 def _nval(r):
                     if fd.ndim == 1:
                         return float(fd[r])
-                    return _scalar(fd[r])
+                    return _scalar(fd[r], mag_col)
                 values = [_nval(r) for r in data_rows if r < len(fd)]
                 if not values:
                     # 请求的节点在该场里都没有数据（非接触区）→ 视为无结果，
