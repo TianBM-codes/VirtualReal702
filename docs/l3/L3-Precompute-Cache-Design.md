@@ -1,6 +1,6 @@
 # L3 预计算缓存方案（导入即算好、接口直接走缓存）
 
-> 更新时间：2026-10-18。新导入与重跑新增必需的同步首屏准备屏障，成功后才对外 ready；高级索引和缓存失败返回 error。见 [统一就绪判定](Ready-Barrier-Design.md)。原有自动/手动后台预热仍用于补算，其让路和跳过失败的规则不适用于必需准备。
+> 更新时间：2026-10-21。新增 frame-scalars 缓存来源日志。新导入与重跑新增必需的同步首屏准备屏障，成功后才对外 ready；高级索引和缓存失败返回 error。见 [统一就绪判定](Ready-Barrier-Design.md)。原有自动/手动后台预热仍用于补算，其让路和跳过失败的规则不适用于必需准备。
 > 历史更新时间：2026-10-09。状态：第 1～7 步已全部实现并推送，待开发者本地跑测试 + 实测。
 > 前置背景：`docs/l3/Perf-Cache-Worklog.md`（frame-scalars 四步优化）、
 > `docs/近期效率优化与算例总览.md`（开发者 9c2afe2 引入的另一套整包缓存）。
@@ -94,6 +94,11 @@
 - 无 result_group 的老模型（legacy ODB jobs）用 `groups/_default/`。
 - 缓存最终响应包的接口（`deformed-positions`、`modal-animation`）在响应头返回 `X-Cache: hit|miss`；
   `modal-shape` 改为直接由顶点位移缓存打包，不再单独存响应包，也不再带 `X-Cache`。
+- `frame-scalars` 在服务层以 INFO 级别记录 `[frame-scalars cache] status=memory_hit|disk_hit|miss`，
+  分别表示本次读取命中内存、命中磁盘、未命中（需要计算）。记录项目/ODB、结果组、实例、step、field、
+  帧、分量（`mag` 表示合量）和渲染参数，方便对照前端请求；接口参数、响应体和响应头均不变。
+  该日志表示归一化前顶点数值的缓存来源，不表示整个请求已完成或计算成功；关闭缓存时同样记 `miss`。
+  自动预热与导入首屏准备也调用同一服务，会产生相同格式的日志，不能把所有日志都视为前端请求。
 - L2 重建基础几何（`ingest.py --phase core` 或 `all`）开始时整体删除 `l3_cache/`；`advanced` 阶段保留基础几何就绪后产生的缓存。所有依赖渲染几何的 key 同时带 render.h5 签名。
 - 单元边线缓存优先读取 `<instance>_edges.h5`，兼容旧工作区中嵌入 `<instance>_surface.h5` 的边数据。缓存 key 同时包含 surface 文件签名、边数据来源与 edges 文件签名；高级文件首次出现或重新生成时自动失效。高级文件尚未生成时不缓存“缺失”结果。
 

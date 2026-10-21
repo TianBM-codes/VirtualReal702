@@ -1068,11 +1068,21 @@ def frame_scalars(
         bool(use_geometry_split), advanced_version,
     )
     cached = _vertex_cache_get(vertex_key) if h5_sig is not None else None
+    cache_status = "memory_hit" if cached is not None else "miss"
     if cached is None and h5_sig is not None:
         cached = _vertex_disk_get(idx.workspace, cache_store.group_bucket(result_group),
                                   vertex_key)
         if cached is not None:
+            cache_status = "disk_hit"
             _vertex_cache_put(vertex_key, cached)   # 磁盘命中 → 提升到内存层
+    logger.info(
+        "[frame-scalars cache] status=%s odb_id=%r result_group=%r "
+        "instance=%r step=%r field=%r frame=%d component_idx=%s mode=%s "
+        "feature_angle=%s average_threshold=%s use_geometry_split=%s",
+        cache_status, odb_id, result_group, instance, step, field, frame_idx,
+        "mag" if component_idx is None else component_idx, effective_render_mode,
+        feature_angle, average_threshold, use_geometry_split,
+    )
     if cached is not None:
         scalar_vertex, global_range, result_position, num_frames = cached
     else:
