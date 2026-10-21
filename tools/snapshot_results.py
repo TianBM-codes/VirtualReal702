@@ -1,12 +1,17 @@
 """
-结果快照与比对：确认缓存/性能优化没有改变任何计算结果（只读，不连服务、不写缓存）。
+结果快照与比对：确认缓存/性能优化没有改变任何计算结果（不连服务、默认不写缓存）。
 
-先用优化前的代码生成基准快照，优化后用同一批组合重算并逐项比对：
+推荐用法：基准代码放在独立的 git worktree 里，主目录（正在跑服务和解析）不用切换版本：
 
-    git checkout precompute-opt-baseline          # 优化前的代码
-    python tools/snapshot_results.py --workspace E:\\...\\202610211132 --out baseline.npz
-    git checkout main                             # 优化后的代码
-    python tools/snapshot_results.py --workspace E:\\...\\202610211132 --compare baseline.npz
+    git worktree add ..\702-baseline precompute-opt-baseline      # 只需做一次
+    python tools/snapshot_results.py --code-root ..\702-baseline --workspace E:\...\<项目> --out baseline.npz --procs 4
+    python tools/snapshot_results.py --workspace E:\...\<项目> --compare baseline.npz --procs 4
+
+--code-root：从这个目录导入计算代码（src/），工具本身用当前版本。不传则用工具所在仓库的代码。
+--procs：多进程并行（每个进程各自加载一份模型索引，大模型注意内存）。
+--cache：memory（默认，只用进程内缓存：同一帧同一分量的范围不重复算，不写工作区）/
+         none（每项都现算，最慢）/ disk（读取全量准备写好的磁盘缓存，用于核对导入时写进缓存的内容；
+         缺的条目会现算并写入 l3_cache）。缓存里存的就是计算结果本身，三种模式结果应完全相同。
 
 抽样范围（默认）：每个结果组、每个字段、第一个和最后一个 step、各 step 的第 0 帧 /
 中间帧 / 最后一帧、所有实例，覆盖
@@ -16,9 +21,6 @@
   - U 场：顶点位移向量与 deform-suggest-scale 统计。
 可用 --steps all、--frames all 扩大，--fields S,U 缩小。
 
---use-disk-cache：不关缓存，直接读取全量准备写好的磁盘缓存（缺的条目会现算并写入
-l3_cache），用于核对“导入时（含多进程）写进缓存的内容”与基准一致。
-
 每项记录 SHA-256（逐字节一致性）和数值统计（NaN 个数、最小、最大、和）；
 前 --keep-arrays 项（默认 60）另存完整数组，比对不一致时能给出最大绝对误差。
 比对结果分三类：完全一致 / 数值等价（字节不同但 NaN 位置一致、最大误差 ≤ --atol）/ 不一致。
@@ -26,20 +28,35 @@ l3_cache），用于核对“导入时（含多进程）写进缓存的内容”
 import argparse
 import hashlib
 import json
+import multiprocessing as mp
 import os
+import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+_TOOL_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, _TOOL_REPO)
 
 import numpy as np  # noqa: E402
 
 FORMAT_VERSION = 1
 
 
-def _disable_caches():
+def _use_code_root(code_root):
+    """让 `import src...` 指向 code_root（必须在任何 src 导入之前调用）。"""
+    if not code_root:
+        return
+    root = os.path.abspath(code_root)
+    sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _TOOL_REPO]
+    sys.path.insert(0, root)
+
+
+def _configure_caches(mode):
     from src.l3.services import cache_store
-    cache_store.settings.scalar_cache_mb = 0       # 同时关闭内存层与磁盘层：每项都现算
+    if mode == "none":
+        cache_store.settings.scalar_cache_mb = 0          # 内存层与磁盘层都关
+    elif mode == "memory":
+        cache_store.settings.scalar_disk_cache_mb = 0     # 只关磁盘层：不写工作区
     cache_store.clear_memory()
 
 
@@ -167,6 +184,44 @@ def _compare_arrays(old, new, atol):
     return worst <= atol, f"最大绝对误差 {worst:.3g}"
 
 
+
+# ── 计算（单进程与多进程共用） ────────────────────────────────────────────────
+
+_STATE = {}
+
+
+def _init(code_root, odb_id, workspace, cache_mode):
+    _use_code_root(code_root)
+    _configure_caches(cache_mode)
+    reg, _idx = _load(odb_id, workspace)
+    _STATE.update(reg=reg, odb_id=odb_id)
+
+
+def _run_unit(unit):
+    """unit = [(序号, 任务, 是否保留数组), ...]，同一字段的任务放一起以复用缓存。"""
+    out = []
+    for i, task, keep in unit:
+        result = run_task(_STATE["reg"], _STATE["odb_id"], tuple(task))
+        digest, stats = _digest(result)
+        out.append((i, digest, stats, {k: np.asarray(v) for k, v in result.items()} if keep else None))
+    return out
+
+
+def _units(tasks, keep_arrays):
+    groups = {}
+    for i, task in enumerate(tasks):
+        groups.setdefault((task[1], task[3], task[4]), []).append((i, task, i < keep_arrays))
+    return list(groups.values())
+
+
+def _git_rev(root):
+    try:
+        return subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True).stdout.strip() or "?"
+    except Exception:
+        return "?"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--workspace", required=True)
@@ -174,28 +229,24 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--out", help="生成基准快照到此文件（.npz）")
     g.add_argument("--compare", help="与此基准快照比对")
+    ap.add_argument("--code-root", default=None, help="从这个目录导入计算代码（例如基准 tag 的 worktree）")
+    ap.add_argument("--procs", type=int, default=1)
+    ap.add_argument("--cache", choices=("memory", "none", "disk"), default="memory")
+    ap.add_argument("--use-disk-cache", action="store_true", help="同 --cache disk（兼容旧参数）")
     ap.add_argument("--steps", choices=("ends", "all"), default="ends")
     ap.add_argument("--frames", choices=("ends", "all"), default="ends")
     ap.add_argument("--fields", default=None, help="逗号分隔，只抽这些字段")
     ap.add_argument("--keep-arrays", type=int, default=60)
-    ap.add_argument("--use-disk-cache", action="store_true",
-                    help="读取已有磁盘缓存（核对导入时写入的缓存内容），默认关闭缓存每项现算")
     ap.add_argument("--atol", type=float, default=0.0,
                     help="数值等价的最大绝对误差，默认 0（只允许 -0/+0 一类的字节差异）")
     args = ap.parse_args()
+    cache_mode = "disk" if args.use_disk_cache else args.cache
 
+    _use_code_root(args.code_root)
+    code_root = os.path.abspath(args.code_root) if args.code_root else _TOOL_REPO
     workspace = os.path.abspath(args.workspace)
     odb_id = args.odb_id or os.path.basename(workspace.rstrip("\\/"))
-
-    from src.l3.infra.manifest_repo import ManifestRepo
-    from src.l3.services.precompute_plan import list_targets
-
-    if args.use_disk_cache:
-        from src.l3.services import cache_store
-        cache_store.clear_memory()
-    else:
-        _disable_caches()
-    reg, idx = _load(odb_id, workspace)
+    print(f"计算代码 {code_root}（{_git_rev(code_root)}），缓存模式 {cache_mode}，{args.procs} 个进程")
 
     if args.compare:
         with np.load(args.compare, allow_pickle=False) as z:
@@ -203,48 +254,70 @@ def main():
             stored = {name: z[name] for name in z.files if name != "meta"}
         tasks = [tuple(t) for t in meta["tasks"]]
         print(f"基准 {args.compare}：{len(tasks)} 项，生成于 {meta['created']}（代码 {meta.get('git', '?')}）")
+        keep_arrays = 0
     else:
+        from src.l3.infra.manifest_repo import ManifestRepo
+        from src.l3.services.precompute_plan import list_targets
+        _configure_caches(cache_mode)
+        _reg, idx = _load(odb_id, workspace)
         fields = set(args.fields.split(",")) if args.fields else None
         tasks = build_tasks(idx, list_targets(ManifestRepo(workspace)),
                             steps=args.steps, frames=args.frames, fields=fields)
+        del _reg, idx
+        keep_arrays = args.keep_arrays
         print(f"共 {len(tasks)} 项，开始计算……")
 
-    records = []
-    arrays_out = {}
-    same = equiv = diff = 0
-    report = []
+    units = _units(tasks, keep_arrays)
+    results = [None] * len(tasks)
     t0 = time.perf_counter()
-    last = t0
-    for i, task in enumerate(tasks):
-        result = run_task(reg, odb_id, task)
-        digest, stats = _digest(result)
-        if args.compare:
+    last = [t0]
+    done = [0]
+
+    def _collect(chunk):
+        for i, digest, stats, arrays in chunk:
+            results[i] = (digest, stats, arrays)
+        done[0] += len(chunk)
+        now = time.perf_counter()
+        if now - last[0] > 30:
+            last[0] = now
+            el = now - t0
+            eta = el / done[0] * (len(tasks) - done[0])
+            print(f"  {done[0]}/{len(tasks)}，已用 {el / 60:.1f} 分钟，预计还需 {eta / 60:.1f} 分钟", flush=True)
+
+    init_args = (args.code_root, odb_id, workspace, cache_mode)
+    if args.procs <= 1:
+        _init(*init_args)
+        for unit in units:
+            _collect(_run_unit(unit))
+    else:
+        units.sort(key=len, reverse=True)
+        with mp.get_context("spawn").Pool(args.procs, initializer=_init, initargs=init_args) as pool:
+            for chunk in pool.imap_unordered(_run_unit, units):
+                _collect(chunk)
+
+    if args.compare:
+        same = equiv = diff = 0
+        report = []
+        for i, task in enumerate(tasks):
+            digest, stats, _ = results[i]
             old = meta["records"][i]
             if old["sha256"] == digest:
                 same += 1
+                continue
+            prefix = f"a{i}_"
+            old_arrays = {k[len(prefix):]: v for k, v in stored.items() if k.startswith(prefix)}
+            if old_arrays:
+                # 需要完整数组才能算误差：单独重算这一项
+                if not _STATE:
+                    _init(*init_args)
+                ok, why = _compare_arrays(old_arrays, run_task(_STATE["reg"], odb_id, task), args.atol)
             else:
-                prefix = f"a{i}_"
-                old_arrays = {k[len(prefix):]: v for k, v in stored.items() if k.startswith(prefix)}
-                if old_arrays:
-                    ok, why = _compare_arrays(old_arrays, result, args.atol)
-                else:
-                    ok, why = False, f"统计 {old['stats']} → {stats}"
-                if ok:
-                    equiv += 1
-                else:
-                    diff += 1
-                    report.append(f"[不一致] {_task_key(task)}：{why}")
-        else:
-            records.append({"sha256": digest, "stats": stats})
-            if i < args.keep_arrays:
-                for name, a in result.items():
-                    arrays_out[f"a{i}_{name}"] = a
-        now = time.perf_counter()
-        if now - last > 30:
-            last = now
-            print(f"  {i + 1}/{len(tasks)}，已用 {(now - t0) / 60:.1f} 分钟", flush=True)
-
-    if args.compare:
+                ok, why = False, f"统计 {old['stats']} → {stats}"
+            if ok:
+                equiv += 1
+            else:
+                diff += 1
+                report.append(f"[不一致] {_task_key(task)}：{why}")
         print(f"\n比对完成（{(time.perf_counter() - t0) / 60:.1f} 分钟）：完全一致 {same}，"
               f"数值等价 {equiv}，不一致 {diff}")
         for line in report[:200]:
@@ -253,14 +326,15 @@ def main():
             print(f"……另有 {len(report) - 200} 项不一致")
         sys.exit(1 if diff else 0)
 
-    try:
-        import subprocess
-        git = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                             cwd=os.path.dirname(__file__)).stdout.strip()
-    except Exception:
-        git = "?"
+    records = [{"sha256": d, "stats": st} for d, st, _a in results]
+    arrays_out = {}
+    for i, (_d, _st, arrays) in enumerate(results):
+        if arrays:
+            for name, a in arrays.items():
+                arrays_out[f"a{i}_{name}"] = a
     meta = {"format": FORMAT_VERSION, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "workspace": workspace, "git": git, "tasks": tasks, "records": records}
+            "workspace": workspace, "git": _git_rev(code_root), "code_root": code_root,
+            "cache_mode": cache_mode, "tasks": tasks, "records": records}
     np.savez_compressed(args.out, meta=np.array(json.dumps(meta, ensure_ascii=False)), **arrays_out)
     n_err = sum(1 for r in records if "error" in r["stats"])
     print(f"\n已写入 {os.path.abspath(args.out)}：{len(tasks)} 项（其中 {n_err} 项是报错结果），"

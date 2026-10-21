@@ -166,7 +166,10 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 已完成并推送：USUM √2 修复（`e8bfdb9`，已在开发者机器验证）→ 全量计划（`41e32e6`）→ 基准 tag `precompute-opt-baseline`（`fccb74d`）
 → 优化第 1 步（`0cc0083`）、第 2 步（`e669422`）、第 3 步（`7e9dc81`）。**优化后的代码尚未在开发者机器上运行过。**
 
-开发者正在用 tag 版本生成基准快照 `baseline.npz`（项目 `202610211132`）。接续时按顺序：
+开发者正在生成基准快照 `baseline.npz`（项目改为 `202610211530`，1440w 自由度、241 万节点、1 step × 2 帧、38 个字段）。
+快照工具已改为：基准代码放在 `git worktree add ..\702-baseline precompute-opt-baseline`，用 `--code-root ..\702-baseline`
+导入，主目录不切版本（避免正在运行的服务/解析读到混合版本）；默认 `--cache memory`（只关磁盘层，范围不重复算、不写工作区）；
+`--procs N` 多进程。接续时按顺序：
 
 1. 确认 `baseline.npz` 已生成（必须用 tag 版本生成）。
 2. `git checkout main && git pull`，跑 `tests/test_en_range_optimization.py`、`test_precompute_parallel.py`、`test_precompute_plan.py`、
