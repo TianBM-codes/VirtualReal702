@@ -140,6 +140,9 @@ STATUS（WHOLE_ELEMENT）再次请求仍需约 190 ms，疑似不进缓存，实
 2. 每个实例预建只依赖网格的排序/分组索引（范围与表面平均共用），每帧只读一次、各分量共用。
 3. 计划按“字段 × step”分给多个进程并行，进程数按 CPU 核数与可用内存确定。
 
+**第 1 步已实施**（2026-10-21）：`cache_store.small_get(..., intermediate=True)` 让严格准备期间全模型平均范围在进程内复用
+（缓存关闭时仍每次现算）；区域范围查表改为 `searchsorted`，单元测试 `tests/test_en_range_optimization.py` 对照旧实现逐位一致。
+
 **防止改动计算结果**：优化前的代码打 tag `precompute-opt-baseline`。用 `tools/snapshot_results.py` 先在真实模型上
 生成基准快照（抽样：首末 step × 第 0/中间/最后帧 × 全部字段、分量、模式、实例），每完成一步优化就用同一批组合比对，
 要求逐字节一致（或 NaN 位置一致且误差为 0），并在单元测试里对比新旧实现。

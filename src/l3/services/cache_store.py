@@ -190,9 +190,14 @@ def mem_put(key: tuple, value) -> None:
             _BIG_BYTES -= _nbytes(evicted)
 
 
-def small_get(key: tuple):
-    """小值内存层：命中返回值（可能是 None），未命中返回 MISS。"""
-    if _required_entries.get() is not None:
+def small_get(key: tuple, *, intermediate: bool = False):
+    """小值内存层：命中返回值（可能是 None），未命中返回 MISS。
+
+    严格准备期间默认不命中（最终条目必须核查磁盘层）；intermediate=True 的
+    中间结果（例如被 frame-scalars smooth/flat 与 frame-scalar-range 共用的全模型
+    平均范围）只用于本进程内少算几遍，不代表任何条目已落盘，允许命中。
+    """
+    if _required_entries.get() is not None and not intermediate:
         return MISS
     with _LOCK:
         if key in _SMALL:

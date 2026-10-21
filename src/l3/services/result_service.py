@@ -1702,7 +1702,8 @@ def _compute_en_global_range(
         float(average_threshold), int(domain_version),
     )
     if sig is not None:
-        hit = _range_cache_get(key)
+        # 中间结果：全量准备时同一帧同一分量的 smooth / flat / range 共用一次计算。
+        hit = cache_store.small_get(key, intermediate=True)
         if hit is not _CACHE_MISS:
             return hit
     result = _compute_en_global_range_uncached(
@@ -1833,7 +1834,6 @@ def _compute_en_global_range_uncached(
     dom_max_arr   = np.maximum.reduceat(val_dom, dom_bounds[:-1])
     dom_range_arr = dom_max_arr - dom_min_arr
     dom_sec_arr   = sec_dom[dom_bounds[:-1]]
-    dom_range_map = {int(s): float(r) for s, r in zip(dom_sec_arr, dom_range_arr)}
 
     # Per-(section, node) stats via compound key
     max_nr      = int(node_rows.max()) + 1
@@ -1854,9 +1854,8 @@ def _compute_en_global_range_uncached(
     node_spr_arr  = node_max_arr - node_min_arr
     node_sec_arr  = sec_s[node_bounds[:-1]]
 
-    dom_range_per_node = np.array(
-        [dom_range_map.get(int(s), 0.0) for s in node_sec_arr], dtype=np.float64
-    )
+    # dom_sec_arr 升序且包含 node_sec_arr 的全部取值（来自同一组 sec_ids）
+    dom_range_per_node = dom_range_arr[np.searchsorted(dom_sec_arr, node_sec_arr)]
 
     # 75% threshold: nodes whose spread ≤ 75% of their section domain range are
     # averaged (use mean); the rest keep per-element values.
