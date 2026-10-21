@@ -190,7 +190,7 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms，疑似不进缓存，未核对。
 - 手动 `POST /results/warmup` 不给解析让路，期间追加结果可能等缓存锁超时（300 s）。
-- 重启后旧项目被打开会在 Web 进程内单线程补算全量计划（可能数小时），如需避免可设 `APP_WARMUP=0`。
+- ~~重启后旧项目被打开会在 Web 进程内单线程补算全量计划~~：已按开发者要求把 `APP_WARMUP` 默认改为 0（2026-10-21），旧项目需手动 `POST /results/warmup` 或设 `APP_WARMUP=1` 才补算。
 - 后续可选：按内容去重相邻 step 交接帧（§0.4）、整块读取所有帧、任务账本、集合/区域/几何类最终响应等其他接口族。
 
 ## 1. 需求与结论

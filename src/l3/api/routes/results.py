@@ -417,11 +417,11 @@ async def post_results_warmup(odb_id: str):
     """
     手动触发该模型的缓存预热（后台线程，立即返回）。
 
-    预热内容：每个 result_group × step（最后一帧）× field × instance 的默认视图
-    （模长分量），算完写入内存 + 磁盘缓存。幂等：已缓存的组合秒过，只补算
-    新增字段。返回 warmup = started | already_running。
-    正常情况下不需要手动调用——模型加载完成和新 result_group 就绪时会自动
-    预热（APP_WARMUP=0 可关闭自动，此接口仍可用）。
+    预热内容：全量预计算计划（services/precompute_plan.py：每个 result_group ×
+    step × field × instance 的全部帧、分量、smooth/flat 等），算完写入内存 + 磁盘
+    缓存。幂等：已缓存的组合秒过，只补算缺的部分。返回 warmup = started | already_running。
+    新导入在 ready 前已全量准备；本接口用于给旧项目手动补算。自动后台预热
+    默认关闭（APP_WARMUP=1 开启），本接口不受影响。
     """
     from ...services.warmup_service import warm_odb_async
 

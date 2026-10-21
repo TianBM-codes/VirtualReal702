@@ -105,13 +105,14 @@ class Settings:
         if self.scalar_disk_cache_mb < 0:
             self.scalar_disk_cache_mb = -1
 
-        # Cache warm-up: automatically run the full precompute plan
-        # (services/precompute_plan.py: every frame × component × smooth/flat)
-        # in a background thread when a model finishes loading or a new
-        # result_group becomes ready; projects prepared under an older plan are
-        # backfilled this way. 0 = no automatic warm-up (the manual
-        # POST /results/warmup endpoint still works).
-        self.enable_warmup = _get(cfg, "APP_WARMUP", "1") == "1"
+        # Automatic background cache warm-up: run the full precompute plan
+        # (services/precompute_plan.py) in a background thread of the web
+        # process when a model finishes loading or a new result_group becomes
+        # ready. New imports are already fully prepared before ready, so this
+        # mainly backfills projects prepared under an older plan — which can
+        # take hours per large model. Default OFF (2026-10-21); 1 = enable.
+        # The manual POST /results/warmup endpoint works either way.
+        self.enable_warmup = _get(cfg, "APP_WARMUP", "0") == "1"
 
         # Parallel worker processes for the strict full-cache preparation before
         # ready (services/precompute_plan.run_plan_parallel). 0 = auto (physical
@@ -162,7 +163,7 @@ def log_startup_config() -> None:
         f"  gzip_compresslevel: {settings.gzip_compresslevel}",
         f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (RAM, 0 = off)",
         f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off, -1 = unlimited)",
-        f"  enable_warmup     : {settings.enable_warmup}",
+        f"  enable_warmup     : {settings.enable_warmup}   (auto backfill, default off)",
         f"  precompute_workers: {settings.precompute_workers}   (0 = auto, 1 = sequential)",
     ]
     if settings.odb_workspace:
