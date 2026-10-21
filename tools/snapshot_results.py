@@ -197,7 +197,10 @@ _STATE = {}
 def _init(code_root, odb_id, workspace, cache_mode):
     _use_code_root(code_root)
     _configure_caches(cache_mode)
+    t0 = time.perf_counter()
+    print(f"  [进程 {os.getpid()}] 加载模型索引……", flush=True)
     reg, _idx = _load(odb_id, workspace)
+    print(f"  [进程 {os.getpid()}] 加载完成 {time.perf_counter() - t0:.0f} s", flush=True)
     _STATE.update(reg=reg, odb_id=odb_id)
 
 
@@ -214,7 +217,8 @@ def _run_unit(unit):
 def _units(tasks, keep_arrays):
     groups = {}
     for i, task in enumerate(tasks):
-        groups.setdefault((task[1], task[3], task[4]), []).append((i, task, i < keep_arrays))
+        # 同一 (结果组, 实例, step, 字段, 帧) 一组：组内复用范围/原始帧，组又足够小、进度更新及时
+        groups.setdefault((task[1], task[2], task[3], task[4], task[5]), []).append((i, task, i < keep_arrays))
     return list(groups.values())
 
 
@@ -277,16 +281,20 @@ def main():
     last = [t0]
     done = [0]
 
+    def _heartbeat(force=False):
+        now = time.perf_counter()
+        if not force and now - last[0] < 30:
+            return
+        last[0] = now
+        el = now - t0
+        eta = f"，预计还需 {el / done[0] * (len(tasks) - done[0]) / 60:.1f} 分钟" if done[0] else ""
+        print(f"  {done[0]}/{len(tasks)}，已用 {el / 60:.1f} 分钟{eta}", flush=True)
+
     def _collect(chunk):
         for i, digest, stats, arrays in chunk:
             results[i] = (digest, stats, arrays)
         done[0] += len(chunk)
-        now = time.perf_counter()
-        if now - last[0] > 30:
-            last[0] = now
-            el = now - t0
-            eta = el / done[0] * (len(tasks) - done[0])
-            print(f"  {done[0]}/{len(tasks)}，已用 {el / 60:.1f} 分钟，预计还需 {eta / 60:.1f} 分钟", flush=True)
+        _heartbeat()
 
     init_args = (args.code_root, odb_id, workspace, cache_mode)
     if args.procs <= 1:
@@ -296,7 +304,15 @@ def main():
     else:
         units.sort(key=len, reverse=True)
         with mp.get_context("spawn").Pool(args.procs, initializer=_init, initargs=init_args) as pool:
-            for chunk in pool.imap_unordered(_run_unit, units):
+            it = pool.imap_unordered(_run_unit, units)
+            remaining = len(units)
+            while remaining:
+                try:
+                    chunk = it.next(timeout=30)
+                except mp.TimeoutError:
+                    _heartbeat(force=True)          # 没有新结果也每 30 秒报一次，表明还在算
+                    continue
+                remaining -= 1
                 _collect(chunk)
 
     if args.compare:
