@@ -194,6 +194,12 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 `catalog 导入失败（非致命）：invalid literal for int() with base 10: 'test1'`（项目 ID 非数字时模型修正 catalog 跳过），与缓存无关。
 多进程写入内容与单进程是否逐字节一致，尚未用 `snapshot_results.py --cache disk --compare` 在 1440w 项目上核对。
 
+**实机验证（2026-10-22，`201b7ce` 之后）**：
+- STATUS（`202610211132` PART-1-1）：返回 `WHOLE_ELEMENT_FLAT`、范围 0～1，首次 482 ms、再次 38 ms（修复前每次约 180 ms 且为空 payload）。
+- 手动预热让路：对 `202610211132` 手动 `POST /results/warmup` 返回 started → 导入 door.odb（项目 `2026102201`）期间再调返回 `deferred`
+  → 控制台 `Warmup[202610211132]: parse task started, yielding (39.2s)` → 导入的严格准备直接拿到锁，7533 项 / 8 进程 / 约 2.2 分钟完成、ready，
+  无等锁超时 → ready 后再调返回 `already_running`，预热已由 poll 自动接着补算。
+
 遗留问题：
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - ~~STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms~~：原因是 L3 的云图/范围/着色只认 NODAL、ELEMENT_NODAL、INTEGRATION_POINT，STATUS 只有 WHOLE_ELEMENT 块，每次都判为无数据、返回空 payload（灰色），空结果不缓存。2026-10-22 起按单元着色（`WHOLE_ELEMENT_FLAT`，与积分点 flat 同一读取函数），结果进缓存、全量计划自动覆盖；含 WHOLE_ELEMENT 块的结果文件缓存键加 `("we", …)`，旧的“无范围”缓存不再命中，其他文件键不变。测试 `tests/test_l3_whole_element_field.py`。
