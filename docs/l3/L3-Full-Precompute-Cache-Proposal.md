@@ -200,6 +200,12 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
   → 控制台 `Warmup[202610211132]: parse task started, yielding (39.2s)` → 导入的严格准备直接拿到锁，7533 项 / 8 进程 / 约 2.2 分钟完成、ready，
   无等锁超时 → ready 后再调返回 `already_running`，预热已由 poll 自动接着补算。
 
+**接口覆盖探测工具（2026-10-22）**：`tools/probe_endpoints.py --project <id> [--full]`，从服务 `/openapi.json` 读全部路由、
+通过服务接口发现参数取值，对只读 GET 各请求两遍，按服务端耗时分 ERROR / NOT_CACHED / NOT_PRECOMPUTED / OK，输出 .md 汇总与 .csv 明细。
+远程取样（door，`2026102201`，每接口 1 组）初步结果：`color-code/{instance}/schemes` 每次约 150 ms（未缓存）；
+`deformed-positions`（默认 scale）首次约 370 ms、`modal-animation`（31 MB）首次约 340～500 ms（最终响应包未预算）；
+`raw-values` 带 result_group 一律 404（已修，见接口文档 2026-10-22 第三轮）。完整结果待在开发者本机跑 `--full`。
+
 遗留问题：
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - ~~STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms~~：原因是 L3 的云图/范围/着色只认 NODAL、ELEMENT_NODAL、INTEGRATION_POINT，STATUS 只有 WHOLE_ELEMENT 块，每次都判为无数据、返回空 payload（灰色），空结果不缓存。2026-10-22 起按单元着色（`WHOLE_ELEMENT_FLAT`，与积分点 flat 同一读取函数），结果进缓存、全量计划自动覆盖；含 WHOLE_ELEMENT 块的结果文件缓存键加 `("we", …)`，旧的“无范围”缓存不再命中，其他文件键不变。测试 `tests/test_l3_whole_element_field.py`。
