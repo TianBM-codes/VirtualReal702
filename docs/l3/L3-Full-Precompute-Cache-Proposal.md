@@ -190,7 +190,7 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - ~~STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms~~：原因是 L3 的云图/范围/着色只认 NODAL、ELEMENT_NODAL、INTEGRATION_POINT，STATUS 只有 WHOLE_ELEMENT 块，每次都判为无数据、返回空 payload（灰色），空结果不缓存。2026-10-22 起按单元着色（`WHOLE_ELEMENT_FLAT`，与积分点 flat 同一读取函数），结果进缓存、全量计划自动覆盖；含 WHOLE_ELEMENT 块的结果文件缓存键加 `("we", …)`，旧的“无范围”缓存不再命中，其他文件键不变。测试 `tests/test_l3_whole_element_field.py`。
 - 仍存在：任何字段在某实例上真的没有数据时（如 CPRESS 在 DAO-1），每次请求仍会重新判定一遍（DAO-1 约 30 ms），未做“无数据”缓存。
-- 手动 `POST /results/warmup` 不给解析让路，期间追加结果可能等缓存锁超时（300 s）。
+- ~~手动 `POST /results/warmup` 不给解析让路，期间追加结果可能等缓存锁超时（300 s）~~：2026-10-22 已修。原因有两层：手动预热带 `force`、跑起来不检查解析；而 `APP_WARMUP=0` 时解析繁忙检测根本没注册。现在繁忙检测始终注册，手动预热开始前繁忙则返回 `deferred`，进行中遇到解析则在当前组合后中止、释放锁，记入待办，由 poll 的 `run_pending`（不再受 `APP_WARMUP` 控制）在解析结束后接着补算。单个组合最长约数十秒，远小于 300 秒。
 - ~~重启后旧项目被打开会在 Web 进程内单线程补算全量计划~~：已按开发者要求把 `APP_WARMUP` 默认改为 0（2026-10-21），旧项目需手动 `POST /results/warmup` 或设 `APP_WARMUP=1` 才补算。
 - 后续可选：按内容去重相邻 step 交接帧（§0.4）、整块读取所有帧、任务账本、集合/区域/几何类最终响应等其他接口族。
 

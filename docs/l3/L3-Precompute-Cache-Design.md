@@ -142,7 +142,7 @@
     L2 高级索引阶段——`l2/advanced_status.json` 为 pending/running，超过 12 小时未更新视为残留）
     排队或运行时，自动触发的预热一律推迟；预热进行中每个组合开始前也检查一次，遇到解析开始即中止，之后补做（已算部分在缓存里）。
     原因：结果组解析时每写完一个字段 result_files 就多一行，旧逻辑下 poll 每 10 秒都会重新触发一轮
-    预热，和解析抢 CPU/磁盘。手动 `POST /results/warmup` 不受限制。
+    预热，和解析抢 CPU/磁盘。手动 `POST /results/warmup` 同样让路（2026-10-22 起；此前不让路，会让 ready 前的严格准备等缓存锁超时），让路后由 poll 在解析结束后接着补算，`APP_WARMUP=0` 时也是如此。
   - 跨进程去重：`l3_cache/.warmup.lock`（Linux flock / Windows msvcrt，进程退出自动释放）保证同一
     工作区同时只有一个进程在预热；完成后写 `l3_cache/.warmup_done`（result_files 全部条目 + 结果文件
     (mtime,size) 的摘要），其他进程处理待办时看到签名一致就不再为预热去加载模型。两个控制文件不参与

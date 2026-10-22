@@ -16,8 +16,10 @@ ready 前严格执行同一计划；这里负责计划升级前就 ready 的旧�
 
 让路与去重：
   - 解析（job_runner）是 CPU/磁盘大户，有任何解析任务在排队/运行时（含基础几何
-    ready 之后后台继续跑的 L2 高级索引阶段），自动触发的预热一律推迟（记入待办，解析全部结束后由 poll 补做）；预热进行中遇到解析
-    开始也会在下一个组合处中止。手动 POST 不受限制。
+    ready 之后后台继续跑的 L2 高级索引阶段），预热一律推迟（记入待办，解析全部结束
+    后由 poll 补做）；预热进行中遇到解析开始也会在下一个组合处中止、释放缓存锁，
+    否则 ready 前的严格准备要等这把锁、超过 300 秒就判失败。手动 POST 同样让路，
+    繁忙检测与待办处理不受 APP_WARMUP 开关影响。
   - 多 worker / 多进程：同一工作区用文件锁 l3_cache/.warmup.lock 保证同一时刻
     只有一个进程在预热；预热完成写 l3_cache/.warmup_done（结果文件签名），其他
     进程看到签名一致就不再为预热去加载模型。
@@ -251,6 +253,8 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     idx = reg.get(odb_id)
     if idx is None or not idx.is_render_ready:
         return {"odb_id": odb_id, "status": "not_ready"}
+    if yield_to_parse and parse_busy():
+        return {"odb_id": odb_id, "status": "yielded"}
 
     # 模型几何类（与结果无关）：着色分类编码 + 单元边线
     try:
@@ -300,16 +304,16 @@ def warm_odb_sync(odb_id: str, reason: str = "",
 
 
 def warm_odb_async(odb_id: str, reason: str = "",
-                   reg: Optional[OdbRegistry] = None,
-                   force: bool = False) -> str:
+                   reg: Optional[OdbRegistry] = None) -> str:
     """后台线程预热；同一模型同时只跑一个。
 
     返回 started / already_running / deferred（解析繁忙，记入待办）。
-    force=True（手动接口）不看解析是否繁忙；自动触发的预热在解析时让路。
+    手动与自动触发一样给解析让路：开始前繁忙则推迟，进行中遇到解析则中止，
+    都记入待办，解析全部结束后由 poll 线程（run_pending）接着补算。
     跨进程用文件锁去重：别的进程正在预热同一工作区时本次直接放弃。
     """
     reg = reg if reg is not None else _global_registry
-    if not force and parse_busy():
+    if parse_busy():
         _pending.add(odb_id)
         logger.info("Warmup[%s]: parse busy, deferred (%s)", odb_id, reason)
         return "deferred"
@@ -331,7 +335,7 @@ def warm_odb_async(odb_id: str, reason: str = "",
                 return
             sig = _targets_signature(idx.workspace)
             rep = warm_odb_sync(odb_id, reason=reason, reg=reg,
-                                yield_to_parse=not force)
+                                yield_to_parse=True)
             if rep.get("status") == "done":
                 _write_done(idx.workspace, sig)
             elif rep.get("status") == "yielded":
