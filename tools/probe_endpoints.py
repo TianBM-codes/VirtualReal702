@@ -11,6 +11,9 @@ r"""
     python tools/probe_endpoints.py --project 2026102201
     python tools/probe_endpoints.py --project 2026102201 --full          # 结果类接口穷举全部组合
     python tools/probe_endpoints.py --base http://127.0.0.1:5000 --project X --threshold-ms 100
+    python tools/probe_endpoints.py --project X --interval-ms 200     # 放慢，减少对在用服务的影响
+
+始终单连接串行（上一个返回才发下一个），每两个请求之间默认停 50 ms；间隔不计入耗时。
 
 输出：控制台汇总 + <out>.md（按接口汇总、未探测清单）+ <out>.csv（每个请求明细）。
 分类（服务端耗时取响应头 X-Elapsed-Time-Ms，没有时用客户端总耗时）：
@@ -324,6 +327,8 @@ def main():
     ap.add_argument("--limit-per-route", type=int, default=0, help="每个接口最多请求多少组参数（0=不限）")
     ap.add_argument("--only", default="", help="只探测路径里包含该子串的接口，如 results/")
     ap.add_argument("--out", default="", help="输出文件前缀，默认 probe_<项目>_<时间>")
+    ap.add_argument("--interval-ms", type=float, default=50.0,
+                    help="每两个请求之间停顿的毫秒数（默认 50，0=不停顿）")
     args = ap.parse_args()
     base = args.base.rstrip("/")
     out = args.out or f"probe_{args.project}_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -351,13 +356,17 @@ def main():
         if args.limit_per_route:
             reqs = reqs[:args.limit_per_route]
         plan.extend((route, p, prm) for p, prm in reqs)
-    print(f"共 {len(plan)} 个请求 × 2 遍，未探测接口 {len(skipped)} 个", flush=True)
+    print(f"共 {len(plan)} 个请求 × 2 遍，未探测接口 {len(skipped)} 个；单连接串行，"
+          f"请求间隔 {args.interval_ms:g} ms", flush=True)
 
     rows = []
     t_start, last = time.time(), time.time()
+    pause = max(args.interval_ms, 0) / 1000.0
     for i, (route, path, prm) in enumerate(plan, 1):
         r1 = _get(base, path, prm)
+        time.sleep(pause)
         r2 = _get(base, path, prm)
+        time.sleep(pause)
         cls = _classify(r1, r2, args.threshold_ms)
         rows.append({
             "route": route["path"], "class": cls, "url": r1["url"].replace(base, ""),
