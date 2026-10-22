@@ -250,6 +250,12 @@ legend-entries 提速（`8703566`）、FREQUENCY 步 modal-animation 预算（`7
 - `region-mesh-edges`（etype 方案大区域约 110 ms）改为整实例边表去重后进内存缓存；`legend-entries`（section 约 100 ms）
   表面单元计数与默认标题按几何记忆化。两者都是每进程首次计算一次，未纳入磁盘预算。
 
+**2026-10-22 傍晚复测（`probe_2026102201_20261022_164353.md`，阈值 100 ms，`c9e32ca` 后）**：单测通过；ERROR 只剩 summary（预期）；
+region-mesh-edges、legend-entries、modal-animation、pick 全部 OK。剩余：
+- 4 个接口各有 1 个 NOT_PRECOMPUTED（color-code、deformed-normals、frame-colors、全实例 legend-entries），是每个进程首个请求的冷启动（加载索引/记忆化），其余同类请求都命中。
+- `raw-values` 432 个 NOT_CACHED：大字段（如 STH ELEMENT_NODAL，JSON 2.5 MB）`format=json` 约 325 ms，其中主要是 JSON 序列化，
+  `format=l3be` 同一请求 40 ms。raw-values 是计算类接口（viewer 不调用），按全量预算需复制全部 L1 数据（JSON 还会膨胀约 4 倍），暂未纳入，待定。
+
 **后续可做**：
 - 小模型导入时前约 50 s 单进程测内存（test1 占总时长约 40%），可按模型规模预估首批 worker 数。
 - `202610211132` 变形动画“炸开”：该模型有 STATUS（单元删除），疑为被删单元节点位移无意义所致，Abaqus 会隐藏 STATUS=0 单元；未查。
