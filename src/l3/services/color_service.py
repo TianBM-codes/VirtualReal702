@@ -1365,7 +1365,15 @@ def get_legend_entries(
     face_counts = {v: int(c) for v, c in zip(vals, counts_arr)}
     # elem_count = actual total elements per label (incl. interior, from L1),
     # except scheme=section where regions are surface-defined.
-    surface_elem_counts = _surface_elem_counts_per_label(codes, vals, etype_arr, elem_row_arr)
+    # 表面单元计数与 section 默认标题只依赖模型几何，按 instance/scheme 记忆化
+    # （section 每次现算约 100 ms）；高级索引加载前后 section 分类不同，key 带其版本
+    adv_ver = int(getattr(idx, "_advanced_status_mtime_ns", 0))
+    set_key = tuple(set_names) if set_names else ()
+    sc_key = ("surface_elem_counts", instance, scheme, set_key, adv_ver)
+    surface_elem_counts = idx.legend_scan_cache.get(sc_key)
+    if surface_elem_counts is None:
+        surface_elem_counts = _surface_elem_counts_per_label(codes, vals, etype_arr, elem_row_arr)
+        idx.legend_scan_cache[sc_key] = surface_elem_counts
     elem_counts = _total_elem_counts_per_label(
         idx, instance, scheme, set_names, surface_elem_counts
     )
@@ -1388,8 +1396,13 @@ def get_legend_entries(
 
     from ..infra.manifest_repo import ManifestRepo
     overrides     = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
-    default_titles = _default_titles_section(idx, instance, etype_arr, elem_row_arr, unique_vals) \
-        if scheme == "section" else {}
+    default_titles = {}
+    if scheme == "section":
+        dt_key = ("section_default_titles", instance, adv_ver)
+        default_titles = idx.legend_scan_cache.get(dt_key)
+        if default_titles is None:
+            default_titles = _default_titles_section(idx, instance, etype_arr, elem_row_arr, unique_vals)
+            idx.legend_scan_cache[dt_key] = default_titles
 
     entries = []
     for val in unique_vals:

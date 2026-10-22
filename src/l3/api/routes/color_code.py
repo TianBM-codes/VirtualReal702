@@ -9,10 +9,8 @@ GET /api/odb/{odb_id}/color-code/{instance}?scheme=etype|material|section_type|e
   → X-Face-Count: Rf
 """
 import json
-import os
 from typing import Dict, List
 
-import h5py
 import numpy as np
 
 from fastapi import APIRouter, Body, Query
@@ -23,6 +21,7 @@ from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...infra.manifest_repo import ManifestRepo
 from ...services import color_service
+from ...services.mesh_edge_service import instance_unique_edges
 from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["color_code"])
@@ -309,21 +308,13 @@ async def get_region_mesh_edges(
     node_in_region = np.zeros(len(coords_global), dtype=bool)
     node_in_region[region_vert_rows] = True
 
-    geometry_dir = os.path.join(idx.workspace, "l2", "geometry")
-    edges_h5 = os.path.join(geometry_dir, f"{instance}_edges.h5")
-    surface_h5 = os.path.join(geometry_dir, f"{instance}_surface.h5")
-    # 两阶段 L2 的边数据在独立文件中；旧工作区仍可从 surface.h5 读取。
-    edge_source = edges_h5 if os.path.isfile(edges_h5) else surface_h5
-    if not os.path.exists(edge_source):
+    edge_nodes = instance_unique_edges(idx.workspace, instance, len(coords_global))
+    if edge_nodes is None:
         return _empty()
 
-    with h5py.File(edge_source, "r") as f:
-        if "element_mesh_edges/edge_nodes" not in f:
-            return _empty()
-        edge_nodes = f["element_mesh_edges/edge_nodes"][:]   # [E, 2] int32
-
+    # 边表已去重且有序，筛选后与原 np.unique(np.sort(...), axis=0) 结果一致
     edge_mask = node_in_region[edge_nodes[:, 0]] & node_in_region[edge_nodes[:, 1]]
-    filtered = np.unique(np.sort(edge_nodes[edge_mask], axis=1), axis=0)
+    filtered = edge_nodes[edge_mask]
 
     E = len(filtered)
     edge_positions = np.ascontiguousarray(

@@ -241,6 +241,15 @@ legend-entries 提速（`8703566`）、FREQUENCY 步 modal-animation 预算（`7
 5. 在 1440w 项目上：重新导入后跑 `probe_endpoints.py --full`，并用 `snapshot_results.py --cache disk --compare baseline.npz`
    核对多进程落盘内容（STATUS 项不一致属预期）。
 
+**2026-10-22 下午探测结果（`probe_2026102201_20261022_153257.md`，阈值 10 ms）**：
+- 已验证：pick 不再 500；`schemes` 6 ms；eigenfrequency 步 `modal-animation` 命中（实测约 20 ms，包 31.8 MB）。
+- 阈值 10 ms 过严：缓存命中的大响应（frame-scalars、modal-animation 等）服务端耗时本身就有 20–60 ms，被误判为 NOT_CACHED；
+  判断是否进缓存建议仍用 100 ms，或看同一请求两次耗时是否接近。
+- `raw-values` 432 个 500：8 个面内/面外主值字段（`*_INPLANE_*`、`*_OUTOFPLANE_*`）在 `format=json` 下含 NaN，JSONResponse 拒绝序列化；
+  已改为 NaN→null（`format=l3be` 本来就正常）。raw-values 每次读 L1，不在缓存计划内（约 10–550 ms，随数据量）。
+- `region-mesh-edges`（etype 方案大区域约 110 ms）改为整实例边表去重后进内存缓存；`legend-entries`（section 约 100 ms）
+  表面单元计数与默认标题按几何记忆化。两者都是每进程首次计算一次，未纳入磁盘预算。
+
 **后续可做**：
 - 小模型导入时前约 50 s 单进程测内存（test1 占总时长约 40%），可按模型规模预估首批 worker 数。
 - `202610211132` 变形动画“炸开”：该模型有 STATUS（单元删除），疑为被删单元节点位移无意义所致，Abaqus 会隐藏 STATUS=0 单元；未查。
