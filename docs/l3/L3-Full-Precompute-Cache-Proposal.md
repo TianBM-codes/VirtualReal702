@@ -329,6 +329,14 @@ region-mesh-edges 140/10116 → 9/65、region-outline 49/2606 → 8/16、color-c
 - 探测工具仍在静力步请求 modal-animation：`meta/overview` 不带 `result_group` 时不列 step，工具拿不到 procedure，已改为按结果组取。
 - 其余与上次一致：pick 约 0.2～0.36 s/次、render-buffers(-chunked) 0.25～1 s、frame-scalars 命中 124～234 ms（39 MB 下限）。
 
+**第二次复测（`5ebe167`，`probe_202610221440_20261023_012948`，821 个请求）**：warmup 日志
+`color views {'color_code': 20, 'legend': 20, 'legend_entries': 20, 'region_mesh_edges': 97, 'region_outline': 97, 'skipped': 0, 'seconds': 34.9}`。
+legend 首次最大 1607 → 33 ms；modal-animation 不再出现在静力步探测里；region-outline / legend-entries 全部 OK，region-mesh-edges 81 OK + 1 个首次 101 ms。
+color-code 20 个都是 `hit/hit`，首次 100～137 ms、再次约 50 ms：命中后从磁盘读 116 MB 的耗时（第二次走系统文件缓存），属 I/O 下限，
+被 100 ms 阈值判为 NOT_PRECOMPUTED 不代表没预算。至此 viewer 调用的接口里，仍超过阈值的只剩与缓存无关或响应体积决定的：
+pick / nearest-face（现查）、render-buffers(-chunked)（174～213 MB）、frame-scalars（39 MB）、modal-shape（116 MB）；
+deformed-positions 首次约 0.2 s（任意 scale，只预算位移底座）与 modal-animation 预算策略待领导确认。
+
 ## 1. 需求与结论
 
 用户当前要求：**能缓存的都缓存，需要遍历接口可能性进行缓存；暂不以磁盘存储量作为缩减覆盖范围的理由。**
