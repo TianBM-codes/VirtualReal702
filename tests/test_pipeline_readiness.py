@@ -148,7 +148,7 @@ def prepared_model(tmp_path, monkeypatch):
         calls.append((args, kw))
         cache_store.json_put(str(tmp_path), "groups/g", ("test", str(args[2:])), {"ok": True})
 
-    for name in ("compute_scalar_range", "frame_scalars", "frame_colors",
+    for name in ("compute_scalar_range", "frame_scalars",
                  "frame_vertex_displacements", "deform_scale_stats"):
         monkeypatch.setattr(precompute_plan, name, calculate)
     monkeypatch.setattr(cache_store.settings, "scalar_cache_mb", 10)
@@ -162,9 +162,9 @@ def test_prepare_ignores_busy_queue_and_only_warms_instances_with_data(prepared_
     from src.l3.services import warmup_service
     monkeypatch.setattr(warmup_service, "parse_busy", lambda: pytest.fail("不得等待解析队列空闲"))
     readiness.prepare_workspace("p", str(workspace), "g", group_only=True)
-    # 全量计划：每帧 range 1 + scalars smooth/flat 2 + frame-colors U1-3×2 6 + 位移 1，
-    # 共 2 帧；再加每帧变形比例 2。只有有结果块的实例 A，B 不算。
-    assert len(calls) == 22
+    # 全量计划：每帧 range 1 + scalars smooth/flat 2 + 位移 1，共 2 帧；
+    # 再加每帧变形比例 2。只有有结果块的实例 A，B 不算（frame-colors 不预算）。
+    assert len(calls) == 10
     per_instance = [args for args, _kw in calls[:-2]]
     assert all(args[2] == "A" for args in per_instance)
     assert {args[-1] for args in per_instance} == {0, 4}       # 第 0 帧也覆盖

@@ -262,6 +262,15 @@ region-mesh-edges、legend-entries、modal-animation、pick 全部 OK。剩余�
 全量预算等于把 L1 原始结果整份复制（JSON 再膨胀约 4 倍）；慢主要在 JSON 序列化（STH ELEMENT_NODAL json 约 325 ms，
 `format=l3be` 40 ms），调用方要快可用 l3be。探测报告里 raw-values 的 NOT_CACHED 属预期。
 
+**决定（2026-10-22）：全量缓存只对 viewer 实际调用的接口负责。** 清单以 `viewer/src` 为准，写在
+`tools/probe_endpoints.py` 的 `VIEWER_ROUTES`（探测工具默认只测这些，`--all-routes` 测全部）。据此：
+- `frame-colors` 移出全量计划：viewer 只定义了 `fetchFieldColors`、从未调用（云图走 frame-scalars + 色带贴图），
+  它却占计划条目一半以上（test1：4014 / 7533，每字段每帧 U1-3 × smooth/flat 6 项）。接口保留，按需现算并缓存。
+  范围缩小，`PLAN_VERSION` 不变（旧项目完成标记仍有效）。
+- 探测工具请求 `modal-animation` 时与前端一样带 `deform-suggest-scale` 建议值 + `n_frames=20`（此前不带 scale，测的是默认 1.0 的包）。
+- viewer 调用、但计划里只做中间层的：`deformed-positions`（scale 任意，缓存位移向量）、`modal-shape`、`pick`、
+  `section-mesh`（截面位置任意）、区域边线/轮廓，现有速度在阈值内，不再加预算。
+
 **后续可做**：
 - 小模型导入时前约 50 s 单进程测内存（test1 占总时长约 40%），可按模型规模预估首批 worker 数。
 - `202610211132` 变形动画“炸开”：该模型有 STATUS（单元删除），疑为被删单元节点位移无意义所致，Abaqus 会隐藏 STATUS=0 单元；未查。

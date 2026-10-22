@@ -26,7 +26,7 @@ def prepare_workspace(odb_id: str, workspace: str, result_group=None,
     """成功返回后才允许提交 ready；仅预计算有结果块的实例，不吞掉实际错误。
 
     按全量计划（services/precompute_plan.py）准备每 step 全部帧、全部分量、
-    smooth/flat 的云图与范围、frame-colors、U 位移和变形比例；另含几何分类与
+    smooth/flat 的云图与范围、U 位移和变形比例；另含几何分类与
     单元边线。与 scale 等有关的任意请求不在承诺范围。
     progress(message, percent) 用于把进度写进项目日志。
     """

@@ -54,7 +54,7 @@ def test_run_plan_matches_count_and_skips_surface_for_beams(manifest, monkeypatc
             calls.append((name, args, kw))
         return _fn
 
-    for name in ("compute_scalar_range", "frame_scalars", "frame_colors",
+    for name in ("compute_scalar_range", "frame_scalars",
                  "frame_vertex_displacements", "deform_scale_stats"):
         monkeypatch.setattr(plan, name, record(name))
     idx = SimpleNamespace(render_source_elem_row={"SOLID": np.array([0]),
@@ -68,13 +68,12 @@ def test_run_plan_matches_count_and_skips_surface_for_beams(manifest, monkeypatc
                    for name, a, kw in calls if name == "frame_scalars"}
     assert ("SOLID", "U", 0, None, "flat") in scalar_keys
     assert ("SOLID", "U", 7, 2, "smooth") in scalar_keys
-    colors = {(kw["component"], kw["render_mode"]) for name, _a, kw in calls
-              if name == "frame_colors"}
-    assert colors == {(c, m) for c in ("U1", "U2", "U3") for m in ("smooth", "flat")}
+    # frame-colors viewer 不调用，不在计划内
+    assert not hasattr(plan, "frame_colors")
 
 
 def test_no_data_is_skipped_but_other_failures_are_strict(manifest, monkeypatch):
-    for name in ("compute_scalar_range", "frame_colors",
+    for name in ("compute_scalar_range",
                  "frame_vertex_displacements", "deform_scale_stats"):
         monkeypatch.setattr(plan, name, lambda *a, **kw: None)
 
@@ -102,7 +101,7 @@ def test_frequency_step_adds_modal_animation_with_suggested_scale(manifest, monk
         conn.execute("CREATE TABLE steps (result_group TEXT, step_name TEXT, procedure TEXT)")
         conn.execute("INSERT INTO steps VALUES ('g', 'S1', 'FREQUENCY')")
     calls = []
-    for name in ("compute_scalar_range", "frame_scalars", "frame_colors",
+    for name in ("compute_scalar_range", "frame_scalars",
                  "frame_vertex_displacements", "deform_scale_stats"):
         monkeypatch.setattr(plan, name, lambda *a, **kw: None)
     monkeypatch.setattr(plan, "suggest_deform_scale", lambda reg, odb, step, frame, rg: 10.0 + frame)

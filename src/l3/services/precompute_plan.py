@@ -6,12 +6,14 @@
 覆盖范围（每个 result_group × step × field × 有结果块的 instance × 全部真实帧）：
   - frame-scalar-range：默认分量 + 每个实际分量；
   - frame-scalars：默认分量 + 每个实际分量 × smooth/flat；
-  - frame-colors：U1/U2/U3 × smooth/flat（路由只接受这三个分量）；
   - U 场：每帧顶点位移向量（vertex-displacements / deformed-* / modal-* 共用）与
     deform-suggest-scale 统计；FREQUENCY 步另预算每阶 modal-animation 最终响应包
     （scale = 该阶 deform-suggest-scale，n_frames = 20，与前端预计算模式的默认请求一致）。
 无表面三角形的实例（纯梁/质量点）跳过云图类，只准备位移。合法的全 NaN 结果
 （NotFoundError，接口同样返回空 payload）记为跳过；其他异常在 strict 模式下直接失败。
+
+不在计划内的接口（viewer 不调用，2026-10-22 起只对 viewer 用到的接口预算）：
+frame-colors（viewer 云图走 frame-scalars + 色带贴图）、raw-values 等，首次请求时计算并缓存。
 
 任意参数（scale、feature_angle、平均阈值、集合、归一化范围……）不在计划内，
 首次请求时计算并缓存。
@@ -33,7 +35,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from ..core.errors import NotFoundError
 from ..infra.manifest_repo import ManifestRepo
 from .result_service import (
-    cached_modal_animation, compute_scalar_range, deform_scale_stats, frame_colors,
+    cached_modal_animation, compute_scalar_range, deform_scale_stats,
     frame_scalars, frame_vertex_displacements, suggest_deform_scale,
 )
 
@@ -41,9 +43,9 @@ logger = logging.getLogger(__name__)
 
 # 覆盖范围变化时加 1：后台预热的完成标记带此版本，旧项目会按新计划补算。
 PLAN_VERSION = 2          # 2: FREQUENCY 步加 modal-animation 响应包
+#                           （之后去掉 frame-colors 属于缩小范围，旧标记仍有效，不加版本）
 
 RENDER_MODES = ("smooth", "flat")
-FRAME_COLORS_COMPONENTS = ("U1", "U2", "U3")
 MODAL_PROCEDURES = ("FREQUENCY",)
 MODAL_ANIMATION_FRAMES = 20   # 前端预计算模式默认帧数
 _PROGRESS_INTERVAL_S = 30.0
@@ -179,8 +181,7 @@ def _has_surface(idx, instance: str) -> bool:
 def count_calls(idx, targets: List[Target]) -> int:
     total = 0
     for t in targets:
-        per_frame_surface = len(t.component_options) * (1 + len(RENDER_MODES)) \
-            + len(FRAME_COLORS_COMPONENTS) * len(RENDER_MODES)
+        per_frame_surface = len(t.component_options) * (1 + len(RENDER_MODES))
         for inst in t.instances:
             per_frame = per_frame_surface if _has_surface(idx, inst) else 0
             if t.field == "U":
@@ -254,11 +255,6 @@ def run_plan(reg, odb_id: str, idx, targets: List[Target], *, strict: bool,
                         for mode in RENDER_MODES:
                             _call("scalars", f"{cctx} {mode}", frame_scalars, reg, odb_id, instance,
                                   t.step, t.field, frame, component_idx=comp,
-                                  render_mode=mode, result_group=rg)
-                    for comp in FRAME_COLORS_COMPONENTS:
-                        for mode in RENDER_MODES:
-                            _call("colors", f"{ctx} frame-colors {comp} {mode}", frame_colors, reg, odb_id,
-                                  instance, t.step, t.field, frame, component=comp,
                                   render_mode=mode, result_group=rg)
                 if t.field == "U":
                     _call("displacement", f"{ctx} 位移", frame_vertex_displacements, reg, odb_id, instance,

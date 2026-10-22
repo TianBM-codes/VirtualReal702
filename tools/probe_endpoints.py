@@ -6,6 +6,8 @@ r"""
 路由清单来自服务的 /openapi.json（新接口自动纳入），参数取值全部通过服务自己的
 接口发现（结果组、step、帧、实例、字段、分量、着色方案、区域），不读工作区文件。
 只发 GET；POST/DELETE/PATCH 与日志、健康检查等列为"未探测"并注明原因。
+默认只探测 viewer 实际调用的 GET 接口（VIEWER_ROUTES，2026-10-22 起只保证这些接口的缓存），
+加 --all-routes 探测全部项目数据接口。modal-animation 与前端一样带建议 scale + n_frames=20。
 
 用法（在服务所在机器上跑，避免网络时间干扰；建议先重启服务，让第一遍反映磁盘缓存状态）：
     python tools/probe_endpoints.py --project 2026102201
@@ -40,6 +42,38 @@ SKIP_PREFIXES = (
     ("/api/modal/", "独立模态接口（需 model_id，非项目数据）"),
     ("/api/projects/{project_id}/logs", "实时日志"),
 )
+# viewer（viewer/src）实际调用的 GET 接口；全量缓存只对这些负责
+VIEWER_ROUTES = {
+    "/api/projects/{project_id}",
+    "/api/odb/{odb_id}/meta/overview",
+    "/api/odb/{odb_id}/geometry/orientations",
+    "/api/odb/{odb_id}/geometry/{instance}/render-buffers",
+    "/api/odb/{odb_id}/geometry/{instance}/render-buffers-chunked",
+    "/api/odb/{odb_id}/geometry/{instance}/element-mesh-edges",
+    "/api/odb/{odb_id}/geometry/{instance}/feature-edges",
+    "/api/odb/{odb_id}/geometry/{instance}/lines",
+    "/api/odb/{odb_id}/geometry/{instance}/points",
+    "/api/odb/{odb_id}/geometry/{instance}/couplings",
+    "/api/odb/{odb_id}/geometry/{instance}/element-outline/{render_face_idx}",
+    "/api/odb/{odb_id}/results/frame-scalar-range",
+    "/api/odb/{odb_id}/results/frame-scalars",
+    "/api/odb/{odb_id}/results/deformed-positions",
+    "/api/odb/{odb_id}/results/deform-suggest-scale",
+    "/api/odb/{odb_id}/results/modal-shape",
+    "/api/odb/{odb_id}/results/modal-animation",
+    "/api/odb/{odb_id}/results/section-mesh",
+    "/api/odb/{odb_id}/query/pick",
+    "/api/odb/{odb_id}/query/nearest-face",
+    "/api/odb/{odb_id}/color-code/{instance}/schemes",
+    "/api/odb/{odb_id}/color-code/{instance}",
+    "/api/odb/{odb_id}/color-code/{instance}/legend-entries",
+    "/api/odb/{odb_id}/color-code/{instance}/legend",
+    "/api/odb/{odb_id}/color-code/{instance}/region-mesh-edges",
+    "/api/odb/{odb_id}/color-code/{instance}/region-outline",
+    "/api/odb/{odb_id}/sensitivity/result_groups",
+    "/api/odb/{odb_id}/sensitivity/fields",
+}
+MODAL_ANIMATION_FRAMES = 20     # 前端预计算模式的默认帧数（与 precompute_plan 一致）
 # 结果维度在 sample 模式下取的字段：NODAL 优先 U，单元类优先 S，另取一个无分量标量和一个 WHOLE_ELEMENT
 PREFERRED_FIELDS = ("U", "S")
 
@@ -109,6 +143,7 @@ class Catalog:
                 for inst in self.instances:
                     d = _data(base, f"{odb}/fields", {"instance": inst, "step": step, "result_group": rg})
                     self.fields[(rg, step, inst)] = (d or {}).get("fields") or []
+        self._scales = {}
         self.schemes, self.elsets, self.regions = {}, {}, {}
         for inst in self.instances:
             d = _data(base, f"{odb}/color-code/{urllib.parse.quote(inst, safe='')}/schemes") or {}
@@ -120,6 +155,15 @@ class Catalog:
                 lg = _data(base, f"{odb}/color-code/{urllib.parse.quote(inst, safe='')}/legend",
                            {"scheme": sc}) or {}
                 self.regions[(inst, sc)] = [e["legend_key"] for e in lg.get("legend") or []]
+
+    def suggest_scale(self, rg, step, frame):
+        """与前端相同：modal-animation 的 scale 取 deform-suggest-scale 返回值（原样回传）。"""
+        key = (rg, step, frame)
+        if key not in self._scales:
+            d = _data(self.base, f"/api/odb/{self.project}/results/deform-suggest-scale",
+                      {"step": step, "frame": frame, "result_group": rg}) or {}
+            self._scales[key] = d.get("scale")
+        return self._scales[key]
 
     # sample 模式的取样
     def _pick(self, seq, n_ends=True):
@@ -187,7 +231,7 @@ def _routes(base):
     return out
 
 
-def _skip_reason(route):
+def _skip_reason(route, all_routes=False):
     path = route["path"]
     if not path.startswith("/api/"):
         return "非项目数据接口"
@@ -198,6 +242,8 @@ def _skip_reason(route):
             return why
     if not (path.startswith("/api/odb/{odb_id}") or path.startswith("/api/projects/{project_id}")):
         return "非项目数据接口"
+    if not all_routes and path not in VIEWER_ROUTES:
+        return "viewer 不调用（--all-routes 时探测）"
     return None
 
 
@@ -212,7 +258,7 @@ def _requests_for(route, cat):
     uses_scheme = "scheme" in names
     known = {"odb_id", "project_id", "instance", "instances", "step", "step_name", "frame", "frame_idx",
              "field", "component_idx", "component", "mode", "result_group", "scheme", "set_names",
-             "region", "position", "x", "y", "z", "render_face_idx", "name"}
+             "region", "position", "x", "y", "z", "render_face_idx", "name", "scale", "n_frames"}
     missing = [n for n, req in q.items() if req and n not in known]
     if missing:
         return None, f"必填参数无法自动填：{missing}"
@@ -274,6 +320,10 @@ def _requests_for(route, cat):
                     if "render_face_idx" in names:
                         a["render_face_idx"] = 0
                     if fd is None:
+                        if route["path"].endswith("/results/modal-animation") and fr is not None:
+                            sc = cat.suggest_scale(rg, step, fr)
+                            if sc is not None:
+                                a = {**a, "scale": sc, "n_frames": MODAL_ANIMATION_FRAMES}
                         emit(a)
                         continue
                     a["field"] = fd["name"]
@@ -325,6 +375,8 @@ def main():
     ap.add_argument("--full", action="store_true", help="穷举全部 step/帧/字段/分量/区域（默认取样）")
     ap.add_argument("--threshold-ms", type=float, default=100.0, help="判定“需要现算”的服务端耗时阈值")
     ap.add_argument("--limit-per-route", type=int, default=0, help="每个接口最多请求多少组参数（0=不限）")
+    ap.add_argument("--all-routes", action="store_true",
+                    help="探测全部项目数据 GET 接口（默认只探测 viewer 调用的）")
     ap.add_argument("--only", default="", help="只探测路径里包含该子串的接口，如 results/")
     ap.add_argument("--out", default="", help="输出文件前缀，默认 probe_<项目>_<时间>")
     ap.add_argument("--interval-ms", type=float, default=50.0,
@@ -345,7 +397,7 @@ def main():
     for route in _routes(base):
         if args.only and args.only not in route["path"]:
             continue
-        why = _skip_reason(route)
+        why = _skip_reason(route, args.all_routes)
         if why:
             skipped.append((route, why))
             continue

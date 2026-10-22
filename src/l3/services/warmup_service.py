@@ -3,7 +3,7 @@
 
 目标：用户第一次点开云图就命中缓存。做法是在以下时机后台执行全量预计算计划
 （services/precompute_plan.py：每个 result_group × step × field × instance 的全部帧、
-全部分量、smooth/flat，以及 frame-colors、U 位移与变形比例）。新导入由 runner 在
+全部分量、smooth/flat，以及 U 位移与变形比例；frame-colors viewer 不调用，不预算）。新导入由 runner 在
 ready 前严格执行同一计划；这里负责计划升级前就 ready 的旧项目补算和兜底：
 
   1. 模型加载完成（core.state 的 on_render_ready_loaded 回调，覆盖启动预载
