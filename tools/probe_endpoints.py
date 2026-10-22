@@ -54,7 +54,6 @@ VIEWER_ROUTES = {
     "/api/odb/{odb_id}/geometry/{instance}/lines",
     "/api/odb/{odb_id}/geometry/{instance}/points",
     "/api/odb/{odb_id}/geometry/{instance}/couplings",
-    "/api/odb/{odb_id}/geometry/{instance}/element-outline/{render_face_idx}",
     "/api/odb/{odb_id}/results/frame-scalar-range",
     "/api/odb/{odb_id}/results/frame-scalars",
     "/api/odb/{odb_id}/results/deformed-positions",
