@@ -186,6 +186,14 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 `--diff` 结果 **完全一致 832，数值等价 0，不一致 0**。快照走的是进程内计算路径（`--cache memory`），覆盖第 1、2 步；
 第 3 步多进程严格准备的落盘内容尚待重启服务导入后用 `--cache disk` 核对。
 
+**多进程实测（2026-10-22，项目 `test1` = door.odb）**：壳模型，PART-1-1 37,828 节点 / 33,986 单元（65,481 个表面三角形），
+2 个 step（eigenfrequency、sag），每步约 24 个字段。计划 7533 项（range 1155、scalars 2310、colors 4014、位移 27、变形统计 27），
+**全部完成、0 跳过、0 失败，8 个 worker，127.7 s**。日志：前约 50 s 只有 1 个进程（先跑完第一个目标测内存峰值），
+之后扩到 8 个，剩余约 7000 项用了约 80 s。ready 后首次请求（内存冷、磁盘命中）frame-scalars 约 40～80 ms。
+观察：小模型上"先单进程测内存"占了总时长约 40%，可考虑按模型规模预估首批进程数；导入日志另有
+`catalog 导入失败（非致命）：invalid literal for int() with base 10: 'test1'`（项目 ID 非数字时模型修正 catalog 跳过），与缓存无关。
+多进程写入内容与单进程是否逐字节一致，尚未用 `snapshot_results.py --cache disk --compare` 在 1440w 项目上核对。
+
 遗留问题：
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - ~~STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms~~：原因是 L3 的云图/范围/着色只认 NODAL、ELEMENT_NODAL、INTEGRATION_POINT，STATUS 只有 WHOLE_ELEMENT 块，每次都判为无数据、返回空 payload（灰色），空结果不缓存。2026-10-22 起按单元着色（`WHOLE_ELEMENT_FLAT`，与积分点 flat 同一读取函数），结果进缓存、全量计划自动覆盖；含 WHOLE_ELEMENT 块的结果文件缓存键加 `("we", …)`，旧的“无范围”缓存不再命中，其他文件键不变。测试 `tests/test_l3_whole_element_field.py`。
