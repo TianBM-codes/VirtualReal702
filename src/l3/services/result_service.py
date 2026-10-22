@@ -2,7 +2,7 @@
 Frame-color / frame-scalar computation:
   L1 results HDF5 → per-vertex uint8 RGBA or float32 scalars aligned to render geometry.
 
-Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT
+Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT → WHOLE_ELEMENT
 """
 import logging
 import os
@@ -102,7 +102,7 @@ def _range_disk_put(workspace: str, bucket: str, key: tuple, value) -> None:
 # ─── Generic component extraction ────────────────────────────────────────────
 
 _STORED_MAGNITUDE_COMPONENTS = ("USUM",)
-_STORED_MAG_MEMO: Dict[tuple, Optional[int]] = {}
+_STORED_MAG_MEMO: Dict[tuple, Tuple[Optional[int], bool]] = {}
 
 
 def stored_magnitude_col(f) -> Optional[int]:
@@ -133,18 +133,24 @@ def drop_stored_magnitude(data: np.ndarray, mag_col: Optional[int]) -> np.ndarra
 def _component_cache_token(h5_path: str, h5_sig, component_idx: Optional[int]):
     """
     缓存键里的分量部分。默认分量（None）在带自带合量列的文件上改为 "mag-excl-USUM"，
-    让修复 √2 合量 bug 之前写入的错误缓存不再命中；其他文件的键保持不变。
+    让修复 √2 合量 bug 之前写入的错误缓存不再命中。含 WHOLE_ELEMENT 块的文件
+    （如 STATUS）再包一层 ("we", ...)：支持该位置之前缓存的"无范围"不再命中。
+    其他文件的键保持不变。
     """
-    if component_idx is not None:
-        return int(component_idx)
     memo_key = (h5_path, h5_sig)
     if memo_key not in _STORED_MAG_MEMO:
         try:
             with h5py.File(h5_path, "r") as f:
-                _STORED_MAG_MEMO[memo_key] = stored_magnitude_col(f)
+                _STORED_MAG_MEMO[memo_key] = (stored_magnitude_col(f),
+                                              "WHOLE_ELEMENT" in f)
         except OSError:
-            return None
-    return "mag-excl-USUM" if _STORED_MAG_MEMO[memo_key] is not None else None
+            return None if component_idx is None else int(component_idx)
+    mag_col, has_whole_element = _STORED_MAG_MEMO[memo_key]
+    if component_idx is not None:
+        token = int(component_idx)
+    else:
+        token = "mag-excl-USUM" if mag_col is not None else None
+    return ("we", token) if has_whole_element else token
 
 
 # 原始结果帧的进程内复用：全量准备时同一帧要按多个分量、smooth/flat、全模型
@@ -747,10 +753,12 @@ def _frame_colors_scalars(h5_path, idx, instance, frame_idx, component,
                 scalar_face, num_frames = result
                 scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3]
 
-        # ── Try INTEGRATION_POINT ──────────────────────────────────────────
-        if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
+        # ── Try INTEGRATION_POINT, then WHOLE_ELEMENT (e.g. STATUS) ─────────
+        for position in ("INTEGRATION_POINT", "WHOLE_ELEMENT"):
+            if scalar_vertex is not None or src_etype is None or src_elem_row is None:
+                break
             result = _scalar_from_element_position(
-                f, "INTEGRATION_POINT", instance, frame_idx, component,
+                f, position, instance, frame_idx, component,
                 src_etype, src_elem_row,
             )
             if result is not None:
@@ -1028,15 +1036,16 @@ def _scalar_range_from_h5(
                 if surface_range is not None:
                     return surface_range
 
-            # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
+            # ── INTEGRATION_POINT, then WHOLE_ELEMENT (flat fallback) ────────
             if not found_en:
-                result = _scalar_elem_pos_by_idx(
-                    f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
-                    src_etype, src_elem_row,
-                )
-                if result is not None:
-                    _, _, rng = result
-                    return rng
+                for position in ("INTEGRATION_POINT", "WHOLE_ELEMENT"):
+                    result = _scalar_elem_pos_by_idx(
+                        f, position, instance, frame_idx, component_idx,
+                        src_etype, src_elem_row,
+                    )
+                    if result is not None:
+                        _, _, rng = result
+                        return rng
 
     return None
 
@@ -1067,7 +1076,7 @@ def frame_scalars(
     u_per_vertex: normalized scalar t ∈ [0, 1] for each render vertex.
     legend_range: [val_min, val_max] in original field units.
     result_position: 'NODAL' | 'ELEMENT_NODAL' | 'ELEMENT_NODAL_FLAT' |
-                     'INTEGRATION_POINT_FLAT'
+                     'INTEGRATION_POINT_FLAT' | 'WHOLE_ELEMENT_FLAT'
 
     component_idx=None → magnitude (L2 norm).
     component_idx=0,1,2,... → direct index into the result component axis.
@@ -1081,7 +1090,8 @@ def frame_scalars(
     override_min/override_max: when both are provided, skip per-instance range
     computation and use these values directly (global normalization mode).
 
-    Position fallback: NODAL → ELEMENT_NODAL (averaged) → INTEGRATION_POINT (flat).
+    Position fallback: NODAL → ELEMENT_NODAL (averaged) → INTEGRATION_POINT (flat)
+    → WHOLE_ELEMENT (flat, e.g. STATUS).
     feature_angle: degrees for shell/membrane geometric splitting; None = section-only.
     use_geometry_split: False = ignore feature_angle, use section-only domains.
     average_threshold: 75% threshold for conditional node averaging.
@@ -1284,15 +1294,17 @@ def frame_scalars(
                 if all_range is not None:
                     global_range = all_range
 
-            # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
-            if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
+            # ── INTEGRATION_POINT, then WHOLE_ELEMENT (flat fallback) ────────
+            for position in ("INTEGRATION_POINT", "WHOLE_ELEMENT"):
+                if scalar_vertex is not None or src_etype is None or src_elem_row is None:
+                    break
                 result = _scalar_elem_pos_by_idx(
-                    f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
+                    f, position, instance, frame_idx, component_idx,
                     src_etype, src_elem_row,
                 )
                 if result is not None:
                     scalar_face, num_frames, global_range = result
-                    result_position = "INTEGRATION_POINT_FLAT"
+                    result_position = f"{position}_FLAT"
                     if vtx_ti is not None:
                         scalar_vertex = scalar_face[vtx_ti]         # [Nv] indexed
                     else:

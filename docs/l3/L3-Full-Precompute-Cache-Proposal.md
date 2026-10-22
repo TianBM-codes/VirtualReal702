@@ -96,7 +96,7 @@ L1 导出单步约 37 分钟（日志 11:33 开始），按 5 步推算整个导
 
 未计入（量级更小或另需测量）：frame-scalar-range（ELEMENT_NODAL smooth 的范围要单独计算，可能再加数十分钟）、
 55 帧 × 2 实例的顶点位移与 deform-suggest-scale、几何类（color-code、单元边线）、集合维度、frame-colors（U1/U2/U3）。
-STATUS（WHOLE_ELEMENT）再次请求仍需约 190 ms，疑似不进缓存，实施时核对。
+STATUS（WHOLE_ELEMENT）再次请求仍需约 190 ms：已查明是 L3 不认 WHOLE_ELEMENT 位置、每次都返回空 payload，空结果不进缓存；2026-10-22 已支持（见 §0.8）。
 
 结论：这一规模下“全量算完才 ready”可行，代价主要是导入时间增加约一半，磁盘不是瓶颈。
 模态项目（帧数 = 模态阶数）和更大网格的项目需要按同一方法另测。
@@ -188,7 +188,8 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 
 遗留问题：
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
-- STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms，疑似不进缓存，未核对。
+- ~~STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms~~：原因是 L3 的云图/范围/着色只认 NODAL、ELEMENT_NODAL、INTEGRATION_POINT，STATUS 只有 WHOLE_ELEMENT 块，每次都判为无数据、返回空 payload（灰色），空结果不缓存。2026-10-22 起按单元着色（`WHOLE_ELEMENT_FLAT`，与积分点 flat 同一读取函数），结果进缓存、全量计划自动覆盖；含 WHOLE_ELEMENT 块的结果文件缓存键加 `("we", …)`，旧的“无范围”缓存不再命中，其他文件键不变。测试 `tests/test_l3_whole_element_field.py`。
+- 仍存在：任何字段在某实例上真的没有数据时（如 CPRESS 在 DAO-1），每次请求仍会重新判定一遍（DAO-1 约 30 ms），未做“无数据”缓存。
 - 手动 `POST /results/warmup` 不给解析让路，期间追加结果可能等缓存锁超时（300 s）。
 - ~~重启后旧项目被打开会在 Web 进程内单线程补算全量计划~~：已按开发者要求把 `APP_WARMUP` 默认改为 0（2026-10-21），旧项目需手动 `POST /results/warmup` 或设 `APP_WARMUP=1` 才补算。
 - 后续可选：按内容去重相邻 step 交接帧（§0.4）、整块读取所有帧、任务账本、集合/区域/几何类最终响应等其他接口族。
