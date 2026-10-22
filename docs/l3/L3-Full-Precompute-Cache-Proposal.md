@@ -337,6 +337,21 @@ color-code 20 个都是 `hit/hit`，首次 100～137 ms、再次约 50 ms：命�
 pick / nearest-face（现查）、render-buffers(-chunked)（174～213 MB）、frame-scalars（39 MB）、modal-shape（116 MB）；
 deformed-positions 首次约 0.2 s（任意 scale，只预算位移底座）与 modal-animation 预算策略待领导确认。
 
+### 0.11 接续清单（2026-10-23 收尾，最后提交见 git log）
+
+**已完成并验证**：1440w 多进程落盘快照比对 832/832 一致；color-code / legend / legend-entries / region-mesh-edges / region-outline
+存盘 + 导入预算（`cfc6126`、`5ebe167`），测试全绿，`--full` 探测全部命中（§0.10）；探测工具只在 FREQUENCY 步测 modal-animation。
+
+**待领导确认（新对话先问结论）**：
+1. `deformed-positions` 是否预算“建议 scale”整包：现首次约 0.2～9 s（冷启动差异大）、命中约 100 ms；每帧约 232 MB（1440w），
+   帧数多的模型线性增长。viewer 调用时 scale 由用户调整，且**不带 `result_group`**（`ThreeViewport.vue:1835`，多结果组项目可能取默认组，需单独确认）。
+2. `modal-animation` 预算策略：现 FREQUENCY 步每阶预算 scale=建议值、n_frames=20 的整包，大小约 20 × 渲染顶点数 × 12 字节
+   （1440w 每阶 2.3 GB，20 阶约 46 GB，逼近默认 100 GB 磁盘上限）；viewer 默认 shader 模式只用 modal-shape（116 MB），
+   预计算模式需用户手动切换。可选：保留 / 按规模（顶点数或总大小）决定 / 不再预算。
+
+**后续可做（未排期）**：pick 每次 0.2～0.36 s 提速；多选单元集合组合首次约 2 s（单集合分类可存盘后组合）；
+单元集合很多的模型着色包磁盘 = 集合数 × 顶点数 × 12 字节需留意；§0.9 原有的“后续可做”各项仍有效。
+
 ## 1. 需求与结论
 
 用户当前要求：**能缓存的都缓存，需要遍历接口可能性进行缓存；暂不以磁盘存储量作为缩减覆盖范围的理由。**
