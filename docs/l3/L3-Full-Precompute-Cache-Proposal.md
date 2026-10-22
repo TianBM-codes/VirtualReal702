@@ -236,8 +236,10 @@ legend-entries 提速（`8703566`）、FREQUENCY 步 modal-animation 预算（`7
 3. `python tools/probe_endpoints.py --base http://127.0.0.1:18071 --project <新项目> --full`，预期：ERROR 只剩
    `projects/{id}/summary`（ODB 项目无 model_summary.json）；`schemes`、`legend-entries` 不再 NOT_CACHED；
    eigenfrequency 步的 `modal-animation` 首次即命中（sag 静力步不预算，仍为 NOT_PRECOMPUTED，属预期）。
-4. 向前端同事确认第三方前端调 `modal-animation` 的实际 `scale` / `n_frames`；与“建议值 + 20 帧”不同则预算的包不命中，需改
-   `precompute_plan.MODAL_ANIMATION_FRAMES` / `_modal_animation`。
+4. ~~向前端同事确认第三方前端调 `modal-animation` 的实际 `scale` / `n_frames`~~ 已确认（2026-10-22）：前端传
+   `deform-suggest-scale` 返回的建议值 + `n_frames=20`，与预算一致。实测项目 2026102201 eigenfrequency 第 4 阶带
+   `scale=0.5442756586073418&n_frames=20` 首次请求 49 ms（命中）。注意前端须原样回传建议值，四舍五入后缓存 key 对不上。
+   （此前探测工具不带 scale，测的是默认 1.0 的包，不能说明预算命中。）
 5. 在 1440w 项目上：重新导入后跑 `probe_endpoints.py --full`，并用 `snapshot_results.py --cache disk --compare baseline.npz`
    核对多进程落盘内容（STATUS 项不一致属预期）。
 
@@ -255,6 +257,10 @@ region-mesh-edges、legend-entries、modal-animation、pick 全部 OK。剩余�
 - 4 个接口各有 1 个 NOT_PRECOMPUTED（color-code、deformed-normals、frame-colors、全实例 legend-entries），是每个进程首个请求的冷启动（加载索引/记忆化），其余同类请求都命中。
 - `raw-values` 432 个 NOT_CACHED：大字段（如 STH ELEMENT_NODAL，JSON 2.5 MB）`format=json` 约 325 ms，其中主要是 JSON 序列化，
   `format=l3be` 同一请求 40 ms。raw-values 是计算类接口（viewer 不调用），按全量预算需复制全部 L1 数据（JSON 还会膨胀约 4 倍），暂未纳入，待定。
+
+**决定（2026-10-22）：`raw-values` 不缓存、不纳入全量预算。** 理由：计算类接口（viewer 不调用），不属于“模型显示类接口”；
+全量预算等于把 L1 原始结果整份复制（JSON 再膨胀约 4 倍）；慢主要在 JSON 序列化（STH ELEMENT_NODAL json 约 325 ms，
+`format=l3be` 40 ms），调用方要快可用 l3be。探测报告里 raw-values 的 NOT_CACHED 属预期。
 
 **后续可做**：
 - 小模型导入时前约 50 s 单进程测内存（test1 占总时长约 40%），可按模型规模预估首批 worker 数。
@@ -324,7 +330,7 @@ region-mesh-edges、legend-entries、modal-animation、pick 全部 OK。剩余�
 | `modal-animation` | 所有适用模态的位移底座；计划内 scale 和 n_frames 的最终动画包 | 任意 scale；n_frames 当前合法整数 4～120 | 固定 scale 后帧数是有限维度，可全部列入计划；前端默认值 20 必须覆盖，其他配置的必需范围需审阅确定 |
 | `geometry/*` | 全实例 render-buffers、标准分块、element-mesh-edges、feature-edges、lines、points、couplings、orientations 等 | 任意 chunk_size、集合子集、任意面列表 | 已有 L2 文件不等于已有最终响应缓存；可预生成标准响应，任意切块复用基础数组 |
 | `color-code/*` | 已有 scheme、已有 region、已有单集合；分类编码、区域边线、区域轮廓 | 任意集合组合、用户改色和改名 | 目前分类预热排除 elset；应覆盖已有集合，动态显示信息必须有版本或即时组合 |
-| `results/raw-values` | 实际存在的 group/step/field/instance/frame/position，覆盖 json 与 l3be | 后续新增或重写结果 | 不再因直接读取 L1 或磁盘占用而排除；不同 position 的数据不可混用 |
+| `results/raw-values` | **不缓存**（2026-10-22 拍板，见 §0.9） | — | 计算类接口，viewer 不调用；每次直接读 L1，需要快用 `format=l3be` |
 | `results/node-table`、`results/node-time-value`、`query/node-displacements` | 全实际帧的节点结果底座、标签映射、时间轴和必要索引 | 任意节点/列组合、请求顺序、任意时间插值 | 不穷举所有列表；复用完整数据，提取/插值后可缓存具体查询结果，保持顺序和错误语义 |
 | pick、ray-pick、bbox、nearest-face、surface-patch、render-faces、section-mesh | 几何、结果映射、空间/拓扑索引，固定预设剖切可额外生成 | 射线、坐标、包围盒、剖切位置和任意选区 | 准备公共底座；合法具体查询首次计算后可缓存，不宣称所有任意空间输入已预算 |
 | meta、steps、frames、fields、sensitivity/model-update 字段目录 | 每个数据版本的元数据快照 | 新结果、字段、集合、图例或模型修正状态变化 | 小响应也纳入清单；实时进度和任务状态不能长期返回旧快照 |
