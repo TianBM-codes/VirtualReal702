@@ -99,17 +99,26 @@ class Settings:
         # deform/animation payloads are persisted under <workspace>/l3_cache/ so
         # they survive restarts and are shared across worker processes. Cap is
         # for the whole l3_cache/ of one workspace, evicted oldest-mtime-first.
-        # Default 100 GB (final value to be decided). 0 = memory-only caching.
-        self.scalar_disk_cache_mb = max(
-            0, int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "102400")))
+        # Default 100 GB (final value to be decided). 0 = memory-only caching,
+        # negative (e.g. -1) = unlimited, never evict.
+        self.scalar_disk_cache_mb = int(_get(cfg, "APP_SCALAR_DISK_CACHE_MB", "102400"))
+        if self.scalar_disk_cache_mb < 0:
+            self.scalar_disk_cache_mb = -1
 
-        # Cache warm-up: automatically precompute the default view of the LAST
-        # frame of every step (every field × instance, magnitude component) in
-        # a background thread when a model finishes loading or a new
-        # result_group becomes ready, so the
-        # first click hits a warm cache. 0 = no automatic warm-up (the manual
-        # POST /results/warmup endpoint still works).
-        self.enable_warmup = _get(cfg, "APP_WARMUP", "1") == "1"
+        # Automatic background cache warm-up: run the full precompute plan
+        # (services/precompute_plan.py) in a background thread of the web
+        # process when a model finishes loading or a new result_group becomes
+        # ready. New imports are already fully prepared before ready, so this
+        # mainly backfills projects prepared under an older plan — which can
+        # take hours per large model. Default OFF (2026-10-21); 1 = enable.
+        # The manual POST /results/warmup endpoint works either way.
+        self.enable_warmup = _get(cfg, "APP_WARMUP", "0") == "1"
+
+        # Parallel worker processes for the strict full-cache preparation before
+        # ready (services/precompute_plan.run_plan_parallel). 0 = auto (physical
+        # cores, capped at 8 and by free memory measured after the first worker
+        # finishes a target); 1 = run in-process sequentially.
+        self.precompute_workers = max(0, int(_get(cfg, "APP_PRECOMPUTE_WORKERS", "0")))
 
         # Embedded runner: run L1+L2 job pipeline as a daemon thread inside
         # the web process.  Default: ON on Linux/macOS, OFF on Windows.
@@ -153,8 +162,9 @@ def log_startup_config() -> None:
         f"  enable_gzip       : {settings.enable_gzip}",
         f"  gzip_compresslevel: {settings.gzip_compresslevel}",
         f"  scalar_cache_mb   : {settings.scalar_cache_mb}   (RAM, 0 = off)",
-        f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off)",
-        f"  enable_warmup     : {settings.enable_warmup}",
+        f"  scalar_disk_cache_mb: {settings.scalar_disk_cache_mb}   (per workspace, 0 = off, -1 = unlimited)",
+        f"  enable_warmup     : {settings.enable_warmup}   (auto backfill, default off)",
+        f"  precompute_workers: {settings.precompute_workers}   (0 = auto, 1 = sequential)",
     ]
     if settings.odb_workspace:
         lines.append(f"  [DEV] odb_workspace: {settings.odb_workspace}")

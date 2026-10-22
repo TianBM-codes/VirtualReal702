@@ -2,12 +2,14 @@
 Frame-color / frame-scalar computation:
   L1 results HDF5 → per-vertex uint8 RGBA or float32 scalars aligned to render geometry.
 
-Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT
+Position fallback order: NODAL → ELEMENT_NODAL → INTEGRATION_POINT → WHOLE_ELEMENT
 """
 import logging
 import os
 import re
 import json
+import threading
+from collections import OrderedDict
 from typing import Dict, Literal, Optional, Tuple
 
 import h5py
@@ -43,7 +45,15 @@ _range_cache_put = cache_store.small_put
 
 def clear_result_caches() -> None:
     """清空内存结果缓存（测试与运维用）。磁盘缓存不动，删工作区即删。"""
+    global _FRAME_MEMO_BYTES
     cache_store.clear_memory()
+    with _FRAME_MEMO_LOCK:
+        _FRAME_MEMO.clear()
+        _FRAME_MEMO_BYTES = 0
+    with _EN_INDEX_LOCK:
+        _EN_GEOM_CACHE.clear()
+        _EN_RANGE_INDEX.clear()
+    _STORED_MAG_MEMO.clear()
 
 
 def _vertex_disk_get(workspace: str, bucket: str, key: tuple) -> Optional[tuple]:
@@ -91,7 +101,95 @@ def _range_disk_put(workspace: str, bucket: str, key: tuple, value) -> None:
 
 # ─── Generic component extraction ────────────────────────────────────────────
 
-def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.ndarray:
+_STORED_MAGNITUDE_COMPONENTS = ("USUM",)
+_STORED_MAG_MEMO: Dict[tuple, Tuple[Optional[int], bool]] = {}
+
+
+def stored_magnitude_col(f) -> Optional[int]:
+    """
+    结果文件自带的合量列下标（OP2 位移在 U1/U2/U3 后附了现成的 USUM 列），没有返回 None。
+
+    对这类数据求模长前必须先去掉该列，否则 √(U1²+U2²+U3²+USUM²) = √2·|U|。
+    只认 meta/components 里明确登记的名字，ODB 等不带合量列的文件不受影响。
+    """
+    if "meta/components" not in f:
+        return None
+    names = [c.decode() if isinstance(c, bytes) else str(c)
+             for c in f["meta/components"][()]]
+    for i, name in enumerate(names):
+        if name.upper() in _STORED_MAGNITUDE_COMPONENTS:
+            return i if len(names) > 1 else None
+    return None
+
+
+def drop_stored_magnitude(data: np.ndarray, mag_col: Optional[int]) -> np.ndarray:
+    """去掉 data 最后一维里的自带合量列，供求模长使用；mag_col 为 None 或不匹配时原样返回。"""
+    data = np.asarray(data)
+    if mag_col is None or data.ndim == 0 or data.shape[-1] < 2 or mag_col >= data.shape[-1]:
+        return data
+    return np.delete(data, mag_col, axis=-1)
+
+
+def _component_cache_token(h5_path: str, h5_sig, component_idx: Optional[int]):
+    """
+    缓存键里的分量部分。默认分量（None）在带自带合量列的文件上改为 "mag-excl-USUM"，
+    让修复 √2 合量 bug 之前写入的错误缓存不再命中。含 WHOLE_ELEMENT 块的文件
+    （如 STATUS，只有一个分量、计划只算默认分量）再包一层 ("we", None)：支持该位置
+    之前缓存的"无范围"不再命中。显式分量不打开文件（命中缓存时不碰 H5），键不变。
+    其他文件的键保持不变。
+    """
+    if component_idx is not None:
+        return int(component_idx)
+    memo_key = (os.path.normcase(os.path.abspath(h5_path)), h5_sig)
+    if memo_key not in _STORED_MAG_MEMO:
+        try:
+            with h5py.File(h5_path, "r") as f:
+                _STORED_MAG_MEMO[memo_key] = (stored_magnitude_col(f),
+                                              "WHOLE_ELEMENT" in f)
+        except OSError:
+            return None
+    mag_col, has_whole_element = _STORED_MAG_MEMO[memo_key]
+    token = "mag-excl-USUM" if mag_col is not None else None
+    return ("we", token) if has_whole_element else token
+
+
+# 原始结果帧的进程内复用：全量准备时同一帧要按多个分量、smooth/flat、全模型
+# 范围反复读取（一帧 S 约 118 MB，读一次 0.24 s）。只是少读几遍文件，数据与
+# 直接读取逐字节相同；key 含结果文件签名，文件重写后自然失效。
+_FRAME_MEMO: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_FRAME_MEMO_BYTES = 0
+_FRAME_MEMO_CAP = 256 * 1024 * 1024
+_FRAME_MEMO_LOCK = threading.Lock()
+
+
+def _frame_slice(ds, frame_idx: int):
+    """ds[frame_idx]，同一结果文件的同一帧在进程内只读一次。返回只读数组。"""
+    global _FRAME_MEMO_BYTES
+    path = ds.file.filename
+    sig = cache_store.file_sig(path)
+    key = (path, sig, ds.name, int(frame_idx))
+    if sig is not None:
+        with _FRAME_MEMO_LOCK:
+            hit = _FRAME_MEMO.get(key)
+            if hit is not None:
+                _FRAME_MEMO.move_to_end(key)
+                return hit
+    data = ds[frame_idx]
+    if sig is None or not isinstance(data, np.ndarray) or data.nbytes > _FRAME_MEMO_CAP // 2:
+        return data
+    data.setflags(write=False)
+    with _FRAME_MEMO_LOCK:
+        if key not in _FRAME_MEMO:
+            _FRAME_MEMO[key] = data
+            _FRAME_MEMO_BYTES += data.nbytes
+            while _FRAME_MEMO_BYTES > _FRAME_MEMO_CAP and _FRAME_MEMO:
+                _, old = _FRAME_MEMO.popitem(last=False)
+                _FRAME_MEMO_BYTES -= old.nbytes
+    return data
+
+
+def _extract_component(data: np.ndarray, component_idx: Optional[int],
+                       mag_col: Optional[int] = None) -> np.ndarray:
     """
     Extract a scalar from the last axis of data.
 
@@ -99,6 +197,8 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.nda
     component_idx: int → use as direct index into last axis
                    None → magnitude (L2 norm) for vector fields, but the raw
                           signed value for scalar fields (ncomp == 1)
+    mag_col:       stored magnitude column (see stored_magnitude_col), excluded
+                   from the norm
     Returns float32 array with one fewer dimension.
     """
     if data.ndim == 1:
@@ -111,7 +211,7 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int]) -> np.nda
         # fields (U, RF, …) should collapse to a magnitude.
         if data.shape[-1] == 1:
             return data[..., 0].astype(np.float32)
-        return np.linalg.norm(data, axis=-1).astype(np.float32)
+        return np.linalg.norm(drop_stored_magnitude(data, mag_col), axis=-1).astype(np.float32)
     ci = int(component_idx)
     if ci < data.shape[-1]:
         return data[..., ci].astype(np.float32)
@@ -136,11 +236,11 @@ def _scalar_nodal_by_idx(f, instance: str, frame_idx: int,
             f"frame_idx {frame_idx} out of range [0, {num_frames})",
             {"frame_idx": frame_idx},
         )
-    frame_data = ds[frame_idx]   # [N, ncomp] or [N]
+    frame_data = _frame_slice(ds, frame_idx)   # [N, ncomp] or [N]
     # Collapse extra dims (e.g. [N, 1, ncomp] from some exporters)
     while frame_data.ndim > 2:
         frame_data = frame_data.mean(axis=1)
-    return _extract_component(frame_data, component_idx), num_frames
+    return _extract_component(frame_data, component_idx, stored_magnitude_col(f)), num_frames
 
 
 def _expand_sparse_nodal_to_geometry_rows(
@@ -261,7 +361,7 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
         if num_frames is None:
             num_frames = ds.shape[0]
 
-        frame_data = ds[frame_idx]
+        frame_data = _frame_slice(ds, frame_idx)
 
         # Average over middle dimensions (local_nodes or ips) until [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:
@@ -393,7 +493,7 @@ def _scalar_from_nodal(f, instance: str, frame_idx: int, component: Component):
             f"frame_idx {frame_idx} out of range [0, {num_frames})",
             {"frame_idx": frame_idx},
         )
-    frame_data = ds[frame_idx]   # [N, ncomp]
+    frame_data = _frame_slice(ds, frame_idx)   # [N, ncomp]
     ci = _COMP_IDX.get(component, 0)
     if frame_data.ndim == 1:
         return frame_data.astype(np.float32), num_frames
@@ -440,7 +540,7 @@ def _scalar_from_element_position(f, position: str, instance: str,
         if num_frames is None:
             num_frames = ds.shape[0]
 
-        frame_data = ds[frame_idx]
+        frame_data = _frame_slice(ds, frame_idx)
 
         # Average over all middle dimensions until shape is [N_elem, ncomp] or [N_elem]
         while frame_data.ndim > 2:
@@ -653,10 +753,12 @@ def _frame_colors_scalars(h5_path, idx, instance, frame_idx, component,
                 scalar_face, num_frames = result
                 scalar_vertex = np.repeat(scalar_face, 3)  # [Nt*3]
 
-        # ── Try INTEGRATION_POINT ──────────────────────────────────────────
-        if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
+        # ── Try INTEGRATION_POINT, then WHOLE_ELEMENT (e.g. STATUS) ─────────
+        for position in ("INTEGRATION_POINT", "WHOLE_ELEMENT"):
+            if scalar_vertex is not None or src_etype is None or src_elem_row is None:
+                break
             result = _scalar_from_element_position(
-                f, "INTEGRATION_POINT", instance, frame_idx, component,
+                f, position, instance, frame_idx, component,
                 src_etype, src_elem_row,
             )
             if result is not None:
@@ -856,7 +958,7 @@ def compute_scalar_range(
     h5_sig = _result_h5_sig(h5_path)
     range_key = (
         "scalar_range", odb_id, instance, h5_path, h5_sig, int(frame_idx),
-        None if component_idx is None else int(component_idx),
+        _component_cache_token(h5_path, h5_sig, component_idx),
         float(average_threshold), advanced_version,
     )
     if h5_sig is not None:
@@ -934,15 +1036,16 @@ def _scalar_range_from_h5(
                 if surface_range is not None:
                     return surface_range
 
-            # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
+            # ── INTEGRATION_POINT, then WHOLE_ELEMENT (flat fallback) ────────
             if not found_en:
-                result = _scalar_elem_pos_by_idx(
-                    f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
-                    src_etype, src_elem_row,
-                )
-                if result is not None:
-                    _, _, rng = result
-                    return rng
+                for position in ("INTEGRATION_POINT", "WHOLE_ELEMENT"):
+                    result = _scalar_elem_pos_by_idx(
+                        f, position, instance, frame_idx, component_idx,
+                        src_etype, src_elem_row,
+                    )
+                    if result is not None:
+                        _, _, rng = result
+                        return rng
 
     return None
 
@@ -973,7 +1076,7 @@ def frame_scalars(
     u_per_vertex: normalized scalar t ∈ [0, 1] for each render vertex.
     legend_range: [val_min, val_max] in original field units.
     result_position: 'NODAL' | 'ELEMENT_NODAL' | 'ELEMENT_NODAL_FLAT' |
-                     'INTEGRATION_POINT_FLAT'
+                     'INTEGRATION_POINT_FLAT' | 'WHOLE_ELEMENT_FLAT'
 
     component_idx=None → magnitude (L2 norm).
     component_idx=0,1,2,... → direct index into the result component axis.
@@ -987,7 +1090,8 @@ def frame_scalars(
     override_min/override_max: when both are provided, skip per-instance range
     computation and use these values directly (global normalization mode).
 
-    Position fallback: NODAL → ELEMENT_NODAL (averaged) → INTEGRATION_POINT (flat).
+    Position fallback: NODAL → ELEMENT_NODAL (averaged) → INTEGRATION_POINT (flat)
+    → WHOLE_ELEMENT (flat, e.g. STATUS).
     feature_angle: degrees for shell/membrane geometric splitting; None = section-only.
     use_geometry_split: False = ignore feature_angle, use section-only domains.
     average_threshold: 75% threshold for conditional node averaging.
@@ -1063,16 +1167,26 @@ def frame_scalars(
     vertex_key = (
         "frame_scalars", odb_id, instance, h5_path, h5_sig,
         cache_store.render_sig(idx.workspace, instance), int(frame_idx),
-        None if component_idx is None else int(component_idx),
+        _component_cache_token(h5_path, h5_sig, component_idx),
         effective_render_mode, fa_cache_key, float(average_threshold),
         bool(use_geometry_split), advanced_version,
     )
     cached = _vertex_cache_get(vertex_key) if h5_sig is not None else None
+    cache_status = "memory_hit" if cached is not None else "miss"
     if cached is None and h5_sig is not None:
         cached = _vertex_disk_get(idx.workspace, cache_store.group_bucket(result_group),
                                   vertex_key)
         if cached is not None:
+            cache_status = "disk_hit"
             _vertex_cache_put(vertex_key, cached)   # 磁盘命中 → 提升到内存层
+    logger.info(
+        "[frame-scalars cache] status=%s odb_id=%r result_group=%r "
+        "instance=%r step=%r field=%r frame=%d component_idx=%s mode=%s "
+        "feature_angle=%s average_threshold=%s use_geometry_split=%s",
+        cache_status, odb_id, result_group, instance, step, field, frame_idx,
+        "mag" if component_idx is None else component_idx, effective_render_mode,
+        feature_angle, average_threshold, use_geometry_split,
+    )
     if cached is not None:
         scalar_vertex, global_range, result_position, num_frames = cached
     else:
@@ -1180,15 +1294,17 @@ def frame_scalars(
                 if all_range is not None:
                     global_range = all_range
 
-            # ── INTEGRATION_POINT (flat fallback) ────────────────────────────
-            if scalar_vertex is None and src_etype is not None and src_elem_row is not None:
+            # ── INTEGRATION_POINT, then WHOLE_ELEMENT (flat fallback) ────────
+            for position in ("INTEGRATION_POINT", "WHOLE_ELEMENT"):
+                if scalar_vertex is not None or src_etype is None or src_elem_row is None:
+                    break
                 result = _scalar_elem_pos_by_idx(
-                    f, "INTEGRATION_POINT", instance, frame_idx, component_idx,
+                    f, position, instance, frame_idx, component_idx,
                     src_etype, src_elem_row,
                 )
                 if result is not None:
                     scalar_face, num_frames, global_range = result
-                    result_position = "INTEGRATION_POINT_FLAT"
+                    result_position = f"{position}_FLAT"
                     if vtx_ti is not None:
                         scalar_vertex = scalar_face[vtx_ti]         # [Nv] indexed
                     else:
@@ -1453,7 +1569,7 @@ def _en_per_vertex_averaged(
         if num_frames is None:
             num_frames = int(ds.shape[0])
 
-        fd = ds[frame_idx]              # [N_elem, n_local, ncomp?]
+        fd = _frame_slice(ds, frame_idx)              # [N_elem, n_local, ncomp?]
         while fd.ndim > 3:
             fd = fd.mean(axis=2)
         if fd.ndim == 3:
@@ -1643,16 +1759,113 @@ def _compute_en_global_range(
         float(average_threshold), int(domain_version),
     )
     if sig is not None:
-        hit = _range_cache_get(key)
+        # 中间结果：全量准备时同一帧同一分量的 smooth / flat / range 共用一次计算。
+        hit = cache_store.small_get(key, intermediate=True)
         if hit is not _CACHE_MISS:
             return hit
     result = _compute_en_global_range_uncached(
         result_h5, geom_h5_path, instance, frame_idx, component_idx,
-        average_threshold, all_element_domain,
+        average_threshold, all_element_domain, domain_version,
     )
     if sig is not None:
         _range_cache_put(key, result)
     return result
+
+
+# 全模型平均范围的“只依赖网格”部分：每种结果布局（参与的单元类型及其 N/n_shared）
+# 只建一次。见 _en_range_index。
+_EN_GEOM_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_EN_RANGE_INDEX: "OrderedDict[tuple, dict]" = OrderedDict()
+_EN_INDEX_MAX = 2
+_EN_INDEX_LOCK = threading.Lock()
+
+
+def _lru_get(cache, key):
+    with _EN_INDEX_LOCK:
+        hit = cache.get(key)
+        if hit is not None:
+            cache.move_to_end(key)
+        return hit
+
+
+def _lru_put(cache, key, value):
+    with _EN_INDEX_LOCK:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > _EN_INDEX_MAX:
+            cache.popitem(last=False)
+
+
+def _en_range_geometry(geom_f, geom_h5_path: str, all_element_domain, domain_version):
+    """各单元类型的 (区域编号 sec_id, 连接 conn)，conn 优先含中节点的完整连接。
+
+    domain_version 为 None 时不缓存（每次照原样读取）。
+    """
+    key = None
+    if domain_version is not None:
+        ho_path = geom_h5_path[:-3] + "_highorder.h5" if geom_h5_path.endswith(".h5") else ""
+        key = (geom_h5_path, cache_store.file_sig(geom_h5_path),
+               cache_store.file_sig(ho_path) if ho_path else None, int(domain_version))
+        hit = _lru_get(_EN_GEOM_CACHE, key)
+        if hit is not None:
+            return hit
+    parts = {}
+    for etype_key in geom_f['elements']:
+        geom_grp = geom_f['elements'][etype_key]
+        if 'conn' not in geom_grp or 'section_id' not in geom_grp:
+            continue
+        sec_id = None
+        if all_element_domain is not None:
+            domain_values = all_element_domain.get(etype_key)
+            if domain_values is not None and len(domain_values) == len(geom_grp['section_id']):
+                sec_id = np.asarray(domain_values, dtype=np.int32)
+        if sec_id is None:
+            sec_id = geom_grp['section_id'][:]   # [N_geom] int32
+        conn = geom_grp['conn'][:]               # [N_geom, n_corner] int32
+        # Prefer full connectivity (corner + mid-nodes) so mid-node
+        # extrema — which often hold the field min/max on high-order
+        # elements — are included in the legend range, matching Abaqus.
+        conn_full = _load_full_conn_rows(geom_f, geom_h5_path, etype_key)
+        if (conn_full is not None
+                and conn_full.shape[0] == conn.shape[0]
+                and conn_full.shape[1] > conn.shape[1]):
+            conn = conn_full
+        parts[etype_key] = (sec_id, conn)
+    if key is not None:
+        _lru_put(_EN_GEOM_CACHE, key, parts)
+    return parts
+
+
+def _en_range_index(geom_key, layout, geom_parts):
+    """
+    把各单元类型的 (区域, 节点) 采样拼起来并做两次稳定排序，按布局缓存。
+
+    稳定排序的性质：先去掉 NaN 再排序，与先排序再按原顺序去掉 NaN，得到的序列
+    完全相同。所以每次只需按本帧的 NaN 掩码过滤预排好的下标，结果与逐次排序逐位一致。
+    """
+    key = None if geom_key is None else (geom_key, layout)
+    if key is not None:
+        hit = _lru_get(_EN_RANGE_INDEX, key)
+        if hit is not None:
+            return hit
+    secs, nodes = [], []
+    for etype_key, n, n_shared in layout:
+        sec_id, conn = geom_parts[etype_key]
+        secs.append(np.repeat(sec_id[:n], n_shared).astype(np.int32))
+        nodes.append(conn[:n, :n_shared].ravel().astype(np.int32))
+    sec_full = np.concatenate(secs)
+    node_full = np.concatenate(nodes)
+    max_nr = int(node_full.max()) + 1
+    compound = sec_full.astype(np.int64) * max_nr + node_full.astype(np.int64)
+    index = {
+        "sec": sec_full,
+        "node": node_full,
+        "dom_perm": np.argsort(sec_full, kind='stable'),
+        "node_perm": np.argsort(compound, kind='stable'),
+    }
+    if key is not None:
+        _lru_put(_EN_RANGE_INDEX, key, index)
+    return index
 
 
 def _compute_en_global_range_uncached(
@@ -1663,50 +1876,34 @@ def _compute_en_global_range_uncached(
     component_idx: Optional[int],
     average_threshold: float = 0.75,
     all_element_domain: Optional[dict] = None,
+    domain_version: Optional[int] = None,
 ) -> Optional[Tuple[float, float]]:
     """
     Compute global legend range from ALL elements (including interior) using
     L2 geometric domains when available, otherwise L1 section domains.
+
+    domain_version 不为 None 时复用按网格预建的排序下标（_en_range_index），
+    结果与逐次排序逐位一致；为 None 时每次重建。
 
     Returns (global_min, global_max), or None if section_id data is unavailable.
     """
     if not os.path.exists(geom_h5_path):
         return None
 
-    all_secs  = []
-    all_nodes = []
-    all_vals  = []
+    layout = []
+    all_vals = []
 
     try:
         with h5py.File(geom_h5_path, 'r') as geom_f:
             if 'elements' not in geom_f:
                 return None
+            geom_parts = _en_range_geometry(geom_f, geom_h5_path, all_element_domain,
+                                            domain_version)
 
-            for etype_key in geom_f['elements']:
+            for etype_key, (sec_id, conn) in geom_parts.items():
                 grp_path = f'/ELEMENT_NODAL/{instance}/{etype_key}'
                 if grp_path not in result_h5:
                     continue
-
-                geom_grp = geom_f['elements'][etype_key]
-                if 'conn' not in geom_grp or 'section_id' not in geom_grp:
-                    continue
-
-                sec_id = None
-                if all_element_domain is not None:
-                    domain_values = all_element_domain.get(etype_key)
-                    if domain_values is not None and len(domain_values) == len(geom_grp['section_id']):
-                        sec_id = np.asarray(domain_values, dtype=np.int32)
-                if sec_id is None:
-                    sec_id = geom_grp['section_id'][:]   # [N_geom] int32
-                conn     = geom_grp['conn'][:]          # [N_geom, n_corner] int32
-                # Prefer full connectivity (corner + mid-nodes) so mid-node
-                # extrema — which often hold the field min/max on high-order
-                # elements — are included in the legend range, matching Abaqus.
-                conn_full = _load_full_conn_rows(geom_f, geom_h5_path, etype_key)
-                if (conn_full is not None
-                        and conn_full.shape[0] == conn.shape[0]
-                        and conn_full.shape[1] > conn.shape[1]):
-                    conn = conn_full
                 N_geom   = len(sec_id)
                 n_corner = conn.shape[1]
 
@@ -1722,7 +1919,7 @@ def _compute_en_global_range_uncached(
                 if frame_idx >= int(ds.shape[0]):
                     continue
 
-                fd = ds[frame_idx]
+                fd = _frame_slice(ds, frame_idx)
                 while fd.ndim > 3:
                     fd = fd.mean(axis=2)
                 if fd.ndim == 3:
@@ -1741,32 +1938,31 @@ def _compute_en_global_range_uncached(
                 if N == 0 or n_shared == 0:
                     continue
 
-                sc_sub   = sc[:N, :n_shared].astype(np.float64)
-                conn_sub = conn[:N, :n_shared]
-                sec_rep  = np.repeat(sec_id[:N], n_shared)
-                node_rep = conn_sub.ravel()
-                val_rep  = sc_sub.ravel()
-
-                valid = np.isfinite(val_rep)
-                if valid.any():
-                    all_secs.append(sec_rep[valid].astype(np.int32))
-                    all_nodes.append(node_rep[valid].astype(np.int32))
-                    all_vals.append(val_rep[valid])
+                layout.append((etype_key, N, n_shared))
+                all_vals.append(sc[:N, :n_shared].astype(np.float64).ravel())
     except Exception:
         logger.exception("_compute_en_global_range: failed reading %s", geom_h5_path)
         return None
 
     if not all_vals:
         return None
+    values_full = np.concatenate(all_vals)
+    valid = np.isfinite(values_full)
+    if not valid.any():
+        return None
 
-    sec_ids   = np.concatenate(all_secs)
-    node_rows = np.concatenate(all_nodes)
-    values    = np.concatenate(all_vals)
+    geom_key = None
+    if domain_version is not None:
+        ho_path = geom_h5_path[:-3] + "_highorder.h5" if geom_h5_path.endswith(".h5") else ""
+        geom_key = (geom_h5_path, cache_store.file_sig(geom_h5_path),
+                    cache_store.file_sig(ho_path) if ho_path else None, int(domain_version))
+    index = _en_range_index(geom_key, tuple(layout), geom_parts)
+    sec_full, node_full = index["sec"], index["node"]
 
     # Per-domain raw range (denominator for the 75% threshold)
-    dom_sort      = np.argsort(sec_ids, kind='stable')
-    sec_dom       = sec_ids[dom_sort]
-    val_dom       = values[dom_sort]
+    dom_sort      = index["dom_perm"][valid[index["dom_perm"]]]
+    sec_dom       = sec_full[dom_sort]
+    val_dom       = values_full[dom_sort]
     dom_bounds    = np.concatenate([[0],
                                      np.where(sec_dom[1:] != sec_dom[:-1])[0] + 1,
                                      [len(sec_dom)]])
@@ -1774,19 +1970,15 @@ def _compute_en_global_range_uncached(
     dom_max_arr   = np.maximum.reduceat(val_dom, dom_bounds[:-1])
     dom_range_arr = dom_max_arr - dom_min_arr
     dom_sec_arr   = sec_dom[dom_bounds[:-1]]
-    dom_range_map = {int(s): float(r) for s, r in zip(dom_sec_arr, dom_range_arr)}
 
-    # Per-(section, node) stats via compound key
-    max_nr      = int(node_rows.max()) + 1
-    compound    = sec_ids.astype(np.int64) * max_nr + node_rows.astype(np.int64)
-    node_sort   = np.argsort(compound, kind='stable')
-    comp_s      = compound[node_sort]
-    sec_s       = sec_ids[node_sort]
-    val_s       = values[node_sort]
+    # Per-(section, node) stats; the stable (section, node) order is precomputed
+    node_sort   = index["node_perm"][valid[index["node_perm"]]]
+    sec_s       = sec_full[node_sort]
+    node_s      = node_full[node_sort]
+    val_s       = values_full[node_sort]
 
-    node_bounds   = np.concatenate([[0],
-                                     np.where(comp_s[1:] != comp_s[:-1])[0] + 1,
-                                     [len(comp_s)]])
+    new_group     = (sec_s[1:] != sec_s[:-1]) | (node_s[1:] != node_s[:-1])
+    node_bounds   = np.concatenate([[0], np.where(new_group)[0] + 1, [len(sec_s)]])
     node_min_arr  = np.minimum.reduceat(val_s, node_bounds[:-1])
     node_max_arr  = np.maximum.reduceat(val_s, node_bounds[:-1])
     node_sum_arr  = np.add.reduceat(val_s, node_bounds[:-1])
@@ -1795,9 +1987,8 @@ def _compute_en_global_range_uncached(
     node_spr_arr  = node_max_arr - node_min_arr
     node_sec_arr  = sec_s[node_bounds[:-1]]
 
-    dom_range_per_node = np.array(
-        [dom_range_map.get(int(s), 0.0) for s in node_sec_arr], dtype=np.float64
-    )
+    # dom_sec_arr 升序且包含 node_sec_arr 的全部取值（来自同一组 sec_ids）
+    dom_range_per_node = dom_range_arr[np.searchsorted(dom_sec_arr, node_sec_arr)]
 
     # 75% threshold: nodes whose spread ≤ 75% of their section domain range are
     # averaged (use mean); the rest keep per-element values.
@@ -1819,9 +2010,6 @@ def _compute_en_global_range_uncached(
     if not (np.isfinite(g_min) and np.isfinite(g_max)):
         return None
     return float(g_min), float(g_max)
-
-
-# ─── frame_deformed_positions ─────────────────────────────────────────────────
 
 def _read_raw_node_displacements(
     idx,

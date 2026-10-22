@@ -37,6 +37,7 @@ from ..core.errors import NotFoundError, ValidationError
 from ..core.state import OdbRegistry
 from ..infra.manifest_repo import ManifestRepo
 from ..infra.registry_repo import RegistryRepo
+from .result_service import drop_stored_magnitude, stored_magnitude_col
 from src.l1.manifest_schema import canon_instance
 
 logger = logging.getLogger(__name__)
@@ -190,13 +191,15 @@ def _read_nodal_scalar(f: h5py.File, instance_name: str, frame_idx: int,
     if frame_data.ndim == 1 or (frame_data.ndim == 2 and frame_data.shape[1] == 1):
         arr = frame_data.ravel().astype(np.float32)
     elif magnitude:
-        arr = np.linalg.norm(frame_data, axis=1).astype(np.float32)
+        arr = np.linalg.norm(drop_stored_magnitude(frame_data, stored_magnitude_col(f)),
+                             axis=1).astype(np.float32)
     else:
         ci = comp_idx or 0
         if ci < frame_data.shape[1]:
             arr = frame_data[:, ci].astype(np.float32)
         else:
-            arr = np.linalg.norm(frame_data, axis=1).astype(np.float32)
+            arr = np.linalg.norm(drop_stored_magnitude(frame_data, stored_magnitude_col(f)),
+                                 axis=1).astype(np.float32)
     return arr
 
 
@@ -210,6 +213,7 @@ def _read_nodal_timeseries(f: h5py.File, instance_name: str, node_row: int,
         return []
     ds = f[ds_path]
     num_frames = ds.shape[0]
+    mag_col = stored_magnitude_col(f)
     if frame_indices:
         idxs = [i for i in frame_indices if 0 <= i < num_frames]
     else:
@@ -220,7 +224,7 @@ def _read_nodal_timeseries(f: h5py.File, instance_name: str, node_row: int,
         if np.isscalar(frame_data) or (hasattr(frame_data, "ndim") and frame_data.ndim == 0):
             results.append(float(frame_data))
         elif magnitude:
-            results.append(float(np.linalg.norm(frame_data)))
+            results.append(float(np.linalg.norm(drop_stored_magnitude(frame_data, mag_col))))
         else:
             arr = np.asarray(frame_data)
             ci = comp_idx if comp_idx < len(arr) else 0

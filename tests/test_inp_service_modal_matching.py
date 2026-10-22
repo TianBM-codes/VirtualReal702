@@ -1,11 +1,13 @@
 import numpy as np
 
-from services.model_update.analysis.inp_service import (
+from services.model_update.analysis.fem_catalog_service import (
     _apply_transform,
     _best_fit_rigid_transform,
+    _rotation_to_matrix,
+)
+from services.model_update.analysis.fem_correlation_service import (
     _build_modal_match_row,
     _compute_dac_dsf,
-    _rotation_to_matrix,
     get_modal_correlation_all_scatter_payload,
     get_modal_frequency_consistency_payload,
     get_modal_match_frequency_scatter_payload,
@@ -98,7 +100,7 @@ def test_build_modal_match_row_exposes_flip_and_scalar_fields():
 
 def test_modal_match_frequency_scatter_payload_contains_points_and_tooltips(monkeypatch):
     monkeypatch.setattr(
-        "services.model_update.analysis.inp_service.match_modal_modes",
+        "services.model_update.analysis.fem_correlation_service.match_modal_modes",
         lambda project_id, **kwargs: {
             "project_id": int(project_id),
             "method": kwargs["method"],
@@ -156,7 +158,7 @@ def test_modal_match_frequency_scatter_payload_contains_points_and_tooltips(monk
 
 def test_match_modal_modes_treats_fractional_mac_threshold_as_percent(monkeypatch):
     monkeypatch.setattr(
-        "services.model_update.analysis.inp_service._load_modal_correlation_rows",
+        "services.model_update.analysis.fem_correlation_service._load_modal_correlation_rows",
         lambda project_id: [
             {
                 "fem_mode_no": 1,
@@ -236,11 +238,11 @@ def test_modal_frequency_consistency_payload_auto_computes_when_rows_missing(mon
     captured = {}
 
     monkeypatch.setattr(
-        "services.model_update.analysis.inp_service._load_modal_correlation_rows",
+        "services.model_update.analysis.fem_correlation_service._load_modal_correlation_rows",
         lambda project_id: rows_by_call.pop(0),
     )
     monkeypatch.setattr(
-        "services.model_update.analysis.inp_service.compute_modal_correlation",
+        "services.model_update.analysis.fem_correlation_service.compute_modal_correlation",
         lambda project_id, overwrite=True, mac_threshold=None: captured.update({
             "project_id": project_id,
             "overwrite": overwrite,
@@ -269,7 +271,7 @@ def test_modal_frequency_consistency_payload_auto_computes_when_rows_missing(mon
 
 def test_modal_correlation_all_scatter_payload_returns_only_matched_pairs(monkeypatch):
     monkeypatch.setattr(
-        "services.model_update.analysis.inp_service.match_modal_modes",
+        "services.model_update.analysis.fem_correlation_service.match_modal_modes",
         lambda project_id, **kwargs: {
             "project_id": int(project_id),
             "method": kwargs["method"],

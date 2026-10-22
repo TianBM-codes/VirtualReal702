@@ -1,6 +1,6 @@
 # L3 预计算缓存方案（导入即算好、接口直接走缓存）
 
-> 更新时间：2026-10-18。新导入与重跑新增必需的同步首屏准备屏障，成功后才对外 ready；高级索引和缓存失败返回 error。见 [统一就绪判定](Ready-Barrier-Design.md)。原有自动/手动后台预热仍用于补算，其让路和跳过失败的规则不适用于必需准备。
+> 更新时间：2026-10-21。**预计算范围已从“每个 step 最后一帧”扩展为全量计划**（全部帧 × 全部分量 × smooth/flat、frame-colors U1-3、每帧 U 位移），新导入在 ready 前严格执行，旧项目由后台预热补算；实现在 `services/precompute_plan.py`，设计见 [全量预计算方案](L3-Full-Precompute-Cache-Proposal.md)，下文“最后一帧”的描述为历史记录。磁盘容量可设 `APP_SCALAR_DISK_CACHE_MB=-1` 不限容量；普通写入后的容量扫描改为每工作区最多 30 秒一次。新增 frame-scalars 缓存来源日志。新导入与重跑新增必需的同步首屏准备屏障，成功后才对外 ready；高级索引和缓存失败返回 error。见 [统一就绪判定](Ready-Barrier-Design.md)。原有自动/手动后台预热仍用于补算，其让路和跳过失败的规则不适用于必需准备。
 > 历史更新时间：2026-10-09。状态：第 1～7 步已全部实现并推送，待开发者本地跑测试 + 实测。
 > 前置背景：`docs/l3/Perf-Cache-Worklog.md`（frame-scalars 四步优化）、
 > `docs/近期效率优化与算例总览.md`（开发者 9c2afe2 引入的另一套整包缓存）。
@@ -94,6 +94,11 @@
 - 无 result_group 的老模型（legacy ODB jobs）用 `groups/_default/`。
 - 缓存最终响应包的接口（`deformed-positions`、`modal-animation`）在响应头返回 `X-Cache: hit|miss`；
   `modal-shape` 改为直接由顶点位移缓存打包，不再单独存响应包，也不再带 `X-Cache`。
+- `frame-scalars` 在服务层以 INFO 级别记录 `[frame-scalars cache] status=memory_hit|disk_hit|miss`，
+  分别表示本次读取命中内存、命中磁盘、未命中（需要计算）。记录项目/ODB、结果组、实例、step、field、
+  帧、分量（`mag` 表示合量）和渲染参数，方便对照前端请求；接口参数、响应体和响应头均不变。
+  该日志表示归一化前顶点数值的缓存来源，不表示整个请求已完成或计算成功；关闭缓存时同样记 `miss`。
+  自动预热与导入首屏准备也调用同一服务，会产生相同格式的日志，不能把所有日志都视为前端请求。
 - L2 重建基础几何（`ingest.py --phase core` 或 `all`）开始时整体删除 `l3_cache/`；`advanced` 阶段保留基础几何就绪后产生的缓存。所有依赖渲染几何的 key 同时带 render.h5 签名。
 - 单元边线缓存优先读取 `<instance>_edges.h5`，兼容旧工作区中嵌入 `<instance>_surface.h5` 的边数据。缓存 key 同时包含 surface 文件签名、边数据来源与 edges 文件签名；高级文件首次出现或重新生成时自动失效。高级文件尚未生成时不缓存“缺失”结果。
 
@@ -128,7 +133,7 @@
   按 result_group 区分）。
 - 内容：A 类（color-code 各 scheme、element-mesh-edges）+ B 类（见 3.1）。
 - 仍是单线程串行的后台 daemon 线程，幂等（已缓存的直接命中跳过），失败只记日志。
-- `APP_WARMUP=0` 关闭自动预计算，手动接口仍可用。
+- `APP_WARMUP=0` 关闭自动预计算，手动接口仍可用。**2026-10-21 起默认值改为 0**（新导入已在 ready 前全量准备，自动预热只剩旧项目补算，耗时长），需要时设 `APP_WARMUP=1`。
 - **调度（2026-10-09 第二轮补充）**：
   - 导入即预计算：poll 记录每个项目的状态签名（几何状态 + 各结果组状态），服务运行期间签名变化且
     项目整体就绪（几何 ready、无排队/运行中的结果组）→ 记入待办，解析空闲时主动加载并预热，
@@ -137,7 +142,7 @@
     L2 高级索引阶段——`l2/advanced_status.json` 为 pending/running，超过 12 小时未更新视为残留）
     排队或运行时，自动触发的预热一律推迟；预热进行中每个组合开始前也检查一次，遇到解析开始即中止，之后补做（已算部分在缓存里）。
     原因：结果组解析时每写完一个字段 result_files 就多一行，旧逻辑下 poll 每 10 秒都会重新触发一轮
-    预热，和解析抢 CPU/磁盘。手动 `POST /results/warmup` 不受限制。
+    预热，和解析抢 CPU/磁盘。手动 `POST /results/warmup` 同样让路（2026-10-22 起；此前不让路，会让 ready 前的严格准备等缓存锁超时），让路后由 poll 在解析结束后接着补算，`APP_WARMUP=0` 时也是如此。
   - 跨进程去重：`l3_cache/.warmup.lock`（Linux flock / Windows msvcrt，进程退出自动释放）保证同一
     工作区同时只有一个进程在预热；完成后写 `l3_cache/.warmup_done`（result_files 全部条目 + 结果文件
     (mtime,size) 的摘要），其他进程处理待办时看到签名一致就不再为预热去加载模型。两个控制文件不参与

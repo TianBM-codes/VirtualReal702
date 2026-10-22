@@ -16,16 +16,75 @@ def _reset(monkeypatch):
     ws.set_busy_check(None)
 
 
-def test_parse_busy_defers_auto_warmup_but_not_manual(monkeypatch):
-    ws.set_busy_check(lambda: True)
+def test_parse_busy_defers_auto_and_manual_warmup(monkeypatch):
+    busy = [True]
+    ws.set_busy_check(lambda: busy[0])
     started = []
     monkeypatch.setattr(ws.threading, "Thread",
                         lambda *a, **k: type("T", (), {"start": lambda self: started.append(1)})())
     assert ws.warm_odb_async("p1", reason="model loaded") == "deferred"
-    assert "p1" in ws._pending and not started
-    assert ws.warm_odb_async("p1", reason="manual", force=True) == "started"
+    assert ws.warm_odb_async("p2", reason="manual") == "deferred"
+    assert ws._pending == {"p1", "p2"} and not started
+    busy[0] = False
+    ws._busy_cache[0] = 0.0
+    assert ws.warm_odb_async("p2", reason="manual") == "started"
     assert started == [1]
-    ws._active.discard("p1")
+    ws._active.discard("p2")
+
+
+def test_warmup_yields_when_parse_starts(monkeypatch):
+    """预热进行中解析开始 → 中止并释放缓存锁，记入待办（手动触发同样如此）。"""
+    import threading
+
+    class _Idx:
+        workspace = None
+        is_render_ready = True
+        source_node_rows = {"I": None}
+
+    class _Reg:
+        def peek(self, _):
+            return idx
+
+        def get(self, _):
+            return idx
+
+    def _run_plan(reg, odb_id, idx_, plan, strict, check, progress):
+        busy[0] = True
+        ws._busy_cache[0] = 0.0
+        check()
+        raise AssertionError("check() should have yielded")
+
+    busy = [False]
+    idx = _Idx()
+    ws.set_busy_check(lambda: busy[0])
+    monkeypatch.setattr(ws, "warm_color_codes", lambda i: 0)
+    monkeypatch.setattr(ws, "warm_element_mesh_edges", lambda i: 0)
+    monkeypatch.setattr(ws, "_list_result_targets", lambda m: [])
+    monkeypatch.setattr(ws, "list_targets", lambda m, default_instances: [])
+    monkeypatch.setattr(ws, "ManifestRepo", lambda w: None)
+    monkeypatch.setattr(ws, "run_plan", _run_plan)
+    monkeypatch.setattr(ws, "_targets_signature", lambda w: "")
+    released = []
+
+    class _Lock:
+        def __init__(self, w):
+            pass
+
+        def acquire(self):
+            return True
+
+        def release(self):
+            released.append(1)
+
+    monkeypatch.setattr(ws, "_WarmLock", _Lock)
+    threads = []
+    real_thread = threading.Thread
+    monkeypatch.setattr(ws.threading, "Thread",
+                        lambda *a, **k: threads.append(real_thread(*a, **k)) or threads[-1])
+    assert ws.warm_odb_async("p3", reason="manual", reg=_Reg()) == "started"
+    threads[0].join(5)
+    assert released == [1]
+    assert "p3" in ws._pending and "p3" not in ws._active
 
 
 def test_note_project_state_baseline_then_ready_transition():

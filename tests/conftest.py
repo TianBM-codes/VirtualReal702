@@ -15,6 +15,15 @@ if str(ROOT) not in sys.path:
 from src.l3.core.state import ModelIndex, OdbRegistry  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_result_memos():
+    """结果帧 / 排序下标等进程内复用按文件签名区分；测试间清空，避免同路径重写时串用。"""
+    from src.l3.services.result_service import clear_result_caches
+    clear_result_caches()
+    yield
+    clear_result_caches()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     for rel in ("l1/geometry", "l1/results"):

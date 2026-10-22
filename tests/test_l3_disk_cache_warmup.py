@@ -18,6 +18,7 @@ import pytest
 
 from src.l3.services import cache_store
 from src.l3.services.result_service import (
+    _component_cache_token, _result_h5_sig,
     clear_result_caches,
     compute_scalar_range,
     frame_scalars,
@@ -56,6 +57,14 @@ def _setup_nodal_instance(workspace, make_registry, *, values, field="U"):
     return registry, instance, path
 
 
+def _restart_caches(path):
+    """模拟重启：清空内存缓存。重启后每个结果文件首次请求要读一次文件元数据
+    （分量名、是否含 WHOLE_ELEMENT）来确定缓存键，这是预期行为；这里先读掉，
+    之后验证的是不再重读结果数据。"""
+    clear_result_caches()
+    _component_cache_token(str(path), _result_h5_sig(str(path)), None)
+
+
 def _call_frame_scalars(registry, instance, **kw):
     return frame_scalars(
         registry=registry, odb_id="odb", instance=instance,
@@ -65,13 +74,13 @@ def _call_frame_scalars(registry, instance, **kw):
 
 def test_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch):
     """清空内存缓存（模拟重启）后，第二次调用从磁盘复用，不打开 H5。"""
-    registry, instance, _ = _setup_nodal_instance(
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
     u1, legend1, pos1 = _call_frame_scalars(registry, instance)
     assert list((workspace / GROUP_DIR / "arrays").glob("*.npz"))
 
-    clear_result_caches()
+    _restart_caches(path)
     monkeypatch.setattr(h5py, "File", _boom)
     u2, legend2, pos2 = _call_frame_scalars(registry, instance)
     assert np.array_equal(u1, u2)
@@ -80,7 +89,7 @@ def test_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch)
 
 
 def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch):
-    registry, instance, _ = _setup_nodal_instance(
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
     r1 = compute_scalar_range(
@@ -89,7 +98,7 @@ def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkey
     )
     assert list((workspace / GROUP_DIR / "json").glob("*.json"))
 
-    clear_result_caches()
+    _restart_caches(path)
     monkeypatch.setattr(h5py, "File", _boom)
     r2 = compute_scalar_range(
         registry=registry, odb_id="odb", instance=instance,
@@ -166,11 +175,14 @@ def test_group_bucket_names():
     assert cache_store.group_bucket("..") != "groups/.."
 
 
-def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
+def test_warmup_precomputes_default_view(workspace, make_registry, register_result_block, monkeypatch):
     """warm_odb_sync 后，frame_scalars / compute_scalar_range 均不再读 H5。"""
-    registry, instance, _ = _setup_nodal_instance(
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
+    # 计划只算有结果块的实例（与真实导入一致：各导入器都会写 result_blocks）
+    register_result_block(workspace, step="Step-1", field="U", instance=instance,
+                          position="NODAL", file_path=path)
     # 建 result_files 表供预热枚举 (result_group, step, field)
     conn = sqlite3.connect(workspace / "manifest.db")
     conn.execute(
@@ -198,11 +210,14 @@ def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
     assert r == (pytest.approx(0.0), pytest.approx(8.0))
 
 
-def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypatch):
-    """预热取每个 step 的最后一帧（frames 表最大 frame_idx），第 0 帧不预算。"""
-    registry, instance, _ = _setup_nodal_instance(
+def test_warmup_covers_every_frame(workspace, make_registry, register_result_block, monkeypatch):
+    """全量计划：frames 表里的每一帧都预算，包括第 0 帧。"""
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
+    # 计划只算有结果块的实例（与真实导入一致：各导入器都会写 result_blocks）
+    register_result_block(workspace, step="Step-1", field="U", instance=instance,
+                          position="NODAL", file_path=path)
     conn = sqlite3.connect(workspace / "manifest.db")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS result_files "
@@ -223,7 +238,7 @@ def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypat
     conn.close()
 
     report = warm_odb_sync("odb", reason="test", reg=registry)
-    assert report["status"] == "done" and report["warmed"] == 1
+    assert report["status"] == "done" and report["warmed"] == 2
 
     monkeypatch.setattr(h5py, "File", _boom)
     u, legend, _ = frame_scalars(
@@ -231,8 +246,8 @@ def test_warmup_uses_last_frame_of_each_step(workspace, make_registry, monkeypat
         step="Step-1", field="U", frame_idx=1, component_idx=None,
     )
     assert legend[1] == pytest.approx(16.0)       # 第 1 帧数据 = 第 0 帧 × 2
-    with pytest.raises(AssertionError, match="cache miss"):
-        _call_frame_scalars(registry, instance)   # 第 0 帧未预算
+    _, legend0, _ = _call_frame_scalars(registry, instance)   # 第 0 帧同样命中
+    assert legend0[1] == pytest.approx(8.0)
 
 
 def test_frame_colors_cached_and_warmed(workspace, make_registry, monkeypatch):

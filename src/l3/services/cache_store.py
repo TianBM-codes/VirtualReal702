@@ -19,11 +19,12 @@ L3 统一结果缓存（内存层 + 工作区磁盘层）。
       json/<sha1>.json
       payloads/<sha1>.bin   最终 L3BE 响应包（命中后原样返回）
   整个 l3_cache/ 合计不超过 APP_SCALAR_DISK_CACHE_MB（默认 100GB），超出按 mtime
-  （命中时 touch）删最旧的文件。写入一律"临时文件 + os.replace"原子写，读到损坏
+  （命中时 touch）删最旧的文件；设为负数（如 -1）表示不限容量、不淘汰。容量扫描
+  （遍历目录）在普通写入后最多每 30 秒一次，全量准备期间只在结束时做一次。写入一律"临时文件 + os.replace"原子写，读到损坏
   文件直接删除当未命中。删除项目时整个工作区被删，缓存随之清理。
 
 开关：APP_SCALAR_CACHE_MB=0 关闭全部结果缓存（内存 + 磁盘）；
-      APP_SCALAR_DISK_CACHE_MB=0 只关磁盘层。
+      APP_SCALAR_DISK_CACHE_MB=0 只关磁盘层，<0 不限容量。
 
 缓存 key 由调用方构造，必须包含所依赖源文件的签名（file_sig / render_sig），
 源文件被重写后 key 自然变化，旧条目由 LRU 淘汰。缓存中的数组是共享对象，
@@ -37,7 +38,9 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from collections import OrderedDict
@@ -64,20 +67,27 @@ _required_entries = ContextVar("required_cache_entries", default=None)
 
 
 @contextmanager
-def require_persistent_cache():
-    """Runner 首屏准备：必须落盘，写失败/容量不足不能伪装成预热成功。"""
+def require_persistent_cache(*, verify: bool = True):
+    """Runner 全量缓存准备：必须落盘，写失败/容量不足不能伪装成预热成功。
+
+    yield 本轮需要的条目集合 {(workspace, path)}。verify=False 只收集不核验
+    （并行 worker 用），由父进程把各 worker 的条目并入自己的集合后统一淘汰与核验。
+    """
     if not disk_enabled():
-        raise RuntimeError("首屏缓存需要 APP_SCALAR_CACHE_MB 和 APP_SCALAR_DISK_CACHE_MB 均大于 0")
+        raise RuntimeError("全量缓存需要 APP_SCALAR_CACHE_MB 和 APP_SCALAR_DISK_CACHE_MB 均大于 0"
+                           "（磁盘层也可设 -1 表示不限容量）")
     entries = set()
     token = _required_entries.set(entries)
     try:
-        yield
+        yield entries
+        if not verify:
+            return
         evict_workspace = {workspace for workspace, _path in entries}
         for workspace in evict_workspace:
             evict(workspace)
         missing = [path for _workspace, path in entries if not os.path.isfile(path)]
         if missing:
-            raise RuntimeError("首屏缓存未完整保留，请检查磁盘空间、权限和 APP_SCALAR_DISK_CACHE_MB：" + missing[0])
+            raise RuntimeError("全量缓存未完整保留，请检查磁盘空间、权限和 APP_SCALAR_DISK_CACHE_MB：" + missing[0])
     finally:
         _required_entries.reset(token)
 
@@ -95,10 +105,16 @@ def enabled() -> bool:
 
 
 def disk_enabled() -> bool:
-    return settings.scalar_cache_mb > 0 and settings.scalar_disk_cache_mb > 0
+    return settings.scalar_cache_mb > 0 and settings.scalar_disk_cache_mb != 0
+
+
+def disk_unlimited() -> bool:
+    return settings.scalar_disk_cache_mb < 0
 
 
 def _disk_cap_bytes() -> int:
+    if disk_unlimited():
+        return sys.maxsize
     return settings.scalar_disk_cache_mb * 1024 * 1024
 
 
@@ -180,9 +196,14 @@ def mem_put(key: tuple, value) -> None:
             _BIG_BYTES -= _nbytes(evicted)
 
 
-def small_get(key: tuple):
-    """小值内存层：命中返回值（可能是 None），未命中返回 MISS。"""
-    if _required_entries.get() is not None:
+def small_get(key: tuple, *, intermediate: bool = False):
+    """小值内存层：命中返回值（可能是 None），未命中返回 MISS。
+
+    严格准备期间默认不命中（最终条目必须核查磁盘层）；intermediate=True 的
+    中间结果（例如被 frame-scalars smooth/flat 与 frame-scalar-range 共用的全模型
+    平均范围）只用于本进程内少算几遍，不代表任何条目已落盘，允许命中。
+    """
+    if _required_entries.get() is not None and not intermediate:
         return MISS
     with _LOCK:
         if key in _SMALL:
@@ -271,8 +292,26 @@ def _atomic_write(path: str, write_fn) -> bool:
         return False
 
 
+_EVICT_INTERVAL_S = 30.0
+_last_evict: dict = {}
+
+
+def _evict_after_write(workspace: str) -> None:
+    """写入后的容量检查：全量准备期间推迟到结束时统一做（require_persistent_cache），
+    平时每个工作区最多 30 秒扫一次目录——条目上万时每写一次就遍历一遍代价是平方级。"""
+    if _required_entries.get() is not None or disk_unlimited():
+        return
+    now = time.monotonic()
+    if now - _last_evict.get(workspace, -_EVICT_INTERVAL_S) < _EVICT_INTERVAL_S:
+        return
+    _last_evict[workspace] = now
+    evict(workspace)
+
+
 def evict(workspace: str, cap_bytes: Optional[int] = None) -> None:
     """整个 l3_cache/ 超过容量时按 mtime 从旧到新删除文件。"""
+    if cap_bytes is None and disk_unlimited():
+        return
     cap = _disk_cap_bytes() if cap_bytes is None else cap_bytes
     root = cache_root(workspace)
     entries = []
@@ -304,7 +343,7 @@ def evict(workspace: str, cap_bytes: Optional[int] = None) -> None:
 def _fits(nbytes: int) -> bool:
     fits = disk_enabled() and nbytes <= _disk_cap_bytes()
     if not fits and _required_entries.get() is not None:
-        raise RuntimeError("首屏缓存单项超过磁盘缓存容量，请增大 APP_SCALAR_DISK_CACHE_MB")
+        raise RuntimeError("全量缓存单项超过磁盘缓存容量，请增大 APP_SCALAR_DISK_CACHE_MB")
     return fits
 
 
@@ -336,7 +375,7 @@ def arrays_put(workspace: str, bucket: str, key: tuple, arrays: dict) -> None:
     if os.path.exists(path):
         return
     if _atomic_write(path, lambda fh: np.savez(fh, **arrays)):
-        evict(workspace)
+        _evict_after_write(workspace)
 
 
 def json_get(workspace: str, bucket: str, key: tuple):
@@ -395,7 +434,7 @@ def payload_put(workspace: str, bucket: str, key: tuple, payload: bytes) -> None
     if os.path.exists(path):
         return
     if _atomic_write(path, lambda fh: fh.write(payload)):
-        evict(workspace)
+        _evict_after_write(workspace)
 
 
 def clear_bucket(workspace: str, bucket: str) -> None:
