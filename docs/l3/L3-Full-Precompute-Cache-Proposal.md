@@ -222,6 +222,32 @@ scale=建议值、n_frames=20 的响应包（`precompute_plan._modal_animation`�
 - ~~重启后旧项目被打开会在 Web 进程内单线程补算全量计划~~：已按开发者要求把 `APP_WARMUP` 默认改为 0（2026-10-21），旧项目需手动 `POST /results/warmup` 或设 `APP_WARMUP=1` 才补算。
 - 后续可选：按内容去重相邻 step 交接帧（§0.4）、整块读取所有帧、任务账本、集合/区域/几何类最终响应等其他接口族。
 
+### 0.9 接续清单（2026-10-22 收尾）
+
+2026-10-22 已完成并推送（详见 §0.8 各条记录）：STATUS/WHOLE_ELEMENT 支持（`4ac300b`）、手动预热给解析让路（`201b7ce`，实机验证通过）、
+测试修复若干、接口探测工具 `tools/probe_endpoints.py`、raw-values 路径修复（`8cdd3f4`）、pick NaN 500 / schemes 缓存 /
+legend-entries 提速（`8703566`）、FREQUENCY 步 modal-animation 预算（`74c02ae`，计划版本 2）、断点续做设计备忘（未实施）。
+
+**待开发者在本机验证（新对话先问结果）**：
+1. `python -m pytest tests/test_precompute_plan.py tests/test_l3_deform_cache.py tests/test_l3_pick_invariant_nan.py -v`
+   （`74c02ae`、`8703566` 之后尚未跑过）。
+2. 重启服务后重新导入带 FREQUENCY 步的模型（door.odb 含 eigenfrequency 步）：`cache_prepare` 总项数应比 7533 多（多出的是动画包），
+   ready 正常。
+3. `python tools/probe_endpoints.py --base http://127.0.0.1:18071 --project <新项目> --full`，预期：ERROR 只剩
+   `projects/{id}/summary`（ODB 项目无 model_summary.json）；`schemes`、`legend-entries` 不再 NOT_CACHED；
+   eigenfrequency 步的 `modal-animation` 首次即命中（sag 静力步不预算，仍为 NOT_PRECOMPUTED，属预期）。
+4. 向前端同事确认第三方前端调 `modal-animation` 的实际 `scale` / `n_frames`；与“建议值 + 20 帧”不同则预算的包不命中，需改
+   `precompute_plan.MODAL_ANIMATION_FRAMES` / `_modal_animation`。
+5. 在 1440w 项目上：重新导入后跑 `probe_endpoints.py --full`，并用 `snapshot_results.py --cache disk --compare baseline.npz`
+   核对多进程落盘内容（STATUS 项不一致属预期）。
+
+**后续可做**：
+- 小模型导入时前约 50 s 单进程测内存（test1 占总时长约 40%），可按模型规模预估首批 worker 数。
+- `202610211132` 变形动画“炸开”：该模型有 STATUS（单元删除），疑为被删单元节点位移无意义所致，Abaqus 会隐藏 STATUS=0 单元；未查。
+- 断点续做：`Pipeline-Resume-Design.md`，待定。
+- 全量测试另有约 68 个与缓存无关的失败（模型修正/灵敏度/求解器，多为 inp_service 拆分后测试未跟上），建议单独清理。
+- 探测工具只测 GET；POST 纯查询（render-faces、surface-patch、node-table 等）未覆盖。
+
 ## 1. 需求与结论
 
 用户当前要求：**能缓存的都缓存，需要遍历接口可能性进行缓存；暂不以磁盘存储量作为缩减覆盖范围的理由。**
