@@ -175,11 +175,14 @@ def test_group_bucket_names():
     assert cache_store.group_bucket("..") != "groups/.."
 
 
-def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
+def test_warmup_precomputes_default_view(workspace, make_registry, register_result_block, monkeypatch):
     """warm_odb_sync 后，frame_scalars / compute_scalar_range 均不再读 H5。"""
-    registry, instance, _ = _setup_nodal_instance(
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
+    # 计划只算有结果块的实例（与真实导入一致：各导入器都会写 result_blocks）
+    register_result_block(workspace, step="Step-1", field="U", instance=instance,
+                          position="NODAL", file_path=path)
     # 建 result_files 表供预热枚举 (result_group, step, field)
     conn = sqlite3.connect(workspace / "manifest.db")
     conn.execute(
@@ -207,11 +210,14 @@ def test_warmup_precomputes_default_view(workspace, make_registry, monkeypatch):
     assert r == (pytest.approx(0.0), pytest.approx(8.0))
 
 
-def test_warmup_covers_every_frame(workspace, make_registry, monkeypatch):
+def test_warmup_covers_every_frame(workspace, make_registry, register_result_block, monkeypatch):
     """全量计划：frames 表里的每一帧都预算，包括第 0 帧。"""
-    registry, instance, _ = _setup_nodal_instance(
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
+    # 计划只算有结果块的实例（与真实导入一致：各导入器都会写 result_blocks）
+    register_result_block(workspace, step="Step-1", field="U", instance=instance,
+                          position="NODAL", file_path=path)
     conn = sqlite3.connect(workspace / "manifest.db")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS result_files "
