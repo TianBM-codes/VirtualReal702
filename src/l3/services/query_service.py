@@ -365,13 +365,18 @@ def _read_pick_result(
                     if node_pos is not None and node_pos < elem_data.shape[0]:
                         node_val = _scalar(elem_data[node_pos]) if elem_data[node_pos].ndim >= 1 \
                                    else float(elem_data[node_pos])
-                        return PickResultInfo(field=field, position=position,
-                                              component=component, raw_value=node_val)
+                        if np.isfinite(node_val):
+                            return PickResultInfo(field=field, position=position,
+                                                  component=component, raw_value=node_val)
 
                 # Average over all leading dims (IPs / nodes) until 1-D, then extract scalar
                 while hasattr(elem_data, "ndim") and elem_data.ndim > 1:
                     elem_data = elem_data.mean(axis=0)
                 display = _scalar(elem_data) if hasattr(elem_data, "__len__") else float(elem_data)
+                # 不变量场（如壳的面内主应变）的 ELEMENT_NODAL 块 L1 未填值、整块 NaN，
+                # 与 frame_scalars 一样继续尝试 INTEGRATION_POINT；NaN 也不能进 JSON（会 500）。
+                if not np.isfinite(display):
+                    continue
                 return PickResultInfo(field=field, position=position,
                                       component=component, display_value=display)
 

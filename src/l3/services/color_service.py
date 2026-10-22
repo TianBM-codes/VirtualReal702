@@ -289,6 +289,27 @@ def get_all_schemes(idx: ModelIndex) -> dict:
 
     Returns: {"schemes": [union, canonical order], "elsets": ["INST.name", ...]}
     """
+    # 结果只由各实例几何文件、sets.h5 与高级索引决定；每次都要开这些文件（约 100 ms），
+    # 按文件签名缓存，文件重写或高级索引重载后自动失效。
+    from ..infra.manifest_repo import ManifestRepo
+    manifest = ManifestRepo(idx.workspace)
+    geom_sigs = []
+    for inst in sorted(idx.source_elem_etype.keys()):
+        path = manifest.get_geom_path(canon_instance(inst)) or \
+            os.path.join(idx.workspace, "l1", "geometry", f"{inst}.h5")
+        geom_sigs.append((inst, path, cache_store.file_sig(path)))
+    key = ("color_schemes", idx.workspace, tuple(geom_sigs),
+           cache_store.file_sig(os.path.join(idx.workspace, "l1", "sets", "sets.h5")),
+           int(getattr(idx, "_advanced_status_mtime_ns", 0)))
+    hit = cache_store.small_get(key)
+    if hit is not cache_store.MISS:
+        return {"schemes": list(hit["schemes"]), "elsets": list(hit["elsets"])}
+    result = _get_all_schemes_uncached(idx)
+    cache_store.small_put(key, result)
+    return {"schemes": list(result["schemes"]), "elsets": list(result["elsets"])}
+
+
+def _get_all_schemes_uncached(idx: ModelIndex) -> dict:
     # Canonical display order; any extra scheme is appended afterwards.
     order = ["etype", "section", "material", "section_type",
              "section_assignment", "elset"]
@@ -1423,16 +1444,20 @@ def _default_titles_section(
     domain_mat: Dict[int, str] = {}
     if os.path.exists(geom_h5):
         with h5py.File(geom_h5, "r") as f:
+            # 每种单元类型的 material_name 整列只读一次（逐行读 HDF5 时数百个区域
+            # 要几百毫秒），取值与逐行读取相同。
+            mat_cols: Dict[str, Optional[np.ndarray]] = {}
             for val in unique_vals:
                 did = label_to_id.get(val)
                 if did is None or did not in domain_rep or did in domain_mat:
                     continue
                 etype, row = domain_rep[did]
-                grp = f.get(f"elements/{etype}")
-                mat = ""
-                if grp is not None and "material_name" in grp:
-                    mat = _decode(grp["material_name"][row])
-                domain_mat[did] = mat
+                if etype not in mat_cols:
+                    grp = f.get(f"elements/{etype}")
+                    mat_cols[etype] = grp["material_name"][()] \
+                        if grp is not None and "material_name" in grp else None
+                col = mat_cols[etype]
+                domain_mat[did] = _decode(col[row]) if col is not None else ""
 
     result: Dict[str, str] = {}
     for val in unique_vals:
