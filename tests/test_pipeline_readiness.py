@@ -142,6 +142,7 @@ def prepared_model(tmp_path, monkeypatch):
     monkeypatch.setattr(readiness, "ModelIndex", lambda *a: idx)
     monkeypatch.setattr(readiness, "warm_color_codes", lambda *a, **kw: 0)
     monkeypatch.setattr(readiness, "warm_element_mesh_edges", lambda *a, **kw: 0)
+    monkeypatch.setattr(readiness, "warm_color_views", lambda *a, **kw: {})
     calls = []
 
     def calculate(*args, **kw):

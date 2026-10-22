@@ -23,6 +23,7 @@ import numpy as np
 
 from ..core.errors import NotFoundError, NotReadyError, ValidationError
 from ..core.state import ModelIndex
+from ..infra.l3be import build as l3be_build
 from src.l1.manifest_schema import canon_instance
 from . import cache_store
 
@@ -373,6 +374,50 @@ def get_color_code(
     else:
         colors = np.repeat(face_colors, 3, axis=0)  # [Rf*3, 3] Triangle Soup
     return colors, legend
+
+
+def color_code_payload_key(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]] = None,
+) -> Optional[tuple]:
+    """GET /color-code/{instance} 响应包的缓存 key = 面分类 key + 当前的用户改色/改名。
+
+    改色/改名后 key 跟着变，修改立即生效；不能缓存时返回 None。
+    """
+    vkey = view_key(idx, instance, scheme, set_names)
+    if vkey is None:
+        return None
+    from ..infra.manifest_repo import ManifestRepo
+    overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
+    return ("color_code_payload_v1", vkey, json.dumps(overrides, sort_keys=True, default=str))
+
+
+def color_code_payload(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]] = None,
+) -> Tuple[bytes, bool]:
+    """→ (L3BE 响应包 color_per_vertex + legend, 是否命中缓存)。
+
+    颜色数组与顶点数同长（241 万节点模型约 116 MB），每次现拼约 0.6 s；
+    只依赖几何与改色/改名 → 整包存盘（model 桶），导入时预算（region_edge_service.warm_color_views）。
+    """
+    if not idx.is_render_ready:
+        raise NotReadyError(f"ODB '{idx.odb_id}' render data not loaded")
+    key = color_code_payload_key(idx, instance, scheme, set_names)
+    if key is not None:
+        cached = cache_store.payload_get(idx.workspace, cache_store.MODEL_BUCKET, key)
+        if cached is not None:
+            return cached, True
+    colors, legend = get_color_code(idx, instance, scheme, set_names)
+    legend_bytes = np.frombuffer(json.dumps(legend).encode("utf-8"), dtype=np.uint8)
+    payload = l3be_build([("color_per_vertex", colors), ("legend", legend_bytes)])
+    if key is not None:
+        cache_store.payload_put(idx.workspace, cache_store.MODEL_BUCKET, key, payload)
+    return payload, False
 
 
 def get_legend(
@@ -964,6 +1009,44 @@ def _geom_h5_path(idx: ModelIndex, instance: str) -> str:
         os.path.join(idx.workspace, "l1", "geometry", f"{instance}.h5")
 
 
+def _check_scheme(scheme: str, set_names: Optional[List[str]]) -> None:
+    if scheme not in _SCHEMES:
+        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
+    if scheme == "elset" and not set_names:
+        raise ValidationError("set_names required for elset scheme", {})
+
+
+def _codes_key(idx: ModelIndex, instance: str, scheme: str,
+               set_names: Optional[List[str]], n_faces: int) -> tuple:
+    """面分类编码的缓存 key：依赖的几何文件签名都在其中，也是其他几何类显示缓存的身份。"""
+    ws = idx.workspace
+    sets_sig = cache_store.file_sig(os.path.join(ws, "l1", "sets", "sets.h5")) \
+        if scheme == "elset" else None
+    return ("color_codes", ws, instance, scheme,
+            tuple(set_names) if scheme == "elset" else (),
+            cache_store.render_sig(ws, instance),
+            cache_store.file_sig(_geom_h5_path(idx, instance)), sets_sig,
+            n_faces,
+            # section / region 分类依赖 L2 高级阶段的 averaging_data，高级索引
+            # 加载前后结果不同；与 result_service 的 advanced_version 同口径
+            int(getattr(idx, "_advanced_status_mtime_ns", 0)))
+
+
+def view_key(idx: ModelIndex, instance: str, scheme: str,
+             set_names: Optional[List[str]] = None) -> Optional[tuple]:
+    """按分类显示的结果（着色包、图例条目、区域边线）共用的几何身份 = 面分类 key。
+
+    实例缺渲染数据或参数不合法时返回 None（调用方不缓存，走原计算路径报错）。
+    """
+    instance = canon_instance(instance)
+    etype_arr = getattr(idx, "source_elem_etype", {}).get(instance)
+    if etype_arr is None or getattr(idx, "render_source_elem_row", {}).get(instance) is None:
+        return None
+    if scheme not in _SCHEMES or (scheme == "elset" and not set_names):
+        return None
+    return _codes_key(idx, instance, scheme, set_names, len(etype_arr))
+
+
 def _face_codes(
     idx: ModelIndex,
     instance: str,
@@ -979,22 +1062,9 @@ def _face_codes(
     key 带 render.h5 / L1 几何 / sets.h5 签名，L2 重跑后自然失效。用户改色/改名
     （legend overrides）不影响这里，每次请求在编码之上现查。
     """
-    if scheme not in _SCHEMES:
-        raise ValidationError(f"Unknown scheme '{scheme}'", {"scheme": scheme})
-    if scheme == "elset" and not set_names:
-        raise ValidationError("set_names required for elset scheme", {})
-
+    _check_scheme(scheme, set_names)
     ws = idx.workspace
-    sets_sig = cache_store.file_sig(os.path.join(ws, "l1", "sets", "sets.h5")) \
-        if scheme == "elset" else None
-    key = ("color_codes", ws, instance, scheme,
-           tuple(set_names) if scheme == "elset" else (),
-           cache_store.render_sig(ws, instance),
-           cache_store.file_sig(_geom_h5_path(idx, instance)), sets_sig,
-           len(etype_arr),
-           # section / region 分类依赖 L2 高级阶段的 averaging_data，高级索引
-           # 加载前后结果不同；与 result_service 的 advanced_version 同口径
-           int(getattr(idx, "_advanced_status_mtime_ns", 0)))
+    key = _codes_key(idx, instance, scheme, set_names, len(etype_arr))
     hit = cache_store.mem_get(key)
     if hit is not None:
         return hit
@@ -1262,13 +1332,12 @@ def _total_elem_counts_per_label(
     - etype / material / section_type: counted directly from L1 per-element
       datasets — exact totals.
     - section_assignment: element_set size per section (exact totals).
-    - elset: relabel every element (reusing _labels_from_elsets) and tally.
+    - elset: classify every element (reusing _codes_from_elsets) and tally.
     - section: regions are a surface-only concept, so fall back to surface_counts.
 
     Results (other than section) are memoized on idx.legend_scan_cache since L1 is
     immutable.
     """
-    from collections import Counter
     if scheme == "section":
         return surface_counts
 
@@ -1290,8 +1359,13 @@ def _total_elem_counts_per_label(
         if full_etype is None or len(full_etype) == 0:
             counts = {}
         else:
-            labels = _labels_from_elsets(idx, instance, full_etype, full_row, set_names or [])
-            counts = dict(Counter(labels))
+            # 按编码计数，与 Counter(逐单元标签) 相同（重复的集合名合并到同一标签）；
+            # 大模型上逐单元构造字符串要数秒
+            codes, vals = _codes_from_elsets(idx, instance, full_etype, full_row, set_names or [])
+            counts = {}
+            for v, c in zip(vals, np.bincount(codes, minlength=len(vals))):
+                if c:
+                    counts[v] = counts.get(v, 0) + int(c)
     else:
         counts = dict(surface_counts)
 
@@ -1360,6 +1434,60 @@ def get_legend_entries(
             {"instance": instance},
         )
 
+    base = _legend_entries_base(idx, instance, scheme, set_names, etype_arr, elem_row_arr)
+
+    from ..infra.manifest_repo import ManifestRepo
+    overrides = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
+    entries = []
+    for val, title, rgb, face_count, elem_count in zip(
+            base["vals"], base["titles"], base["colors"], base["face"], base["elem"]):
+        ov         = overrides.get(val, {})
+        user_name  = "display_name" in ov
+        user_color = "color_r" in ov
+        if user_color:
+            r, g, b = ov["color_r"], ov["color_g"], ov["color_b"]
+        else:
+            r, g, b = rgb
+        entries.append({
+            "legend_key":    val,
+            "default_title": title,
+            "display_name":  ov.get("display_name"),   # None if not set
+            "color_r":       r,
+            "color_g":       g,
+            "color_b":       b,
+            "user_color":    user_color,
+            "user_name":     user_name,
+            "face_count":    face_count,
+            "elem_count":    elem_count,
+        })
+    return entries
+
+
+def _legend_entries_base(
+    idx: ModelIndex,
+    instance: str,
+    scheme: str,
+    set_names: Optional[List[str]],
+    etype_arr: np.ndarray,
+    elem_row_arr: np.ndarray,
+) -> dict:
+    """图例条目中只依赖几何的部分：取值顺序、默认标题、自动配色、面数与单元数。
+
+    大模型首次计算要数秒（单元集合要给全部单元重新分类计数），结果只取决于几何 →
+    内存 + 工作区磁盘 model 桶，导入时预算；用户改色/改名由调用方每次现查叠加。
+    → {"vals": [...], "titles": [...], "colors": [[r, g, b], ...], "face": [...], "elem": [...]}
+    """
+    _check_scheme(scheme, set_names)
+    key = ("legend_entries_base_v1",
+           _codes_key(idx, instance, scheme, set_names, len(etype_arr)))
+    hit = cache_store.small_get(key)
+    if hit is not cache_store.MISS:
+        return hit
+    hit = cache_store.json_get(idx.workspace, cache_store.MODEL_BUCKET, key)
+    if hit is not cache_store.MISS:
+        cache_store.small_put(key, hit)
+        return hit
+
     codes, vals = _face_codes(idx, instance, scheme, set_names, etype_arr, elem_row_arr)
     counts_arr = np.bincount(codes, minlength=len(vals)) if len(vals) else []
     face_counts = {v: int(c) for v, c in zip(vals, counts_arr)}
@@ -1394,8 +1522,6 @@ def get_legend_entries(
             rgb = global_colors.get(ckey, _GREY)
         palette_colors[val] = rgb
 
-    from ..infra.manifest_repo import ManifestRepo
-    overrides     = ManifestRepo(idx.workspace).get_legend_overrides(instance, scheme)
     default_titles = {}
     if scheme == "section":
         dt_key = ("section_default_titles", instance, adv_ver)
@@ -1404,28 +1530,16 @@ def get_legend_entries(
             default_titles = _default_titles_section(idx, instance, etype_arr, elem_row_arr, unique_vals)
             idx.legend_scan_cache[dt_key] = default_titles
 
-    entries = []
-    for val in unique_vals:
-        ov         = overrides.get(val, {})
-        user_name  = "display_name" in ov
-        user_color = "color_r" in ov
-        if user_color:
-            r, g, b = ov["color_r"], ov["color_g"], ov["color_b"]
-        else:
-            r, g, b = palette_colors[val]
-        entries.append({
-            "legend_key":    val,
-            "default_title": default_titles.get(val, val),
-            "display_name":  ov.get("display_name"),   # None if not set
-            "color_r":       r,
-            "color_g":       g,
-            "color_b":       b,
-            "user_color":    user_color,
-            "user_name":     user_name,
-            "face_count":    face_counts.get(val, 0),
-            "elem_count":    elem_counts.get(val, 0),
-        })
-    return entries
+    base = {
+        "vals":   list(unique_vals),
+        "titles": [default_titles.get(val, val) for val in unique_vals],
+        "colors": [[float(c) for c in palette_colors[val]] for val in unique_vals],
+        "face":   [face_counts.get(val, 0) for val in unique_vals],
+        "elem":   [int(elem_counts.get(val, 0)) for val in unique_vals],
+    }
+    cache_store.small_put(key, base)
+    cache_store.json_put(idx.workspace, cache_store.MODEL_BUCKET, key, base)
+    return base
 
 
 def _default_titles_section(

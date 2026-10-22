@@ -275,6 +275,49 @@ region-mesh-edges、legend-entries、modal-animation、pick 全部 OK。剩余�
 - 全量测试另有约 68 个与缓存无关的失败（模型修正/灵敏度/求解器，多为 inp_service 拆分后测试未跟上），建议单独清理。
 - 探测工具只测 GET；POST 纯查询（render-faces、surface-patch、node-table 等）未覆盖。
 
+### 0.10 1440w 实测与几何类显示缓存（2026-10-23）
+
+**1440w 重新导入（项目 `202610221440`，`9f870ce`）**：`cache_prepare` 376/376、0 跳过、0 失败，4 进程，507 s
+（range 124、scalars 248、位移 2、变形统计 2；静力步无 modal-animation）。
+`snapshot_results.py --workspace <完整路径> --cache disk --compare baseline.npz --procs 2`：**完全一致 832、不一致 0**（13 分钟），
+多进程严格准备落盘的内容与基准代码逐项相同（§0.8 遗留项完成）。注意 `--workspace` 必须给完整数据路径，只写项目号会按代码目录
+相对路径解析，模型加载失败、832 项全部“不一致”（第一次比对就是这样）。
+
+**`--full` 探测（`probe_202610221440_20261023_000518`，阈值 100 ms）**：表面约 322 万三角面、967 万渲染顶点，逐顶点响应很大
+（frame-scalars 39 MB；color-code、element-mesh-edges、modal-shape 各约 116 MB；deformed-positions 232 MB）。
+- frame-scalars 两次 143～330 ms：命中缓存，慢在 39 MB 的归一化与打包，属下限，不是漏缓存。
+- modal-animation 测在静力步（每阶 20 帧包 **2.3 GB**，首次 13～15 s、命中 2 s）：viewer 只在 FREQUENCY 步调用，属探测工具误测，
+  已改为只测 FREQUENCY 步。但说明大模型模态动画预算包远大于 §0.8 的“每阶数百 MB”估计（约 n_frames × 渲染顶点数 × 12 字节），
+  **是否继续预算 modal-animation 待领导确认**。
+- deformed-positions 首次 9.2 s / 2.7 s、命中 107 ms（scale 任意，只预算了位移底座）：**是否预算建议 scale 的整包待领导确认**。
+- pick 每次 200～380 ms（现查，不属缓存），以后单独看。
+- 下面四项 viewer 调用且大模型明显慢，2026-10-23 用户拍板先做：
+
+| 接口 | 实测（修改前） | 处理 |
+|---|---|---|
+| `color-code/{instance}/region-mesh-edges` | 整模型大小区域每次 9～10 s（116 MB），中等区域 1～3 s | 整包存盘；区域节点标记去掉 `np.unique`（结果相同） |
+| `color-code/{instance}/region-outline` | 大区域每次约 2.6 s（0.3 MB） | 整包存盘 |
+| `color-code/{instance}` | 每次约 0.6 s，单元集合首次约 2 s（116 MB） | 整包按“面分类 key + 当前改色/改名”存盘 |
+| `color-code/{instance}/legend-entries` | 首次 2.7～8.4 s，之后约 40 ms（仅进程内记忆化） | 只依赖几何的部分存盘；单元集合单元数改用编码 bincount |
+
+实现（`services/region_edge_service.py`、`color_service.color_code_payload` / `_legend_entries_base`）：
+- 缓存 key 都以面分类 key（`color_service._codes_key`：render.h5 / L1 几何 / sets.h5 签名 + 高级索引版本）为身份；区域边线另加
+  边文件与 surface.h5 签名。改色/改名进 color-code 包的 key（改后换新包，立即生效）；legend-entries 改色/改名每次现查叠加。
+- `warm_color_views`：导入严格准备（`readiness_service`，在单元边线之后）与旧项目手动预热（`warmup_service`）都会执行。范围 =
+  每个实例 × 每个非 elset 方案 + 每个单元集合单选（前端把同一份 set_names 广播给所有实例，所以每个实例都算每个集合）的着色包与
+  图例条目，以及每个方案在表面出现的每个区域、每个集合（只在所属实例）的单元边线与外轮廓。多选集合任意组合不穷举（首次请求后缓存）。
+  请求本身就会报参数错误的组合（ValidationError / NotFoundError）记为跳过。已在磁盘的大条目只检查存在（`cache_store.payload_exists`），
+  追加结果重跑准备时不重读几 GB 响应包。结果写进导入日志一条“几何显示缓存完成：{…}”。
+- 响应头新增 `X-Cache: hit|miss`（三个二进制接口），探测工具可直接看是否命中。
+- 磁盘估算（1440w）：着色包（5 个方案 + 15 个集合）× 116 MB ≈ 2.3 GB；区域边线每个方案合计约一份整模型边线（≤ 116 MB）× 5 + 集合若干百 MB；
+  外轮廓与图例条目可忽略。**单元集合很多的模型，着色包 = 集合数 × 整模型顶点数 × 12 字节**，需要留意磁盘上限。
+- 测试 `tests/test_l3_color_views_cache.py`。
+
+**待开发者验证**：跑 `test_l3_color_views_cache.py`、`test_l3_region_edges_route.py`、`test_l3_color_code_cache.py`、
+`test_color_elset_prefix.py`、`test_color_legend_save_route.py`、`test_pipeline_readiness.py`、`test_l3_warmup_scheduling.py`、
+`test_l3_disk_cache_warmup.py`；重启服务后对 `202610221440` 手动 `POST /results/warmup` 补算（或重新导入，看“几何显示缓存完成”日志的
+条目数与秒数），再跑 `--full` 探测：上述四个接口第二次应全部 `X-Cache: hit` 且远低于原耗时。
+
 ## 1. 需求与结论
 
 用户当前要求：**能缓存的都缓存，需要遍历接口可能性进行缓存；暂不以磁盘存储量作为缩减覆盖范围的理由。**

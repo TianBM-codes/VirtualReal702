@@ -7,7 +7,7 @@ r"""
 接口发现（结果组、step、帧、实例、字段、分量、着色方案、区域），不读工作区文件。
 只发 GET；POST/DELETE/PATCH 与日志、健康检查等列为"未探测"并注明原因。
 默认只探测 viewer 实际调用的 GET 接口（VIEWER_ROUTES，2026-10-22 起只保证这些接口的缓存），
-加 --all-routes 探测全部项目数据接口。modal-animation 与前端一样带建议 scale + n_frames=20。
+加 --all-routes 探测全部项目数据接口。modal-animation 与前端一样带建议 scale + n_frames=20，且只测 FREQUENCY 步。
 
 用法（在服务所在机器上跑，避免网络时间干扰；建议先重启服务，让第一遍反映磁盘缓存状态）：
     python tools/probe_endpoints.py --project 2026102201
@@ -127,6 +127,8 @@ class Catalog:
                 self.groups[g["result_group"]] = list(g.get("steps") or [])
         ov = _data(base, f"{odb}/meta/overview") or {}
         self.instances = [i["instance_name"] for i in ov.get("instances") or []]
+        self.procedures = {s.get("step_name"): (s.get("procedure") or "").upper()
+                           for s in ov.get("steps") or []}
         self.bbox_center = {}
         for i in ov.get("instances") or []:
             lo, hi = i.get("bbox_min"), i.get("bbox_max")
@@ -320,6 +322,9 @@ def _requests_for(route, cat):
                         a["render_face_idx"] = 0
                     if fd is None:
                         if route["path"].endswith("/results/modal-animation") and fr is not None:
+                            # viewer 只在 FREQUENCY 步显示模态动画（DeformCard.vue）
+                            if cat.procedures.get(step, "FREQUENCY") != "FREQUENCY":
+                                continue
                             sc = cat.suggest_scale(rg, step, fr)
                             if sc is not None:
                                 a = {**a, "scale": sc, "n_frames": MODAL_ANIMATION_FRAMES}

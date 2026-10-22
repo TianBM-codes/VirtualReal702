@@ -59,6 +59,7 @@ def test_warmup_yields_when_parse_starts(monkeypatch):
     ws.set_busy_check(lambda: busy[0])
     monkeypatch.setattr(ws, "warm_color_codes", lambda i: 0)
     monkeypatch.setattr(ws, "warm_element_mesh_edges", lambda i: 0)
+    monkeypatch.setattr(ws, "warm_color_views", lambda i: {})
     monkeypatch.setattr(ws, "_list_result_targets", lambda m: [])
     monkeypatch.setattr(ws, "list_targets", lambda m, default_instances: [])
     monkeypatch.setattr(ws, "ManifestRepo", lambda w: None)

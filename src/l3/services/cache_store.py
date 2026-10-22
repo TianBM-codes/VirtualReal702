@@ -426,6 +426,18 @@ def payload_get(workspace: str, bucket: str, key: tuple) -> Optional[bytes]:
     return data
 
 
+def payload_exists(workspace: str, bucket: str, key: tuple) -> bool:
+    """响应包是否已在磁盘上（不读内容）；预热用来跳过已算的大条目，命中同样计入全量核验。"""
+    if not disk_enabled():
+        return False
+    path = _entry_path(workspace, bucket, "payloads", key, ".bin")
+    if not os.path.isfile(path):
+        return False
+    _touch(path)
+    _require_entry(workspace, path)
+    return True
+
+
 def payload_put(workspace: str, bucket: str, key: tuple, payload: bytes) -> None:
     if not _fits(len(payload)):
         return
