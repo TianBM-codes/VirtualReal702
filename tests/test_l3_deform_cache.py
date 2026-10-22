@@ -93,6 +93,11 @@ def _setup_deform_workspace(workspace, make_registry, *, with_aux=True):
         "CREATE TABLE IF NOT EXISTS result_files (step_name TEXT, field_name TEXT,"
         " result_group TEXT)")
     conn.execute("INSERT INTO result_files VALUES ('Step-1', 'U', NULL)")
+    # 全量计划只算有结果块的实例（各导入器都会写 result_blocks）
+    conn.execute(
+        "INSERT INTO result_blocks (step_name, field_name, instance_name, position,"
+        " elem_type, file_path) VALUES ('Step-1', 'U', ?, 'NODAL', NULL, ?)",
+        (INSTANCE, str(u_path)))
     conn.commit()
     conn.close()
     return registry, surf_pos, u, u_path
