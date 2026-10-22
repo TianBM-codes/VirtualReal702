@@ -194,8 +194,9 @@ def test_instance_without_data_is_skipped_like_api(prepared_model, monkeypatch):
 
     monkeypatch.setattr(precompute_plan, "compute_scalar_range", no_data)
     readiness.prepare_workspace("p", str(workspace), "g", group_only=True)
-    # 无数据的范围逐项跳过（2 帧 × 1 个分量），其余照常准备
-    assert len(calls) == 20
+    # 无数据的范围逐项跳过（2 帧 × 1 个分量），其余照常准备：
+    # 每帧 scalars smooth/flat 2 + 位移 1，共 2 帧；再加每帧变形比例 2（frame-colors 不预算）
+    assert len(calls) == 8
 
 
 def test_missing_advanced_data_never_counts_as_success(prepared_model):
