@@ -8,7 +8,8 @@
   - frame-scalars：默认分量 + 每个实际分量 × smooth/flat；
   - frame-colors：U1/U2/U3 × smooth/flat（路由只接受这三个分量）；
   - U 场：每帧顶点位移向量（vertex-displacements / deformed-* / modal-* 共用）与
-    deform-suggest-scale 统计。
+    deform-suggest-scale 统计；FREQUENCY 步另预算每阶 modal-animation 最终响应包
+    （scale = 该阶 deform-suggest-scale，n_frames = 20，与前端预计算模式的默认请求一致）。
 无表面三角形的实例（纯梁/质量点）跳过云图类，只准备位移。合法的全 NaN 结果
 （NotFoundError，接口同样返回空 payload）记为跳过；其他异常在 strict 模式下直接失败。
 
@@ -32,17 +33,19 @@ from typing import Callable, Dict, List, Optional, Tuple
 from ..core.errors import NotFoundError
 from ..infra.manifest_repo import ManifestRepo
 from .result_service import (
-    compute_scalar_range, deform_scale_stats, frame_colors, frame_scalars,
-    frame_vertex_displacements,
+    cached_modal_animation, compute_scalar_range, deform_scale_stats, frame_colors,
+    frame_scalars, frame_vertex_displacements, suggest_deform_scale,
 )
 
 logger = logging.getLogger(__name__)
 
 # 覆盖范围变化时加 1：后台预热的完成标记带此版本，旧项目会按新计划补算。
-PLAN_VERSION = 1
+PLAN_VERSION = 2          # 2: FREQUENCY 步加 modal-animation 响应包
 
 RENDER_MODES = ("smooth", "flat")
 FRAME_COLORS_COMPONENTS = ("U1", "U2", "U3")
+MODAL_PROCEDURES = ("FREQUENCY",)
+MODAL_ANIMATION_FRAMES = 20   # 前端预计算模式默认帧数
 _PROGRESS_INTERVAL_S = 30.0
 
 
@@ -59,6 +62,11 @@ class Target:
     instances: Tuple[str, ...]
     frames: Tuple[int, ...]
     n_components: int
+    procedure: Optional[str] = None
+
+    @property
+    def modal(self) -> bool:
+        return self.field == "U" and (self.procedure or "").upper() in MODAL_PROCEDURES
 
     @property
     def context(self) -> str:
@@ -86,6 +94,14 @@ def _columns(conn, table: str) -> set:
         return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
     except Exception:
         return set()
+
+
+def _procedure_of(manifest: ManifestRepo, step: str, result_group) -> Optional[str]:
+    try:
+        info = manifest.get_step_info(step, result_group)
+        return (info or {}).get("procedure")
+    except Exception:
+        return None
 
 
 def _frames_of(manifest: ManifestRepo, step: str, result_group) -> Tuple[int, ...]:
@@ -150,6 +166,7 @@ def list_targets(manifest: ManifestRepo, *, result_group=None, group_only: bool 
             result_group=rg, step=step, field=field, file_path=file_path,
             instances=tuple(sorted(insts or ())),
             frames=_frames_of(manifest, step, rg), n_components=n_comp,
+            procedure=_procedure_of(manifest, step, rg),
         ))
     return targets
 
@@ -167,6 +184,8 @@ def count_calls(idx, targets: List[Target]) -> int:
         for inst in t.instances:
             per_frame = per_frame_surface if _has_surface(idx, inst) else 0
             if t.field == "U":
+                per_frame += 1
+            if t.modal and _has_surface(idx, inst):
                 per_frame += 1
             total += per_frame * len(t.frames)
         if t.field == "U":
@@ -244,6 +263,9 @@ def run_plan(reg, odb_id: str, idx, targets: List[Target], *, strict: bool,
                 if t.field == "U":
                     _call("displacement", f"{ctx} 位移", frame_vertex_displacements, reg, odb_id, instance,
                           t.step, frame, result_group=rg)
+                if t.modal and surface:
+                    _call("modal_animation", f"{ctx} 模态动画", _modal_animation, reg, odb_id,
+                          instance, t.step, frame, rg)
         if t.field == "U":
             for frame in t.frames:
                 _call("deform_stats", f"{t.context} 第 {frame} 帧 变形比例", deform_scale_stats,
@@ -252,6 +274,13 @@ def run_plan(reg, odb_id: str, idx, targets: List[Target], *, strict: bool,
     stats["seconds"] = round(time.time() - t0, 1)
     _report(force=True)
     return stats
+
+
+def _modal_animation(reg, odb_id: str, instance: str, step: str, frame: int, rg) -> None:
+    """前端预计算模式的默认请求：scale 取该阶建议值（与 deform-suggest-scale 接口返回值相同）。"""
+    scale = float(suggest_deform_scale(reg, odb_id, step, frame, rg))
+    cached_modal_animation(reg, odb_id, instance, step, frame, scale=scale,
+                           n_frames=MODAL_ANIMATION_FRAMES, result_group=rg)
 
 
 # ── 多进程执行 ─────────────────────────────────────────────────────────────────

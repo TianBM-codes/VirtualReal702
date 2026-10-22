@@ -206,6 +206,13 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 `deformed-positions`（默认 scale）首次约 370 ms、`modal-animation`（31 MB）首次约 340～500 ms（最终响应包未预算）；
 `raw-values` 带 result_group 一律 404（已修，见接口文档 2026-10-22 第三轮）。完整结果待在开发者本机跑 `--full`。
 
+**探测结果处理（2026-10-22，door `--full` 9405 个请求）**：`query/pick` 壳面内主值类字段 500（EN 块 NaN 写进 JSON）已修；
+`schemes` 每次约 110 ms → 按文件签名缓存；`legend-entries`（section）约 300 ms → 材料名按单元类型整列读取；
+`raw-values` 404 已修（服务未重启所以探测时仍报错）；`projects/{id}/summary` 404 是 ODB 项目没有 `model_summary.json`，非缓存问题。
+`modal-animation` 首次 340～500 ms：领导决定也预算存盘 → 计划版本 2，FREQUENCY 步每阶 × 有表面实例预算
+scale=建议值、n_frames=20 的响应包（`precompute_plan._modal_animation`）。磁盘约 n_frames × 顶点数 × 12 字节/阶，
+241 万节点模型每阶约数百 MB，阶数多时需关注 `APP_SCALAR_DISK_CACHE_MB`（超出单条上限的包 `_fits` 不写入、不计入必需条目）。
+
 遗留问题：
 - 导入在缓存准备阶段中断（重启/崩溃）会从 L1 整条重跑、L2 清空缓存；准备出错没有单独重试入口。断点续做方案见 `Pipeline-Resume-Design.md`，2026-10-22 决定暂不实施。
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。

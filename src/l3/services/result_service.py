@@ -2656,3 +2656,69 @@ def modal_animation_frames(
 
     header = np.array([n_frames, n_verts], dtype=np.uint32)
     return header.tobytes() + frames.tobytes()
+
+
+def deform_payload_slot(
+    registry: OdbRegistry,
+    kind: str,
+    *,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame: int,
+    result_group: Optional[str],
+    **params,
+) -> Optional[tuple]:
+    """
+    变形 / 模态动画最终响应包的缓存位置 → (workspace, bucket, key, vertex_count)。
+
+    key 含 U 结果文件签名与 instance 渲染几何签名：结果组重新解析或 L2 重跑后
+    自然失效。缓存关闭或源文件不可用时返回 None（不缓存，照常计算）。
+    """
+    if not cache_store.disk_enabled():
+        return None
+    idx = registry.get(odb_id)
+    if idx is None:
+        return None
+    inst = canon_instance(instance)
+    try:
+        result_h5 = ManifestRepo(idx.workspace).result_h5_abspath(step, "U", result_group)
+    except Exception:
+        return None
+    u_sig = cache_store.file_sig(result_h5)
+    g_sig = cache_store.render_sig(idx.workspace, inst)
+    if u_sig is None or g_sig is None:
+        return None
+    key = (kind, str(odb_id), inst, result_h5, u_sig, g_sig, int(frame),
+           tuple(sorted((k, repr(v)) for k, v in params.items())))
+    vtx_nr = idx.vtx_node_row.get(inst)
+    vertex_count = len(vtx_nr) if vtx_nr is not None else None
+    return idx.workspace, cache_store.group_bucket(result_group), key, vertex_count
+
+
+def cached_modal_animation(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    scale: float = 1.0,
+    n_frames: int = 20,
+    result_group: str = None,
+) -> Tuple[bytes, bool]:
+    """modal-animation 响应包（走磁盘缓存）→ (payload, 是否命中)。接口与全量计划共用。"""
+    slot = deform_payload_slot(
+        registry, "modal_animation_v1", odb_id=odb_id, instance=instance, step=step,
+        frame=frame_idx, result_group=result_group,
+        scale=float(scale), n_frames=int(n_frames),
+    )
+    cached = cache_store.payload_get(*slot[:3]) if slot else None
+    if cached is not None:
+        return cached, True
+    data = modal_animation_frames(
+        registry=registry, odb_id=odb_id, instance=instance, step=step,
+        frame_idx=frame_idx, scale=scale, n_frames=n_frames, result_group=result_group,
+    )
+    if slot:
+        cache_store.payload_put(*slot[:3], data)
+    return data, False

@@ -31,7 +31,8 @@ from ...services.result_service import (
     frame_vertex_displacements,
     suggest_deform_scale,
     modal_shape_displacement,
-    modal_animation_frames,
+    cached_modal_animation,
+    deform_payload_slot,
 )
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
@@ -41,41 +42,9 @@ _FRAME_ALIAS_RE = re.compile(r"^(?P<field>.+)__FRAME_(?P<frame>\d+)$")
 _RAW_SENSITIVITY_GROUP_RE = re.compile(r"^sensitivity_batch_", re.IGNORECASE)
 
 
-def _payload_cache_slot(
-    kind: str,
-    *,
-    odb_id: str,
-    instance: str,
-    step: str,
-    frame: int,
-    result_group: Optional[str],
-    **params,
-) -> Optional[tuple]:
-    """
-    变形 / 模态动画最终响应包的缓存位置 → (workspace, bucket, key, vertex_count)。
-
-    key 含 U 结果文件签名与 instance 渲染几何签名：结果组重新解析或 L2 重跑后
-    自然失效。缓存关闭或源文件不可用时返回 None（不缓存，照常计算）。
-    """
-    if not cache_store.disk_enabled():
-        return None
-    idx = registry.get(odb_id)
-    if idx is None:
-        return None
-    inst = canon_instance(instance)
-    try:
-        result_h5 = ManifestRepo(idx.workspace).result_h5_abspath(step, "U", result_group)
-    except Exception:
-        return None
-    u_sig = cache_store.file_sig(result_h5)
-    g_sig = cache_store.render_sig(idx.workspace, inst)
-    if u_sig is None or g_sig is None:
-        return None
-    key = (kind, str(odb_id), inst, result_h5, u_sig, g_sig, int(frame),
-           tuple(sorted((k, repr(v)) for k, v in params.items())))
-    vtx_nr = idx.vtx_node_row.get(inst)
-    vertex_count = len(vtx_nr) if vtx_nr is not None else None
-    return idx.workspace, cache_store.group_bucket(result_group), key, vertex_count
+def _payload_cache_slot(kind: str, **kw) -> Optional[tuple]:
+    """变形 / 模态动画最终响应包的缓存位置，见 result_service.deform_payload_slot。"""
+    return deform_payload_slot(registry, kind, **kw)
 
 
 def _normalize_step_token(value: Optional[str]) -> str:
@@ -715,30 +684,7 @@ async def get_modal_animation(
     二进制格式：[n_frames uint32][n_verts uint32][n_frames × n_verts × 3 × float32]
     供前端预计算模式：收到后缓存，播放时只做 buffer 切换。
     """
-    slot = _payload_cache_slot(
-        "modal_animation_v1",
-        odb_id=odb_id,
-        instance=instance,
-        step=step,
-        frame=frame,
-        result_group=result_group,
-        scale=float(scale),
-        n_frames=int(n_frames),
-    )
-    cached_payload = cache_store.payload_get(*slot[:3]) if slot else None
-    if cached_payload is not None:
-        return Response(
-            content=cached_payload,
-            media_type="application/octet-stream",
-            headers={
-                "X-N-Frames": str(n_frames),
-                "X-Frame":    str(frame),
-                "X-Scale":    str(scale),
-                "X-Cache":    "hit",
-            },
-        )
-
-    data = modal_animation_frames(
+    data, hit = cached_modal_animation(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
@@ -748,8 +694,6 @@ async def get_modal_animation(
         n_frames=n_frames,
         result_group=result_group,
     )
-    if slot:
-        cache_store.payload_put(*slot[:3], data)
     return Response(
         content=data,
         media_type="application/octet-stream",
@@ -757,7 +701,7 @@ async def get_modal_animation(
             "X-N-Frames": str(n_frames),
             "X-Frame":    str(frame),
             "X-Scale":    str(scale),
-            "X-Cache":    "miss",
+            "X-Cache":    "hit" if hit else "miss",
         },
     )
 
