@@ -70,9 +70,14 @@ def test_http_download_mysql_and_simright_protocol(monkeypatch, tmp_path):
         q.execute("SELECT extra_json FROM t_mt_py_project_config WHERE pid=%s", (project_id,))
         meta = json.loads(q.fetchone()["extra_json"])["test_load_level_import"]
         assert len(meta["axis_rows"]) == 3 and meta["ignored_trailing_values"]["UP"] == 999
-        result = comparison.get_simright_test_load_level_comparison(project_id, base, "model", example_mode=False,
-            sensors=[{"name": "UP", "node_id": 10, "part_id": 5, "quantity": "scalar", "var_name": "D.N.X"}],
-            step_mapping=[{"sample_index": 1, "loadcase_id": 42}])
+        from services.model_update.analysis import project_config_service as configs
+        monkeypatch.setattr(configs, "get_connection", lambda: proxy)
+        monkeypatch.setattr(comparison, "get_connection", lambda: proxy)
+        configs.upsert_project_config(project_id, extra_json={"simright": {
+            "filename": "model", "base_url": base, "sensor_bindings": {
+                "UP": {"node_id": 10, "part_id": 5, "quantity": "scalar", "var_name": "D.N.X"}}}}, cursor=q)
+        result = comparison.get_simright_test_load_level_comparison(project_id, example_mode=False,
+            sensors=[{"name": "UP"}], steps=[None, 42, None])
         assert result["curves"][-1]["data"] == [["0", None], ["1", 12.], ["0", None]]
         assert not result["issues"]
         q.execute("""INSERT INTO t_mt_py_test_load_level_data

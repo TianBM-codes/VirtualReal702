@@ -53,134 +53,155 @@ TXT 数据按 `sample_index` 排列，用导入元数据中选定的横轴生成
 
 `POST /get/simright_test_load_level_comparison`
 
-请求使用 `Content-Type: application/json`。`example_mode` 放在 JSON 请求体中，与 `project_id` 同级，不放在 URL 查询参数中；该参数仅用于这个 SimRight 对比接口。
+请求使用 `Content-Type: application/json`。所有参数放在 JSON 请求体中。
+已移除请求参数 `filename`、`step_mapping`；`sensors` 每项只允许 `name`。
 
-| `example_mode` | 数据来源与行为 | 使用条件 |
+### 请求参数与两种用途
+
+| 参数 | 类型/默认值 | 说明 |
 | --- | --- | --- |
-| `true`（默认，可省略） | 读取本地示例 JSON，返回表格、step 下拉框和对比曲线 | 只需 `project_id`，用于前端展示测试 |
-| `false` | 查询项目已入库的试验数据，并调用数巧服务 | 先导入试验 TXT，提供真实 `simright_base_url` 和 `filename` |
+| `project_id` | 正整数，必填 | 外部传入的项目 ID |
+| `example_mode` | bool，默认 true | true 读取示例文件；false 查询数据库和数巧 |
+| `sensors` | 对象列表，可省略或为 null | 如 `[{"name":"310004a"}]`；省略、null、空列表均只返回加载信息和 step 下拉列，不返回测点列或曲线 |
+| `steps` | step ID/null 列表，可省略 | 每个位置对应一条试验加载记录；省略或 null 时全部未选择；显式列表长度必须等于有效记录数 |
+| `simright_base_url` | URL，可省略 | 真实模式的数巧地址；省略时读取项目配置 `simright.base_url` |
+| `profile` | markdown/excel，默认 markdown | 数巧客户端协议配置 |
+| `axis_label` | 字符串，可省略 | 默认采用 TXT 导入时的横轴；可切换为其他加载信息行 |
+| `shell_layer` | 字符串，默认 bottom | 数巧壳层 |
+| `import_sha256` | 字符串，可省略 | 真实模式校验 TXT 是否已重新导入，防止记录错位 |
 
-当前先使用示例模式。真实查询分支已实现，但尚未与真实数巧服务联调。
+`steps` 替代原来的 `step_mapping`。例如 `[42, null, 91]` 表示第 1 条试验记录选 step 42，第 2 条未选择，第 3 条选 step 91。ID 取 `table` 中 `key=simright_step` 列的 `selectOptions[].value`，不是选项数组下标。JSON 中使用 `null`，对应 Python 的 `None`。
 
-当前默认返回示例结果，供前端先接入表格和曲线：
+只提取用户选择的 step。真实模式对每个节点和变量取该 step 返回的最大 `stateId`；相同 step、节点和变量在单次请求内复用结果。未选择的位置仿真值为 null，试验读数保留。选择关系由每次请求传入，不在数据库中持久化。
+
+### 示例模式：先取表头，再取指定测点曲线
+
+当前默认示例模式，不访问 MySQL 或数巧。示例可在 [simright_load_level_comparison.json](../../tools/examples/simright_load_level_comparison.json) 中修改。
+文件中的“上xx、下xx”属于动态加载信息，与测点 `310004a`、`310005a` 分开保存；示例有效记录数为 4。
+
+首次请求：
 
 ```json
 {"project_id": 2026101601}
 ```
 
-也可显式写为 `{"project_id": 2026101601, "example_mode": true}`。
+返回完整成功信封示例（示例来源字段和 summary 等也保留）：
 
-`example_mode` 默认 true，此时不访问 MySQL、试验 TXT 或数巧服务。
-响应 `data.is_example=true`、`data.data_source="example"`，包含示例表格、step 下拉框和四条对比曲线。
-外层仍是 `{ok,code,message,data}`，曲线仍位于 `data.curves`。
-示例内容集中在 [tools/examples/simright_load_level_comparison.json](../../tools/examples/simright_load_level_comparison.json)，可直接修改。
-返回时只将 `project_id` 替换为请求值，并固定标记示例来源；其他查询参数不参与示例计算，也不写入数据库。
+```json
+{
+  "ok": true,
+  "code": 200,
+  "message": "数巧加载级试验对比示例获取成功",
+  "data": {
+    "project_id": 2026101601,
+    "is_example": true,
+    "data_source": "example",
+    "axis_label": "载荷",
+    "unit": "με",
+    "import_sha256": null,
+    "record_indices": [0, 1, 2, 3],
+    "table": [
+      {"key": "axis:0", "label": "载荷", "value": [0, 1, 2, 3]},
+      {"key": "axis:1", "label": "上xx", "value": [0, 10, 20, 30]},
+      {"key": "axis:2", "label": "下xx", "value": [0, -8, -16, -24]},
+      {
+        "key": "simright_step", "label": "仿真step", "type": "select",
+        "selectOptions": [
+          {"label": "下拉1", "value": 0}, {"label": "下拉3", "value": 1},
+          {"label": "下拉5", "value": 2}, {"label": "下拉7", "value": 3}
+        ],
+        "value": [null, null, null, null]
+      }
+    ],
+    "curves": [],
+    "resolved_states": [],
+    "issues": [],
+    "summary": {"sample_count": 4, "sensor_count": 0, "curve_count": 0}
+  }
+}
+```
 
-后续需要启用真实查询时显式传入 `example_mode=false`。以下参数及响应示例均描述真实查询分支。
+用户选择 step 后调用同一接口：
 
-真实查询调用顺序：先通过 `/import/test_load_level` 导入该 `project_id` 的试验 TXT，再调用本接口获取表格和 step 选项，最后携带测点绑定及 step 选择再次调用本接口获取对比结果。每次真实查询都需要传入 `example_mode: false`；省略会回到示例模式。
+```json
+{
+  "project_id": 2026101601,
+  "sensors": [{"name": "310004a"}, {"name": "310005a"}],
+  "steps": [0, null, 2, 3]
+}
+```
 
-初次请求仅获取 TXT 动态表头、试验曲线和数巧 step 下拉选项：
+此时 `data.table` 仍只包含动态加载信息列和 step 下拉列。测点的试验、仿真读数统一放在 `data.curves`，不再以 `test:*` 或 `simulation:*` 列重复返回。本次选择两个测点，因此返回四条曲线。下面展示其中一个测点对应的两条曲线：
+
+```json
+[
+  {
+    "label": "310004a-试验",
+    "xaxis": ["0", "1", "2", "3"],
+    "data": [["0", 0], ["1", 10], ["2", 20], ["3", 30]]
+  },
+  {
+    "label": "310004a-仿真",
+    "xaxis": ["0", "1", "2", "3"],
+    "data": [["0", 0], ["1", null], ["2", 19.5], ["3", 29.5]]
+  }
+]
+```
+
+示例模式也会校验名称、steps 长度和 step ID，并根据用户选择提取示例值；不会随意给未知测点生成假曲线。示例仿真数组按 step 选项顺序提供数值，所有示例 step 必须有对应值。
+
+### 真实模式与服务端项目配置
+
+真实模式先通过 `/import/test_load_level` 导入 TXT，再调用本接口。每次真实请求都需要 `example_mode: false`。
 
 ```json
 {
   "project_id": 2026101601,
   "example_mode": false,
-  "simright_base_url": "http://simright-server:8080",
-  "filename": "project/model.rdb",
-  "profile": "markdown"
+  "sensors": [{"name": "310004a"}],
+  "steps": [42, null, 91]
 }
 ```
 
-`filename` 是数巧部署中的 RDB 相对路径或模型标识，不是本服务的 ODB 本地文件路径。
-`profile` 支持 `markdown` 和 `excel`，分别使用现有客户端的两种接口地址及文件参数名。
+这里假设真实 TXT 有 3 条有效记录；实际长度应按首次响应的 `record_indices` 确定。首次只获取表头时省略 `sensors`、`steps` 即可。
 
-前端选择加载记录对应的 step 后再次请求同一接口：
+模型标识不再由对比请求传入。使用现有 `POST /project/config` 配置，保存到 `t_mt_py_project_config.extra_json.simright`：
 
 ```json
 {
   "project_id": 2026101601,
-  "example_mode": false,
-  "simright_base_url": "http://simright-server:8080",
-  "filename": "project/model.rdb",
-  "sensors": [{
-    "name": "310004a",
-    "node_id": 123,
-    "part_id": 5,
-    "part_ori_id": 4,
-    "quantity": "scalar",
-    "var_name": "E.EL.11",
-    "simulation_scale": 1000000
-  }],
-  "step_mapping": [
-    {"sample_index": 0, "loadcase_id": 42},
-    {"sample_index": 1, "loadcase_id": 91, "state_id": 2}
-  ]
+  "extra_json": {
+    "simright": {
+      "base_url": "http://simright-server:8080",
+      "filename": "project/model.rdb",
+      "instance_parts": {
+        "PART-1-1": {"part_id": 5, "part_ori_id": 4}
+      },
+      "sensor_bindings": {
+        "310004a": {
+          "quantity": "scalar",
+          "var_name": "E.EL.11",
+          "simulation_scale": 1000000
+        }
+      }
+    }
+  }
 }
 ```
 
-示例节点和 step ID 仅展示协议，必须使用实际模型中的 ID。
-示例地址和 `filename` 也必须替换为数巧部署中的实际值，不能直接照抄调用。
+配置示例需替换为实际地址、数巧模型标识、实例、零件及变量名。更新 `simright` 时应提交该块完整配置，项目配置合并规则不会递归合并其内部字段。
 
-- 每条 `step_mapping` 对应一个试验**记录序号**，不使用加载值作为唯一标识。
-- `loadcase_id` 取返回的 `selectOptions[].value`，不是工况数组索引。后端会将其转换为文档要求的 `loadcaseIndex`。
-- 省略 `state_id` 时通过 `nodeInfo` 获取该变量全部帧，选择返回记录中最大的 `stateId`；指定时严格取该帧。响应 `resolved_states` 返回实际选择。
-- `sensors` 是 TXT 名称与数巧节点的明确绑定，不能将 ODB 的 instance 名称直接当作数巧 part ID。`part_id` 是内部 ID，`part_ori_id` 是零件过滤需要的 oriId，二者不能互换。未提供 part ID 时，重复节点结果会报歧义。
-- 标量变量名由数巧部署配置决定，`var_name` 不限制为示例值。
-- 读数不自动换单位。`simulation_scale` 可显式转换，例如应变转微应变用 `1000000`。如不传则为 `1`，调用方需确保试验和仿真单位一致。
-- `axis_label` 可在本次对比时切换为 TXT 的其他加载信息行。
-- 选择关系通过请求传入，本接口不会持久化前端的 step 选择。重新导入 TXT 后应刷新表格再选择。
-- 可将初次返回的 `import_sha256` 原样带回对比请求，文件已变化时返回原始状态为 409 的业务错误，防止旧的记录选择应用到新文件。
+- 按 `project_id + name` 查询 `t_mt_py_fem_node_match`，使用 `fem_node_label`；实例通过 `instance_parts` 映射到数巧零件，不能直接把实例名当作 part ID。
+- `sensor_bindings` 配置每个测点的结果变量、投影与单位换算；也允许在服务端明确配置 `node_id`、`part_id`、`part_ori_id`，适用于数巧节点编号与本地模型不同的情况。显式节点配置优先。
+- `part_id` 是内部 ID，`part_ori_id` 是过滤用的 oriId；配置 oriId 时必须同时配置内部 ID。未配置零件时，仅在结果中的节点没有零件歧义时允许返回。
+- 标量查询需要 `quantity=scalar` 和 `var_name`。张量查询配置 `quantity=stress/strain`、全局 `direction`；应变还需要 `shear_convention=tensor/engineering`。`component_vars` 可映射六分量，默认使用 `S.EL.*` / `E.EL.*`。
+- `simulation_scale` 默认 1，不自动换算单位。试验与仿真单位必须一致，例如应变转微应变可以配置 1000000。
+- 缺少模型配置、匹配或变量设置时明确报错；全部未选 step 时不查询节点结果或解析节点绑定。
 
-响应沿用现有成功/错误信封，以下为 `data` 的结构示意：
+### 响应与错误约定
 
-```json
-{
-  "project_id": 2026101601,
-  "axis_label": "级别",
-  "unit": "με",
-  "import_sha256": "文件摘要",
-  "record_indices": [0, 1, 2],
-  "table": [
-    {"key": "axis:0", "label": "级别", "value": [0, 1, 0]},
-    {"key": "axis:1", "label": "系数", "value": [0, 0.5, 0]},
-    {"key": "test:310004a", "label": "310004a", "value": [0, 10, 1]},
-    {
-      "key": "simright_step", "label": "仿真step", "type": "select",
-      "selectOptions": [{"label": "Step-1", "value": 42}],
-      "value": [null, 42, null]
-    },
-    {"key": "simulation:310004a", "label": "310004a-仿真", "value": [null, 9.8, null]}
-  ],
-  "curves": [
-    {"label": "310004a-试验", "xaxis": ["0", "1", "0"], "data": [["0", 0], ["1", 10], ["0", 1]]},
-    {"label": "310004a-仿真", "xaxis": ["0", "1", "0"], "data": [["0", null], ["1", 9.8], ["0", null]]}
-  ],
-  "resolved_states": [{"sensor": "310004a", "sample_index": 1, "loadcase_id": 42, "part_id": 5, "state_id": 7}],
-  "issues": [],
-  "summary": {"sample_count": 3, "sensor_count": 1, "curve_count": 2}
-}
-```
+曲线格式仍为 `{label, xaxis, data:[[x,y],...]}`，放在 `data.curves`。`table` 每个对象表示一列，所有 `value[i]` 对应同一条试验记录，加载信息列数量不固定。
+`summary.sensor_count` 是本次返回的测点数；不传 sensors 时为 0。每个选定测点返回两条曲线，即使仿真值全部为 null。
+未选择 step 不产生 issue；选择后单点提取失败会保留试验值、将仿真值设为 null，并在 `issues` 中记录测点、记录序号与原因。成功提取的零件和帧保存在 `resolved_states`。数巧工况请求整体失败时返回错误。
 
-表头是所有 `axis_rows` 和所有 TXT 测点的动态结果，不固定为“上xx、下xx”。指定 `sensors` 时对比曲线仅包含选定测点，初次未绑定节点时返回全部试验曲线。
-未选择 step 或提取失败的仿真点为 `null`，不会补零。错误位置和原因在 `issues`，试验结果仍保留。无法获取工况列表时返回原始状态为 502 的业务错误。
-
-## 张量投影
-
-节点绑定可设置 `quantity: "stress"` 或 `"strain"`，并提供全局 `direction`。
-应变还必须指定 `shear_convention: "tensor"` 或 `"engineering"`。
-默认变量为 `S.EL.11/22/33/12/13/23` 或 `E.EL.11/22/33/12/13/23`，实际部署命名不同可用 `component_vars` 显式映射六分量。
-
-六次请求使用相同工况、帧、全局坐标系、壳层和平均选项，严格检查零件及帧身份相同后计算方向投影。
-固定使用 `coordSystemId=global`、`coordSystemType=1`、`nodeAverage=1`、`avgMethod=simple`、`avgRegion=part`、`avgOrder=pre`、`useCornerData=0`；`shell_layer` 默认 `bottom`，可显式指定。
-节点返回多个角点/层值时不自行取平均，记录错误等待确认服务端数值语义。数巧与 Abaqus 的平均规则是否完全一致仍需真实模型对照。
-
-## 验证
-
-```powershell
-python -m pytest tests/test_simright_load_level_comparison.py tests/test_sensor_curve.py tools/simright/tests/test_simright.py -q
-$env:RUN_LOAD_LEVEL_MYSQL_TEST='1'
-python -m pytest tests/test_load_level_live.py -q
-```
-
-后者使用配置的 MySQL 与本机临时 HTTP 服务，验证真实下载、SQL 存储、元数据合并、重复加载值和数巧请求协议。测试读数在事务末回滚，数据库结构迁移保留。数巧 HTTP 响应在测试服务中模拟，不等同于真实数巧部署联调。
+请求中的旧 `filename`、`step_mapping` 或 sensors 内的 `node_id` 等额外字段会触发请求模型校验错误（HTTP 422）。服务业务错误沿用本文开头说明的 HTTP 500/业务码 500 信封，原始状态保存在 `error.details.original_status_code`。真实数巧服务尚未联调。

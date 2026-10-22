@@ -13,11 +13,16 @@ class ImportTestLoadLevelRequest(BaseModel):
     ignore_last_reading: bool = True
 
 
-class LoadLevelStepSelection(BaseModel):
+class SimrightSensorName(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sample_index: int = Field(ge=0)
-    loadcase_id: Union[int, str]
-    state_id: Optional[int] = Field(default=None, ge=0)
+    name: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_name(self):
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("测点名称不能为空")
+        return self
 
 
 class SimrightSensorBinding(BaseModel):
@@ -59,24 +64,16 @@ class SimrightLoadLevelComparisonRequest(BaseModel):
     project_id: int = Field(gt=0, le=9223372036854775807)
     example_mode: bool = True
     simright_base_url: Optional[HttpUrl] = None
-    filename: Optional[str] = Field(default=None, min_length=1)
     profile: Literal["markdown", "excel"] = "markdown"
     axis_label: Optional[str] = None
-    sensors: List[SimrightSensorBinding] = Field(default_factory=list)
-    step_mapping: List[LoadLevelStepSelection] = Field(default_factory=list)
+    sensors: Optional[List[SimrightSensorName]] = None
+    steps: Optional[List[Union[int, str, None]]] = None
     shell_layer: str = "bottom"
     import_sha256: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_mapping(self):
-        if self.example_mode:
-            return self
-        if self.simright_base_url is None or self.filename is None:
-            raise ValueError("真实查询需要 simright_base_url 和 filename")
-        if len({item.name for item in self.sensors}) != len(self.sensors):
+        sensors = self.sensors or []
+        if len({item.name for item in sensors}) != len(sensors):
             raise ValueError("测点名称不能重复")
-        if len({item.sample_index for item in self.step_mapping}) != len(self.step_mapping):
-            raise ValueError("同一试验记录只能选择一个仿真 step")
-        if self.step_mapping and not self.sensors:
-            raise ValueError("获取仿真对比结果需要 sensors 节点绑定")
         return self

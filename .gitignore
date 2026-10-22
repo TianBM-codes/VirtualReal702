@@ -72,3 +72,4 @@ offline_packages/
 !docs/simright/*.json
 !docs/simright/examples/*.json
 !tools/simright/requirements*.txt
+!tools/examples/simright_load_level_comparison.json

@@ -131,82 +131,113 @@ def comparison(monkeypatch):
     meta = {"axis_label": "Level", "axis_rows": [
         {"label": "Level", "value": [0, 1, 0]}, {"label": "Factor", "value": [0, .5, 0]}],
         "sensor_names": ["UP", "DOWN"], "sample_count": 3, "unit": "mm", "sha256": "abc"}
-    monkeypatch.setattr(service, "load_test_data", lambda project_id: (meta, {"UP": [0, 1, .1], "DOWN": [0, -1, -.1]}))
+    monkeypatch.setattr(service, "load_test_data", lambda pid: (meta, {"UP": [0, 1, .1], "DOWN": [0, -1, -.1]}))
+    config = {"filename": "model.rdb", "base_url": "http://simright", "sensor_bindings": {
+        "UP": dict(node_id=10, part_id=5, quantity="scalar", var_name="D.N.X", simulation_scale=2)}}
+    monkeypatch.setattr(service, "get_project_config", lambda pid: {"extra_json": {"simright": config}})
+    connection = Connection()
+    connection.q.fetchall = lambda: [{"instance_name": "PART-1", "fem_node_label": 10}]
+    monkeypatch.setattr(service, "get_connection", lambda: connection)
     calls = []
 
     class Client:
         def __init__(self, *args, **kwargs):
             pass
-
         def __enter__(self):
             return self
-
         def __exit__(self, *args):
             pass
-
         def loadcases(self, filename):
+            assert filename == "model.rdb"
             return {"value": [{"id": 42, "name": "Step-A"}, {"id": 91, "name": "Step-B"}]}
-
         def node_info(self, filename, nodes, variable, **options):
             calls.append((variable, options))
-            assert options["loadcaseIndex"] in (0, 1)  # IDs 42/91 are NOT indices.
-            states = options["stateIds"] or [2, 7]
+            assert options["loadcaseIndex"] in (0, 1)
+            assert options["stateIds"] == []
             return [{"nodeId": nodes[0], "partId": 5, "stateId": state,
-                     "values": [float(state)]} for state in reversed(states)]
-
+                     "values": [float(state)]} for state in [7, 2]]
     monkeypatch.setattr(service, "SimRightClient", Client)
-    return meta, calls
+    return config, calls, connection
 
 
-def binding(**kwargs):
-    return dict(name="UP", node_id=10, part_id=5, quantity="scalar", var_name="D.N.X", **kwargs)
+def query(**kwargs):
+    return service.get_simright_test_load_level_comparison(7, example_mode=False, **kwargs)
 
 
-def test_initial_table_uses_all_file_headers_and_does_not_query_values(comparison):
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False)
-    assert [row["label"] for row in result["table"]] == ["Level", "Factor", "UP", "DOWN", "仿真step"]
+@pytest.mark.parametrize("sensors", [None, []])
+def test_initial_response_only_contains_axes_and_step_options(comparison, sensors):
+    result = query(sensors=sensors)
+    assert [row["key"] for row in result["table"]] == ["axis:0", "axis:1", "simright_step"]
     assert result["table"][-1]["value"] == [None] * 3
     assert result["table"][-1]["selectOptions"] == [{"label": "Step-A", "value": 42}, {"label": "Step-B", "value": 91}]
+    assert result["curves"] == [] and comparison[1] == []
+
+
+def test_selected_steps_latest_frame_nulls_and_cache(comparison):
+    result = query(sensors=[{"name": "UP"}], steps=[42, None, 42])
     assert result["curves"][0]["data"] == [["0", 0], ["1", 1], ["0", .1]]
+    assert result["curves"][-1]["data"] == [["0", 14.], ["1", None], ["0", 14.]]
+    assert all(row["state_id"] == 7 for row in result["resolved_states"])
+    assert not result["issues"] and len(comparison[1]) == 1
+    assert [row["key"] for row in result["table"]] == ["axis:0", "axis:1", "simright_step"]
+
+
+def test_no_selected_steps_does_not_resolve_nodes(comparison, monkeypatch):
+    monkeypatch.setattr(service, "_resolve_bindings", lambda *args: pytest.fail("Unexpected node lookup"))
+    result = query(sensors=[{"name": "UP"}])
+    assert all(point[1] is None for point in result["curves"][-1]["data"])
     assert comparison[1] == []
 
 
-def test_selected_step_latest_frame_and_explicit_state(comparison):
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
-        sensors=[binding(simulation_scale=2)], step_mapping=[
-            {"sample_index": 1, "loadcase_id": 42}, {"sample_index": 2, "loadcase_id": 91, "state_id": 2}])
-    assert result["curves"][-1]["data"] == [["0", None], ["1", 14.], ["0", 4.]]
-    assert [state["state_id"] for state in result["resolved_states"]] == [7, 2]
-    assert not result["issues"]
+@pytest.mark.parametrize("steps", [[42], [], [None, 0, None]])
+def test_invalid_steps_rejected(comparison, steps):
+    with pytest.raises(ValidationError):
+        query(sensors=[{"name": "UP"}], steps=steps)
 
 
-def test_tensor_projection(comparison):
-    tensor = dict(name="UP", node_id=10, part_id=5, quantity="stress", direction=[1, 0, 0])
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
-        sensors=[tensor], step_mapping=[{"sample_index": 0, "loadcase_id": 42}])
+def test_unknown_sensor_rejected(comparison):
+    with pytest.raises(ValidationError):
+        query(sensors=[{"name": "UNKNOWN"}])
+
+
+def test_stale_import_rejected(comparison):
+    with pytest.raises(AppError) as exc:
+        query(import_sha256="old")
+    assert exc.value.status_code == 409
+
+
+def test_saved_node_match_and_server_side_part_config(comparison):
+    config, calls, connection = comparison
+    config["sensor_bindings"]["UP"].pop("node_id")
+    config["instance_parts"] = {"PART-1": {"part_id": 5, "part_ori_id": 4}}
+    query(sensors=[{"name": "UP"}], steps=[42, None, None])
+    assert connection.q.executed[0][1] == (7, "UP")
+    assert calls[0][1]["entitiesIds"] == [4]
+
+
+def test_missing_match_or_result_config_rejected(comparison):
+    config, calls, connection = comparison
+    config["sensor_bindings"] = {}
+    with pytest.raises(ValidationError):
+        query(sensors=[{"name": "UP"}], steps=[42, None, None])
+    connection.q.fetchall = lambda: []
+    with pytest.raises(ValidationError):
+        query(sensors=[{"name": "UP"}], steps=[42, None, None])
+
+
+def test_server_side_tensor_projection(comparison):
+    comparison[0]["sensor_bindings"]["UP"] = dict(node_id=10, part_id=5, quantity="stress", direction=[1, 0, 0])
+    result = query(sensors=[{"name": "UP"}], steps=[42, None, None])
     assert result["curves"][-1]["data"][0] == ["0", 7.]
     assert len(comparison[1]) == 6
 
 
-def test_invalid_step_is_not_silently_mapped_to_index(comparison):
-    with pytest.raises(ValidationError):
-        service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
-            sensors=[binding()], step_mapping=[{"sample_index": 0, "loadcase_id": 0}])
-
-
-def test_stale_import_mapping_is_rejected(comparison):
-    with pytest.raises(AppError) as exc:
-        service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False, import_sha256="old")
-    assert exc.value.status_code == 409
-
-
 def test_tensor_components_cannot_mix_frames(comparison, monkeypatch):
+    comparison[0]["sensor_bindings"]["UP"] = dict(node_id=10, part_id=5, quantity="stress", direction=[1, 0, 0])
     def node_info(client, filename, nodes, variable, **options):
         return [{"nodeId": 10, "partId": 5, "stateId": 2 if variable.endswith("12") else 7, "values": [1.]}]
     monkeypatch.setattr(service.SimRightClient, "node_info", node_info)
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
-        sensors=[dict(name="UP", node_id=10, part_id=5, quantity="stress", direction=[1, 0, 0])],
-        step_mapping=[{"sample_index": 0, "loadcase_id": 42}])
+    result = query(sensors=[{"name": "UP"}], steps=[42, None, None])
     assert result["curves"][-1]["data"][0][1] is None
     assert "identities" in result["issues"][0]["message"]
 
@@ -214,8 +245,7 @@ def test_tensor_components_cannot_mix_frames(comparison, monkeypatch):
 def test_ambiguous_corner_values_return_null_and_issue(comparison, monkeypatch):
     monkeypatch.setattr(service.SimRightClient, "node_info", lambda *args, **kwargs:
         [{"nodeId": 10, "partId": 5, "stateId": 7, "values": [1, 2]}])
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
-        sensors=[binding()], step_mapping=[{"sample_index": 0, "loadcase_id": 42}])
+    result = query(sensors=[{"name": "UP"}], steps=[42, None, None])
     assert result["curves"][-1]["data"][0] == ["0", None]
     assert result["issues"] and not result["resolved_states"]
 
@@ -225,65 +255,61 @@ def test_vendor_failure_produces_502(comparison, monkeypatch):
         raise service.SimRightError("offline")
     monkeypatch.setattr(service.SimRightClient, "loadcases", fail)
     with pytest.raises(AppError) as exc:
-        service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False)
+        query()
     assert exc.value.status_code == 502
 
 
-def test_routes_and_validation(monkeypatch):
-    from fastapi import FastAPI
-    from webapi.routers import test_data
+def test_missing_project_connection_config(comparison):
+    comparison[0].clear()
+    with pytest.raises(ValidationError):
+        query()
 
-    async def no_log(*args):
-        pass
-    monkeypatch.setattr(test_data, "log_request", no_log)
-    monkeypatch.setattr(test_data, "import_test_load_level", lambda **kwargs: kwargs)
-    monkeypatch.setattr(test_data, "get_simright_test_load_level_comparison", lambda **kwargs: {"table": [], "curves": []})
-    app = FastAPI()
-    app.include_router(test_data.router)
-    assert "/get/simright_test_load_level_comparison" in app.openapi()["paths"]
-    body = ImportTestLoadLevelRequest(project_id=7, file_path="http://test/file.txt")
-    assert asyncio.run(test_data.import_test_load_level_api(object(), body))["data"]["ignore_last_reading"] is True
-    body = SimrightLoadLevelComparisonRequest(project_id=7, simright_base_url="http://simright", filename="model")
-    assert asyncio.run(test_data.get_simright_test_load_level_comparison_api(object(), body))["data"]["curves"] == []
+
+@pytest.mark.parametrize("extra", [
+    {"filename": "model"}, {"step_mapping": []},
+    {"sensors": [{"name": "UP", "node_id": 10}]},
+    {"sensors": [{"name": "UP"}, {"name": " UP "}]},
+    {"sensors": [{"name": " "}]}])
+def test_removed_fields_and_invalid_names_rejected(extra):
     with pytest.raises(ValueError):
-        SimrightLoadLevelComparisonRequest(project_id=7, example_mode=False, simright_base_url="http://simright", filename="model",
-            step_mapping=[{"sample_index": 1, "loadcase_id": 42}])
+        SimrightLoadLevelComparisonRequest(project_id=7, **extra)
 
 
-def test_example_mode_needs_no_database_or_simright(monkeypatch):
+def test_example_mode_header_and_filtered_curves_without_external_data(monkeypatch):
     def unexpected(*args, **kwargs):
         raise AssertionError("Example mode must not query external data")
+    monkeypatch.setattr(service, "get_project_config", unexpected)
     monkeypatch.setattr(service, "load_test_data", unexpected)
     monkeypatch.setattr(service, "SimRightClient", unexpected)
-    body = SimrightLoadLevelComparisonRequest(project_id=2026101601)
-    result = service.get_simright_test_load_level_comparison(**body.model_dump())
-    assert result["project_id"] == 2026101601 and result["is_example"] is True
-    assert result["data_source"] == "example"
-    count = result["summary"]["sample_count"]
-    assert result["record_indices"] == list(range(count))
-    assert all(len(column["value"]) == count for column in result["table"])
-    assert len(result["curves"]) == result["summary"]["curve_count"]
-    for curve in result["curves"]:
-        assert set(curve) == {"label", "xaxis", "data"}
-        assert curve["xaxis"] == [point[0] for point in curve["data"]]
-        assert len(curve["data"]) == count
-    result["curves"][0]["data"].clear()
-    assert service.get_simright_test_load_level_comparison(123)["curves"][0]["data"]
-
-
-def test_real_mode_still_requires_connection_details():
-    with pytest.raises(ValueError):
-        SimrightLoadLevelComparisonRequest(project_id=7, example_mode=False)
+    result = service.get_simright_test_load_level_comparison(7)
+    assert result["is_example"] and result["data_source"] == "example"
+    assert result["curves"] == []
+    assert [row["key"] for row in result["table"]] == ["axis:0", "axis:1", "axis:2", "simright_step"]
+    assert result["table"][-1]["value"] == [None] * 4
+    selected = service.get_simright_test_load_level_comparison(7, sensors=[{"name": "310004a"}], steps=[3, None, 1, 0])
+    assert len(selected["curves"]) == 2
+    assert [row["key"] for row in selected["table"]] == ["axis:0", "axis:1", "axis:2", "simright_step"]
+    assert selected["curves"][-1]["data"] == [["0", 29.5], ["1", None], ["2", 9.5], ["3", 0]]
+    selected["curves"][0]["data"].clear()
+    assert service.get_simright_test_load_level_comparison(7, sensors=[{"name": "310004a"}])["curves"][0]["data"]
     with pytest.raises(ValidationError):
-        service.get_simright_test_load_level_comparison(7, example_mode=False)
+        service.get_simright_test_load_level_comparison(7, sensors=[{"name": "bad"}])
 
 
-def test_example_route_returns_success_envelope_without_network(monkeypatch):
+def test_route_and_openapi(monkeypatch):
+    from fastapi import FastAPI
     from webapi.routers import test_data
     async def no_log(*args):
         pass
     monkeypatch.setattr(test_data, "log_request", no_log)
-    response = asyncio.run(test_data.get_simright_test_load_level_comparison_api(
-        object(), SimrightLoadLevelComparisonRequest(project_id=42)))
-    assert response["ok"] and response["data"]["project_id"] == 42
-    assert response["data"]["is_example"] and response["data"]["curves"]
+    app = FastAPI()
+    app.include_router(test_data.router)
+    path = "/get/simright_test_load_level_comparison"
+    schema = app.openapi()["components"]["schemas"]["SimrightLoadLevelComparisonRequest"]["properties"]
+    assert "filename" not in schema and "step_mapping" not in schema and "steps" in schema
+    body = SimrightLoadLevelComparisonRequest(project_id=42)
+    response = asyncio.run(test_data.get_simright_test_load_level_comparison_api(object(), body))
+    assert response["data"]["curves"] == []
+    body = SimrightLoadLevelComparisonRequest(project_id=42, sensors=[{"name": "310004a"}], steps=[0, None, 2, 3])
+    response = asyncio.run(test_data.get_simright_test_load_level_comparison_api(object(), body))
+    assert response["ok"] and len(response["data"]["curves"]) == 2
