@@ -207,6 +207,7 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 `raw-values` 带 result_group 一律 404（已修，见接口文档 2026-10-22 第三轮）。完整结果待在开发者本机跑 `--full`。
 
 遗留问题：
+- 导入在缓存准备阶段中断（重启/崩溃）会从 L1 整条重跑、L2 清空缓存；准备出错没有单独重试入口。断点续做方案见 `Pipeline-Resume-Design.md`，2026-10-22 决定暂不实施。
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - ~~STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms~~：原因是 L3 的云图/范围/着色只认 NODAL、ELEMENT_NODAL、INTEGRATION_POINT，STATUS 只有 WHOLE_ELEMENT 块，每次都判为无数据、返回空 payload（灰色），空结果不缓存。2026-10-22 起按单元着色（`WHOLE_ELEMENT_FLAT`，与积分点 flat 同一读取函数），结果进缓存、全量计划自动覆盖；含 WHOLE_ELEMENT 块的结果文件缓存键加 `("we", …)`，旧的“无范围”缓存不再命中，其他文件键不变。测试 `tests/test_l3_whole_element_field.py`。
 - 仍存在：任何字段在某实例上真的没有数据时（如 CPRESS 在 DAO-1），每次请求仍会重新判定一遍（DAO-1 约 30 ms），未做“无数据”缓存。

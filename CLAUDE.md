@@ -260,6 +260,7 @@ uvicorn src.modal_service.main:app --reload --port 8001
 | `docs/l3/Binary-Payload-Spec.md` | Binary envelope protocol for large array responses |
 | `docs/l3/L3-Render-Assembly-Design.md` | How L3 assembles render buffers from L1/L2 data |
 | `docs/l3/L3-Module-Boundary.md` | Router/Service/Repository responsibility separation |
+| `docs/l3/Pipeline-Resume-Design.md` | 导入流水线断点续做（缓存准备中断后不重跑 L1/L2）设计备忘，未实施 |
 | `docs/l1/abaqus_dump_guide.md` | Practical guide for running L1 extraction |
 | `docs/Special-Element-Handling.md` | 特殊单元（耦合/连接器/质量/弹簧）在 ODB/INP 两路径的解析与显示约定 |
 | `docs/维护注意事项.md` | 运维/数据修复的坑与工具（result_blocks 修复、结果路径解析约定等） |
