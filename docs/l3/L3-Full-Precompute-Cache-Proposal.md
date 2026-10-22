@@ -316,7 +316,18 @@ region-mesh-edges、legend-entries、modal-animation、pick 全部 OK。剩余�
 **待开发者验证**：跑 `test_l3_color_views_cache.py`、`test_l3_region_edges_route.py`、`test_l3_color_code_cache.py`、
 `test_color_elset_prefix.py`、`test_color_legend_save_route.py`、`test_pipeline_readiness.py`、`test_l3_warmup_scheduling.py`、
 `test_l3_disk_cache_warmup.py`；重启服务后对 `202610221440` 手动 `POST /results/warmup` 补算（或重新导入，看“几何显示缓存完成”日志的
-条目数与秒数），再跑 `--full` 探测：上述四个接口第二次应全部 `X-Cache: hit` 且远低于原耗时。
+条目数与秒数），再跑 `--full` 探测：上述四个接口第二次应全部 `X-Cache: hit` 且远低于原耗时（已验证，见下方复测）。
+
+**复测（2026-10-23 凌晨，`dde76cd`，`probe_202610221440_20261023_011643`）**：服务重启后手动 warmup，日志
+`color views {'color_code': 20, 'legend_entries': 20, 'region_mesh_edges': 97, 'region_outline': 97, 'skipped': 0, 'seconds': 86.0}`
+（82 个方案区域 + 15 个集合区域；结果计划 376 项已在盘上，整个 warmup 128 s）。探测（再次请求中位数 / 最大值，ms）：
+region-mesh-edges 140/10116 → 9/65、region-outline 49/2606 → 8/16、color-code 576/674 → 55/87、legend-entries 首次 2692/8441 → 10/26，
+四项全部 `X-Cache: hit`。
+- 新暴露：`color-code/{instance}/legend`（viewer 调用）单元集合首次约 1.4～1.6 s。原因是单元集合分类只进内存，以前着色包现算时
+  顺带算好了分类，图例跟着命中；着色包改为直接命中后分类没人算。已改为图例与着色包同 key 存盘（`key + ("legend",)`），
+  `warm_color_views` 增加 `legend` 一类。
+- 探测工具仍在静力步请求 modal-animation：`meta/overview` 不带 `result_group` 时不列 step，工具拿不到 procedure，已改为按结果组取。
+- 其余与上次一致：pick 约 0.2～0.36 s/次、render-buffers(-chunked) 0.25～1 s、frame-scalars 命中 124～234 ms（39 MB 下限）。
 
 ## 1. 需求与结论
 

@@ -161,17 +161,17 @@ def region_outline(idx, instance: str, scheme: str,
 # ─── 导入时预热 ───────────────────────────────────────────────────────────────
 
 def warm_color_views(idx, strict: bool = False) -> dict:
-    """预计算每个实例 × 着色方案（含每个单元集合单选）的着色包与图例条目，
+    """预计算每个实例 × 着色方案（含每个单元集合单选）的着色包、图例与图例条目，
     以及每个区域的单元边线 / 外轮廓。已在磁盘上的大条目只检查存在、不重读。
 
     请求本身就会报参数错误的组合（ValidationError / NotFoundError，例如集合
     在 L1 中查不到）记为跳过，与接口行为一致；其他异常 strict 时抛出。
     多选单元集合的任意组合不穷举，首次请求时计算并缓存。
-    返回 {"color_code", "legend_entries", "region_mesh_edges", "region_outline",
+    返回 {"color_code", "legend", "legend_entries", "region_mesh_edges", "region_outline",
           "skipped", "seconds"}。
     """
     t0 = time.time()
-    stats = {"color_code": 0, "legend_entries": 0, "region_mesh_edges": 0,
+    stats = {"color_code": 0, "legend": 0, "legend_entries": 0, "region_mesh_edges": 0,
              "region_outline": 0, "skipped": 0}
     ws = idx.workspace
 
@@ -222,6 +222,7 @@ def warm_color_views(idx, strict: bool = False) -> dict:
         for scheme, sets in combos:
             _run("color_code", color_service.color_code_payload_key(idx, inst, scheme, sets),
                  color_service.color_code_payload, idx, inst, scheme, sets)
+            _run("legend", None, color_service.get_legend, idx, inst, scheme, sets)
             _run("legend_entries", None, color_service.get_legend_entries, idx, inst, scheme, sets)
             if scheme == "elset":
                 owner, _ = color_service._split_instance_prefix(sets[0], known)

@@ -127,8 +127,11 @@ class Catalog:
                 self.groups[g["result_group"]] = list(g.get("steps") or [])
         ov = _data(base, f"{odb}/meta/overview") or {}
         self.instances = [i["instance_name"] for i in ov.get("instances") or []]
-        self.procedures = {s.get("step_name"): (s.get("procedure") or "").upper()
-                           for s in ov.get("steps") or []}
+        self.procedures = {}                    # step -> procedure（overview 不带 result_group 时不列 step）
+        for rg in self.groups:
+            ov_rg = _data(base, f"{odb}/meta/overview", {"result_group": rg}) or {}
+            for s in ov_rg.get("steps") or []:
+                self.procedures.setdefault(s.get("step_name"), (s.get("procedure") or "").upper())
         self.bbox_center = {}
         for i in ov.get("instances") or []:
             lo, hi = i.get("bbox_min"), i.get("bbox_max")

@@ -416,6 +416,7 @@ def color_code_payload(
     legend_bytes = np.frombuffer(json.dumps(legend).encode("utf-8"), dtype=np.uint8)
     payload = l3be_build([("color_per_vertex", colors), ("legend", legend_bytes)])
     if key is not None:
+        cache_store.json_put(idx.workspace, cache_store.MODEL_BUCKET, key + ("legend",), legend)
         cache_store.payload_put(idx.workspace, cache_store.MODEL_BUCKET, key, payload)
     return payload, False
 
@@ -446,9 +447,18 @@ def get_legend(
             {"instance": instance},
         )
 
+    # 图例只依赖几何与改色/改名，与着色包同 key 存盘：单元集合的分类只进内存，
+    # 着色包命中后不再顺带算出分类，图例单独现算要 1.5 s 左右（1440w）
+    key = color_code_payload_key(idx, instance, scheme, set_names)
+    if key is not None:
+        hit = cache_store.json_get(idx.workspace, cache_store.MODEL_BUCKET, key + ("legend",))
+        if hit is not cache_store.MISS:
+            return hit
     _, legend = _compute_labels_and_legend(
         idx, instance, scheme, set_names, etype_arr, elem_row_arr
     )
+    if key is not None:
+        cache_store.json_put(idx.workspace, cache_store.MODEL_BUCKET, key + ("legend",), legend)
     return legend
 
 

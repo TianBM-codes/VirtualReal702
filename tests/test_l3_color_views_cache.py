@@ -164,6 +164,23 @@ def test_color_code_errors_unchanged(tmp_path):
         C.color_code_payload(idx, INST, "elset", ["PA-1.NOSUCHSET"])
 
 
+@pytest.mark.parametrize("scheme,sets", [("material", None), ("elset", ["PA-1.SETA"])])
+def test_legend_cached_with_color_payload(tmp_path, monkeypatch, scheme, sets):
+    """着色包命中后图例也不再现算分类（单元集合分类只进内存）；改色后图例跟着变。"""
+    idx = _build(tmp_path)
+    ref = _uncached(monkeypatch, C.get_legend, idx, INST, scheme, sets)
+    C.color_code_payload(idx, INST, scheme, sets)
+    cache_store.clear_memory()
+    with monkeypatch.context() as m:
+        m.setattr(h5py, "File", _boom)
+        assert C.get_legend(idx, INST, scheme, sets) == ref
+    ManifestRepo(idx.workspace).set_legend_overrides(INST, scheme, [
+        {"legend_key": ref[0]["legend_key"], "display_name": "改名",
+         "color_r": 1.0, "color_g": 0.0, "color_b": 0.0},
+    ])
+    assert C.get_legend(idx, INST, scheme, sets)[0]["name"] == "改名"
+
+
 # ─── legend-entries ───────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("scheme,sets", [
@@ -261,7 +278,8 @@ def test_warm_color_views_covers_viewer_requests(tmp_path, monkeypatch):
     stats = R.warm_color_views(idx, strict=True)
     schemes = [s for s in C.get_schemes(idx, INST)["schemes"] if s != "elset"]
     elsets = C.get_all_schemes(idx)["elsets"]
-    assert stats["color_code"] == stats["legend_entries"] == len(schemes) + len(elsets)
+    assert stats["color_code"] == stats["legend"] == stats["legend_entries"] \
+        == len(schemes) + len(elsets)
     assert stats["region_mesh_edges"] == stats["region_outline"] > 0
     assert stats["skipped"] == 0
 
@@ -270,6 +288,7 @@ def test_warm_color_views_covers_viewer_requests(tmp_path, monkeypatch):
     monkeypatch.setattr(h5py, "File", _boom)
     for scheme, sets in [(s, None) for s in schemes] + [("elset", [e]) for e in elsets]:
         assert C.color_code_payload(idx, INST, scheme, sets)[1] is True
+        C.get_legend(idx, INST, scheme, sets)
         C.get_legend_entries(idx, INST, scheme, sets)
     for region in ("Steel", "Alu"):
         assert R.region_mesh_edges(idx, INST, "material", region)[2] is True
