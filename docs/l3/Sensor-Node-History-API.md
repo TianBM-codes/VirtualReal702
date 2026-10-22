@@ -61,7 +61,8 @@ ODB 只读打开，提取在独立 Abaqus Python 进程及服务器线程池执�
 ```
 
 `sensor` 是传感器名称，查询限定工程，只读新表 `t_mt_py_test_load_level_data`。
-每个传感器返回一条曲线，横坐标为加载级，按数值升序排列，纵坐标为实测值。
+每个传感器返回一条曲线，横坐标为加载级，纵坐标为实测值。旧 CSV 数据按加载值排序；
+TXT 导入数据按原始记录序号排列，横轴来自 `extra_json.test_load_level_import.axis_rows`，保留重复值和卸载顺序。
 不要求先创建节点匹配关系，不进行方向投影、单位变换或数据插值。
 
 响应曲线同样只含 `data/label/xaxis` 三个字段：
@@ -96,12 +97,15 @@ ODB 只读打开，提取在独立 Abaqus Python 进程及服务器线程池执�
 | project_id | 工程 ID，BIGINT |
 | sensor | 传感器名称 |
 | load_level | 加载级，非负数，最多 8 位小数 |
+| sample_index | TXT 原始记录序号，从 0 开始；旧 CSV 记录为空 |
+| legacy_load_level | 兼容 CSV 唯一键的自动生成列，无需填写 |
 | reading_value | 实测值，可为空 |
 | unit | 读数单位，可为空 |
 | remark | 备注，可为空 |
 | created_at / updated_at | 创建及更新时间 |
 
-`project_id + sensor + load_level` 唯一。同一传感器的曲线应使用相同单位，发现混合单位时接口报错。
+CSV 记录的 `project_id + sensor + load_level` 唯一；TXT 记录的 `project_id + sensor + sample_index` 唯一。
+同一传感器的曲线应使用相同单位，发现混合单位时接口报错。
 加载级是试验数据自己的横坐标，与有限元的 step/frame 不自动对应。
 
 CSV 使用 UTF-8 或 UTF-8 BOM，必需列 `sensor,load_level,value`，可选列 `unit,remark`。
@@ -123,6 +127,9 @@ python tools/import_test_load_levels.py --project-id 2026101601 --csv readings.c
 只更新 CSV 中指定的加载级，不清空其他数据。
 
 模板：`tools/examples/test_load_levels.csv`，其中数值仅用于演示；请替换为实际读数后导入。
+
+TXT 下载导入、动态表格与数巧对比见 [SimRight 加载级对比接口](../model_update/SimRight-Load-Level-Comparison.md)。
+TXT 导入原子替换该工程的试验数据，之后不要混入旧 CSV 行；混合格式会明确报错，避免记录错位。
 
 ## 验证
 

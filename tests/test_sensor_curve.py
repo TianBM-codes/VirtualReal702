@@ -24,6 +24,9 @@ class Cursor:
     def fetchall(self):
         return self.rows
 
+    def fetchone(self):
+        return (1,)
+
     def close(self):
         self.closed = True
 
@@ -61,7 +64,7 @@ def test_load_level_curve_format_and_project_scope(monkeypatch):
     assert result["unit"] == "mm"
     assert result["summary"] == {"curve_count": 1, "point_count": 3}
     sql, params = cursor.executed[0]
-    assert params == (7, "SG'1") and "ORDER BY load_level" in sql
+    assert params == (7, "SG'1") and "ORDER BY CASE" in sql
     assert connection.closed and cursor.closed
 
 
@@ -95,6 +98,7 @@ def test_import_validation(tmp_path, text):
 
 
 def test_csv_and_atomic_import(monkeypatch, tmp_path):
+    monkeypatch.setattr(importer, "ensure_test_load_level_schema", lambda cursor: None)
     path = tmp_path / "readings.csv"
     path.write_text("sensor,load_level,value,unit,remark\nSG1,0,0,mm,start\nSG1,1.5,,mm,missing\n", encoding="utf-8-sig")
     rows = importer.read_rows(path)
@@ -114,6 +118,7 @@ def test_csv_and_atomic_import(monkeypatch, tmp_path):
 
 
 def test_update_existing_is_explicit(monkeypatch):
+    monkeypatch.setattr(importer, "ensure_test_load_level_schema", lambda cursor: None)
     cursor = Cursor()
     monkeypatch.setattr(importer, "get_connection", lambda: Connection(cursor))
     importer.store_rows(7, [("SG1", Decimal("1"), .2, None, None)], update_existing=True)

@@ -18,13 +18,17 @@ CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL = """
         project_id BIGINT NOT NULL COMMENT '工程ID',
         sensor VARCHAR(100) NOT NULL COMMENT '传感器名称',
         load_level DECIMAL(20,8) NOT NULL COMMENT '加载级，曲线横坐标',
+        sample_index INT NULL COMMENT 'TXT原始记录序号，从0开始',
+        legacy_load_level DECIMAL(20,8) GENERATED ALWAYS AS
+            (CASE WHEN sample_index IS NULL THEN load_level ELSE NULL END) STORED,
         reading_value DOUBLE NULL COMMENT '实测值，缺失时为NULL',
         unit VARCHAR(32) NULL COMMENT '读数单位',
         remark VARCHAR(255) NULL COMMENT '备注',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
-        UNIQUE KEY uk_project_sensor_level (project_id, sensor, load_level)
+        UNIQUE KEY uk_project_sensor_level (project_id, sensor, legacy_load_level),
+        UNIQUE KEY uk_project_sensor_sample (project_id, sensor, sample_index)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='加载级试验数据表';
 """
 
@@ -1140,6 +1144,32 @@ def ensure_tables_exist():
         logger.info("MySQL schema reconciled in %.2fs", time.perf_counter() - started)
 
 
+def ensure_test_load_level_schema(cursor):
+    """Keep legacy CSV upserts while allowing repeated TXT axis values."""
+    cursor.execute(CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL)
+    for column, definition in (
+        ("sample_index", "sample_index INT NULL COMMENT 'TXT原始记录序号，从0开始'"),
+        ("legacy_load_level", "legacy_load_level DECIMAL(20,8) GENERATED ALWAYS AS "
+         "(CASE WHEN sample_index IS NULL THEN load_level ELSE NULL END) STORED"),
+    ):
+        cursor.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s "
+                       "AND TABLE_NAME=%s AND COLUMN_NAME=%s", (DB_CONFIG["database"], "t_mt_py_test_load_level_data", column))
+        if cursor.fetchone() is None:
+            cursor.execute("ALTER TABLE t_mt_py_test_load_level_data ADD COLUMN " + definition)
+    for name, columns in (
+        ("uk_project_sensor_level", ["project_id", "sensor", "legacy_load_level"]),
+        ("uk_project_sensor_sample", ["project_id", "sensor", "sample_index"]),
+    ):
+        cursor.execute("SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=%s "
+                       "AND TABLE_NAME=%s AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX",
+                       (DB_CONFIG["database"], "t_mt_py_test_load_level_data", name))
+        existing = [row["COLUMN_NAME"] if isinstance(row, dict) else row[0] for row in cursor.fetchall()]
+        if existing != columns:
+            prefix = "DROP INDEX " + name + ", " if existing else ""
+            cursor.execute("ALTER TABLE t_mt_py_test_load_level_data " + prefix +
+                           "ADD UNIQUE KEY " + name + " (" + ",".join(columns) + ")")
+
+
 def _run_schema_ddl():
     conn = get_connection()
     cursor = conn.cursor()
@@ -1201,6 +1231,7 @@ def _run_schema_ddl():
 
         for sql in CREATE_TABLE_SQL_LIST:
             cursor.execute(sql)
+        ensure_test_load_level_schema(cursor)
         # Static sensors use names such as WY4; preserve numeric IDs as text.
         cursor.execute("SHOW COLUMNS FROM t_mt_py_fem_node_pairs LIKE 'point'")
         point_column = cursor.fetchone()

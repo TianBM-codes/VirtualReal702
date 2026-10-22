@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from db import CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL, get_connection
+from db import ensure_test_load_level_schema, get_connection
 
 
 def read_rows(path):
@@ -64,7 +64,7 @@ def store_rows(project_id, rows, update_existing=False):
     connection = get_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute(CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL)
+        ensure_test_load_level_schema(cursor)
         connection.commit()
         sql = """INSERT INTO t_mt_py_test_load_level_data
             (project_id, sensor, load_level, reading_value, unit, remark)

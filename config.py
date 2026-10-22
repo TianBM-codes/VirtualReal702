@@ -58,9 +58,15 @@ DB_ENSURE_TABLES = _cfg_bool(_SERVICE_CONFIG, "DB_ENSURE_TABLES", True)
 # so the HTTP server (and the ODB viewer routes) come up even if MySQL is down.
 DB_INIT_ON_STARTUP = _cfg_bool(_SERVICE_CONFIG, "DB_INIT_ON_STARTUP", True)
 
+run_env = _cfg((_SERVICE_CONFIG), "APP_ENV", "prod")
+if run_env == "prod":
+    port = 5000
+else:
+    port = 18071
+
 APP_CONFIG = {
     "host": str(_cfg(_SERVICE_CONFIG, "APP_HOST", "0.0.0.0")),
-    "port": int(_cfg(_SERVICE_CONFIG, "APP_PORT", 18071)),
+    "port": port,
     "debug": _cfg_bool(_SERVICE_CONFIG, "APP_DEBUG", False),
 }
 

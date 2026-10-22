@@ -44,6 +44,8 @@ class TestData:
     start_datetime: Optional[datetime] = None
     ax_infors: Dict[str, List[float]] = field(default_factory=dict)
     page_records: List[int] = field(default_factory=list)
+    page_headers: List[List[str]] = field(default_factory=list)
+    page_axes: List[Dict[str, List[float]]] = field(default_factory=list)
 
 
 def detective_begin_num(table_lines: Sequence[str]) -> int:
@@ -138,6 +140,8 @@ def parse_table(part: bytes, test_data: TestData) -> None:
 
     # 对应原脚本的 table_lines[2:begin_num-1]，跳过虚线和“序号”表头。
     ax_tags = get_step_information(table_lines[2:begin_num - 1])
+    test_data.page_headers.append(table_lines[:begin_num])
+    test_data.page_axes.append(ax_tags)
     if not test_data.ax_infors:
         test_data.ax_infors = ax_tags
 

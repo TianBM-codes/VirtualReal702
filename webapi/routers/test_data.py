@@ -2,6 +2,9 @@ from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 from services.model_update.analysis.sensor_curve_service import get_sensor_curve
 from ..models import SensorCurveRequest
+from ..load_level_models import ImportTestLoadLevelRequest, SimrightLoadLevelComparisonRequest
+from services.model_update.analysis.test_load_level_service import import_test_load_level
+from services.model_update.analysis.simright_load_level_service import get_simright_test_load_level_comparison
 
 from services.model_update.analysis.test_unit_service import (
     convert_test_unit_system,
@@ -39,6 +42,32 @@ from ..models import (
 from ..utils import log_request, model_to_dict
 
 router = APIRouter(tags=["model-update"])
+
+
+@router.post("/import/test_load_level")
+async def import_test_load_level_api(request: Request, body: ImportTestLoadLevelRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = await run_in_threadpool(import_test_load_level, **model_to_dict(body))
+        return success_response(data, "加载级试验 TXT 导入成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
+
+
+@router.post("/get/simright_test_load_level_comparison")
+async def get_simright_test_load_level_comparison_api(request: Request, body: SimrightLoadLevelComparisonRequest):
+    await log_request(request, model_to_dict(body))
+    try:
+        data = await run_in_threadpool(get_simright_test_load_level_comparison, **model_to_dict(body))
+        return success_response(data, "数巧加载级试验对比获取成功")
+    except AppError as exc:
+        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
+    except Exception as exc:
+        app_exc = server_error(exc)
+        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
 @router.post("/get/sensor_load_level_curve")

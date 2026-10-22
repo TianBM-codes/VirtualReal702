@@ -342,7 +342,7 @@ async def get_modal_scale_factor_table_api(request: Request):
     try:
         body = await request.json()
         result = get_modal_scale_factor_table_payload(int(body["project_id"]))
-        return success_response(result, "MSF琛ㄦ牸鏌ヨ鎴愬姛")
+        return success_response(result, "MSF计算成功")
     except Exception as exc:
         return _legacy_error_response(exc)
 
