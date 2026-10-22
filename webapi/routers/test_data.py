@@ -62,7 +62,7 @@ async def get_simright_test_load_level_comparison_api(request: Request, body: Si
     await log_request(request, model_to_dict(body))
     try:
         data = await run_in_threadpool(get_simright_test_load_level_comparison, **model_to_dict(body))
-        return success_response(data, "数巧加载级试验对比获取成功")
+        return success_response(data, "数巧加载级试验对比示例获取成功" if data.get("is_example") else "数巧加载级试验对比获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

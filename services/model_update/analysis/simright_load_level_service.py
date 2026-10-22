@@ -1,5 +1,7 @@
 """Align explicitly selected SimRight states to ordered test records."""
 import math
+import json
+from pathlib import Path
 from decimal import Decimal
 
 from src.l3.core.errors import AppError, ConflictError, ValidationError
@@ -93,8 +95,16 @@ def _simulation_value(client, filename, binding, step, selection, shell_layer, c
     return scaled, identity
 
 
-def get_simright_test_load_level_comparison(project_id, simright_base_url, filename,
-        profile="markdown", axis_label=None, sensors=None, step_mapping=None, shell_layer="bottom", import_sha256=None):
+def get_simright_test_load_level_comparison(project_id, simright_base_url=None, filename=None,
+        profile="markdown", axis_label=None, sensors=None, step_mapping=None, shell_layer="bottom", import_sha256=None,
+        example_mode=True):
+    if example_mode:
+        path = Path(__file__).resolve().parents[3] / "tools" / "examples" / "simright_load_level_comparison.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.update(project_id=project_id, is_example=True, data_source="example")
+        return payload
+    if not simright_base_url or not filename:
+        raise ValidationError("真实查询需要 simright_base_url 和 filename")
     metadata, readings = load_test_data(project_id)
     if import_sha256 is not None and import_sha256 != metadata["sha256"]:
         raise ConflictError("试验 TXT 已更新，请刷新表格后重新选择仿真 step")

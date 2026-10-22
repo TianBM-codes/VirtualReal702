@@ -163,7 +163,7 @@ def binding(**kwargs):
 
 
 def test_initial_table_uses_all_file_headers_and_does_not_query_values(comparison):
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model")
+    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False)
     assert [row["label"] for row in result["table"]] == ["Level", "Factor", "UP", "DOWN", "仿真step"]
     assert result["table"][-1]["value"] == [None] * 3
     assert result["table"][-1]["selectOptions"] == [{"label": "Step-A", "value": 42}, {"label": "Step-B", "value": 91}]
@@ -172,7 +172,7 @@ def test_initial_table_uses_all_file_headers_and_does_not_query_values(compariso
 
 
 def test_selected_step_latest_frame_and_explicit_state(comparison):
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model",
+    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
         sensors=[binding(simulation_scale=2)], step_mapping=[
             {"sample_index": 1, "loadcase_id": 42}, {"sample_index": 2, "loadcase_id": 91, "state_id": 2}])
     assert result["curves"][-1]["data"] == [["0", None], ["1", 14.], ["0", 4.]]
@@ -182,7 +182,7 @@ def test_selected_step_latest_frame_and_explicit_state(comparison):
 
 def test_tensor_projection(comparison):
     tensor = dict(name="UP", node_id=10, part_id=5, quantity="stress", direction=[1, 0, 0])
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model",
+    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
         sensors=[tensor], step_mapping=[{"sample_index": 0, "loadcase_id": 42}])
     assert result["curves"][-1]["data"][0] == ["0", 7.]
     assert len(comparison[1]) == 6
@@ -190,13 +190,13 @@ def test_tensor_projection(comparison):
 
 def test_invalid_step_is_not_silently_mapped_to_index(comparison):
     with pytest.raises(ValidationError):
-        service.get_simright_test_load_level_comparison(7, "http://simright", "model",
+        service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
             sensors=[binding()], step_mapping=[{"sample_index": 0, "loadcase_id": 0}])
 
 
 def test_stale_import_mapping_is_rejected(comparison):
     with pytest.raises(AppError) as exc:
-        service.get_simright_test_load_level_comparison(7, "http://simright", "model", import_sha256="old")
+        service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False, import_sha256="old")
     assert exc.value.status_code == 409
 
 
@@ -204,7 +204,7 @@ def test_tensor_components_cannot_mix_frames(comparison, monkeypatch):
     def node_info(client, filename, nodes, variable, **options):
         return [{"nodeId": 10, "partId": 5, "stateId": 2 if variable.endswith("12") else 7, "values": [1.]}]
     monkeypatch.setattr(service.SimRightClient, "node_info", node_info)
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model",
+    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
         sensors=[dict(name="UP", node_id=10, part_id=5, quantity="stress", direction=[1, 0, 0])],
         step_mapping=[{"sample_index": 0, "loadcase_id": 42}])
     assert result["curves"][-1]["data"][0][1] is None
@@ -214,7 +214,7 @@ def test_tensor_components_cannot_mix_frames(comparison, monkeypatch):
 def test_ambiguous_corner_values_return_null_and_issue(comparison, monkeypatch):
     monkeypatch.setattr(service.SimRightClient, "node_info", lambda *args, **kwargs:
         [{"nodeId": 10, "partId": 5, "stateId": 7, "values": [1, 2]}])
-    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model",
+    result = service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False,
         sensors=[binding()], step_mapping=[{"sample_index": 0, "loadcase_id": 42}])
     assert result["curves"][-1]["data"][0] == ["0", None]
     assert result["issues"] and not result["resolved_states"]
@@ -225,7 +225,7 @@ def test_vendor_failure_produces_502(comparison, monkeypatch):
         raise service.SimRightError("offline")
     monkeypatch.setattr(service.SimRightClient, "loadcases", fail)
     with pytest.raises(AppError) as exc:
-        service.get_simright_test_load_level_comparison(7, "http://simright", "model")
+        service.get_simright_test_load_level_comparison(7, "http://simright", "model", example_mode=False)
     assert exc.value.status_code == 502
 
 
@@ -246,5 +246,44 @@ def test_routes_and_validation(monkeypatch):
     body = SimrightLoadLevelComparisonRequest(project_id=7, simright_base_url="http://simright", filename="model")
     assert asyncio.run(test_data.get_simright_test_load_level_comparison_api(object(), body))["data"]["curves"] == []
     with pytest.raises(ValueError):
-        SimrightLoadLevelComparisonRequest(project_id=7, simright_base_url="http://simright", filename="model",
+        SimrightLoadLevelComparisonRequest(project_id=7, example_mode=False, simright_base_url="http://simright", filename="model",
             step_mapping=[{"sample_index": 1, "loadcase_id": 42}])
+
+
+def test_example_mode_needs_no_database_or_simright(monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Example mode must not query external data")
+    monkeypatch.setattr(service, "load_test_data", unexpected)
+    monkeypatch.setattr(service, "SimRightClient", unexpected)
+    body = SimrightLoadLevelComparisonRequest(project_id=2026101601)
+    result = service.get_simright_test_load_level_comparison(**body.model_dump())
+    assert result["project_id"] == 2026101601 and result["is_example"] is True
+    assert result["data_source"] == "example"
+    count = result["summary"]["sample_count"]
+    assert result["record_indices"] == list(range(count))
+    assert all(len(column["value"]) == count for column in result["table"])
+    assert len(result["curves"]) == result["summary"]["curve_count"]
+    for curve in result["curves"]:
+        assert set(curve) == {"label", "xaxis", "data"}
+        assert curve["xaxis"] == [point[0] for point in curve["data"]]
+        assert len(curve["data"]) == count
+    result["curves"][0]["data"].clear()
+    assert service.get_simright_test_load_level_comparison(123)["curves"][0]["data"]
+
+
+def test_real_mode_still_requires_connection_details():
+    with pytest.raises(ValueError):
+        SimrightLoadLevelComparisonRequest(project_id=7, example_mode=False)
+    with pytest.raises(ValidationError):
+        service.get_simright_test_load_level_comparison(7, example_mode=False)
+
+
+def test_example_route_returns_success_envelope_without_network(monkeypatch):
+    from webapi.routers import test_data
+    async def no_log(*args):
+        pass
+    monkeypatch.setattr(test_data, "log_request", no_log)
+    response = asyncio.run(test_data.get_simright_test_load_level_comparison_api(
+        object(), SimrightLoadLevelComparisonRequest(project_id=42)))
+    assert response["ok"] and response["data"]["project_id"] == 42
+    assert response["data"]["is_example"] and response["data"]["curves"]

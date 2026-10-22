@@ -57,8 +57,9 @@ class SimrightSensorBinding(BaseModel):
 class SimrightLoadLevelComparisonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: int = Field(gt=0, le=9223372036854775807)
-    simright_base_url: HttpUrl
-    filename: str = Field(min_length=1)
+    example_mode: bool = True
+    simright_base_url: Optional[HttpUrl] = None
+    filename: Optional[str] = Field(default=None, min_length=1)
     profile: Literal["markdown", "excel"] = "markdown"
     axis_label: Optional[str] = None
     sensors: List[SimrightSensorBinding] = Field(default_factory=list)
@@ -68,6 +69,10 @@ class SimrightLoadLevelComparisonRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_mapping(self):
+        if self.example_mode:
+            return self
+        if self.simright_base_url is None or self.filename is None:
+            raise ValueError("真实查询需要 simright_base_url 和 filename")
         if len({item.name for item in self.sensors}) != len(self.sensors):
             raise ValueError("测点名称不能重复")
         if len({item.sample_index for item in self.step_mapping}) != len(self.step_mapping):

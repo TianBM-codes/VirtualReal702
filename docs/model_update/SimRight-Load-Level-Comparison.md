@@ -53,13 +53,41 @@ TXT 数据按 `sample_index` 排列，用导入元数据中选定的横轴生成
 
 `POST /get/simright_test_load_level_comparison`
 
+请求使用 `Content-Type: application/json`。`example_mode` 放在 JSON 请求体中，与 `project_id` 同级，不放在 URL 查询参数中；该参数仅用于这个 SimRight 对比接口。
+
+| `example_mode` | 数据来源与行为 | 使用条件 |
+| --- | --- | --- |
+| `true`（默认，可省略） | 读取本地示例 JSON，返回表格、step 下拉框和对比曲线 | 只需 `project_id`，用于前端展示测试 |
+| `false` | 查询项目已入库的试验数据，并调用数巧服务 | 先导入试验 TXT，提供真实 `simright_base_url` 和 `filename` |
+
+当前先使用示例模式。真实查询分支已实现，但尚未与真实数巧服务联调。
+
+当前默认返回示例结果，供前端先接入表格和曲线：
+
+```json
+{"project_id": 2026101601}
+```
+
+也可显式写为 `{"project_id": 2026101601, "example_mode": true}`。
+
+`example_mode` 默认 true，此时不访问 MySQL、试验 TXT 或数巧服务。
+响应 `data.is_example=true`、`data.data_source="example"`，包含示例表格、step 下拉框和四条对比曲线。
+外层仍是 `{ok,code,message,data}`，曲线仍位于 `data.curves`。
+示例内容集中在 [tools/examples/simright_load_level_comparison.json](../../tools/examples/simright_load_level_comparison.json)，可直接修改。
+返回时只将 `project_id` 替换为请求值，并固定标记示例来源；其他查询参数不参与示例计算，也不写入数据库。
+
+后续需要启用真实查询时显式传入 `example_mode=false`。以下参数及响应示例均描述真实查询分支。
+
+真实查询调用顺序：先通过 `/import/test_load_level` 导入该 `project_id` 的试验 TXT，再调用本接口获取表格和 step 选项，最后携带测点绑定及 step 选择再次调用本接口获取对比结果。每次真实查询都需要传入 `example_mode: false`；省略会回到示例模式。
+
 初次请求仅获取 TXT 动态表头、试验曲线和数巧 step 下拉选项：
 
 ```json
 {
   "project_id": 2026101601,
+  "example_mode": false,
   "simright_base_url": "http://simright-server:8080",
-  "filename": "project/model.odb",
+  "filename": "project/model.rdb",
   "profile": "markdown"
 }
 ```
@@ -72,8 +100,9 @@ TXT 数据按 `sample_index` 排列，用导入元数据中选定的横轴生成
 ```json
 {
   "project_id": 2026101601,
+  "example_mode": false,
   "simright_base_url": "http://simright-server:8080",
-  "filename": "project/model.odb",
+  "filename": "project/model.rdb",
   "sensors": [{
     "name": "310004a",
     "node_id": 123,
@@ -91,6 +120,7 @@ TXT 数据按 `sample_index` 排列，用导入元数据中选定的横轴生成
 ```
 
 示例节点和 step ID 仅展示协议，必须使用实际模型中的 ID。
+示例地址和 `filename` 也必须替换为数巧部署中的实际值，不能直接照抄调用。
 
 - 每条 `step_mapping` 对应一个试验**记录序号**，不使用加载值作为唯一标识。
 - `loadcase_id` 取返回的 `selectOptions[].value`，不是工况数组索引。后端会将其转换为文档要求的 `loadcaseIndex`。
