@@ -229,19 +229,16 @@ scale=建议值、n_frames=20 的响应包（`precompute_plan._modal_animation`�
 legend-entries 提速（`8703566`）、FREQUENCY 步 modal-animation 预算（`74c02ae`，计划版本 2）、断点续做设计备忘（未实施）。
 
 **待开发者在本机验证（新对话先问结果）**：
-1. `python -m pytest tests/test_precompute_plan.py tests/test_l3_deform_cache.py tests/test_l3_pick_invariant_nan.py -v`
-   （`74c02ae`、`8703566` 之后尚未跑过）。
-2. 重启服务后重新导入带 FREQUENCY 步的模型（door.odb 含 eigenfrequency 步）：`cache_prepare` 总项数应比 7533 多（多出的是动画包），
-   ready 正常。
-3. `python tools/probe_endpoints.py --base http://127.0.0.1:18071 --project <新项目> --full`，预期：ERROR 只剩
-   `projects/{id}/summary`（ODB 项目无 model_summary.json）；`schemes`、`legend-entries` 不再 NOT_CACHED；
-   eigenfrequency 步的 `modal-animation` 首次即命中（sag 静力步不预算，仍为 NOT_PRECOMPUTED，属预期）。
+1.–3. 已完成（2026-10-22）：单测通过；door 重新导入 ready 正常；`--full` 探测 ERROR 只剩 summary（见下方复测记录）。
 4. ~~向前端同事确认第三方前端调 `modal-animation` 的实际 `scale` / `n_frames`~~ 已确认（2026-10-22）：前端传
    `deform-suggest-scale` 返回的建议值 + `n_frames=20`，与预算一致。实测项目 2026102201 eigenfrequency 第 4 阶带
    `scale=0.5442756586073418&n_frames=20` 首次请求 49 ms（命中）。注意前端须原样回传建议值，四舍五入后缓存 key 对不上。
    （此前探测工具不带 scale，测的是默认 1.0 的包，不能说明预算命中。）
-5. 在 1440w 项目上：重新导入后跑 `probe_endpoints.py --full`，并用 `snapshot_results.py --cache disk --compare baseline.npz`
-   核对多进程落盘内容（STATUS 项不一致属预期）。
+5. **进行中（2026-10-22 晚，开发者在跑）**：1440w（`E:\code\odb-service-design\model_v2\1440w-dof_grav_v3.odb`，
+   旧项目 `202610211530`）用 `402cb14` 之后的代码（计划已去掉 frame-colors）重新导入，然后
+   `python tools/snapshot_results.py --workspace <新工作区> --cache disk --compare baseline.npz --procs 2`。
+   预期“不一致 = 0”（STATUS 等整单元字段不一致属预期：基准代码不支持）；快照工具仍比对 frame-colors，disk 模式下现算。
+   新对话先要：比对输出全文 + 导入日志最后一条 `cache_prepare`（总项数/跳过/失败/进程数/耗时，总项数比旧版少属预期）。
 
 **2026-10-22 下午探测结果（`probe_2026102201_20261022_153257.md`，阈值 10 ms）**：
 - 已验证：pick 不再 500；`schemes` 6 ms；eigenfrequency 步 `modal-animation` 命中（实测约 20 ms，包 31.8 MB）。
