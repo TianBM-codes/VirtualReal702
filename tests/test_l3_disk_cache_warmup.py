@@ -18,6 +18,7 @@ import pytest
 
 from src.l3.services import cache_store
 from src.l3.services.result_service import (
+    _component_cache_token, _result_h5_sig,
     clear_result_caches,
     compute_scalar_range,
     frame_scalars,
@@ -56,6 +57,14 @@ def _setup_nodal_instance(workspace, make_registry, *, values, field="U"):
     return registry, instance, path
 
 
+def _restart_caches(path):
+    """模拟重启：清空内存缓存。重启后每个结果文件首次请求要读一次文件元数据
+    （分量名、是否含 WHOLE_ELEMENT）来确定缓存键，这是预期行为；这里先读掉，
+    之后验证的是不再重读结果数据。"""
+    clear_result_caches()
+    _component_cache_token(str(path), _result_h5_sig(str(path)), None)
+
+
 def _call_frame_scalars(registry, instance, **kw):
     return frame_scalars(
         registry=registry, odb_id="odb", instance=instance,
@@ -65,13 +74,13 @@ def _call_frame_scalars(registry, instance, **kw):
 
 def test_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch):
     """清空内存缓存（模拟重启）后，第二次调用从磁盘复用，不打开 H5。"""
-    registry, instance, _ = _setup_nodal_instance(
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
     u1, legend1, pos1 = _call_frame_scalars(registry, instance)
     assert list((workspace / GROUP_DIR / "arrays").glob("*.npz"))
 
-    clear_result_caches()
+    _restart_caches(path)
     monkeypatch.setattr(h5py, "File", _boom)
     u2, legend2, pos2 = _call_frame_scalars(registry, instance)
     assert np.array_equal(u1, u2)
@@ -80,7 +89,7 @@ def test_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch)
 
 
 def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkeypatch):
-    registry, instance, _ = _setup_nodal_instance(
+    registry, instance, path = _setup_nodal_instance(
         workspace, make_registry, values=np.arange(9.0)
     )
     r1 = compute_scalar_range(
@@ -89,7 +98,7 @@ def test_range_disk_cache_survives_memory_clear(workspace, make_registry, monkey
     )
     assert list((workspace / GROUP_DIR / "json").glob("*.json"))
 
-    clear_result_caches()
+    _restart_caches(path)
     monkeypatch.setattr(h5py, "File", _boom)
     r2 = compute_scalar_range(
         registry=registry, odb_id="odb", instance=instance,

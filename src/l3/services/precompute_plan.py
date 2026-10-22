@@ -121,10 +121,14 @@ def list_targets(manifest: ManifestRepo, *, result_group=None, group_only: bool 
             params = (result_group,)
         rows = conn.execute(sql, params).fetchall()
         block_instances: Dict[tuple, set] = {}
-        has_blocks = bool(_columns(conn, "result_blocks"))
+        block_cols = _columns(conn, "result_blocks")
+        has_blocks = bool(block_cols)
+        # 老库的 result_blocks 没有 result_group 列：按 (step, field) 匹配任意结果组
+        blocks_by_group = "result_group" in block_cols
         if has_blocks:
+            rg_col = "result_group" if blocks_by_group else "NULL"
             for rg, step, field, inst in conn.execute(
-                    "SELECT DISTINCT result_group, step_name, field_name, instance_name "
+                    f"SELECT DISTINCT {rg_col}, step_name, field_name, instance_name "
                     "FROM result_blocks"):
                 block_instances.setdefault((rg, step, field), set()).add(inst)
 
@@ -138,7 +142,10 @@ def list_targets(manifest: ManifestRepo, *, result_group=None, group_only: bool 
             n_comp = len(json.loads(comps)) if comps else 0
         except (TypeError, ValueError):
             n_comp = 0
-        insts = block_instances.get((rg, step, field)) if has_blocks else set(default_instances)
+        if not has_blocks:
+            insts = set(default_instances)
+        else:
+            insts = block_instances.get((rg if blocks_by_group else None, step, field))
         targets.append(Target(
             result_group=rg, step=step, field=field, file_path=file_path,
             instances=tuple(sorted(insts or ())),

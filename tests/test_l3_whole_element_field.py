@@ -59,4 +59,4 @@ def test_cache_token_marks_whole_element_files(workspace, make_registry):
     _, _, path = _setup(workspace, make_registry)
     # 修复前缓存过的"无范围"（None）不能再命中
     assert _component_cache_token(str(path), (1, 2), None) == ("we", None)
-    assert _component_cache_token(str(path), (1, 2), 0) == ("we", 0)
+    assert _component_cache_token(str(path), (1, 2), 0) == 0      # 显式分量不读文件

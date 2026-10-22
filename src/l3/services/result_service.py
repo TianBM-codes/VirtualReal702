@@ -134,22 +134,22 @@ def _component_cache_token(h5_path: str, h5_sig, component_idx: Optional[int]):
     """
     缓存键里的分量部分。默认分量（None）在带自带合量列的文件上改为 "mag-excl-USUM"，
     让修复 √2 合量 bug 之前写入的错误缓存不再命中。含 WHOLE_ELEMENT 块的文件
-    （如 STATUS）再包一层 ("we", ...)：支持该位置之前缓存的"无范围"不再命中。
+    （如 STATUS，只有一个分量、计划只算默认分量）再包一层 ("we", None)：支持该位置
+    之前缓存的"无范围"不再命中。显式分量不打开文件（命中缓存时不碰 H5），键不变。
     其他文件的键保持不变。
     """
-    memo_key = (h5_path, h5_sig)
+    if component_idx is not None:
+        return int(component_idx)
+    memo_key = (os.path.normcase(os.path.abspath(h5_path)), h5_sig)
     if memo_key not in _STORED_MAG_MEMO:
         try:
             with h5py.File(h5_path, "r") as f:
                 _STORED_MAG_MEMO[memo_key] = (stored_magnitude_col(f),
                                               "WHOLE_ELEMENT" in f)
         except OSError:
-            return None if component_idx is None else int(component_idx)
+            return None
     mag_col, has_whole_element = _STORED_MAG_MEMO[memo_key]
-    if component_idx is not None:
-        token = int(component_idx)
-    else:
-        token = "mag-excl-USUM" if mag_col is not None else None
+    token = "mag-excl-USUM" if mag_col is not None else None
     return ("we", token) if has_whole_element else token
 
 
