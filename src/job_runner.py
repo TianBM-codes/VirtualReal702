@@ -127,6 +127,13 @@ ABAQUS_CMD       = _cfg(_svc_cfg, "APP_ABAQUS_CMD", "abaqus")  # override if not
 # "full" -> pass --invariants full to abaqus_dump.py; "none" -> skip (default)
 INVARIANTS_MODE  = _cfg(_svc_cfg, "APP_INVARIANTS", "none")
 
+# Windows 上 stdout 被重定向（文件/管道）时 Python 默认用 GBK 输出；统一成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s job_runner: %(message)s",
@@ -358,7 +365,7 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding='utf-8', errors='replace', bufsize=1,
-                                cwd=cwd)
+                                cwd=cwd, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     except FileNotFoundError:
         msg = (
             f"Command not found: {cmd[0]!r}\n"

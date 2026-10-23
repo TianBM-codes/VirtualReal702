@@ -34,6 +34,13 @@ from .core.state import registry
 from .infra.registry_repo import RegistryRepo
 from .api.router import router
 
+# Windows 上 stdout 被重定向（文件/管道）时 Python 默认用 GBK 输出；统一成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
