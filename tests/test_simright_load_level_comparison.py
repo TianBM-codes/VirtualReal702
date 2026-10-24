@@ -122,7 +122,7 @@ def test_download_parse_and_metadata_share_transaction(monkeypatch, tmp_path, fa
         assert result["row_count"] == 6 and connection.commits == 2
     assert downloaded == ["http://example/trial.txt"]
     delete = next(item for item in connection.q.executed if item[0].startswith("DELETE"))
-    assert delete[1] == (7,)
+    assert delete[1] == (7, "", "")
     assert connection.q.closed
 
 
@@ -131,7 +131,7 @@ def comparison(monkeypatch):
     meta = {"axis_label": "Level", "axis_rows": [
         {"label": "Level", "value": [0, 1, 0]}, {"label": "Factor", "value": [0, .5, 0]}],
         "sensor_names": ["UP", "DOWN"], "sample_count": 3, "unit": "mm", "sha256": "abc"}
-    monkeypatch.setattr(service, "load_test_data", lambda pid: (meta, {"UP": [0, 1, .1], "DOWN": [0, -1, -.1]}))
+    monkeypatch.setattr(service, "load_test_data", lambda pid, **kwargs: (meta, {"UP": [0, 1, .1], "DOWN": [0, -1, -.1]}))
     config = {"filename": "model.rdb", "base_url": "http://simright", "sensor_bindings": {
         "UP": dict(node_id=10, part_id=5, quantity="scalar", var_name="D.N.X", simulation_scale=2)}}
     monkeypatch.setattr(service, "get_project_config", lambda pid: {"extra_json": {"simright": config}})
@@ -310,6 +310,7 @@ def test_route_and_openapi(monkeypatch):
     body = SimrightLoadLevelComparisonRequest(project_id=42)
     response = asyncio.run(test_data.get_simright_test_load_level_comparison_api(object(), body))
     assert response["data"]["curves"] == []
-    body = SimrightLoadLevelComparisonRequest(project_id=42, sensors=[{"name": "310004a"}], steps=[0, None, 2, 3])
+    body = SimrightLoadLevelComparisonRequest(project_id=42, sensors=[{"name": "310004a"}], steps=[0, None, 2, 3],
+        work_condition_id="condition-001", measurement_id="measurement-001")
     response = asyncio.run(test_data.get_simright_test_load_level_comparison_api(object(), body))
     assert response["ok"] and len(response["data"]["curves"]) == 2

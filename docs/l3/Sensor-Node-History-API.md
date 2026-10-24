@@ -57,12 +57,13 @@ ODB 只读打开，提取在独立 Abaqus Python 进程及服务器线程池执�
 `POST /get/sensor_load_level_curve`
 
 ```json
-{"project_id": 2026101601, "sensor": "DEMO_P01"}
+{"project_id": 2026101601, "sensor": "DEMO_P01", "work_condition_id": "condition-001", "measurement_id": "measurement-001"}
 ```
 
-`sensor` 是传感器名称，查询限定工程，只读新表 `t_mt_py_test_load_level_data`。
+`sensor` 是传感器名称，查询限定工程，只读新表 `t_mt_py_test_load_level_data`。`work_condition_id`、`measurement_id` 为可选字符串，最长各 100 字符，按项目、测点、工况、测量精确查询；省略、null 或空字符串仅查询历史默认组。响应返回实际查询的两个标识。
 每个传感器返回一条曲线，横坐标为加载级，纵坐标为实测值。旧 CSV 数据按加载值排序；
 TXT 导入数据按原始记录序号排列，横轴来自 `extra_json.test_load_level_import.axis_rows`，保留重复值和卸载顺序。
+指定工况或测量时，横轴来自 `extra_json.test_load_level_imports[work_condition_id][measurement_id].axis_rows`。
 不要求先创建节点匹配关系，不进行方向投影、单位变换或数据插值。
 
 响应曲线同样只含 `data/label/xaxis` 三个字段：
@@ -71,6 +72,8 @@ TXT 导入数据按原始记录序号排列，横轴来自 `extra_json.test_load
 {
   "project_id": 2026101601,
   "sensor": "DEMO_P01",
+  "work_condition_id": "condition-001",
+  "measurement_id": "measurement-001",
   "curve_type": "sensor",
   "data": [{
     "label": "DEMO_P01",
@@ -119,7 +122,7 @@ DEMO_P01,2,0.2,mm,示例值
 ```
 
 ```powershell
-python tools/import_test_load_levels.py --project-id 2026101601 --csv readings.csv
+python tools/import_test_load_levels.py --project-id 2026101601 --work-condition-id condition-001 --measurement-id measurement-001 --csv readings.csv
 ```
 
 使用项目现有数据库配置。数据校验通过后整批提交；失败会回滚本批读数。
@@ -129,7 +132,7 @@ python tools/import_test_load_levels.py --project-id 2026101601 --csv readings.c
 模板：`tools/examples/test_load_levels.csv`，其中数值仅用于演示；请替换为实际读数后导入。
 
 TXT 下载导入、动态表格与数巧对比见 [SimRight 加载级对比接口](../model_update/SimRight-Load-Level-Comparison.md)。
-TXT 导入原子替换该工程的试验数据，之后不要混入旧 CSV 行；混合格式会明确报错，避免记录错位。
+TXT 导入支持同名的 `work_condition_id`、`measurement_id` 请求字段，仅原子替换该项目、工况、测量下的试验数据。不同组独立存储；同一组不要混入 CSV 和 TXT 行，混合格式会明确报错，避免记录错位。
 
 ## 验证
 

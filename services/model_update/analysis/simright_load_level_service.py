@@ -169,7 +169,7 @@ def _example_result(project_id, sensors, steps, axis_label):
 
 def get_simright_test_load_level_comparison(project_id, simright_base_url=None,
         profile="markdown", axis_label=None, sensors=None, steps=None, shell_layer="bottom", import_sha256=None,
-        example_mode=True):
+        example_mode=True, work_condition_id=None, measurement_id=None):
     sensors = sensors or []
     if len({sensor["name"] for sensor in sensors}) != len(sensors):
         raise ValidationError("测点名称不能重复")
@@ -180,7 +180,7 @@ def get_simright_test_load_level_comparison(project_id, simright_base_url=None,
     simright_base_url = simright_base_url or config.get("base_url")
     if not simright_base_url or not filename:
         raise ValidationError("请在项目 extra_json.simright 中配置 filename 和 base_url，地址也可通过 simright_base_url 传入")
-    metadata, readings = load_test_data(project_id)
+    metadata, readings = load_test_data(project_id, work_condition_id=work_condition_id, measurement_id=measurement_id)
     if import_sha256 is not None and import_sha256 != metadata["sha256"]:
         raise ConflictError("试验 TXT 已更新，请刷新表格后重新选择仿真 step")
     count = metadata["sample_count"]

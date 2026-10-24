@@ -5,16 +5,19 @@ from decimal import Decimal
 
 from db import get_connection
 from src.l3.core.errors import ValidationError
+from .load_level_scope import scope_ids, import_metadata
 
 
-def get_sensor_curve(project_id, sensor):
+def get_sensor_curve(project_id, sensor, work_condition_id=None, measurement_id=None):
+    condition, measurement = scope_ids(work_condition_id, measurement_id)
     connection = get_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute("""SELECT load_level, sample_index, reading_value, unit
             FROM t_mt_py_test_load_level_data
-            WHERE project_id = %s AND sensor = %s
-            ORDER BY CASE WHEN sample_index IS NULL THEN load_level ELSE sample_index END, id""", (project_id, sensor))
+            WHERE project_id = %s AND sensor = %s AND work_condition_id = %s AND measurement_id = %s
+            ORDER BY CASE WHEN sample_index IS NULL THEN load_level ELSE sample_index END, id""",
+                       (project_id, sensor, condition, measurement))
         rows = cursor.fetchall()
         axis_label, axis = None, None
         if any(row.get("sample_index") is not None for row in rows):
@@ -24,7 +27,7 @@ def get_sensor_curve(project_id, sensor):
             config = cursor.fetchone()
             extra = config["extra_json"] if config else {}
             extra = json.loads(extra) if isinstance(extra, str) else (extra or {})
-            metadata = extra.get("test_load_level_import", {})
+            metadata = import_metadata(extra, condition, measurement)
             axis_label = metadata.get("axis_label")
             axis = next((item["value"] for item in metadata.get("axis_rows", []) if item["label"] == axis_label), None)
             if axis is None or [row["sample_index"] for row in rows] != list(range(len(axis))):
@@ -43,6 +46,7 @@ def get_sensor_curve(project_id, sensor):
             points.append([level, value])
         curves = [{"label": sensor, "data": points, "xaxis": [point[0] for point in points]}] if points else []
         return {"project_id": project_id, "sensor": sensor, "curve_type": "sensor",
+                "work_condition_id": condition, "measurement_id": measurement,
                 "data": curves, "unit": next(iter(units), None), "axis_label": axis_label,
                 "source": "t_mt_py_test_load_level_data",
                 "summary": {"curve_count": len(curves), "point_count": len(points)}}

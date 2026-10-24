@@ -80,6 +80,23 @@ def test_http_download_mysql_and_simright_protocol(monkeypatch, tmp_path):
             sensors=[{"name": "UP"}], steps=[None, 42, None])
         assert result["curves"][-1]["data"] == [["0", None], ["1", 12.], ["0", None]]
         assert not result["issues"]
+        # Same project and sensor, independent scopes and different TXT axes.
+        scoped_path = make_txt(tmp_path / "scoped.txt", axes={"Level": [2, 3]},
+                               gauges={"UP": [20, 30, 999]})
+        imports.import_test_load_level(project_id, str(scoped_path), work_condition_id="001", measurement_id="m-1")
+        imports.import_test_load_level(project_id, str(scoped_path), work_condition_id="002", measurement_id="m-1")
+        scoped_path = make_txt(tmp_path / "updated.txt", axes={"Level": [4, 5]},
+                               gauges={"UP": [40, 50, 999]})
+        imports.import_test_load_level(project_id, str(scoped_path), work_condition_id="001", measurement_id="m-1")
+        assert curves.get_sensor_curve(project_id, "UP", "001", "m-1")["data"][0]["data"] == [["4", 40.], ["5", 50.]]
+        assert curves.get_sensor_curve(project_id, "UP", "002", "m-1")["data"][0]["data"] == [["2", 20.], ["3", 30.]]
+        assert curves.get_sensor_curve(project_id, "UP")["summary"]["point_count"] == 3
+        assert curves.get_sensor_curve(project_id, "UP", "001", "missing")["data"] == []
+        scoped_meta, scoped_readings = imports.load_test_data(project_id, "001", "m-1")
+        assert scoped_meta["sample_count"] == 2 and scoped_readings["UP"] == [40., 50.]
+        selected = comparison.get_simright_test_load_level_comparison(project_id, example_mode=False,
+            work_condition_id="001", measurement_id="m-1", sensors=[{"name": "UP"}], steps=[42, None])
+        assert selected["curves"][0]["data"] == [["4", 40.], ["5", 50.]]
         q.execute("""INSERT INTO t_mt_py_test_load_level_data
             (project_id,sensor,load_level,reading_value) VALUES (%s,'LEGACY',0,1)""", (project_id,))
         with pytest.raises(IntegrityError):

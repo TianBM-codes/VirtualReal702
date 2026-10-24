@@ -14,6 +14,7 @@ from src.utils.file_fetch import materialize_source_file
 from tools.DumpTestDataToDB import parse_txt
 from .project_path_service import resolve_project_workspace
 from .project_config_service import upsert_project_config
+from .load_level_scope import scope_ids, import_metadata
 
 
 def decode_json(value):
@@ -83,7 +84,9 @@ def prepare_import(local_path, source, axis_label=None, unit=None, ignore_last_r
     return metadata, rows
 
 
-def import_test_load_level(project_id, file_path, axis_label=None, unit=None, ignore_last_reading=True):
+def import_test_load_level(project_id, file_path, axis_label=None, unit=None, ignore_last_reading=True,
+                           work_condition_id=None, measurement_id=None):
+    condition, measurement = scope_ids(work_condition_id, measurement_id)
     folder = Path(resolve_project_workspace(project_id)) / "test_data" / "load_level" / uuid4().hex
     folder.mkdir(parents=True, exist_ok=False)
     local_path = materialize_source_file(file_path, str(folder), dest_name="source.txt")
@@ -95,13 +98,21 @@ def import_test_load_level(project_id, file_path, axis_label=None, unit=None, ig
         connection.commit()  # MySQL DDL is outside the replacement transaction.
         cursor.execute("INSERT INTO t_mt_py_project_config (pid) VALUES (%s) ON DUPLICATE KEY UPDATE pid=VALUES(pid)",
                        (project_id,))
-        cursor.execute("SELECT pid FROM t_mt_py_project_config WHERE pid=%s FOR UPDATE", (project_id,))
-        cursor.fetchall()
-        cursor.execute("DELETE FROM t_mt_py_test_load_level_data WHERE project_id=%s", (project_id,))
+        cursor.execute("SELECT pid,extra_json FROM t_mt_py_project_config WHERE pid=%s FOR UPDATE", (project_id,))
+        existing = cursor.fetchall()
+        extra = decode_json(existing[0].get("extra_json")) if existing else {}
+        cursor.execute("""DELETE FROM t_mt_py_test_load_level_data
+            WHERE project_id=%s AND work_condition_id=%s AND measurement_id=%s""", (project_id, condition, measurement))
         cursor.executemany("""INSERT INTO t_mt_py_test_load_level_data
-            (project_id,sensor,sample_index,load_level,reading_value,unit,remark)
-            VALUES (%s,%s,%s,%s,%s,%s,'TXT import')""", [(project_id, *row) for row in rows])
-        upsert_project_config(project_id, extra_json={"test_load_level_import": metadata}, cursor=cursor)
+            (project_id,sensor,sample_index,load_level,reading_value,unit,work_condition_id,measurement_id,remark)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'TXT import')""", [(project_id, *row, condition, measurement) for row in rows])
+        if condition or measurement:
+            scopes = extra.get("test_load_level_imports", {})
+            scopes.setdefault(condition, {})[measurement] = metadata
+            update = {"test_load_level_imports": scopes}
+        else:
+            update = {"test_load_level_import": metadata}
+        upsert_project_config(project_id, extra_json=update, cursor=cursor)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -110,20 +121,23 @@ def import_test_load_level(project_id, file_path, axis_label=None, unit=None, ig
         cursor.close()
         connection.close()
     return {"project_id": project_id, "sensor_count": len(metadata["sensor_names"]),
+            "work_condition_id": condition, "measurement_id": measurement,
             "sample_count": metadata["sample_count"], "row_count": len(rows), "metadata": metadata}
 
 
-def load_test_data(project_id):
+def load_test_data(project_id, work_condition_id=None, measurement_id=None):
+    condition, measurement = scope_ids(work_condition_id, measurement_id)
     connection = get_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute("SELECT extra_json FROM t_mt_py_project_config WHERE pid=%s", (project_id,))
         row = cursor.fetchone()
-        metadata = decode_json(row["extra_json"]).get("test_load_level_import") if row else None
+        metadata = import_metadata(decode_json(row["extra_json"]), condition, measurement) if row else None
         if not metadata:
             raise NotFoundError("工程尚未导入试验 TXT", {"project_id": project_id})
         cursor.execute("""SELECT sensor,sample_index,reading_value FROM t_mt_py_test_load_level_data
-            WHERE project_id=%s ORDER BY sensor,sample_index,id""", (project_id,))
+            WHERE project_id=%s AND work_condition_id=%s AND measurement_id=%s
+            ORDER BY sensor,sample_index,id""", (project_id, condition, measurement))
         readings = {name: [None] * metadata["sample_count"] for name in metadata["sensor_names"]}
         seen = set()
         for record in cursor.fetchall():

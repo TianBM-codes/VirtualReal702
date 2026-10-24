@@ -64,7 +64,7 @@ def test_load_level_curve_format_and_project_scope(monkeypatch):
     assert result["unit"] == "mm"
     assert result["summary"] == {"curve_count": 1, "point_count": 3}
     sql, params = cursor.executed[0]
-    assert params == (7, "SG'1") and "ORDER BY CASE" in sql
+    assert params == (7, "SG'1", "", "") and "ORDER BY CASE" in sql
     assert connection.closed and cursor.closed
 
 
@@ -109,7 +109,7 @@ def test_csv_and_atomic_import(monkeypatch, tmp_path):
     result = importer.store_rows(7, rows)
     assert result["row_count"] == 2
     assert connection.commits == 2 and connection.rollbacks == 0
-    assert cursor.executed[-1][1] == (7, *rows[1])
+    assert cursor.executed[-1][1] == (7, *rows[1], "", "")
     assert "DUPLICATE KEY" not in cursor.executed[-1][0]
     cursor.fail_insert = True
     with pytest.raises(ValueError):
@@ -134,9 +134,10 @@ def test_route_and_request(monkeypatch):
 
     monkeypatch.setattr(test_data, "log_request", noop)
     monkeypatch.setattr(test_data, "get_sensor_curve", lambda **kwargs: dict(kwargs, data=[]))
-    body = SensorCurveRequest(project_id=7, sensor=" SG1 ")
+    body = SensorCurveRequest(project_id=7, sensor=" SG1 ", work_condition_id="001", measurement_id="m-1")
     result = asyncio.run(test_data.get_sensor_load_level_curve_api(object(), body))
-    assert result["data"] == {"project_id": 7, "sensor": "SG1", "data": []}
+    assert result["data"] == {"project_id": 7, "sensor": "SG1", "data": [],
+                              "work_condition_id": "001", "measurement_id": "m-1"}
     app = FastAPI()
     app.include_router(test_data.router)
     assert "/get/sensor_load_level_curve" in app.openapi()["paths"]

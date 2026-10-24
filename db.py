@@ -16,6 +16,8 @@ CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS t_mt_py_test_load_level_data (
         id BIGINT NOT NULL AUTO_INCREMENT,
         project_id BIGINT NOT NULL COMMENT '工程ID',
+        work_condition_id VARCHAR(100) NOT NULL DEFAULT '' COMMENT '工况ID，空字符串兼容历史数据',
+        measurement_id VARCHAR(100) NOT NULL DEFAULT '' COMMENT '测量ID，空字符串兼容历史数据',
         sensor VARCHAR(100) NOT NULL COMMENT '传感器名称',
         load_level DECIMAL(20,8) NOT NULL COMMENT '加载级，曲线横坐标',
         sample_index INT NULL COMMENT 'TXT原始记录序号，从0开始',
@@ -27,8 +29,8 @@ CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL = """
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
-        UNIQUE KEY uk_project_sensor_level (project_id, sensor, legacy_load_level),
-        UNIQUE KEY uk_project_sensor_sample (project_id, sensor, sample_index)
+        UNIQUE KEY uk_project_sensor_level (project_id, work_condition_id, measurement_id, sensor, legacy_load_level),
+        UNIQUE KEY uk_project_sensor_sample (project_id, work_condition_id, measurement_id, sensor, sample_index)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='加载级试验数据表';
 """
 
@@ -1148,6 +1150,8 @@ def ensure_test_load_level_schema(cursor):
     """Keep legacy CSV upserts while allowing repeated TXT axis values."""
     cursor.execute(CREATE_TEST_LOAD_LEVEL_DATA_TABLE_SQL)
     for column, definition in (
+        ("work_condition_id", "work_condition_id VARCHAR(100) NOT NULL DEFAULT '' COMMENT '工况ID'"),
+        ("measurement_id", "measurement_id VARCHAR(100) NOT NULL DEFAULT '' COMMENT '测量ID'"),
         ("sample_index", "sample_index INT NULL COMMENT 'TXT原始记录序号，从0开始'"),
         ("legacy_load_level", "legacy_load_level DECIMAL(20,8) GENERATED ALWAYS AS "
          "(CASE WHEN sample_index IS NULL THEN load_level ELSE NULL END) STORED"),
@@ -1157,8 +1161,8 @@ def ensure_test_load_level_schema(cursor):
         if cursor.fetchone() is None:
             cursor.execute("ALTER TABLE t_mt_py_test_load_level_data ADD COLUMN " + definition)
     for name, columns in (
-        ("uk_project_sensor_level", ["project_id", "sensor", "legacy_load_level"]),
-        ("uk_project_sensor_sample", ["project_id", "sensor", "sample_index"]),
+        ("uk_project_sensor_level", ["project_id", "work_condition_id", "measurement_id", "sensor", "legacy_load_level"]),
+        ("uk_project_sensor_sample", ["project_id", "work_condition_id", "measurement_id", "sensor", "sample_index"]),
     ):
         cursor.execute("SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=%s "
                        "AND TABLE_NAME=%s AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX",

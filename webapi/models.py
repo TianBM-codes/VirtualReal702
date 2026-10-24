@@ -42,6 +42,8 @@ class SensorNodeHistoryRequest(BaseModel):
 class SensorCurveRequest(BaseModel):
     project_id: int
     sensor: str = Field(min_length=1)
+    work_condition_id: Optional[str] = Field(default=None, strict=True, max_length=100)
+    measurement_id: Optional[str] = Field(default=None, strict=True, max_length=100)
 
     @model_validator(mode="after")
     def validate_sensor(self):

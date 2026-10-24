@@ -22,7 +22,8 @@
 - `ignore_last_reading` 默认 `true`：按本次试验格式排除每个测点最后一个读数。被排除的值仍保存在元数据，不参与表格或曲线。
 - `axis_label` 可选，默认使用文件中第一行加载信息的原始名称。指定其他行可更换横轴，不固定为“级别”或“系数”。所有加载信息行始终完整保留。
 - `unit` 可选；未指定时尝试读取表头的 `单位:`，不能识别则留空，不根据绘图默认标签推断。
-- 先下载、完整解析和校验，成功后在一个事务内替换该工程全部试验读数及当前导入元数据；失败保留旧数据。重新导入会替换该工程之前的 CSV/演示读数，但不修改有限元节点匹配。
+- `work_condition_id`、`measurement_id` 为可选字符串，最长各 100 字符，由外部传入。读数按项目、工况和测量隔离，唯一索引也包含这两个标识。省略、null 或空字符串均表示历史默认数据，不会查询所有工况。
+- 先下载、完整解析和校验，成功后在一个事务内替换该项目、工况、测量下的试验读数及导入元数据；失败保留旧数据。其他工况、测量和有限元节点匹配不受影响。
 
 读数仍写入 `t_mt_py_test_load_level_data`。新增 `sample_index` 保存从零开始的原始记录序号，允许加载值重复、回零或下降。旧 CSV 记录的 `sample_index` 为空，继续按旧的加载值查询及去重。辅助生成列 `legacy_load_level` 用于兼容旧 CSV 唯一键，无需客户端填写。
 
@@ -31,6 +32,8 @@
 ```text
 t_mt_py_project_config.extra_json.test_load_level_import
 ```
+
+上述路径用于两个标识均为空的历史默认数据。指定任一标识时，元数据保存在 `extra_json.test_load_level_imports[work_condition_id][measurement_id]`；省略的一侧使用空字符串键，各组独立保存动态横轴、文件摘要等信息。
 
 包含 `axis_rows: [{label,value}]`（数量不固定）、测点名称与顺序、默认横轴、单位、试验起始日期时间、页数、每页记录数、各页原始表头和加载信息、末值排除规则及被排除值、源链接、本地文件位置、SHA256 和导入时间。`frequency=40` 只是旧脚本默认值，不作为实测采样频率入库。
 
@@ -43,8 +46,10 @@ t_mt_py_project_config.extra_json.test_load_level_import
 沿用 `POST /get/sensor_load_level_curve`：
 
 ```json
-{"project_id": 2026101601, "sensor": "310004a"}
+{"project_id": 2026101601, "sensor": "310004a", "work_condition_id": "condition-001", "measurement_id": "measurement-001"}
 ```
+
+两个标识为可选字符串（最长 100 字符），与导入时保持一致，按四个条件精确查询。响应会返回实际查询的 `work_condition_id`、`measurement_id`；未传或 null 对应数据库空字符串，仅查询历史默认组。没有对应数据时返回空曲线。
 
 TXT 数据按 `sample_index` 排列，用导入元数据中选定的横轴生成曲线，保留重复横坐标及卸载顺序。
 曲线仍是 `{label, xaxis, data:[[x,y],...]}`。旧 CSV 数据继续按数值加载级排序。
@@ -61,6 +66,8 @@ TXT 数据按 `sample_index` 排列，用导入元数据中选定的横轴生成
 | 参数 | 类型/默认值 | 说明 |
 | --- | --- | --- |
 | `project_id` | 正整数，必填 | 外部传入的项目 ID |
+| `work_condition_id` | 字符串，可省略或为 null，最长 100 字符 | 真实模式精确筛选试验数据的工况；示例模式不筛选示例文件 |
+| `measurement_id` | 字符串，可省略或为 null，最长 100 字符 | 真实模式精确筛选试验数据的测量；示例模式不筛选示例文件 |
 | `example_mode` | bool，默认 true | true 读取示例文件；false 查询数据库和数巧 |
 | `sensors` | 对象列表，可省略或为 null | 如 `[{"name":"310004a"}]`；省略、null、空列表均只返回加载信息和 step 下拉列，不返回测点列或曲线 |
 | `steps` | step ID/null 列表，可省略 | 每个位置对应一条试验加载记录；省略或 null 时全部未选择；显式列表长度必须等于有效记录数 |
@@ -82,7 +89,7 @@ TXT 数据按 `sample_index` 排列，用导入元数据中选定的横轴生成
 首次请求：
 
 ```json
-{"project_id": 2026101601}
+{"project_id": 2026101601, "work_condition_id": "condition-001", "measurement_id": "measurement-001"}
 ```
 
 返回完整成功信封示例（示例来源字段和 summary 等也保留）：
