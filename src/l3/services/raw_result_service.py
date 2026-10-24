@@ -256,6 +256,20 @@ def _infer_components(field: str, ncomp: int) -> List[str]:
     return KNOWN.get((field, ncomp), [f"{field}{i+1}" for i in range(ncomp)])
 
 
+def _json_list(arr: np.ndarray) -> list:
+    """ndarray → 嵌套 list，NaN/Inf 换成 None（JSON null）。
+
+    Starlette 的 JSONResponse 以 allow_nan=False 序列化，含 NaN 会 500；
+    面内/面外主值等字段在部分单元/积分点上就是 NaN。"""
+    arr = np.asarray(arr, dtype=np.float32)
+    bad = ~np.isfinite(arr)
+    if not bad.any():
+        return arr.tolist()
+    out = arr.astype(object)
+    out[bad] = None
+    return out.tolist()
+
+
 def raw_values_to_json_payload(
     sections: List[Tuple[str, np.ndarray]],
     components: List[str],
@@ -284,7 +298,7 @@ def raw_values_to_json_payload(
     section_map = {name: arr for name, arr in sections}
     if position == "NODAL":
         payload["node_labels"] = section_map["node_labels"].astype(np.int32).tolist()
-        payload["values"] = section_map["values"].astype(np.float32).tolist()
+        payload["values"] = _json_list(section_map["values"])
         return payload
 
     groups = []
@@ -293,7 +307,7 @@ def raw_values_to_json_payload(
             {
                 "etype": etype,
                 "elem_labels": section_map[_safe_section_name("el_", etype)].astype(np.int32).tolist(),
-                "values": section_map[_safe_section_name("v_", etype)].astype(np.float32).tolist(),
+                "values": _json_list(section_map[_safe_section_name("v_", etype)]),
             }
         )
     payload["etype_groups"] = groups

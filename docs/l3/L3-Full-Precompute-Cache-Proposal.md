@@ -206,13 +206,151 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 `deformed-positions`（默认 scale）首次约 370 ms、`modal-animation`（31 MB）首次约 340～500 ms（最终响应包未预算）；
 `raw-values` 带 result_group 一律 404（已修，见接口文档 2026-10-22 第三轮）。完整结果待在开发者本机跑 `--full`。
 
+**探测结果处理（2026-10-22，door `--full` 9405 个请求）**：`query/pick` 壳面内主值类字段 500（EN 块 NaN 写进 JSON）已修；
+`schemes` 每次约 110 ms → 按文件签名缓存；`legend-entries`（section）约 300 ms → 材料名按单元类型整列读取；
+`raw-values` 404 已修（服务未重启所以探测时仍报错）；`projects/{id}/summary` 404 是 ODB 项目没有 `model_summary.json`，非缓存问题。
+`modal-animation` 首次 340～500 ms：领导决定也预算存盘 → 计划版本 2，FREQUENCY 步每阶 × 有表面实例预算
+scale=建议值、n_frames=20 的响应包（`precompute_plan._modal_animation`）。磁盘约 n_frames × 顶点数 × 12 字节/阶，
+241 万节点模型每阶约数百 MB，阶数多时需关注 `APP_SCALAR_DISK_CACHE_MB`（默认 100 GB）：严格准备时单项超过上限会直接报错，全部条目总量超过上限会在核验时报“全量缓存未完整保留”，导入失败；可设 -1 不限容量。
+
 遗留问题：
+- 导入在缓存准备阶段中断（重启/崩溃）会从 L1 整条重跑、L2 清空缓存；准备出错没有单独重试入口。断点续做方案见 `Pipeline-Resume-Design.md`，2026-10-22 决定暂不实施。
 - `202610211132` 的变形动画显示“炸开”，开发者说之后再查，与缓存无关、尚未排查。
 - ~~STATUS（WHOLE_ELEMENT）字段再次请求仍约 190 ms~~：原因是 L3 的云图/范围/着色只认 NODAL、ELEMENT_NODAL、INTEGRATION_POINT，STATUS 只有 WHOLE_ELEMENT 块，每次都判为无数据、返回空 payload（灰色），空结果不缓存。2026-10-22 起按单元着色（`WHOLE_ELEMENT_FLAT`，与积分点 flat 同一读取函数），结果进缓存、全量计划自动覆盖；含 WHOLE_ELEMENT 块的结果文件缓存键加 `("we", …)`，旧的“无范围”缓存不再命中，其他文件键不变。测试 `tests/test_l3_whole_element_field.py`。
 - 仍存在：任何字段在某实例上真的没有数据时（如 CPRESS 在 DAO-1），每次请求仍会重新判定一遍（DAO-1 约 30 ms），未做“无数据”缓存。
 - ~~手动 `POST /results/warmup` 不给解析让路，期间追加结果可能等缓存锁超时（300 s）~~：2026-10-22 已修。原因有两层：手动预热带 `force`、跑起来不检查解析；而 `APP_WARMUP=0` 时解析繁忙检测根本没注册。现在繁忙检测始终注册，手动预热开始前繁忙则返回 `deferred`，进行中遇到解析则在当前组合后中止、释放锁，记入待办，由 poll 的 `run_pending`（不再受 `APP_WARMUP` 控制）在解析结束后接着补算。单个组合最长约数十秒，远小于 300 秒。
 - ~~重启后旧项目被打开会在 Web 进程内单线程补算全量计划~~：已按开发者要求把 `APP_WARMUP` 默认改为 0（2026-10-21），旧项目需手动 `POST /results/warmup` 或设 `APP_WARMUP=1` 才补算。
 - 后续可选：按内容去重相邻 step 交接帧（§0.4）、整块读取所有帧、任务账本、集合/区域/几何类最终响应等其他接口族。
+
+### 0.9 接续清单（2026-10-22 收尾）
+
+2026-10-22 已完成并推送（详见 §0.8 各条记录）：STATUS/WHOLE_ELEMENT 支持（`4ac300b`）、手动预热给解析让路（`201b7ce`，实机验证通过）、
+测试修复若干、接口探测工具 `tools/probe_endpoints.py`、raw-values 路径修复（`8cdd3f4`）、pick NaN 500 / schemes 缓存 /
+legend-entries 提速（`8703566`）、FREQUENCY 步 modal-animation 预算（`74c02ae`，计划版本 2）、断点续做设计备忘（未实施）。
+
+**待开发者在本机验证（新对话先问结果）**：
+1.–3. 已完成（2026-10-22）：单测通过；door 重新导入 ready 正常；`--full` 探测 ERROR 只剩 summary（见下方复测记录）。
+4. ~~向前端同事确认第三方前端调 `modal-animation` 的实际 `scale` / `n_frames`~~ 已确认（2026-10-22）：前端传
+   `deform-suggest-scale` 返回的建议值 + `n_frames=20`，与预算一致。实测项目 2026102201 eigenfrequency 第 4 阶带
+   `scale=0.5442756586073418&n_frames=20` 首次请求 49 ms（命中）。注意前端须原样回传建议值，四舍五入后缓存 key 对不上。
+   （此前探测工具不带 scale，测的是默认 1.0 的包，不能说明预算命中。）
+5. **进行中（2026-10-22 晚，开发者在跑）**：1440w（`E:\code\odb-service-design\model_v2\1440w-dof_grav_v3.odb`，
+   旧项目 `202610211530`）用 `402cb14` 之后的代码（计划已去掉 frame-colors）重新导入，然后
+   `python tools/snapshot_results.py --workspace <新工作区> --cache disk --compare baseline.npz --procs 2`。
+   预期“不一致 = 0”（STATUS 等整单元字段不一致属预期：基准代码不支持）；快照工具仍比对 frame-colors，disk 模式下现算。
+   新对话先要：比对输出全文 + 导入日志最后一条 `cache_prepare`（总项数/跳过/失败/进程数/耗时，总项数比旧版少属预期）。
+
+**2026-10-22 下午探测结果（`probe_2026102201_20261022_153257.md`，阈值 10 ms）**：
+- 已验证：pick 不再 500；`schemes` 6 ms；eigenfrequency 步 `modal-animation` 命中（实测约 20 ms，包 31.8 MB）。
+- 阈值 10 ms 过严：缓存命中的大响应（frame-scalars、modal-animation 等）服务端耗时本身就有 20–60 ms，被误判为 NOT_CACHED；
+  判断是否进缓存建议仍用 100 ms，或看同一请求两次耗时是否接近。
+- `raw-values` 432 个 500：8 个面内/面外主值字段（`*_INPLANE_*`、`*_OUTOFPLANE_*`）在 `format=json` 下含 NaN，JSONResponse 拒绝序列化；
+  已改为 NaN→null（`format=l3be` 本来就正常）。raw-values 每次读 L1，不在缓存计划内（约 10–550 ms，随数据量）。
+- `region-mesh-edges`（etype 方案大区域约 110 ms）改为整实例边表去重后进内存缓存；`legend-entries`（section 约 100 ms）
+  表面单元计数与默认标题按几何记忆化。两者都是每进程首次计算一次，未纳入磁盘预算。
+
+**2026-10-22 傍晚复测（`probe_2026102201_20261022_164353.md`，阈值 100 ms，`c9e32ca` 后）**：单测通过；ERROR 只剩 summary（预期）；
+region-mesh-edges、legend-entries、modal-animation、pick 全部 OK。剩余：
+- 4 个接口各有 1 个 NOT_PRECOMPUTED（color-code、deformed-normals、frame-colors、全实例 legend-entries），是每个进程首个请求的冷启动（加载索引/记忆化），其余同类请求都命中。
+- `raw-values` 432 个 NOT_CACHED：大字段（如 STH ELEMENT_NODAL，JSON 2.5 MB）`format=json` 约 325 ms，其中主要是 JSON 序列化，
+  `format=l3be` 同一请求 40 ms。raw-values 是计算类接口（viewer 不调用），按全量预算需复制全部 L1 数据（JSON 还会膨胀约 4 倍），暂未纳入，待定。
+
+**决定（2026-10-22）：`raw-values` 不缓存、不纳入全量预算。** 理由：计算类接口（viewer 不调用），不属于“模型显示类接口”；
+全量预算等于把 L1 原始结果整份复制（JSON 再膨胀约 4 倍）；慢主要在 JSON 序列化（STH ELEMENT_NODAL json 约 325 ms，
+`format=l3be` 40 ms），调用方要快可用 l3be。探测报告里 raw-values 的 NOT_CACHED 属预期。
+
+**决定（2026-10-22）：全量缓存只对 viewer 实际调用的接口负责。** 清单以 `viewer/src` 为准，写在
+`tools/probe_endpoints.py` 的 `VIEWER_ROUTES`（探测工具默认只测这些，`--all-routes` 测全部）。据此：
+- `frame-colors` 移出全量计划：viewer 只定义了 `fetchFieldColors`、从未调用（云图走 frame-scalars + 色带贴图），
+  它却占计划条目一半以上（test1：4014 / 7533，每字段每帧 U1-3 × smooth/flat 6 项）。接口保留，按需现算并缓存。
+  范围缩小，`PLAN_VERSION` 不变（旧项目完成标记仍有效）。
+- 探测工具请求 `modal-animation` 时与前端一样带 `deform-suggest-scale` 建议值 + `n_frames=20`（此前不带 scale，测的是默认 1.0 的包）。
+- viewer 调用、但计划里只做中间层的：`deformed-positions`（scale 任意，缓存位移向量）、`modal-shape`、`pick`、
+  `section-mesh`（截面位置任意）、区域边线/轮廓，现有速度在阈值内，不再加预算。
+
+**后续可做**：
+- 小模型导入时前约 50 s 单进程测内存（test1 占总时长约 40%），可按模型规模预估首批 worker 数。
+- `202610211132` 变形动画“炸开”：该模型有 STATUS（单元删除），疑为被删单元节点位移无意义所致，Abaqus 会隐藏 STATUS=0 单元；未查。
+- 断点续做：`Pipeline-Resume-Design.md`，待定。
+- 全量测试另有约 68 个与缓存无关的失败（模型修正/灵敏度/求解器，多为 inp_service 拆分后测试未跟上），建议单独清理。
+- 探测工具只测 GET；POST 纯查询（render-faces、surface-patch、node-table 等）未覆盖。
+
+### 0.10 1440w 实测与几何类显示缓存（2026-10-23）
+
+**1440w 重新导入（项目 `202610221440`，`9f870ce`）**：`cache_prepare` 376/376、0 跳过、0 失败，4 进程，507 s
+（range 124、scalars 248、位移 2、变形统计 2；静力步无 modal-animation）。
+`snapshot_results.py --workspace <完整路径> --cache disk --compare baseline.npz --procs 2`：**完全一致 832、不一致 0**（13 分钟），
+多进程严格准备落盘的内容与基准代码逐项相同（§0.8 遗留项完成）。注意 `--workspace` 必须给完整数据路径，只写项目号会按代码目录
+相对路径解析，模型加载失败、832 项全部“不一致”（第一次比对就是这样）。
+
+**`--full` 探测（`probe_202610221440_20261023_000518`，阈值 100 ms）**：表面约 322 万三角面、967 万渲染顶点，逐顶点响应很大
+（frame-scalars 39 MB；color-code、element-mesh-edges、modal-shape 各约 116 MB；deformed-positions 232 MB）。
+- frame-scalars 两次 143～330 ms：命中缓存，慢在 39 MB 的归一化与打包，属下限，不是漏缓存。
+- modal-animation 测在静力步（每阶 20 帧包 **2.3 GB**，首次 13～15 s、命中 2 s）：viewer 只在 FREQUENCY 步调用，属探测工具误测，
+  已改为只测 FREQUENCY 步。但说明大模型模态动画预算包远大于 §0.8 的“每阶数百 MB”估计（约 n_frames × 渲染顶点数 × 12 字节），
+  **是否继续预算 modal-animation 待领导确认**。
+- deformed-positions 首次 9.2 s / 2.7 s、命中 107 ms（scale 任意，只预算了位移底座）：**是否预算建议 scale 的整包待领导确认**。
+- pick 每次 200～380 ms（现查，不属缓存），以后单独看。
+- 下面四项 viewer 调用且大模型明显慢，2026-10-23 用户拍板先做：
+
+| 接口 | 实测（修改前） | 处理 |
+|---|---|---|
+| `color-code/{instance}/region-mesh-edges` | 整模型大小区域每次 9～10 s（116 MB），中等区域 1～3 s | 整包存盘；区域节点标记去掉 `np.unique`（结果相同） |
+| `color-code/{instance}/region-outline` | 大区域每次约 2.6 s（0.3 MB） | 整包存盘 |
+| `color-code/{instance}` | 每次约 0.6 s，单元集合首次约 2 s（116 MB） | 整包按“面分类 key + 当前改色/改名”存盘 |
+| `color-code/{instance}/legend-entries` | 首次 2.7～8.4 s，之后约 40 ms（仅进程内记忆化） | 只依赖几何的部分存盘；单元集合单元数改用编码 bincount |
+
+实现（`services/region_edge_service.py`、`color_service.color_code_payload` / `_legend_entries_base`）：
+- 缓存 key 都以面分类 key（`color_service._codes_key`：render.h5 / L1 几何 / sets.h5 签名 + 高级索引版本）为身份；区域边线另加
+  边文件与 surface.h5 签名。改色/改名进 color-code 包的 key（改后换新包，立即生效）；legend-entries 改色/改名每次现查叠加。
+- `warm_color_views`：导入严格准备（`readiness_service`，在单元边线之后）与旧项目手动预热（`warmup_service`）都会执行。范围 =
+  每个实例 × 每个非 elset 方案 + 每个单元集合单选（前端把同一份 set_names 广播给所有实例，所以每个实例都算每个集合）的着色包与
+  图例条目，以及每个方案在表面出现的每个区域、每个集合（只在所属实例）的单元边线与外轮廓。多选集合任意组合不穷举（首次请求后缓存）。
+  请求本身就会报参数错误的组合（ValidationError / NotFoundError）记为跳过。已在磁盘的大条目只检查存在（`cache_store.payload_exists`），
+  追加结果重跑准备时不重读几 GB 响应包。结果写进导入日志一条“几何显示缓存完成：{…}”。
+- 响应头新增 `X-Cache: hit|miss`（三个二进制接口），探测工具可直接看是否命中。
+- 磁盘估算（1440w）：着色包（5 个方案 + 15 个集合）× 116 MB ≈ 2.3 GB；区域边线每个方案合计约一份整模型边线（≤ 116 MB）× 5 + 集合若干百 MB；
+  外轮廓与图例条目可忽略。**单元集合很多的模型，着色包 = 集合数 × 整模型顶点数 × 12 字节**，需要留意磁盘上限。
+- 测试 `tests/test_l3_color_views_cache.py`。
+
+**待开发者验证**：跑 `test_l3_color_views_cache.py`、`test_l3_region_edges_route.py`、`test_l3_color_code_cache.py`、
+`test_color_elset_prefix.py`、`test_color_legend_save_route.py`、`test_pipeline_readiness.py`、`test_l3_warmup_scheduling.py`、
+`test_l3_disk_cache_warmup.py`；重启服务后对 `202610221440` 手动 `POST /results/warmup` 补算（或重新导入，看“几何显示缓存完成”日志的
+条目数与秒数），再跑 `--full` 探测：上述四个接口第二次应全部 `X-Cache: hit` 且远低于原耗时（已验证，见下方复测）。
+
+**复测（2026-10-23 凌晨，`dde76cd`，`probe_202610221440_20261023_011643`）**：服务重启后手动 warmup，日志
+`color views {'color_code': 20, 'legend_entries': 20, 'region_mesh_edges': 97, 'region_outline': 97, 'skipped': 0, 'seconds': 86.0}`
+（82 个方案区域 + 15 个集合区域；结果计划 376 项已在盘上，整个 warmup 128 s）。探测（再次请求中位数 / 最大值，ms）：
+region-mesh-edges 140/10116 → 9/65、region-outline 49/2606 → 8/16、color-code 576/674 → 55/87、legend-entries 首次 2692/8441 → 10/26，
+四项全部 `X-Cache: hit`。
+- 新暴露：`color-code/{instance}/legend`（viewer 调用）单元集合首次约 1.4～1.6 s。原因是单元集合分类只进内存，以前着色包现算时
+  顺带算好了分类，图例跟着命中；着色包改为直接命中后分类没人算。已改为图例与着色包同 key 存盘（`key + ("legend",)`），
+  `warm_color_views` 增加 `legend` 一类。
+- 探测工具仍在静力步请求 modal-animation：`meta/overview` 不带 `result_group` 时不列 step，工具拿不到 procedure，已改为按结果组取。
+- 其余与上次一致：pick 约 0.2～0.36 s/次、render-buffers(-chunked) 0.25～1 s、frame-scalars 命中 124～234 ms（39 MB 下限）。
+
+**第二次复测（`5ebe167`，`probe_202610221440_20261023_012948`，821 个请求）**：warmup 日志
+`color views {'color_code': 20, 'legend': 20, 'legend_entries': 20, 'region_mesh_edges': 97, 'region_outline': 97, 'skipped': 0, 'seconds': 34.9}`。
+legend 首次最大 1607 → 33 ms；modal-animation 不再出现在静力步探测里；region-outline / legend-entries 全部 OK，region-mesh-edges 81 OK + 1 个首次 101 ms。
+color-code 20 个都是 `hit/hit`，首次 100～137 ms、再次约 50 ms：命中后从磁盘读 116 MB 的耗时（第二次走系统文件缓存），属 I/O 下限，
+被 100 ms 阈值判为 NOT_PRECOMPUTED 不代表没预算。至此 viewer 调用的接口里，仍超过阈值的只剩与缓存无关或响应体积决定的：
+pick / nearest-face（现查）、render-buffers(-chunked)（174～213 MB）、frame-scalars（39 MB）、modal-shape（116 MB）；
+deformed-positions 首次约 0.2 s（任意 scale，只预算位移底座）与 modal-animation 预算策略待领导确认。
+
+### 0.11 接续清单（2026-10-23 收尾，最后提交见 git log）
+
+**已完成并验证**：1440w 多进程落盘快照比对 832/832 一致；color-code / legend / legend-entries / region-mesh-edges / region-outline
+存盘 + 导入预算（`cfc6126`、`5ebe167`），测试全绿，`--full` 探测全部命中（§0.10）；探测工具只在 FREQUENCY 步测 modal-animation。
+
+**待领导确认（新对话先问结论）**：
+1. `deformed-positions` 是否预算“建议 scale”整包：现首次约 0.2～9 s（冷启动差异大）、命中约 100 ms；每帧约 232 MB（1440w），
+   帧数多的模型线性增长。viewer 调用时 scale 由用户调整，且**不带 `result_group`**（`ThreeViewport.vue:1835`，多结果组项目可能取默认组，需单独确认）。
+2. `modal-animation` 预算策略：现 FREQUENCY 步每阶预算 scale=建议值、n_frames=20 的整包，大小约 20 × 渲染顶点数 × 12 字节
+   （1440w 每阶 2.3 GB，20 阶约 46 GB，逼近默认 100 GB 磁盘上限）；viewer 默认 shader 模式只用 modal-shape（116 MB），
+   预计算模式需用户手动切换。可选：保留 / 按规模（顶点数或总大小）决定 / 不再预算。
+
+**后续可做（未排期）**：pick 每次 0.2～0.36 s 提速；多选单元集合组合首次约 2 s（单集合分类可存盘后组合）；
+单元集合很多的模型着色包磁盘 = 集合数 × 顶点数 × 12 字节需留意；§0.9 原有的“后续可做”各项仍有效。
 
 ## 1. 需求与结论
 
@@ -275,7 +413,7 @@ worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessin
 | `modal-animation` | 所有适用模态的位移底座；计划内 scale 和 n_frames 的最终动画包 | 任意 scale；n_frames 当前合法整数 4～120 | 固定 scale 后帧数是有限维度，可全部列入计划；前端默认值 20 必须覆盖，其他配置的必需范围需审阅确定 |
 | `geometry/*` | 全实例 render-buffers、标准分块、element-mesh-edges、feature-edges、lines、points、couplings、orientations 等 | 任意 chunk_size、集合子集、任意面列表 | 已有 L2 文件不等于已有最终响应缓存；可预生成标准响应，任意切块复用基础数组 |
 | `color-code/*` | 已有 scheme、已有 region、已有单集合；分类编码、区域边线、区域轮廓 | 任意集合组合、用户改色和改名 | 目前分类预热排除 elset；应覆盖已有集合，动态显示信息必须有版本或即时组合 |
-| `results/raw-values` | 实际存在的 group/step/field/instance/frame/position，覆盖 json 与 l3be | 后续新增或重写结果 | 不再因直接读取 L1 或磁盘占用而排除；不同 position 的数据不可混用 |
+| `results/raw-values` | **不缓存**（2026-10-22 拍板，见 §0.9） | — | 计算类接口，viewer 不调用；每次直接读 L1，需要快用 `format=l3be` |
 | `results/node-table`、`results/node-time-value`、`query/node-displacements` | 全实际帧的节点结果底座、标签映射、时间轴和必要索引 | 任意节点/列组合、请求顺序、任意时间插值 | 不穷举所有列表；复用完整数据，提取/插值后可缓存具体查询结果，保持顺序和错误语义 |
 | pick、ray-pick、bbox、nearest-face、surface-patch、render-faces、section-mesh | 几何、结果映射、空间/拓扑索引，固定预设剖切可额外生成 | 射线、坐标、包围盒、剖切位置和任意选区 | 准备公共底座；合法具体查询首次计算后可缓存，不宣称所有任意空间输入已预算 |
 | meta、steps、frames、fields、sensitivity/model-update 字段目录 | 每个数据版本的元数据快照 | 新结果、字段、集合、图例或模型修正状态变化 | 小响应也纳入清单；实时进度和任务状态不能长期返回旧快照 |

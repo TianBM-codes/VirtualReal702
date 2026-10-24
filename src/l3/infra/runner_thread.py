@@ -266,6 +266,7 @@ class EmbeddedRunner:
         """
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"   # 子进程输出按 UTF-8 解码，Windows 默认是 GBK
 
         # On Windows, CREATE_NEW_PROCESS_GROUP isolates the child from the
         # parent's console group so that Intel MKL/Fortran runtime cleanup
@@ -370,7 +371,8 @@ class EmbeddedRunner:
         for phase in ("core", "advanced"):
             ret = subprocess.run(
                 [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
-                 "--phase", phase], capture_output=True, encoding="utf-8", errors="replace")
+                 "--phase", phase], capture_output=True, encoding="utf-8", errors="replace",
+                env=dict(os.environ, PYTHONIOENCODING="utf-8"))
             if ret.returncode != 0:
                 msg = f"L2 {phase} ingest failed: " + ret.stderr[-2000:]
                 self._update_project_geom_status(project_id, "error", msg)
@@ -387,7 +389,8 @@ class EmbeddedRunner:
         for phase in ("core", "advanced"):
             ret = subprocess.run(
                 [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace,
-                 "--phase", phase], capture_output=True, encoding="utf-8", errors="replace")
+                 "--phase", phase], capture_output=True, encoding="utf-8", errors="replace",
+                env=dict(os.environ, PYTHONIOENCODING="utf-8"))
             if ret.returncode != 0:
                 self._update_status(odb_id, "error", error_msg=f"[L2 {phase}] " + ret.stderr[-2000:])
                 return False
@@ -497,7 +500,8 @@ class EmbeddedRunner:
                 if marker.exists():
                     ret = subprocess.run(
                         [sys.executable, str(_INGEST_SCRIPT), "--workspace", workspace],
-                        capture_output=True, encoding="utf-8", errors="replace")
+                        capture_output=True, encoding="utf-8", errors="replace",
+                        env=dict(os.environ, PYTHONIOENCODING="utf-8"))
                     if ret.returncode != 0:
                         raise RuntimeError("L2 截面索引重建失败：" + ret.stderr[-2000:])
                     marker.unlink()

@@ -3,7 +3,7 @@
 
 目标：用户第一次点开云图就命中缓存。做法是在以下时机后台执行全量预计算计划
 （services/precompute_plan.py：每个 result_group × step × field × instance 的全部帧、
-全部分量、smooth/flat，以及 frame-colors、U 位移与变形比例）。新导入由 runner 在
+全部分量、smooth/flat，以及 U 位移与变形比例；frame-colors viewer 不调用，不预算）。新导入由 runner 在
 ready 前严格执行同一计划；这里负责计划升级前就 ready 的旧项目补算和兜底：
 
   1. 模型加载完成（core.state 的 on_render_ready_loaded 回调，覆盖启动预载
@@ -47,6 +47,7 @@ from ..infra.manifest_repo import ManifestRepo
 from . import cache_store
 from .color_service import warm_color_codes
 from .mesh_edge_service import warm_element_mesh_edges
+from .region_edge_service import warm_color_views
 from .precompute_plan import PLAN_VERSION, list_targets, run_plan
 
 logger = logging.getLogger(__name__)
@@ -256,7 +257,7 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     if yield_to_parse and parse_busy():
         return {"odb_id": odb_id, "status": "yielded"}
 
-    # 模型几何类（与结果无关）：着色分类编码 + 单元边线
+    # 模型几何类（与结果无关）：着色分类编码 + 单元边线 + 着色包/图例条目/区域边线
     try:
         n_color = warm_color_codes(idx)
     except Exception:
@@ -267,6 +268,11 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     except Exception:
         logger.exception("Warmup[%s]: element-mesh-edges warmup failed", odb_id)
         n_edges = 0
+    try:
+        views = warm_color_views(idx)
+    except Exception:
+        logger.exception("Warmup[%s]: color views warmup failed", odb_id)
+        views = {}
 
     manifest = ManifestRepo(idx.workspace)
     targets = _list_result_targets(manifest)
@@ -293,12 +299,12 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     n_deform = by_kind.get("displacement", 0) + by_kind.get("deform_stats", 0)
 
     dt = time.time() - t0
-    logger.info("Warmup[%s]%s: %d color-code, %d mesh-edges, plan %d/%d done, "
+    logger.info("Warmup[%s]%s: %d color-code, %d mesh-edges, color views %s, plan %d/%d done, "
                 "%d skipped, %d failed, %.1fs", odb_id, f" ({reason})" if reason else "",
-                n_color, n_edges, stats["done"], stats["total"], stats["skipped"],
+                n_color, n_edges, views, stats["done"], stats["total"], stats["skipped"],
                 stats["failed"], dt)
     return {"odb_id": odb_id, "status": "done",
-            "color_warmed": n_color, "mesh_edges_warmed": n_edges,
+            "color_warmed": n_color, "mesh_edges_warmed": n_edges, "color_views": views,
             "warmed": n_ok, "skipped": n_skip,
             "deform_warmed": n_deform, "seconds": round(dt, 1)}
 

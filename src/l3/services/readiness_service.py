@@ -10,6 +10,7 @@ from ..infra.manifest_repo import ManifestRepo
 from . import cache_store
 from .color_service import warm_color_codes
 from .mesh_edge_service import warm_element_mesh_edges
+from .region_edge_service import warm_color_views
 from .precompute_plan import list_targets, run_plan, run_plan_parallel, worker_limit
 from .warmup_service import _WarmLock
 
@@ -26,8 +27,8 @@ def prepare_workspace(odb_id: str, workspace: str, result_group=None,
     """成功返回后才允许提交 ready；仅预计算有结果块的实例，不吞掉实际错误。
 
     按全量计划（services/precompute_plan.py）准备每 step 全部帧、全部分量、
-    smooth/flat 的云图与范围、frame-colors、U 位移和变形比例；另含几何分类与
-    单元边线。与 scale 等有关的任意请求不在承诺范围。
+    smooth/flat 的云图与范围、U 位移和变形比例；另含几何分类、单元边线，
+    以及着色包 / 图例条目 / 区域边线与外轮廓（每个方案、单个单元集合、每个区域）。与 scale 等有关的任意请求不在承诺范围。
     progress(message, percent) 用于把进度写进项目日志。
     """
     lock = _WarmLock(workspace, strict=True)
@@ -79,6 +80,10 @@ def prepare_workspace(odb_id: str, workspace: str, result_group=None,
         with cache_store.require_persistent_cache() as entries:
             warm_color_codes(idx, strict=True)
             warm_element_mesh_edges(idx, strict=True)
+            views = warm_color_views(idx, strict=True)
+            logger.info("prepare %s: color views done %s", odb_id, views)
+            if progress is not None:
+                progress(f"几何显示缓存完成：{views}", 0)
             # 合法的全 NaN 结果（如实体实例的面内主应变）由计划记为跳过，与接口返回空
             # payload 置灰一致；文件/块缺失已在上面硬校验过。
             workers = worker_limit()

@@ -8,11 +8,8 @@ GET /api/odb/{odb_id}/color-code/{instance}?scheme=etype|material|section_type|e
   → X-Color-Legend: JSON  [{id, name, r, g, b}, ...]
   → X-Face-Count: Rf
 """
-import json
-import os
 from typing import Dict, List
 
-import h5py
 import numpy as np
 
 from fastapi import APIRouter, Body, Query
@@ -22,7 +19,7 @@ from ...core.errors import NotFoundError
 from ...core.state import registry
 from ...infra.l3be import build as l3be_build
 from ...infra.manifest_repo import ManifestRepo
-from ...services import color_service
+from ...services import color_service, region_edge_service
 from ..response import ok
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["color_code"])
@@ -246,20 +243,19 @@ async def get_color_code(
         raise NotFoundError(f"ODB '{odb_id}' not found", {"odb_id": odb_id})
 
     parsed_sets: List[str] = [s.strip() for s in set_names.split(",") if s.strip()]
-    colors, legend = color_service.get_color_code(
+    payload, hit = color_service.color_code_payload(
         idx, instance, scheme, parsed_sets or None
     )
 
     etype_arr = idx.source_elem_etype.get(instance)
     Rf = len(etype_arr) if etype_arr is not None else 0
-    legend_bytes = np.frombuffer(json.dumps(legend).encode("utf-8"), dtype=np.uint8)
-    payload = l3be_build([("color_per_vertex", colors), ("legend", legend_bytes)])
 
     return Response(
         content=payload,
         media_type="application/octet-stream",
         headers={
             "X-Face-Count": str(Rf),
+            "X-Cache": "hit" if hit else "miss",
         },
     )
 
@@ -295,44 +291,14 @@ async def get_region_mesh_edges(
             headers={"X-Edge-Count": "0"},
         )
 
-    face_mask = color_service.region_face_mask(idx, instance, scheme, region)
-    if face_mask is None or not np.any(face_mask):
+    result = region_edge_service.region_mesh_edges(idx, instance, scheme, region)
+    if result is None:
         return _empty()
-
-    render_indices = idx.render_indices.get(instance)
-    vtx_node_row   = idx.vtx_node_row.get(instance)
-    coords_global  = idx.coords_global.get(instance)
-    if render_indices is None or vtx_node_row is None or coords_global is None:
-        return _empty()
-
-    region_vert_rows = vtx_node_row[np.unique(render_indices[face_mask].ravel())]
-    node_in_region = np.zeros(len(coords_global), dtype=bool)
-    node_in_region[region_vert_rows] = True
-
-    geometry_dir = os.path.join(idx.workspace, "l2", "geometry")
-    edges_h5 = os.path.join(geometry_dir, f"{instance}_edges.h5")
-    surface_h5 = os.path.join(geometry_dir, f"{instance}_surface.h5")
-    # 两阶段 L2 的边数据在独立文件中；旧工作区仍可从 surface.h5 读取。
-    edge_source = edges_h5 if os.path.isfile(edges_h5) else surface_h5
-    if not os.path.exists(edge_source):
-        return _empty()
-
-    with h5py.File(edge_source, "r") as f:
-        if "element_mesh_edges/edge_nodes" not in f:
-            return _empty()
-        edge_nodes = f["element_mesh_edges/edge_nodes"][:]   # [E, 2] int32
-
-    edge_mask = node_in_region[edge_nodes[:, 0]] & node_in_region[edge_nodes[:, 1]]
-    filtered = np.unique(np.sort(edge_nodes[edge_mask], axis=1), axis=0)
-
-    E = len(filtered)
-    edge_positions = np.ascontiguousarray(
-        coords_global[filtered.ravel()].reshape(E * 2, 3).astype(np.float32)
-    )
+    payload, E, hit = result
     return Response(
-        content=l3be_build([("edge_positions", edge_positions)]),
+        content=payload,
         media_type="application/octet-stream",
-        headers={"X-Edge-Count": str(E)},
+        headers={"X-Edge-Count": str(E), "X-Cache": "hit" if hit else "miss"},
     )
 
 
@@ -367,52 +333,12 @@ async def get_region_outline(
             headers={"X-Edge-Count": "0"},
         )
 
-    face_mask = color_service.region_face_mask(idx, instance, scheme, region)
-    if face_mask is None or not np.any(face_mask):
+    result = region_edge_service.region_outline(idx, instance, scheme, region)
+    if result is None:
         return _empty()
-
-    render_indices = idx.render_indices.get(instance)
-    vtx_node_row   = idx.vtx_node_row.get(instance)
-    coords_global  = idx.coords_global.get(instance)
-    if render_indices is None or vtx_node_row is None or coords_global is None:
-        return _empty()
-
-    region_tris = render_indices[face_mask]          # [Rf_reg, 3] vertex indices
-    v0, v1, v2 = region_tris[:, 0], region_tris[:, 1], region_tris[:, 2]
-
-    # Convert to node rows: vertices are NOT shared across element boundaries,
-    # but same-position vertices of adjacent elements have the same vtx_node_row.
-    # Deduplicating edges by node-row pairs correctly collapses interior edges
-    # (which appear in two adjacent triangles) and retains only boundary edges.
-    n0 = vtx_node_row[v0]
-    n1 = vtx_node_row[v1]
-    n2 = vtx_node_row[v2]
-
-    edges = np.concatenate([
-        np.stack([np.minimum(n0, n1), np.maximum(n0, n1)], axis=1),
-        np.stack([np.minimum(n1, n2), np.maximum(n1, n2)], axis=1),
-        np.stack([np.minimum(n0, n2), np.maximum(n0, n2)], axis=1),
-    ])   # [3*Rf_reg, 2]  — node row pairs
-
-    N_nodes = len(coords_global)
-    packed = edges[:, 0].astype(np.int64) * N_nodes + edges[:, 1].astype(np.int64)
-    unique_packed, counts = np.unique(packed, return_counts=True)
-    boundary_packed = unique_packed[counts == 1]
-
-    if len(boundary_packed) == 0:
-        return _empty()
-
-    boundary_edges = np.stack([
-        (boundary_packed // N_nodes).astype(np.int32),
-        (boundary_packed %  N_nodes).astype(np.int32),
-    ], axis=1)   # [E_boundary, 2]  — node row pairs
-
-    E = len(boundary_edges)
-    edge_positions = np.ascontiguousarray(
-        coords_global[boundary_edges.ravel()].reshape(E * 2, 3).astype(np.float32)
-    )
+    payload, E, hit = result
     return Response(
-        content=l3be_build([("edge_positions", edge_positions)]),
+        content=payload,
         media_type="application/octet-stream",
-        headers={"X-Edge-Count": str(E)},
+        headers={"X-Edge-Count": str(E), "X-Cache": "hit" if hit else "miss"},
     )
