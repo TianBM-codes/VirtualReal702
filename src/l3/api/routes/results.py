@@ -9,11 +9,12 @@ GET /api/odb/{odb_id}/results/frame-scalars
 Pick 单面精确值复用已有 /query/pick 接口，无需重复实现。
 """
 import re
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 import numpy as np
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from ...core.errors import NotFoundError as CoreNotFoundError
 from ...core.state import registry
@@ -430,9 +431,85 @@ async def get_frame_scalar_range(
          skipped (no data), same as fields with no data.
     Returns JSON { global_min, global_max, instance_ranges: { name: [min, max] } }.
     """
+    return _frame_scalar_range(
+        odb_id=odb_id,
+        inst_list=[s.strip() for s in instances.split(",") if s.strip()],
+        step=step,
+        field=field,
+        frame=frame,
+        component_idx=component_idx,
+        mode=mode,
+        result_group=result_group,
+        set_name=set,
+        feature_angle=feature_angle,
+        average_threshold=average_threshold,
+        use_geometry_split=use_geometry_split,
+    )
+
+
+class FrameScalarRangeRequest(BaseModel):
+    """POST 版 frame-scalar-range 的请求体：字段与 GET 查询参数一一对应。
+
+    instance 很多时 GET 的 URL 会超长被网关/服务器拒掉，改用 POST 把参数放进
+    JSON 体。instances 既可以是数组，也可以沿用 GET 的逗号分隔字符串。
+    """
+    instances: Union[List[str], str]
+    step: str
+    field: str
+    frame: int = 0
+    component_idx: Optional[int] = Field(default=None, ge=0)
+    mode: str = Field(default="smooth", pattern="^(smooth|flat)$")
+    result_group: Optional[Union[List[str], str]] = None
+    set: Optional[str] = None
+    feature_angle: Optional[float] = 20.0
+    average_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    use_geometry_split: bool = True
+
+
+@router.post("/results/frame-scalar-range")
+async def post_frame_scalar_range(odb_id: str, body: FrameScalarRangeRequest):
+    """Same as GET /results/frame-scalar-range, parameters in a JSON body."""
+    if isinstance(body.instances, str):
+        inst_list = [s.strip() for s in body.instances.split(",") if s.strip()]
+    else:
+        inst_list = [str(s).strip() for s in body.instances if str(s).strip()]
+    result_group = body.result_group
+    if isinstance(result_group, str):
+        result_group = [result_group]
+    return _frame_scalar_range(
+        odb_id=odb_id,
+        inst_list=inst_list,
+        step=body.step,
+        field=body.field,
+        frame=body.frame,
+        component_idx=body.component_idx,
+        mode=body.mode,
+        result_group=result_group or None,
+        set_name=body.set,
+        feature_angle=body.feature_angle,
+        average_threshold=body.average_threshold,
+        use_geometry_split=body.use_geometry_split,
+    )
+
+
+def _frame_scalar_range(
+    *,
+    odb_id: str,
+    inst_list: List[str],
+    step: str,
+    field: str,
+    frame: int,
+    component_idx: Optional[int],
+    mode: str,
+    result_group: Optional[List[str]],
+    set_name: Optional[str],
+    feature_angle: Optional[float],
+    average_threshold: float,
+    use_geometry_split: bool,
+):
+    """GET / POST frame-scalar-range 共用的计算逻辑。"""
     from ...core.errors import NotFoundError as _NFE
 
-    inst_list = [s.strip() for s in instances.split(",") if s.strip()]
     instance_ranges: dict = {}
     global_min = float("inf")
     global_max = float("-inf")
@@ -464,7 +541,7 @@ async def get_frame_scalar_range(
                     component_idx=component_idx,
                     render_mode=mode,
                     result_group=rg,
-                    set_name=set,
+                    set_name=set_name,
                     feature_angle=feature_angle,
                     average_threshold=average_threshold,
                     use_geometry_split=use_geometry_split,
