@@ -366,6 +366,9 @@ deformed-positions 首次约 0.2 s（任意 scale，只预算位移底座）与 
   而预算的是每帧各自的建议 scale，因此除所选帧外第一圈都是现算（之后命中）。要覆盖需要 帧数² 包，暂不做。
 - 探测：`tools/probe_endpoints.py` 的 deformed-positions 改为带建议 scale（原用默认 scale=1，测不到预算的包）。
 - 磁盘：1440w 每帧约 232 MB × 帧数；100 GB 默认上限内，帧数多的大模型要留意（与 modal-animation 叠加）。
+- 1440w 实测（2026-10-26，`202610221440`，手动 warmup）：计划 378/378 完成（比导入时 376 多 2 帧变形坐标），57 s，0 跳过 0 失败；
+  磁盘基本不变——该模型 nlgeom，建议 scale 恒为 1.0，§0.10 探测用默认 scale=1 时已存下这 2 包。按 viewer 参数请求两帧均 `X-Cache: hit`。
+  磁盘/耗时增量需在建议 scale ≠ 1 的模型上另测。
 
 ## 1. 需求与结论
 

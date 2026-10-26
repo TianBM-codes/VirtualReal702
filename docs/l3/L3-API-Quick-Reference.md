@@ -1242,8 +1242,9 @@ L3BE sections：
 
 手动触发该模型的**缓存预热**（预计算）：后台线程依次预算
 ① 只依赖几何的数据：每个 instance × `color-code` 各 scheme（elset 除外）的面分类、`element-mesh-edges`；
-② 每个 result_group × step × field × 有结果块的 instance 在**全部帧**上的 `frame-scalars`（默认分量 + 每个实际分量 × smooth/flat）及其归一化范围、`frame-colors`（U1/U2/U3 × smooth/flat）；
-③ U 场每一帧的 `deform-suggest-scale` 统计与各 instance 顶点位移向量（`vertex-displacements` / `modal-shape` / `modal-animation` 共用）；FREQUENCY 分析步另预算每阶 `modal-animation` 最终响应包（scale = 该阶建议值，n_frames = 20）。
+② 每个 result_group × step × field × 有结果块的 instance 在**全部帧**上的 `frame-scalars`（默认分量 + 每个实际分量 × smooth/flat）及其归一化范围（`frame-colors` 自 2026-10-22 起不预算，viewer 不调用）；
+③ U 场每一帧的 `deform-suggest-scale` 统计、各 instance 顶点位移向量（`vertex-displacements` / `modal-shape` / `modal-animation` 共用）与 `deformed-positions` 最终响应包（scale = 该帧建议值，2026-10-26 起）；FREQUENCY 分析步另预算每阶 `modal-animation` 最终响应包（scale = 该阶建议值，n_frames = 20）；
+④ 几何类显示：`color-code` 各 scheme 与每个单元集合单选的着色包/图例/`legend-entries`、每个区域的 `region-mesh-edges` / `region-outline`。
 大模型可能需要数小时（实测 68 万节点、5 步 × 11 帧、37 个字段约 4 小时），计算期间遇到解析任务会让路（手动触发同样让路，解析结束后自动接着算）。
 结果写入内存 + 磁盘缓存（`<workspace>/l3_cache/`）。接口立即返回，不等预热完成。幂等——已缓存的组合直接跳过，重复调用只补算新增字段。
 
