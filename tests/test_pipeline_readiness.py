@@ -149,9 +149,10 @@ def prepared_model(tmp_path, monkeypatch):
         calls.append((args, kw))
         cache_store.json_put(str(tmp_path), "groups/g", ("test", str(args[2:])), {"ok": True})
 
-    for name in ("compute_scalar_range", "frame_scalars",
-                 "frame_vertex_displacements", "deform_scale_stats"):
+    for name in ("compute_scalar_range", "frame_scalars", "frame_vertex_displacements",
+                 "cached_deformed_positions", "deform_scale_stats"):
         monkeypatch.setattr(precompute_plan, name, calculate)
+    monkeypatch.setattr(precompute_plan, "suggest_deform_scale", lambda *a: 1.0)
     monkeypatch.setattr(cache_store.settings, "scalar_cache_mb", 10)
     monkeypatch.setattr(cache_store.settings, "scalar_disk_cache_mb", 10)
     monkeypatch.setattr(cache_store.settings, "precompute_workers", 1)   # 打桩只在本进程生效
@@ -163,9 +164,9 @@ def test_prepare_ignores_busy_queue_and_only_warms_instances_with_data(prepared_
     from src.l3.services import warmup_service
     monkeypatch.setattr(warmup_service, "parse_busy", lambda: pytest.fail("不得等待解析队列空闲"))
     readiness.prepare_workspace("p", str(workspace), "g", group_only=True)
-    # 全量计划：每帧 range 1 + scalars smooth/flat 2 + 位移 1，共 2 帧；
+    # 全量计划：每帧 range 1 + scalars smooth/flat 2 + 位移 1 + 变形坐标 1，共 2 帧；
     # 再加每帧变形比例 2。只有有结果块的实例 A，B 不算（frame-colors 不预算）。
-    assert len(calls) == 10
+    assert len(calls) == 12
     per_instance = [args for args, _kw in calls[:-2]]
     assert all(args[2] == "A" for args in per_instance)
     assert {args[-1] for args in per_instance} == {0, 4}       # 第 0 帧也覆盖
@@ -195,8 +196,8 @@ def test_instance_without_data_is_skipped_like_api(prepared_model, monkeypatch):
     monkeypatch.setattr(precompute_plan, "compute_scalar_range", no_data)
     readiness.prepare_workspace("p", str(workspace), "g", group_only=True)
     # 无数据的范围逐项跳过（2 帧 × 1 个分量），其余照常准备：
-    # 每帧 scalars smooth/flat 2 + 位移 1，共 2 帧；再加每帧变形比例 2（frame-colors 不预算）
-    assert len(calls) == 8
+    # 每帧 scalars smooth/flat 2 + 位移 1 + 变形坐标 1，共 2 帧；再加每帧变形比例 2（frame-colors 不预算）
+    assert len(calls) == 10
 
 
 def test_missing_advanced_data_never_counts_as_success(prepared_model):

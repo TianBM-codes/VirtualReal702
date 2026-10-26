@@ -7,7 +7,8 @@ r"""
 接口发现（结果组、step、帧、实例、字段、分量、着色方案、区域），不读工作区文件。
 只发 GET；POST/DELETE/PATCH 与日志、健康检查等列为"未探测"并注明原因。
 默认只探测 viewer 实际调用的 GET 接口（VIEWER_ROUTES，2026-10-22 起只保证这些接口的缓存），
-加 --all-routes 探测全部项目数据接口。modal-animation 与前端一样带建议 scale + n_frames=20，且只测 FREQUENCY 步。
+加 --all-routes 探测全部项目数据接口。deformed-positions / modal-animation 与前端一样带建议 scale
+（modal-animation 另带 n_frames=20，且只测 FREQUENCY 步）。
 
 用法（在服务所在机器上跑，避免网络时间干扰；建议先重启服务，让第一遍反映磁盘缓存状态）：
     python tools/probe_endpoints.py --project 2026102201
@@ -161,7 +162,7 @@ class Catalog:
                 self.regions[(inst, sc)] = [e["legend_key"] for e in lg.get("legend") or []]
 
     def suggest_scale(self, rg, step, frame):
-        """与前端相同：modal-animation 的 scale 取 deform-suggest-scale 返回值（原样回传）。"""
+        """与前端相同：deformed-positions / modal-animation 的 scale 取 deform-suggest-scale 返回值（原样回传）。"""
         key = (rg, step, frame)
         if key not in self._scales:
             d = _data(self.base, f"/api/odb/{self.project}/results/deform-suggest-scale",
@@ -331,6 +332,11 @@ def _requests_for(route, cat):
                             sc = cat.suggest_scale(rg, step, fr)
                             if sc is not None:
                                 a = {**a, "scale": sc, "n_frames": MODAL_ANIMATION_FRAMES}
+                        elif route["path"].endswith("/results/deformed-positions") and fr is not None:
+                            # 变形面板自动填入该帧建议 scale（DeformCard.vue autoFillScale）
+                            sc = cat.suggest_scale(rg, step, fr)
+                            if sc is not None:
+                                a = {**a, "scale": sc}
                         emit(a)
                         continue
                     a["field"] = fd["name"]

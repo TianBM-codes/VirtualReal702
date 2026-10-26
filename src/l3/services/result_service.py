@@ -2696,6 +2696,37 @@ def deform_payload_slot(
     return idx.workspace, cache_store.group_bucket(result_group), key, vertex_count
 
 
+def cached_deformed_positions(
+    registry: OdbRegistry,
+    odb_id: str,
+    instance: str,
+    step: str,
+    frame_idx: int,
+    scale: float = 1.0,
+    result_group: str = None,
+) -> Tuple[bytes, bool, Optional[int]]:
+    """
+    deformed-positions 响应包（走磁盘缓存）→ (payload, 是否命中, 顶点数)。接口与全量计划共用。
+
+    包内 sections：positions / normals [Nv,3] float32 + 线/点/耦合的变形坐标（有才带）。
+    """
+    from ..infra.l3be import build as l3be_build
+    slot = deform_payload_slot(
+        registry, "deformed_positions_v1", odb_id=odb_id, instance=instance, step=step,
+        frame=frame_idx, result_group=result_group, scale=float(scale),
+    )
+    cached = cache_store.payload_get(*slot[:3]) if slot else None
+    if cached is not None:
+        return cached, True, slot[3]
+    positions, normals, aux_sections = frame_deformed_with_aux(
+        registry, odb_id, instance, step, frame_idx, scale, result_group
+    )
+    payload = l3be_build([("positions", positions), ("normals", normals)] + list(aux_sections))
+    if slot:
+        cache_store.payload_put(*slot[:3], payload)
+    return payload, False, len(positions)
+
+
 def cached_modal_animation(
     registry: OdbRegistry,
     odb_id: str,
