@@ -1,5 +1,6 @@
 import json
 import time
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import uuid4
@@ -63,6 +64,7 @@ def _startup_database() -> None:
         recover_background_tasks()
         print(f"[startup] {DB_DIALECT} ready in {time.perf_counter() - started:.2f}s")
     except Exception as exc:
+        traceback.print_exc()
         print(
             f"[startup] {DB_DIALECT} init FAILED after {time.perf_counter() - started:.2f}s "
             f"({DB_CONFIG['host']}:{DB_CONFIG['port']}): {exc!r}\n"
