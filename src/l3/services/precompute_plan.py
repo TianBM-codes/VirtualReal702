@@ -6,10 +6,12 @@
 覆盖范围（每个 result_group × step × field × 有结果块的 instance × 全部真实帧）：
   - frame-scalar-range：默认分量 + 每个实际分量；
   - frame-scalars：默认分量 + 每个实际分量 × smooth/flat；
-  - U 场：每帧顶点位移向量（vertex-displacements / deformed-* / modal-* 共用）与
-    deform-suggest-scale 统计；FREQUENCY 步另预算每阶 modal-animation 最终响应包
+  - U 场：每帧顶点位移向量（vertex-displacements / deformed-* / modal-* 共用）、
+    deform-suggest-scale 统计，以及每帧 deformed-positions 最终响应包（scale = 该帧
+    deform-suggest-scale，与前端变形面板自动填入的值一致，2026-10-26 领导确认）；
+    FREQUENCY 步另预算每阶 modal-animation 最终响应包
     （scale = 该阶 deform-suggest-scale，n_frames = 20，与前端预计算模式的默认请求一致）。
-无表面三角形的实例（纯梁/质量点）跳过云图类，只准备位移。合法的全 NaN 结果
+无表面三角形的实例（纯梁/质量点）跳过云图类，只准备位移与变形坐标（梁/点/耦合线也随变形）。合法的全 NaN 结果
 （NotFoundError，接口同样返回空 payload）记为跳过；其他异常在 strict 模式下直接失败。
 
 不在计划内的接口（viewer 不调用，2026-10-22 起只对 viewer 用到的接口预算）：
@@ -35,15 +37,16 @@ from typing import Callable, Dict, List, Optional, Tuple
 from ..core.errors import NotFoundError
 from ..infra.manifest_repo import ManifestRepo
 from .result_service import (
-    cached_modal_animation, compute_scalar_range, deform_scale_stats,
+    cached_deformed_positions, cached_modal_animation, compute_scalar_range, deform_scale_stats,
     frame_scalars, frame_vertex_displacements, suggest_deform_scale,
 )
 
 logger = logging.getLogger(__name__)
 
 # 覆盖范围变化时加 1：后台预热的完成标记带此版本，旧项目会按新计划补算。
-PLAN_VERSION = 2          # 2: FREQUENCY 步加 modal-animation 响应包
+PLAN_VERSION = 3          # 2: FREQUENCY 步加 modal-animation 响应包
 #                           （之后去掉 frame-colors 属于缩小范围，旧标记仍有效，不加版本）
+#                           3: U 场每帧加 deformed-positions 响应包（建议 scale）
 
 RENDER_MODES = ("smooth", "flat")
 MODAL_PROCEDURES = ("FREQUENCY",)
@@ -185,7 +188,7 @@ def count_calls(idx, targets: List[Target]) -> int:
         for inst in t.instances:
             per_frame = per_frame_surface if _has_surface(idx, inst) else 0
             if t.field == "U":
-                per_frame += 1
+                per_frame += 2          # 位移向量 + deformed-positions
             if t.modal and _has_surface(idx, inst):
                 per_frame += 1
             total += per_frame * len(t.frames)
@@ -259,6 +262,8 @@ def run_plan(reg, odb_id: str, idx, targets: List[Target], *, strict: bool,
                 if t.field == "U":
                     _call("displacement", f"{ctx} 位移", frame_vertex_displacements, reg, odb_id, instance,
                           t.step, frame, result_group=rg)
+                    _call("deformed", f"{ctx} 变形坐标", _deformed_positions, reg, odb_id,
+                          instance, t.step, frame, rg)
                 if t.modal and surface:
                     _call("modal_animation", f"{ctx} 模态动画", _modal_animation, reg, odb_id,
                           instance, t.step, frame, rg)
@@ -270,6 +275,12 @@ def run_plan(reg, odb_id: str, idx, targets: List[Target], *, strict: bool,
     stats["seconds"] = round(time.time() - t0, 1)
     _report(force=True)
     return stats
+
+
+def _deformed_positions(reg, odb_id: str, instance: str, step: str, frame: int, rg) -> None:
+    """前端变形面板的默认请求：scale 取该帧建议值（deform-suggest-scale 原样回传）。"""
+    scale = float(suggest_deform_scale(reg, odb_id, step, frame, rg))
+    cached_deformed_positions(reg, odb_id, instance, step, frame, scale=scale, result_group=rg)
 
 
 def _modal_animation(reg, odb_id: str, instance: str, step: str, frame: int, rg) -> None:

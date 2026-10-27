@@ -352,6 +352,28 @@ deformed-positions 首次约 0.2 s（任意 scale，只预算位移底座）与 
 **后续可做（未排期）**：pick 每次 0.2～0.36 s 提速；多选单元集合组合首次约 2 s（单集合分类可存盘后组合）；
 单元集合很多的模型着色包磁盘 = 集合数 × 顶点数 × 12 字节需留意；§0.9 原有的“后续可做”各项仍有效。
 
+### 0.12 领导结论落地：deformed-positions 预算建议 scale（2026-10-26）
+
+领导结论（2026-10-26）：① `deformed-positions` 按建议 scale 缓存；② `modal-animation` 前端用的是一次性下载，也缓存。
+
+- ②：计划里本来就有（FREQUENCY 步每阶 × 有表面的实例，scale = 建议值、n_frames = 20，§0.11），**保持不变**。
+- ①：U 场每个实例 × 全部帧各预算一包，scale = 该帧 `deform-suggest-scale`（`precompute_plan._deformed_positions`）。
+  接口与计划共用 `result_service.cached_deformed_positions`，key 不变（`deformed_positions_v1`），所以导入前请求过的包照样命中。
+  纯梁/质量点实例也算（梁线、点、耦合线随变形一起返回）。`PLAN_VERSION` 升为 3，旧项目手动 warmup 时补算。
+- §0.11 里说 viewer “不带 `result_group`” 不成立：`store.getApiUrl()`（`viewer/src/store/viewer.js`）会给每个请求拼上
+  当前 `result_group`；变形面板 `autoFillScale` 把建议值原样填进 scale（不取整），与预算的 key 一致。
+- 覆盖不到的情况：非 FREQUENCY 步点“播放”时，**所有帧都用当前所选帧的建议 scale**（`startDeformAnim`），
+  而预算的是每帧各自的建议 scale，因此除所选帧外第一圈都是现算（之后命中）。要覆盖需要 帧数² 包，暂不做。
+- 探测：`tools/probe_endpoints.py` 的 deformed-positions 改为带建议 scale（原用默认 scale=1，测不到预算的包）。
+- 磁盘：1440w 每帧约 232 MB × 帧数；100 GB 默认上限内，帧数多的大模型要留意（与 modal-animation 叠加）。
+- 1440w 实测（2026-10-26，`202610221440`，手动 warmup）：计划 378/378 完成（比导入时 376 多 2 帧变形坐标），57 s，0 跳过 0 失败；
+  磁盘基本不变——该模型 nlgeom，建议 scale 恒为 1.0，§0.10 探测用默认 scale=1 时已存下这 2 包。按 viewer 参数请求两帧均 `X-Cache: hit`。
+  磁盘/耗时增量需在建议 scale ≠ 1 的模型上另测。
+- door 实测（2026-10-26，`2026102301`，1 实例，eigenfrequency 6 阶 + sag 21 帧，手动 warmup）：计划 3552/3552，124 s，0 跳过 0 失败；
+  `l3_cache` 1.45 → 1.53 GB（+≈86 MB = 27 帧 × 3.18 MB/包）。建议 scale 逐帧不同（sag：0、2361.16、1180.58……118.06；
+  第 0 帧位移为 0 → scale 0），按 viewer 参数抽查 sag 0/1/10/20、eigenfrequency 1 均 `X-Cache: hit`。
+  估算：每帧包 ≈ 渲染顶点数 × 24 字节（positions + normals），总增量 = 每帧包 × 全部帧数。
+
 ## 1. 需求与结论
 
 用户当前要求：**能缓存的都缓存，需要遍历接口可能性进行缓存；暂不以磁盘存储量作为缩减覆盖范围的理由。**

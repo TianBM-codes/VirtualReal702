@@ -296,7 +296,7 @@ def warm_odb_sync(odb_id: str, reason: str = "",
     by_kind = stats["by_kind"]
     n_ok = by_kind.get("range", 0)
     n_skip = stats["skipped"] + stats["failed"]
-    n_deform = by_kind.get("displacement", 0) + by_kind.get("deform_stats", 0)
+    n_deform = sum(by_kind.get(k, 0) for k in ("displacement", "deformed", "deform_stats"))
 
     dt = time.time() - t0
     logger.info("Warmup[%s]%s: %d color-code, %d mesh-edges, color views %s, plan %d/%d done, "

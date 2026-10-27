@@ -20,7 +20,6 @@ from ...core.errors import NotFoundError as CoreNotFoundError
 from ...core.state import registry
 from ...infra.manifest_repo import ManifestRepo
 from ...infra.l3be import build as l3be_build
-from ...services import cache_store
 from src.l1.manifest_schema import canon_instance
 from ..response import ok, nullable_float
 from ...services.result_service import (
@@ -28,12 +27,11 @@ from ...services.result_service import (
     frame_colors,
     frame_scalars,
     frame_deformed_positions,
-    frame_deformed_with_aux,
     frame_vertex_displacements,
     suggest_deform_scale,
     modal_shape_displacement,
     cached_modal_animation,
-    deform_payload_slot,
+    cached_deformed_positions,
 )
 
 router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
@@ -41,11 +39,6 @@ router = APIRouter(prefix="/api/odb/{odb_id}", tags=["results"])
 Component = Literal["U1", "U2", "U3"]
 _FRAME_ALIAS_RE = re.compile(r"^(?P<field>.+)__FRAME_(?P<frame>\d+)$")
 _RAW_SENSITIVITY_GROUP_RE = re.compile(r"^sensitivity_batch_", re.IGNORECASE)
-
-
-def _payload_cache_slot(kind: str, **kw) -> Optional[tuple]:
-    """变形 / 模态动画最终响应包的缓存位置，见 result_service.deform_payload_slot。"""
-    return deform_payload_slot(registry, kind, **kw)
 
 
 def _normalize_step_token(value: Optional[str]) -> str:
@@ -587,29 +580,8 @@ async def get_deformed_positions(
     # Surface + line/point/coupling overlay in one call → single U read (matters
     # for large models / animation).  aux_sections is empty when the instance has
     # no line/point/coupling geometry or the surface H5 predates the node_rows change.
-    slot = _payload_cache_slot(
-        "deformed_positions_v1",
-        odb_id=odb_id,
-        instance=instance,
-        step=step,
-        frame=frame,
-        result_group=result_group,
-        scale=float(scale),
-    )
-    cached_payload = cache_store.payload_get(*slot[:3]) if slot else None
-    if cached_payload is not None:
-        return Response(
-            content=cached_payload,
-            media_type="application/octet-stream",
-            headers={
-                "X-Vertex-Count": str(slot[3] if slot[3] is not None else ""),
-                "X-Frame":        str(frame),
-                "X-Scale":        str(scale),
-                "X-Cache":        "hit",
-            },
-        )
-
-    positions, normals, aux_sections = frame_deformed_with_aux(
+    # 响应包落盘缓存；全量预计算按每帧建议 scale 预算（precompute_plan）。
+    payload, hit, vertex_count = cached_deformed_positions(
         registry=registry,
         odb_id=odb_id,
         instance=instance,
@@ -618,24 +590,14 @@ async def get_deformed_positions(
         scale=scale,
         result_group=result_group,
     )
-
-    sections = [
-        ("positions", positions),   # [Nv, 3] float32
-        ("normals",   normals),     # [Nv, 3] float32  — pre-computed, skip JS computeVertexNormals
-    ]
-    sections.extend(aux_sections)
-
-    payload = l3be_build(sections)
-    if slot:
-        cache_store.payload_put(*slot[:3], payload)
     return Response(
         content=payload,
         media_type="application/octet-stream",
         headers={
-            "X-Vertex-Count": str(len(positions)),
+            "X-Vertex-Count": str(vertex_count if vertex_count is not None else ""),
             "X-Frame":        str(frame),
             "X-Scale":        str(scale),
-            "X-Cache":        "miss",
+            "X-Cache":        "hit" if hit else "miss",
         },
     )
 
