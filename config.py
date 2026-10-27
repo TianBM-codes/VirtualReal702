@@ -35,6 +35,10 @@ def _cfg_bool(cfg: dict, key: str, default: bool) -> bool:
 
 _SERVICE_CONFIG = _load_service_config()
 
+DB_DIALECT = str(_cfg(_SERVICE_CONFIG, "DB_DIALECT", "mysql")).strip().lower()
+if DB_DIALECT not in {"mysql", "dm"}:
+    raise ValueError("DB_DIALECT must be 'mysql' or 'dm'")
+
 DB_CONFIG = {
     "host": str(_cfg(_SERVICE_CONFIG, "DB_HOST", "127.0.0.1")),
     "port": int(_cfg(_SERVICE_CONFIG, "DB_PORT", 3306)),
@@ -49,6 +53,15 @@ DB_CONFIG = {
     # (~21s per attempt on Windows) instead of failing fast.
     "connect_timeout": max(1, int(_cfg(_SERVICE_CONFIG, "DB_CONNECT_TIMEOUT", 5))),
 }
+
+if DB_DIALECT == "dm":
+    DB_CONFIG.update({
+        "host": str(_cfg(_SERVICE_CONFIG, "DM_HOST", "localhost")),
+        "port": int(_cfg(_SERVICE_CONFIG, "DM_PORT", 5236)),
+        "user": str(_cfg(_SERVICE_CONFIG, "DM_USER", "SYSDBA")),
+        "password": str(_cfg(_SERVICE_CONFIG, "DM_PASSWORD", "")),
+        "database": str(_cfg(_SERVICE_CONFIG, "DM_SCHEMA", "DB_SIMU_REAL_TEST")),
+    })
 
 # DDL reconciliation (63 CREATE TABLE + ~50 information_schema probes) runs on
 # every boot. Set DB_ENSURE_TABLES=0 once the schema is settled to skip it.

@@ -59,6 +59,7 @@ benchmark_results/
 AGENTS.md
 
 service_config.json
+!service_config.example.json
 # Frontend
 viewer/node_modules/
 viewer/dist/

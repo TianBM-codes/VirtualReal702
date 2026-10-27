@@ -6,9 +6,9 @@ import mysql.connector
 import mysql.connector.pooling
 
 try:
-    from VirtualReal702.config import DB_CONFIG, DB_ENSURE_TABLES
+    from VirtualReal702.config import DB_CONFIG, DB_DIALECT, DB_ENSURE_TABLES
 except ImportError:  # pragma: no cover - local direct run fallback
-    from config import DB_CONFIG, DB_ENSURE_TABLES
+    from config import DB_CONFIG, DB_DIALECT, DB_ENSURE_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -1082,6 +1082,13 @@ def _get_connection_pool():
 
     with _connection_pool_lock:
         if _connection_pool is None:
+            if DB_DIALECT == "dm":
+                try:
+                    from VirtualReal702.db_dameng import DamengPool
+                except ImportError:
+                    from db_dameng import DamengPool
+                _connection_pool = DamengPool(DB_CONFIG, CREATE_TABLE_SQL_LIST)
+                return _connection_pool
             pool_name = str(DB_CONFIG.get("pool_name", "virtualreal702_pool"))
             pool_size = max(1, int(DB_CONFIG.get("pool_size", 10)))
             pool_reset_session = bool(DB_CONFIG.get("pool_reset_session", True))
@@ -1143,7 +1150,7 @@ def ensure_tables_exist():
         started = time.perf_counter()
         _run_schema_ddl()
         _tables_ensured = True
-        logger.info("MySQL schema reconciled in %.2fs", time.perf_counter() - started)
+        logger.info("%s schema reconciled in %.2fs", DB_DIALECT, time.perf_counter() - started)
 
 
 def ensure_test_load_level_schema(cursor):
@@ -1553,6 +1560,8 @@ def _run_schema_ddl():
                 CHANGE COLUMN `Offset` Offset_L DOUBLE NULL COMMENT 'Offset'
                 """
             )
+        if DB_DIALECT == "dm":
+            conn.refresh_schema_artifacts()
         conn.commit()
     except Exception:
         conn.rollback()

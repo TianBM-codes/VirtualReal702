@@ -1,0 +1,18 @@
+{
+  "DB_DIALECT": "mysql",
+  "DB_HOST": "127.0.0.1",
+  "DB_PORT": 3306,
+  "DB_USER": "root",
+  "DB_PASSWORD": "",
+  "DB_DATABASE": "db_simu_real_test",
+  "DB_CHARSET": "utf8mb4",
+  "DM_HOST": "localhost",
+  "DM_PORT": 5236,
+  "DM_USER": "SYSDBA",
+  "DM_PASSWORD": "",
+  "DM_SCHEMA": "DB_SIMU_REAL_TEST",
+  "DB_POOL_SIZE": 10,
+  "DB_CONNECT_TIMEOUT": 5,
+  "DB_ENSURE_TABLES": true,
+  "DB_INIT_ON_STARTUP": true
+}

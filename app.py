@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pyNastran.converters.format_converter import process_ugrid
 
-from config import APP_CONFIG, DB_CONFIG, DB_INIT_ON_STARTUP
+from config import APP_CONFIG, DB_CONFIG, DB_DIALECT, DB_INIT_ON_STARTUP
 from db import initialize_database_runtime
 from fastapi import Request
 from src.l3.main import app
@@ -55,16 +55,16 @@ def _startup_database() -> None:
     pool stays uninitialised and the first request that needs it rebuilds it.
     """
     if not DB_INIT_ON_STARTUP:
-        print("[startup] DB_INIT_ON_STARTUP=0 — deferring MySQL init to first request")
+        print(f"[startup] DB_INIT_ON_STARTUP=0 — deferring {DB_DIALECT} init to first request")
         return
     started = time.perf_counter()
     try:
         initialize_database_runtime(ensure_tables=True, warm_connection=True)
         recover_background_tasks()
-        print(f"[startup] MySQL ready in {time.perf_counter() - started:.2f}s")
+        print(f"[startup] {DB_DIALECT} ready in {time.perf_counter() - started:.2f}s")
     except Exception as exc:
         print(
-            f"[startup] MySQL init FAILED after {time.perf_counter() - started:.2f}s "
+            f"[startup] {DB_DIALECT} init FAILED after {time.perf_counter() - started:.2f}s "
             f"({DB_CONFIG['host']}:{DB_CONFIG['port']}): {exc!r}\n"
             f"[startup] Serving anyway — ODB viewer routes work; "
             f"model-update routes will retry on first use."
