@@ -679,6 +679,7 @@ def test_submit_project_result_group_and_wait_omits_dsa_field_prefix_filter(monk
     assert captured["parse_options"]["frames"] == [0]
     assert captured["parse_options"]["invariants"] == "none"
     assert "field_prefix" not in captured["parse_options"]
+    assert captured["parse_options"]["fields"] == "all"
     assert result["workspace"] == str(project_workspace)
 
 

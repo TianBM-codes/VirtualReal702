@@ -16,6 +16,7 @@ abaqus_dump.py — Layer 1, Phase 1: ODB → npy + JSON 临时格式
 from __future__ import print_function
 
 import argparse
+import fnmatch
 import json
 import os
 import shutil
@@ -330,6 +331,10 @@ def parse_args():
                          '"first_last", or comma-separated 0-based indices'))
     p.add_argument('--field-prefix', default=None,
                    help='Only extract fields whose names start with this prefix (extract mode only)')
+    p.add_argument('--field-list', default=None,
+                   help=('Comma-separated field whitelist matched against the base field name '
+                         '(region suffix stripped); supports * wildcards, e.g. "U,S,E,LE,NT*,TEMP". '
+                         'Omitted / "all" / "*" = dump every field (full/preflight/extract modes)'))
     p.add_argument('--worker-id', default='0',
                    help='Worker ID shown in log prefix (results-worker mode only)')
     return p.parse_args()
@@ -338,6 +343,24 @@ def parse_args():
 def safe(name):
     """Sanitize a name for use as a filesystem path component."""
     return name.replace('/', '__').replace('\\', '__').replace(' ', '_')
+
+
+def parse_field_list(text):
+    """Parse --field-list into a list of fnmatch patterns, or None (= all fields)."""
+    if text is None:
+        return None
+    pats = [t.strip() for t in text.split(',') if t.strip()]
+    if not pats or any(t.lower() == 'all' or t == '*' for t in pats):
+        return None
+    return pats
+
+
+def field_in_list(raw_name, patterns):
+    """True if the field's base name (region suffix stripped) matches any pattern."""
+    if patterns is None:
+        return True
+    base = split_region_field(raw_name)[0]
+    return any(fnmatch.fnmatchcase(base, p) for p in patterns)
 
 
 def split_region_field(name):
@@ -1311,7 +1334,7 @@ def dump_sets(odb, raw_dir, meta):
     print("    done. ({})".format(_fmt_t(time.time() - t0)))
 
 
-def dump_steps_meta_scan(odb, raw_dir, meta):
+def dump_steps_meta_scan(odb, raw_dir, meta, field_patterns=None):
     """
     Scan step/frame metadata and collect field names WITHOUT reading any field data.
     Writes l1_raw/fields_manifest.json (used by the parallel launcher).
@@ -1367,7 +1390,12 @@ def dump_steps_meta_scan(odb, raw_dir, meta):
             'time_period': float(_tp) if _tp is not None else None,
             'frames':      frames_meta,
         }
-        field_list = sorted(all_field_names)
+        field_list = sorted(n for n in all_field_names if field_in_list(n, field_patterns))
+        skipped = sorted(set(split_region_field(n)[0] for n in all_field_names
+                             if not field_in_list(n, field_patterns)))
+        if skipped:
+            print("    Step '{}': skipping {} field(s) not in --field-list: {}".format(
+                step_name, len(skipped), ', '.join(skipped)))
         fields_by_step[step_name] = field_list
         print("    Step '{}': {} frames, {} fields".format(
             step_name, num_frames, len(field_list)))
@@ -1884,7 +1912,7 @@ def _extract_ip_invariants(step, step_name, field_name, first_field,
 
 
 def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
-                 field_prefix=None, extract_invariants=False):
+                 field_prefix=None, extract_invariants=False, field_patterns=None):
     """Write per-frame result arrays to l1_raw/results/<step>__<field>/<inst>/<pos>/[<etype>/]
 
     field_filter: optional dict {step_name: set_of_field_names}.
@@ -1897,6 +1925,10 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
 
     field_prefix: optional string. If provided, only fields starting with this prefix
       are dumped.
+
+    field_patterns: optional list of fnmatch patterns (from --field-list). If
+      provided, only fields whose base name matches one of them are dumped;
+      None = all fields.
 
     extract_invariants: if True, also extract validInvariants as synthetic scalar
       fields named {field}_{INV_NAME} (e.g. S_MISES, S_MAX_PRINCIPAL).
@@ -1998,13 +2030,20 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
         # labels are unioned), matching the aggregated entry CAE shows.
         # Plain fields form single-member groups — identical to old behaviour.
         field_groups = {}   # base name -> [raw odb field name, ...]
+        skipped_by_list = set()
         for raw_name in sorted(all_field_names):
             if (allowed_fields is not None and raw_name not in allowed_fields
                     and split_region_field(raw_name)[0] not in allowed_fields):
                 continue
             if field_prefix is not None and not raw_name.startswith(field_prefix):
                 continue
+            if not field_in_list(raw_name, field_patterns):
+                skipped_by_list.add(split_region_field(raw_name)[0])
+                continue
             field_groups.setdefault(split_region_field(raw_name)[0], []).append(raw_name)
+        if skipped_by_list:
+            print("    Skipping {} field(s) not in --field-list: {}".format(
+                len(skipped_by_list), ', '.join(sorted(skipped_by_list))))
 
         for field_name in sorted(field_groups.keys()):
             member_names = field_groups[field_name]
@@ -2559,11 +2598,13 @@ def main():
         dump_sets(odb, raw_dir, meta)
         if mode == 'preflight':
             # Scan step/frame metadata + build fields_manifest.json; no field data read.
-            dump_steps_meta_scan(odb, raw_dir, meta)
+            dump_steps_meta_scan(odb, raw_dir, meta,
+                                 field_patterns=parse_field_list(args.field_list))
         else:
-            # full: serial dump of all results (original behaviour)
+            # full: serial dump of all results (restricted by --field-list if given)
             dump_results(odb, raw_dir, meta,
-                         extract_invariants=(args.invariants == 'full'))
+                         extract_invariants=(args.invariants == 'full'),
+                         field_patterns=parse_field_list(args.field_list))
     except Exception:
         print("\n!!! ERROR:")
         traceback.print_exc()
@@ -2913,7 +2954,8 @@ def _run_extract(args, odb_path, workspace):
                      field_filter=field_filter,
                      frame_filter=frame_filter,
                      field_prefix=args.field_prefix,
-                     extract_invariants=(args.invariants == 'full'))
+                     extract_invariants=(args.invariants == 'full'),
+                     field_patterns=parse_field_list(args.field_list))
     except ValueError as exc:
         print("ERROR: {}".format(exc))
         odb.close()

@@ -131,6 +131,10 @@ class Settings:
         # Abaqus executable — override if `abaqus` is not on PATH
         self.abaqus_cmd = _get(cfg, "APP_ABAQUS_CMD", "abaqus")
 
+        # ODB 解析字段白名单（逗号分隔，按基础字段名匹配，支持 * 通配；"all" = 全量）。
+        # 与 src/job_runner.py 的 APP_ODB_FIELDS 默认值保持一致。
+        self.odb_fields = _get(cfg, "APP_ODB_FIELDS", "U,S,E,LE,NT*,TEMP")
+
         # Force-replace host:port in all http:// download URLs.
         # Set to "ip:port" (e.g. "192.168.1.10:8080") to override whatever
         # the caller sends; leave blank to use the URL as-is.

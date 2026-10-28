@@ -359,6 +359,8 @@ def test_build_project_result_parse_options_omits_dsa_field_prefix():
     assert options["frames"] == [0]
     assert options["invariants"] == "none"
     assert "field_prefix" not in options
+    # DSA 结果组要 d_U_* 字段，必须绕过 APP_ODB_FIELDS 白名单
+    assert options["fields"] == "all"
 
 
 def test_build_project_result_parse_options_keeps_non_dsa_field_prefix():

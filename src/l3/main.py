@@ -309,6 +309,7 @@ async def lifespan(app: FastAPI):
             data_root=settings.data_root,
             abaqus_cmd=settings.abaqus_cmd,
             poll_interval=settings.runner_poll_interval,
+            odb_fields=settings.odb_fields,
         )
         if not started:
             logger.debug("Embedded runner not started in this worker (lock held elsewhere)")
