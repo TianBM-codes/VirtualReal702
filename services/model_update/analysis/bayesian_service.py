@@ -3039,7 +3039,9 @@ def _publish_static_iteration_results(*, project_id: int, batch_no: int, iterati
         source_path=solver_payload["solver"]["artifacts"]["odb"],
         result_group=f"sensitivity_batch_update_{batch_no}_iter{iteration}",
         display_name=f"Static update {batch_no}, evaluated iteration {iteration}",
-        parse_options={"steps": [matrix_payload["step"]], "frames": "all", "invariants": "none"},
+        # DSA 结果要 d_U_* 等灵敏度字段，不受 APP_ODB_FIELDS 白名单限制
+        parse_options={"steps": [matrix_payload["step"]], "frames": "all", "invariants": "none",
+                       "fields": "all"},
     )
     stored = _sens._persist_sensitivity_matrix(
         project_id=project_id, batch_no=f"update_{batch_no}_iter{iteration}",

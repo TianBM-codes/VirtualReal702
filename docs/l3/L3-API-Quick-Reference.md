@@ -564,7 +564,7 @@ async function pollLogs(odbId) {
 
 注意：`frames` 过滤后帧会在该结果组内重新编号为连续 `frame_idx`，例如传 `[5]` 时查询用 `frame_idx=0`。
 
-**字段白名单（2026-10-28 起）**：ODB 解析（项目几何 ODB 自带的结果、追加的 ODB 结果组、旧 `/api/jobs`）默认只解析服务配置 `APP_ODB_FIELDS` 列出的字段，默认值 `U,S,E,LE,NT*,TEMP`（位移、应力、总应变/对数应变、节点温度 NT11/NT12…、单元温度）。`S_MISES` 等不变量随 S 一起保留。列表外的字段（如 RF、CPRESS、PEEQ、STATUS）不解析，字段下拉里不会出现，解析日志会打印 `Skipping N field(s) not in --field-list: ...`。增删字段改 `service_config.json` 的 `APP_ODB_FIELDS`（逗号分隔）后重启 runner 即可，只影响之后的新解析；设 `"all"` 恢复全量。模型修正的灵敏度（DSA）结果组由后端自动传 `fields: "all"`，不受白名单影响。OP2/CDB/UNV 等非 ODB 结果不受影响。
+**字段白名单（2026-10-28 起）**：ODB 解析（项目几何 ODB 自带的结果、追加的 ODB 结果组、旧 `/api/jobs`）默认只解析服务配置 `APP_ODB_FIELDS` 列出的字段，默认值 `U,S,E,LE,NT*,TEMP`（位移、应力、总应变/对数应变、节点温度 NT11/NT12…、单元温度）。`S_MISES` 等不变量随 S 一起保留。列表外的字段（如 RF、CPRESS、PEEQ、STATUS）不解析，字段下拉里不会出现，解析日志会打印 `Skipping N field(s) not in --field-list: ...`。增删字段改 `service_config.json` 的 `APP_ODB_FIELDS`（逗号分隔）后重启 runner 即可，只影响之后的新解析；设 `"all"` 恢复全量。模型修正的灵敏度（DSA）结果组（灵敏度计算、贝叶斯静力迭代、求解器直连上传）由后端自动传 `fields: "all"`，不受白名单影响；PBS 通用求解上传的结果组按白名单解析。OP2/CDB/UNV 等非 ODB 结果不受影响。
 
 灵敏度结果场景示例：
 
