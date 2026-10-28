@@ -1,4 +1,5 @@
 """解析流水线的最终屏障：不依赖对外 ready，不使用自动预热的让路队列。"""
+import gc
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from . import cache_store
 from .color_service import warm_color_codes
 from .mesh_edge_service import warm_element_mesh_edges
 from .region_edge_service import warm_color_views
-from .precompute_plan import list_targets, run_plan, run_plan_parallel, worker_limit
+from .precompute_plan import list_targets, run_plan, run_plan_parallel, surface_stub, worker_limit
 from .warmup_service import _WarmLock
 
 
@@ -88,8 +89,16 @@ def prepare_workspace(odb_id: str, workspace: str, result_group=None,
             # payload 置灰一致；文件/块缺失已在上面硬校验过。
             workers = worker_limit()
             if workers > 1 and len(targets) > 1:
+                # 子进程各自加载索引并计算，父进程只派发任务：先换成"哪些实例有表面"
+                # 的轻量替身，释放本进程的整份几何和几何阶段留下的内存缓存，
+                # 避免大模型时内存里同时有父子两份几何。
+                stub = surface_stub(idx)
+                reg.loaded.clear()
+                del idx
+                cache_store.clear_memory()
+                gc.collect()
                 # 子进程各自加载索引并计算，落盘条目并入 entries，退出本 with 时统一核验
-                stats = run_plan_parallel(odb_id, workspace, idx, targets, max_workers=workers,
+                stats = run_plan_parallel(odb_id, workspace, stub, targets, max_workers=workers,
                                           entries=entries, progress=progress)
             else:
                 stats = run_plan(reg, odb_id, idx, targets, strict=True, progress=progress)

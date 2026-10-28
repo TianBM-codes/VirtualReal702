@@ -155,6 +155,10 @@ STATUS（WHOLE_ELEMENT）再次请求仍需约 190 ms：已查明是 L3 不认 W
 worker 为 `python -m src.l3.services.precompute_worker`，不用 multiprocessing，避免 Windows spawn 在子进程里重跑 app.py）。
 先起 1 个 worker，完成第一个目标后按其内存峰值与当前可用内存的 70% 决定总数（`APP_PRECOMPUTE_WORKERS`：0 = 自动，最多 8 且不超过物理核数；
 1 = 本进程串行；没有 psutil 时自动模式最多 4 个）。worker 只收集落盘条目，父进程合并后统一淘汰与核验；任一目标失败或 worker 退出即整体失败。
+2026-10-28 调整（16 GB 内存机器上大模型准备失败后）：① worker 内存不足（异常链上有 `MemoryError`）且还有别的 worker 在跑时，
+该目标放回队首、这个 worker 退出（并行数减一）由剩下的重算，只剩一个 worker 仍内存不足才整体失败；Linux 上 worker 峰值内存改用 `ru_maxrss`。
+② 父进程算完几何类缓存后，把 ModelIndex 换成只含“哪些实例有外表面”的轻量替身（`surface_stub`），释放整份几何和本进程内存缓存层再派发，
+避免父子各持一份几何（串行模式仍由本进程计算，不释放）。
 后台预热（旧项目补算）仍在 Web 进程内单线程执行。`tools/snapshot_results.py --use-disk-cache` 可直接核对导入时写入的缓存内容。
 
 **防止改动计算结果**：优化前的代码打 tag `precompute-opt-baseline`。用 `tools/snapshot_results.py` 先在真实模型上
