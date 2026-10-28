@@ -328,7 +328,9 @@ def run_plan_parallel(odb_id: str, workspace: str, idx, targets: List[Target], *
     先起 1 个 worker；它完成第一个目标后按其内存峰值和当前可用内存决定再起几个
     （没有 psutil 时最多 4 个），避免大模型多开进程把内存撑爆。worker 产生的落盘
     条目并入 entries，由调用方的 require_persistent_cache 统一淘汰与核验。
-    任一目标失败即停止派发、结束全部 worker 并抛 PlanError。
+    任一目标失败即停止派发、结束全部 worker 并抛 PlanError；例外是内存不足（oom）：
+    还有别的 worker 在跑时，把目标放回队首、让出内存的这个 worker 退出（并行数减一），
+    由剩下的 worker 重算；只剩一个 worker 仍内存不足才算失败。
     """
     total = count_calls(idx, targets)
     stats = {"total": total, "done": 0, "skipped": 0, "failed": 0, "by_kind": {}, "workers": 0}
@@ -338,6 +340,7 @@ def run_plan_parallel(odb_id: str, workspace: str, idx, targets: List[Target], *
     procs: List[subprocess.Popen] = []
     threads: List[threading.Thread] = []
     grown = [False]
+    active = [0]      # 仍在领取目标的 worker 数；增减都在 lock 内，保证放回的目标有人接
     t0 = time.time()
     last_report = [t0]
 
@@ -373,14 +376,18 @@ def run_plan_parallel(odb_id: str, workspace: str, idx, targets: List[Target], *
         with lock:
             procs.append(p)
             threads.append(th)
-            stats["workers"] = len(procs)
+            active[0] += 1
+            stats["workers"] = active[0]
         th.start()
 
     def _drive(p: subprocess.Popen):
+        retired = False   # 已在 lock 内把 active 减过
         try:
             while True:
                 with lock:
                     if failure or not pending:
+                        active[0] -= 1
+                        retired = True
                         break
                     t = pending.popleft()
                 try:
@@ -395,10 +402,25 @@ def run_plan_parallel(odb_id: str, workspace: str, idx, targets: List[Target], *
                     break
                 res = json.loads(line)
                 spawn_n = 0
+                retry_msg = None
                 with lock:
-                    if not res.get("ok"):
+                    if not res.get("ok") and res.get("oom") and active[0] > 1 and not failure:
+                        pending.appendleft(t)
+                        active[0] -= 1
+                        retired = True
+                        stats["workers"] = active[0]
+                        retry_msg = (f"{t.context} 内存不足，减少一个并行进程后重算"
+                                     f"（剩 {active[0]} 个进程）")
+                    elif not res.get("ok"):
                         failure.append(res.get("error") or f"{t.context} 计算失败")
                         break
+                if retry_msg is not None:
+                    logger.warning("precompute %s: %s", odb_id, retry_msg)
+                    if progress is not None:
+                        finished = stats["done"] + stats["skipped"] + stats["failed"]
+                        progress(retry_msg, int(finished * 100 / total) if total else 0)
+                    break
+                with lock:
                     st = res["stats"]
                     for k in ("done", "skipped", "failed"):
                         stats[k] += st[k]
@@ -407,11 +429,14 @@ def run_plan_parallel(odb_id: str, workspace: str, idx, targets: List[Target], *
                     entries.update(tuple(e) for e in res["entries"])
                     if not grown[0]:
                         grown[0] = True
-                        spawn_n = min(_want_more(res.get("rss_mb")), len(pending) + 1) - len(procs)
+                        spawn_n = min(_want_more(res.get("rss_mb")), len(pending) + 1) - active[0]
                     _report()
                 for _ in range(max(0, spawn_n)):
                     _spawn()
         finally:
+            if not retired:
+                with lock:
+                    active[0] -= 1
             try:
                 p.stdin.close()
             except OSError:
