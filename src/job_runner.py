@@ -1585,6 +1585,34 @@ def _update_result_group_status(project_id: str, result_group: str,
         )
 
 
+def _remove_result_group_files(conn, workspace: str, result_group: str) -> None:
+    """删掉该组登记在 l1/results/ 下、不在组子目录里的结果文件。
+
+    项目 ODB 自带的 default_result 是整份解析后直接登记的，文件在 l1/results/ 根目录，
+    不会被上面按组子目录的 rmtree 清掉；行删了文件不删就成了占磁盘的孤儿。
+    """
+    results_root = os.path.realpath(os.path.join(workspace, "l1", "results"))
+    try:
+        rows = conn.execute(
+            "SELECT file_path FROM result_files WHERE result_group=?", (result_group,)
+        ).fetchall()
+    except sqlite3.Error:
+        return
+    for (file_path,) in rows:
+        if not file_path:
+            continue
+        rel = file_path.replace("\\", os.sep).replace("/", os.sep)
+        p = rel if os.path.isabs(rel) else os.path.join(workspace, rel)
+        p = os.path.realpath(p)
+        if not p.startswith(results_root + os.sep) or not os.path.isfile(p):
+            continue
+        try:
+            os.remove(p)
+            logger.info("Removed stale result file %s", p)
+        except OSError as exc:
+            logger.warning("Failed to remove stale result file %s: %s", p, exc)
+
+
 def _cleanup_result_group(workspace: str, result_group: str) -> None:
     rg_safe = result_group.replace("/", "__").replace("\\", "__").replace(" ", "_")
     for rel in [
@@ -1600,6 +1628,7 @@ def _cleanup_result_group(workspace: str, result_group: str) -> None:
     manifest = os.path.join(workspace, "manifest.db")
     if os.path.exists(manifest):
         with sqlite3.connect(manifest, timeout=5.0) as conn:
+            _remove_result_group_files(conn, workspace, result_group)
             for table in ("steps", "frames", "result_files",
                           "result_blocks", "result_group_meta"):
                 conn.execute(

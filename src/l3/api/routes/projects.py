@@ -198,6 +198,11 @@ class AddResultGroupRequest(BaseModel):
     parse_options: Optional[dict] = None
 
 
+class ReparseResultGroupRequest(BaseModel):
+    parse_options: Optional[dict] = None
+    drop_external: bool = False
+
+
 class PatchResultGroupRequest(BaseModel):
     display_name: str
 
@@ -731,6 +736,115 @@ async def add_result_group(project_id: str, body: AddResultGroupRequest):
         "project_id": project_id,
         "result_group": body.result_group,
         "status": "pending",
+    })
+
+
+def _pick_reparse_source(rg) -> Optional[str]:
+    """优先用 runner 上次实际用的路径，不在了再退回用户原始路径（URL 交给 runner 重新下载）。"""
+    for cand in (rg["source_path"], rg["original_source_path"]):
+        cand = str(cand or "").strip()
+        if not cand:
+            continue
+        if _is_http_url(cand) or os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _count_external_fields(workspace: str, result_group: str) -> int:
+    manifest = os.path.join(workspace, "manifest.db")
+    if not os.path.isfile(manifest):
+        return 0
+    try:
+        with sqlite3.connect(manifest, timeout=5.0) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM result_files WHERE result_group=? AND source='external'",
+                (result_group,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error:
+        return 0
+
+
+@router.post("/{project_id}/results/{result_group}/reparse", status_code=202)
+async def reparse_result_group(project_id: str, result_group: str,
+                               body: Optional[ReparseResultGroupRequest] = None):
+    """
+    用原来登记的源文件重新解析一个 ODB 结果组（含项目自带的 default_result）。
+    runner 领取后先清掉该组的 manifest 记录、结果文件和 L3 缓存，再按当前字段白名单重新提取。
+    body.parse_options 按键合并到原 parse_options 上（值为 null 表示删掉该键）。
+    """
+    body = body or ReparseResultGroupRequest()
+    repo = _repo()
+    proj = repo.get_project(project_id)
+    if proj is None:
+        raise NotFoundError(f"Project '{project_id}' not found")
+    if proj["geom_status"] != "ready":
+        raise ConflictError(
+            f"Project '{project_id}' geometry is '{proj['geom_status']}', only 'ready' can reparse results"
+        )
+
+    rg = repo.get_result_group(project_id, result_group)
+    if rg is None:
+        raise NotFoundError(f"result_group '{result_group}' not found in project '{project_id}'")
+    if rg["status"] not in ("ready", "error"):
+        raise ConflictError(
+            f"result_group '{result_group}' is '{rg['status']}', only 'ready' or 'error' can reparse"
+        )
+
+    names = [rg["source_file"], rg["original_source_file"], rg["source_path"], rg["original_source_path"]]
+    if not any(str(n or "").split("?")[0].lower().endswith(".odb") for n in names):
+        raise ValidationError(f"result_group '{result_group}' is not an ODB result; reparse only supports ODB")
+
+    source_path = _pick_reparse_source(rg)
+    if source_path is None:
+        raise ValidationError(
+            f"Source file of result_group '{result_group}' no longer exists: "
+            f"{rg['original_source_path'] or rg['source_path']}"
+        )
+
+    workspace = _resolve_workspace(proj["workspace"], project_id)
+    n_external = _count_external_fields(workspace, result_group)
+    if n_external and not body.drop_external:
+        raise ConflictError(
+            f"result_group '{result_group}' has {n_external} external field(s) written back "
+            "(e.g. model-update results); reparse would delete them. Pass drop_external=true to proceed"
+        )
+
+    parse_opts = {}
+    if rg["parse_options"]:
+        try:
+            parse_opts = json.loads(rg["parse_options"]) or {}
+        except Exception:
+            parse_opts = {}
+    for key, value in (body.parse_options or {}).items():
+        if value is None:
+            parse_opts.pop(key, None)
+        else:
+            parse_opts[key] = value
+    parse_options_json = json.dumps(parse_opts) if parse_opts else None
+
+    # source_file 是 runner 用的 ASCII 别名，原始文件名可能含中文，沿用原值
+    repo.reset_result_group_for_resubmit(
+        project_id,
+        result_group,
+        source_path,
+        rg["source_file"],
+        rg["original_source_path"],
+        rg["original_source_file"],
+        rg["display_name"] or result_group,
+        parse_options_json,
+    )
+    repo.append_job_log(
+        project_id, "step",
+        f"结果组 {html.escape(result_group)} 已提交重新解析，等待可视化解析主队列领取",
+        stage="rg_queued",
+    )
+    return ok({
+        "project_id": project_id,
+        "result_group": result_group,
+        "status": "pending",
+        "parse_options": parse_opts,
+        "dropped_external_fields": n_external,
     })
 
 
