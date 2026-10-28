@@ -115,3 +115,15 @@ def test_worker_detects_memory_error_through_chain():
     except plan.PlanError as exc:
         assert _is_memory_error(exc)
     assert not _is_memory_error(ValueError("x"))
+
+
+def test_surface_stub_counts_same_as_full_index():
+    import numpy as np
+
+    full = SimpleNamespace(render_source_elem_row={"A": np.arange(5), "B": np.array([], dtype=np.int64)})
+    stub = plan.surface_stub(full)
+    targets = _targets(["S", "U"])
+    assert plan.count_calls(stub, targets) == plan.count_calls(full, targets)
+    assert plan._has_surface(stub, "A") and not plan._has_surface(stub, "B")
+    # 不在表里的实例按"有表面"处理，与完整索引一致
+    assert plan._has_surface(stub, "C") == plan._has_surface(full, "C")

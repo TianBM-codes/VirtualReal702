@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 from collections import deque
+from types import SimpleNamespace
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -179,6 +180,16 @@ def list_targets(manifest: ManifestRepo, *, result_group=None, group_only: bool 
 def _has_surface(idx, instance: str) -> bool:
     rows = getattr(idx, "render_source_elem_row", None) or {}
     return instance not in rows or len(rows[instance]) > 0
+
+
+def surface_stub(idx) -> SimpleNamespace:
+    """只保留"哪些实例有外表面"的轻量替身，供 count_calls / 排序使用。
+
+    并行模式下父进程不参与结果计算，用它代替完整 ModelIndex，好把几何内存释放掉。
+    """
+    rows = getattr(idx, "render_source_elem_row", None) or {}
+    return SimpleNamespace(render_source_elem_row={
+        inst: range(1 if len(r) > 0 else 0) for inst, r in rows.items()})
 
 
 def count_calls(idx, targets: List[Target]) -> int:
