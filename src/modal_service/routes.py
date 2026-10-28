@@ -73,18 +73,28 @@ class SyncAnimationRequest(AnimationRequest):
     include_frames: bool = True
 
 
-class FemWireframeGeometryRequest(_ProjectRequest):
+class FemWireframeGeometryRequest(GeometryRequest):
+    order: int = Field(default=0, ge=0, validation_alias=AliasChoices("order", "index"))
+    step: Optional[str] = None
+    fem_frame: Optional[int] = Field(default=None, ge=0)
+    result_group: Optional[str] = None
     unmatched_policy: Literal["disconnect", "nearest"] = "disconnect"
 
 
 class FemWireframeAnimationRequest(SyncAnimationRequest):
+    order: int = Field(default=0, ge=0, validation_alias=AliasChoices("order", "index"))
+    fem_frame: Optional[int] = Field(default=None, ge=0)
     unmatched_policy: Literal["disconnect", "nearest"] = "disconnect"
     geometry_version: Optional[str] = None
 
 
 @router.post("/femWireframe/geometry")
 def fem_wireframe_geometry(req: FemWireframeGeometryRequest):
-    return ok(wireframe.get_geometry(req.project_id, req.unmatched_policy))
+    return ok(wireframe.get_geometry(
+        req.project_id, req.unmatched_policy, order=req.order,
+        step=req.step, fem_frame=req.fem_frame, result_group=req.result_group,
+        coefficient=req.coefficient, component=req.component, animation=req.animation,
+    ))
 
 
 @router.post("/femWireframe/animation")

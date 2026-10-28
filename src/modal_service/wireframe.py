@@ -151,11 +151,46 @@ def _context(project_id):
     return idx, paths
 
 
-def get_geometry(project_id, unmatched_policy="disconnect"):
+def _display_fields(geometry, values, scale, deformed, include_basis, component):
+    """Use the same flat node, line and deformation fields as testMesh/geometry."""
+    real = np.asarray(values, dtype=float).reshape(-1).tolist()
+    imag = [0.0] * len(real)
+    components, minimum, maximum = (service._component_data(real, imag, component)
+                                    if real else ([], 0.0, 0.0))
+    return {
+        "ids": geometry["ids"], "originPos": geometry["originPos"],
+        "elementsIndex": geometry["elementsIndex"],
+        "componentData": components, "minValue": minimum, "maxValue": maximum,
+        "scaleFactor": scale,
+        "newPos": service._new_pos(geometry["originPos"], real, scale) if deformed else [],
+        "real": real if include_basis else [], "imag": imag if include_basis else [],
+    }
+
+
+def get_geometry(project_id, unmatched_policy="disconnect", *, order=0, step=None,
+                 fem_frame=None, result_group=None, coefficient=1.0,
+                 component="usum", animation=False):
     if unmatched_policy not in {"disconnect", "nearest"}:
         raise ValidationError("Unknown unmatched_policy")
-    _, paths = _context(project_id)
-    return _build_geometry(*_sources(project_id), paths, unmatched_policy)
+    idx, paths = _context(project_id)
+    geometry = _build_geometry(*_sources(project_id), paths, unmatched_policy)
+    values = np.zeros((len(geometry["ids"]), 3))
+    scale, missing, available = 1.0, [], False
+    if order != 0:
+        fem = service._fem_modal_stats(project_id, order, step, fem_frame, result_group)
+        geometry.update({key: fem[key] for key in
+                         ("available", "reason", "step", "frame", "result_group", "frequency")})
+        available = fem["available"]
+        if available:
+            values, missing = _read_selected_displacements(
+                idx.workspace, geometry["mapping"], fem["step"], fem["frame"], fem["result_group"])
+            if values.size:
+                scale = service._scale_factor(values.reshape(-1).tolist(), [0.0] * values.size,
+                                             service.get_box_max_scalar_size(geometry["originPos"]),
+                                             coefficient)
+    geometry.update(_display_fields(geometry, values, scale, available, animation, component))
+    geometry["missing_result_node_ids"] = missing
+    return geometry
 
 
 def _read_selected_displacements(workspace, mappings, step, frame, result_group):
@@ -212,4 +247,7 @@ def get_animation(project_id, order, unmatched_policy="disconnect", geometry_ver
     test.pop("frames", None)
     fem.update({"ids": geometry["ids"], "real": values.reshape(-1).tolist(),
                 "imag": [0.0] * values.size, "missing_result_node_ids": missing})
+    fem.update(_display_fields(geometry, values, fem["scale"],
+                               order != 0 and fem["available"], True,
+                               kwargs.get("component", "usum")))
     return {"geometry_version": geometry["geometry_version"], "test": test, "fem": fem, "sync": sync["sync"]}
