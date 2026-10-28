@@ -69,6 +69,17 @@ def _sources(project_id):
         connection.close()
 
 
+def _geometry_instance(instance, paths):
+    if instance in paths:
+        return instance
+    # The model-update BDF importer uses BDF_MODEL, while the L1/L2 BDF
+    # pipeline names its single instance after the BDF file. Resolve only
+    # this known alias; never guess an instance in an assembly.
+    if instance == "BDF_MODEL" and len(paths) == 1:
+        return next(iter(paths))
+    return None
+
+
 def _build_geometry(nodes, edges, matches, paths, policy):
     from services.model_update.analysis.fem_catalog_service import _apply_transform
 
@@ -85,8 +96,9 @@ def _build_geometry(nodes, edges, matches, paths, policy):
     selected = {}
     for i, node in enumerate(nodes):
         match = lookup.get(str(node["nid"]))
-        if match and match["instance_name"] in paths:
-            selected.setdefault(match["instance_name"], []).append((i, int(match["fem_node_label"])))
+        instance = _geometry_instance(match["instance_name"], paths) if match else None
+        if instance is not None:
+            selected.setdefault(instance, []).append((i, int(match["fem_node_label"])))
     resolved = {}
     for instance, entries in selected.items():
         path = paths[instance]

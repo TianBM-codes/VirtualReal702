@@ -4,6 +4,15 @@ Existing full-mesh and animation endpoints remain available. These endpoints
 provide an additional FE display model using experimental trace-line edges.
 Display fallback matches never update saved node matches or MAC inputs.
 
+The model-update BDF importer stores node matches under `BDF_MODEL`, while
+the display pipeline uses the BDF filename as its instance name (for example,
+`PROJECT_BDF_579DE83F`). When no exact instance exists and only one display
+geometry instance is available, the wireframe resolves this known `BDF_MODEL`
+alias to that instance. Returned `mapping.instance` uses the actual geometry
+instance, also used to read modal displacements. These remain saved matches
+(`source=matched`); they do not increment `nearest_count` or change database
+rows. No alias is inferred when multiple geometry instances are available.
+
 ## Geometry
 
 `POST /api/model/testMesh/femWireframe/geometry`

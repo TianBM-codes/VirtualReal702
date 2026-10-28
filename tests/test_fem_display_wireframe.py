@@ -48,6 +48,45 @@ def test_nearest_is_display_only_and_version_changes(geometry_file):
     assert result["geometry_version"] != other["geometry_version"]
 
 
+def test_bdf_match_alias_uses_actual_geometry_and_result_instance(geometry_file, tmp_path, monkeypatch):
+    nodes, edges, matches = _inputs()
+    nodes = [node for node in nodes if node["nid"] != 3]
+    edges = [edges[0]]
+    for match in matches:
+        match["instance_name"] = "BDF_MODEL"
+    saved_matches = copy.deepcopy(matches)
+    instance = "PROJECT_BDF_579DE83F"
+    result = wireframe._build_geometry(nodes, edges, matches, {instance: geometry_file}, "disconnect")
+    assert matches == saved_matches
+    assert result["ids"] == [1, 2, 4]
+    assert result["elementsIndex"] == [0, 1]
+    assert result["diagnostics"]["unmatched_node_ids"] == []
+    assert result["diagnostics"]["nearest_count"] == 0
+    assert all(m["instance"] == instance and m["source"] == "matched" for m in result["mapping"])
+    path = tmp_path / "results.h5"
+    with h5py.File(path, "w") as f:
+        f[f"NODAL/{instance}/labels"] = [200, 100]
+        f[f"NODAL/{instance}/data"] = [[[2., 0., 0.], [5., 0., 0.]]]
+    from src.l3.services import result_service
+    monkeypatch.setattr(result_service, "_manifest_result_h5_path", lambda *a: str(path))
+    values, missing = wireframe._read_selected_displacements(
+        str(tmp_path), result["mapping"], "Modal", 0, None)
+    np.testing.assert_array_equal(values, [[5, 0, 0], [2, 0, 0], [5, 0, 0]])
+    assert missing == []
+
+
+def test_instance_alias_never_guesses_between_assembly_instances(geometry_file):
+    assert wireframe._geometry_instance("BDF_MODEL", {"BDF_MODEL": "exact", "OTHER": "other"}) == "BDF_MODEL"
+    assert wireframe._geometry_instance("BDF_MODEL", {"A": geometry_file, "B": geometry_file}) is None
+    assert wireframe._geometry_instance("UNKNOWN", {"A": geometry_file}) is None
+    nodes, edges, matches = _inputs()
+    for match in matches:
+        match["instance_name"] = "BDF_MODEL"
+    result = wireframe._build_geometry(nodes, edges, matches, {"A": geometry_file, "B": geometry_file}, "disconnect")
+    assert result["ids"] == []
+    assert result["diagnostics"]["unmatched_node_ids"] == [1, 2, 3, 4]
+
+
 def test_selected_sparse_result_handles_duplicate_and_missing_nodes(tmp_path, monkeypatch):
     path = tmp_path / "results.h5"
     with h5py.File(path, "w") as f:
