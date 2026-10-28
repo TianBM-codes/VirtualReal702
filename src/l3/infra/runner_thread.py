@@ -86,6 +86,33 @@ def _append_extract_filters(cmd: list, parse_opts: dict) -> list:
     return cmd
 
 
+def _remove_result_group_files(conn, workspace: str, result_group: str) -> None:
+    """删掉该组登记在 l1/results/ 下、不在组子目录里的结果文件（default_result 在根目录）。
+
+    与 src/job_runner.py 同名函数保持一致。
+    """
+    results_root = os.path.realpath(os.path.join(workspace, "l1", "results"))
+    try:
+        rows = conn.execute(
+            "SELECT file_path FROM result_files WHERE result_group=?", (result_group,)
+        ).fetchall()
+    except sqlite3.Error:
+        return
+    for (file_path,) in rows:
+        if not file_path:
+            continue
+        rel = file_path.replace("\\", os.sep).replace("/", os.sep)
+        p = rel if os.path.isabs(rel) else os.path.join(workspace, rel)
+        p = os.path.realpath(p)
+        if not p.startswith(results_root + os.sep) or not os.path.isfile(p):
+            continue
+        try:
+            os.remove(p)
+            logger.info("Runner: removed stale result file %s", p)
+        except OSError as exc:
+            logger.warning("Runner: failed to remove stale result file %s: %s", p, exc)
+
+
 class EmbeddedRunner:
     def __init__(
         self,
@@ -93,12 +120,26 @@ class EmbeddedRunner:
         data_root: str,
         abaqus_cmd: str = "abaqus",
         poll_interval: int = 10,
+        odb_fields: str = "U,S,E,LE,NT*,TEMP",
     ):
         self.registry_db   = registry_db
         self.data_root     = data_root
         self.abaqus_cmd    = abaqus_cmd
         self.poll_interval = poll_interval
+        self.odb_fields    = odb_fields
         self._pid = os.getpid()
+
+    def _odb_field_list(self, parse_opts: dict = None) -> str:
+        """--field-list value: parse_options.fields > field_prefix(=all) > config."""
+        parse_opts = parse_opts or {}
+        fields = parse_opts.get("fields")
+        if isinstance(fields, (list, tuple)):
+            fields = ",".join(str(f).strip() for f in fields if str(f).strip())
+        if fields:
+            return str(fields)
+        if parse_opts.get("field_prefix"):
+            return "all"
+        return self.odb_fields or "all"
 
     # ── SQLite helpers ─────────────────────────────────────────────────────────
 
@@ -318,7 +359,8 @@ class EmbeddedRunner:
         logger.info("[%s] L1 phase 1: abaqus_dump.py", odb_id)
         rc, tail = self._run_streaming(
             [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
-             "--odb", odb_path, "--out", workspace],
+             "--odb", odb_path, "--out", workspace,
+             "--field-list", self._odb_field_list()],
             odb_id, "abaqus_dump",
         )
         if rc != 0:
@@ -533,6 +575,7 @@ class EmbeddedRunner:
         manifest = os.path.join(workspace, "manifest.db")
         if os.path.exists(manifest):
             with sqlite3.connect(manifest, timeout=5.0) as conn:
+                _remove_result_group_files(conn, workspace, result_group)
                 for table in ("steps", "frames", "result_files",
                               "result_blocks", "result_group_meta"):
                     conn.execute(
@@ -578,7 +621,8 @@ class EmbeddedRunner:
             return False
 
         logger.info("[%s] Project ODB: abaqus_dump.py", project_id)
-        dump_cmd = [self.abaqus_cmd, "python", str(_DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
+        dump_cmd = [self.abaqus_cmd, "python", str(_DUMP_SCRIPT), "--odb", odb_path, "--out", workspace,
+                    "--field-list", self._odb_field_list()]
         rc, tail = self._run_streaming(dump_cmd, project_id, "project_abaqus_dump")
         if rc != 0:
             msg = "abaqus_dump failed: " + tail
@@ -826,6 +870,7 @@ class EmbeddedRunner:
                        "--mode", "extract"]
         if parse_opts.get("invariants") == "full":
             extract_cmd.extend(["--invariants", "full"])
+        extract_cmd.extend(["--field-list", self._odb_field_list(parse_opts)])
         _append_extract_filters(extract_cmd, parse_opts)
         rc, tail = self._run_streaming(extract_cmd, label, "extract")
         if rc != 0:
@@ -938,6 +983,7 @@ def start_embedded_runner(
     data_root: str,
     abaqus_cmd: str = "abaqus",
     poll_interval: int = 10,
+    odb_fields: str = "U,S,E,LE,NT*,TEMP",
 ) -> bool:
     """
     Try to start the embedded runner daemon thread.
@@ -945,7 +991,7 @@ def start_embedded_runner(
     Returns True  — this worker acquired the lock and started the thread.
     Returns False — another worker already holds the lock (this worker skips).
     """
-    runner = EmbeddedRunner(registry_db, data_root, abaqus_cmd, poll_interval)
+    runner = EmbeddedRunner(registry_db, data_root, abaqus_cmd, poll_interval, odb_fields)
     if not runner.try_acquire_lock():
         logger.debug(
             "Embedded runner: lock held by another worker (pid=%d), skipping",
