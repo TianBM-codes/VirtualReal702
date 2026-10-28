@@ -126,6 +126,23 @@ HEARTBEAT_INTERVAL = 60   # seconds between heartbeat updates
 ABAQUS_CMD       = _cfg(_svc_cfg, "APP_ABAQUS_CMD", "abaqus")  # override if not in PATH
 # "full" -> pass --invariants full to abaqus_dump.py; "none" -> skip (default)
 INVARIANTS_MODE  = _cfg(_svc_cfg, "APP_INVARIANTS", "none")
+# ODB 只解析白名单里的字段（按基础字段名匹配，支持 * 通配；"all" = 全量）。
+# U=位移, S=应力, E/LE=应变（小变形/大变形）, NT*/TEMP=节点/单元温度。
+ODB_FIELDS       = _cfg(_svc_cfg, "APP_ODB_FIELDS", "U,S,E,LE,NT*,TEMP")
+
+
+def _odb_field_list(parse_opts: dict = None) -> str:
+    """--field-list value for abaqus_dump.py: parse_options.fields > field_prefix(=all) > config."""
+    parse_opts = parse_opts or {}
+    fields = parse_opts.get("fields")
+    if isinstance(fields, (list, tuple)):
+        fields = ",".join(str(f).strip() for f in fields if str(f).strip())
+    if fields:
+        return str(fields)
+    # field_prefix 是灵敏度(DSA)等专用过滤，自带范围，不再叠加白名单
+    if parse_opts.get("field_prefix"):
+        return "all"
+    return ODB_FIELDS or "all"
 
 # Windows 上 stdout 被重定向（文件/管道）时 Python 默认用 GBK 输出；统一成 UTF-8。
 for _stream in (sys.stdout, sys.stderr):
@@ -515,6 +532,7 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
+    dump_cmd += ["--field-list", _odb_field_list()]
     rc1, tail1 = _run_streaming(dump_cmd, odb_id, "l1_dump")
     logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
@@ -538,6 +556,7 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
             retry_cmd += ["--invariants", "full"]
+        retry_cmd += ["--field-list", _odb_field_list()]
         rc1, tail1 = _run_streaming(retry_cmd, odb_id, "l1_dump")
         logger.info("[%s] abaqus_dump retry rc=%d", odb_id, rc1)
 
@@ -897,6 +916,7 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
     dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
+    dump_cmd += ["--field-list", _odb_field_list()]
     rc1, tail1 = _run_streaming(dump_cmd, project_id, "l1_dump")
     logger.info("[%s] project_abaqus_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
 
@@ -920,6 +940,7 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
             retry_cmd += ["--invariants", "full"]
+        retry_cmd += ["--field-list", _odb_field_list()]
         rc1, tail1 = _run_streaming(retry_cmd, project_id, "l1_dump")
         logger.info("[%s] project_abaqus_dump retry rc=%d", project_id, rc1)
 
@@ -1788,6 +1809,7 @@ def _run_result_group(project_id: str, result_group: str,
         extract_cmd += ["--geom-source", "inp"]
     if inv_mode == "full":
         extract_cmd += ["--invariants", "full"]
+    extract_cmd += ["--field-list", _odb_field_list(parse_opts)]
     _append_extract_filters(extract_cmd, parse_opts)
     rc, tail = _run_streaming(extract_cmd, project_id, "rg_extract")
     if "ODB_CONSISTENCY_FAIL:" in tail:

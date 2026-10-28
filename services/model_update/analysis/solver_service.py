@@ -146,6 +146,8 @@ def _build_project_result_parse_options(
         "steps": [str(step)] if step else None,
         "frames": [int(frame)] if frame is not None else "all",
         "invariants": "none",
+        # DSA 结果要 d_U_* 等灵敏度字段，不受 APP_ODB_FIELDS 白名单限制
+        "fields": "all",
     }
 
     # DSA uploads need both the sensitivity fields (for example d_U_T1) and

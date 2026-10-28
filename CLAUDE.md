@@ -69,7 +69,7 @@ python src/job_runner.py   # 进程 2：L1/L2 流水线 runner（可嵌入 app.p
 ```
 `app.py` 是真正入口：它以 L3 的 FastAPI app 为基础，再挂载模型修正的所有路由。
 
-**配置**：服务从 `service_config.json`（项目根目录）读取，也可以用环境变量覆盖。关键字段：`DB_HOST/PORT/USER/PASSWORD/DATABASE`（MySQL），`APP_PORT`（默认 5000），`APP_EMBEDDED_RUNNER`（1=job_runner 作为 app.py 的后台线程自动启动，0=需要手动启另一个进程，Windows 默认 0）。
+**配置**：服务从 `service_config.json`（项目根目录）读取，也可以用环境变量覆盖。关键字段：`DB_HOST/PORT/USER/PASSWORD/DATABASE`（MySQL），`APP_PORT`（默认 5000），`APP_EMBEDDED_RUNNER`（1=job_runner 作为 app.py 的后台线程自动启动，0=需要手动启另一个进程，Windows 默认 0）。`APP_ODB_FIELDS`（ODB 解析字段白名单，逗号分隔、按基础字段名匹配、支持 `*`，默认 `U,S,E,LE,NT*,TEMP`，`all`=全量；结果组 `parse_options.fields` 可覆盖，传 `field_prefix` / 模型修正 DSA 结果组不套白名单）。
 
 **L1 Extraction (requires Abaqus license):**
 ```bash
