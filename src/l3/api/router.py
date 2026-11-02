@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from .routes import health, jobs, meta, query, results, geometry, modal, color_code, section, raw_results, node_table, user_field, simright, projects, external_results, sensitivity, model_update
+from .routes import health, jobs, meta, query, results, geometry, modal, color_code, section, raw_results, node_table, user_field, projects, external_results, sensitivity, model_update
 
 router = APIRouter()
 router.include_router(health.router)
@@ -18,4 +18,3 @@ router.include_router(geometry.router)
 router.include_router(modal.router)
 router.include_router(color_code.router)
 router.include_router(section.router)
-router.include_router(simright.router)

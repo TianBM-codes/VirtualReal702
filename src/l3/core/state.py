@@ -314,7 +314,6 @@ class OdbRegistry:
     """
     def __init__(self, max_loaded: Optional[int] = None):
         # Public name kept: tests inject via registry.loaded[id] = idx and
-        # simright_service reads registry.loaded.keys().
         # OrderedDict doubles as the LRU list — leftmost is least recent.
         self.loaded: "OrderedDict[str, ModelIndex]" = OrderedDict()
         self._known: Dict[str, Tuple[str, str]] = {}

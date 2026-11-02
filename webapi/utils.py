@@ -5,14 +5,13 @@ from fastapi import Request
 
 
 async def log_request(request: Request, body: Any = None) -> None:
+    # Do not copy model parameters or trial data into request logs.
     if request.method != "POST":
         return
 
     log_info = {
         "method": request.method,
         "path": request.url.path,
-        "body": body,
-        "client_ip": request.client.host if request.client else None,
     }
 
     print("\n[Request Log]")

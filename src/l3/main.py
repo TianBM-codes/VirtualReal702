@@ -365,8 +365,8 @@ app.add_exception_handler(Exception, unhandled_error_handler)
 
 app.include_router(router)
 
-# Serve tools/ as /static  →  http://127.0.0.1:8000/static/viewer.html
+# Serve public pages as /static  →  http://127.0.0.1:8000/static/viewer.html
 # __file__ = src/l3/main.py  →  .parent×3 = repo root
-_tools_dir = Path(__file__).resolve().parent.parent.parent / "tools"
+_tools_dir = Path(__file__).resolve().parent.parent.parent / "static"
 if _tools_dir.is_dir():
     app.mount("/static", StaticFiles(directory=str(_tools_dir)), name="static")

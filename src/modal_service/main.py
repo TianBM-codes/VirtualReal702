@@ -36,8 +36,8 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# 挂载静态文件（tools/ 目录，提供 modal_viewer.html）
-_tools_dir = Path(__file__).resolve().parent.parent.parent / "tools"
+# 挂载静态文件（static/ 目录，提供 modal_viewer.html）
+_tools_dir = Path(__file__).resolve().parent.parent.parent / "static"
 if _tools_dir.exists():
     app.mount("/static", StaticFiles(directory=str(_tools_dir)), name="static")
 

@@ -2,20 +2,15 @@ from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 from services.model_update.analysis.sensor_curve_service import get_sensor_curve
 from ..models import SensorCurveRequest
-from ..load_level_models import ImportTestLoadLevelRequest, SimrightLoadLevelComparisonRequest
+from ..load_level_models import ImportTestLoadLevelRequest
 from services.model_update.analysis.test_load_level_service import import_test_load_level
-from services.model_update.analysis.simright_load_level_service import get_simright_test_load_level_comparison
 
 from services.model_update.analysis.test_unit_service import (
     convert_test_unit_system,
     get_test_unit_status,
 )
 from services.model_update.importers.unv_service import (
-    dump_unv_modal_shapes_to_vtk,
-    dump_unv_modal_to_json,
     get_deform_sensor_positions,
-    get_frf_curve,
-    get_frf_names,
     get_modal_shape,
     get_sensor_positions,
     import_unv_data,
@@ -29,10 +24,6 @@ from src.utils.file_fetch import download_if_url
 from ..common import error_response, server_error, success_response
 from ..models import (
     DeformSensorPositionRequest,
-    DumpJsonRequest,
-    DumpVtkRequest,
-    FrfCurveRequest,
-    FrfNamesRequest,
     ImportUnvRequest,
     PlotModalShapeRequest,
     SensorPositionRequest,
@@ -50,19 +41,6 @@ async def import_test_load_level_api(request: Request, body: ImportTestLoadLevel
     try:
         data = await run_in_threadpool(import_test_load_level, **model_to_dict(body))
         return success_response(data, "加载级试验 TXT 导入成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
-@router.post("/get/simright_test_load_level_comparison")
-async def get_simright_test_load_level_comparison_api(request: Request, body: SimrightLoadLevelComparisonRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        data = await run_in_threadpool(get_simright_test_load_level_comparison, **model_to_dict(body))
-        return success_response(data, "数巧加载级试验对比示例获取成功" if data.get("is_example") else "数巧加载级试验对比获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -153,33 +131,6 @@ async def get_sensor_relative_error_api(request: Request, body: SensorPositionRe
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/frf/names")
-async def get_frf_names_api(request: Request, body: FrfNamesRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        return success_response(get_frf_names(body.project_id), "FRF 曲线名称获取成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
-@router.post("/frf/curve")
-async def get_frf_curve_api(request: Request, body: FrfCurveRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        return success_response(
-            get_frf_curve(body.project_id, name=body.name, names=body.names, index=body.index),
-            "FRF 曲线获取成功",
-        )
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
 @router.post("/get/deform_sensor_position")
 async def get_deform_sensor_position_api(request: Request, body: DeformSensorPositionRequest):
     await log_request(request, model_to_dict(body))
@@ -222,32 +173,6 @@ async def get_test_unit_status_api(request: Request, body: TestUnitStatusRequest
     try:
         result = get_test_unit_status(project_id=body.project_id)
         return success_response(result, "试验单位状态获取成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
-@router.post("/dump/vtk")
-async def plot_modal_shape_to_vtk(request: Request, body: DumpVtkRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        result = dump_unv_modal_shapes_to_vtk(body.project_id, output_path=body.vtk_path)
-        return success_response(result, "VTK 文件生成成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
-@router.post("/dump/json")
-async def export_modal_shape_to_json(request: Request, body: DumpJsonRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        result = dump_unv_modal_to_json(body.project_id, output_path=body.json_path)
-        return success_response(result, "JSON 文件生成成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

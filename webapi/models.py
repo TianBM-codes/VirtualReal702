@@ -74,39 +74,6 @@ class SensorPositionRequest(BaseModel):
     project_id: int
 
 
-class FrfNamesRequest(BaseModel):
-    project_id: int
-
-
-class FrfCurveRequest(BaseModel):
-    project_id: int
-    name: Optional[str] = None
-    names: Optional[List[str]] = None
-    index: int = Field(ge=1, le=4)
-
-    @model_validator(mode="after")
-    def _validate_name_fields(self):
-        name = str(self.name or "").strip()
-        raw_names = list(self.names or [])
-        names = [str(item).strip() for item in raw_names if str(item).strip()]
-        if not name and not names:
-            raise ValueError("either name or names is required")
-        if name and names:
-            names.insert(0, name)
-        elif name:
-            names = [name]
-        deduped = []
-        seen = set()
-        for item in names:
-            if item in seen:
-                continue
-            seen.add(item)
-            deduped.append(item)
-        self.name = deduped[0] if deduped else None
-        self.names = deduped
-        return self
-
-
 class DeformSensorPositionRequest(BaseModel):
     project_id: int
     scale: float = 1.0
@@ -122,16 +89,6 @@ class TestUnitConvertRequest(BaseModel):
 
 
 class TestUnitStatusRequest(BaseModel):
-    project_id: int
-
-
-class DumpVtkRequest(BaseModel):
-    vtk_path: str
-    project_id: int
-
-
-class DumpJsonRequest(BaseModel):
-    json_path: str
     project_id: int
 
 
@@ -927,37 +884,6 @@ class SolverRunAndParseRequest(BaseModel):
     wait_timeout_sec: int = 3600
     poll_interval_sec: float = 2.0
     async_submit: bool = False
-
-
-class PBSSolverRunRequest(BaseModel):
-    project_id: int
-    env: Optional[str] = None
-    input_file: Optional[str] = None
-    input_file_name: Optional[str] = None
-    job_name: Optional[str] = None
-    output_dir: Optional[str] = None
-    output_dir_name: Optional[str] = None
-    result_group: Optional[str] = None
-    display_name: Optional[str] = None
-    base_url: Optional[str] = None
-    step: Optional[str] = None
-    frame: Optional[int] = None
-    field_prefix: Optional[str] = None
-    upload_timeout: int = 60
-    wait: bool = True
-    download_results: bool = True
-    poll_interval_sec: float = 10.0
-    wait_timeout_sec: int = 3600
-    timeout_sec: int = 60
-    submit_overrides: Dict[str, Any] = Field(default_factory=dict)
-    async_submit: bool = False
-
-
-class PBSJobStatusRequest(BaseModel):
-    project_id: int
-    env: Optional[str] = None
-    job_id: str
-    timeout_sec: int = 60
 
 
 class BulkSolverParameterRequest(BaseModel):

@@ -15,10 +15,6 @@ from services.model_update.analysis.solver_service import (
     run_bulk_solver_sol103_and_store_modal_results,
     run_solver_and_parse_project_result,
 )
-from services.model_update.analysis.pbs_service import (
-    get_pbs_job_status,
-    run_pbs_solver_job,
-)
 from services.model_update.analysis.bulk_solver_sol200_service import (
     export_sol200_sensitivity_vtu,
     generate_sol200_workflow,
@@ -73,8 +69,6 @@ from ..models import (
     Op2SensitivityStoreCloudRequest,
     Op2SensitivityStoreRequest,
     Op2SensitivityVtuExportRequest,
-    PBSJobStatusRequest,
-    PBSSolverRunRequest,
     SolverRunAndParseRequest,
 )
 from ..utils import log_request, model_to_dict
@@ -581,32 +575,6 @@ def _sol200_sync_generate_run_and_store_kwargs(body: BulkSolverSol200SyncGenerat
     }
 
 
-def _pbs_solver_run_kwargs(body: PBSSolverRunRequest, application: str) -> dict:
-    return {
-        "project_id": body.project_id,
-        "application": application,
-        "input_file": body.input_file,
-        "input_file_name": body.input_file_name,
-        "env": body.env,
-        "job_name": body.job_name,
-        "output_dir": body.output_dir,
-        "output_dir_name": body.output_dir_name,
-        "result_group": body.result_group,
-        "display_name": body.display_name,
-        "base_url": body.base_url,
-        "step": body.step,
-        "frame": body.frame,
-        "field_prefix": body.field_prefix,
-        "upload_timeout": body.upload_timeout,
-        "wait": body.wait,
-        "download_results": body.download_results,
-        "poll_interval_sec": body.poll_interval_sec,
-        "wait_timeout_sec": body.wait_timeout_sec,
-        "timeout_sec": body.timeout_sec,
-        "submit_overrides": body.submit_overrides,
-    }
-
-
 @router.post("/solver/deck_solver/sensitivity")
 async def run_deck_solver_sensitivity_api(request: Request, body: DeckSolverSensitivityRunRequest):
     # Generate the DeckSolver sensitivity deck and optionally launch the solver in
@@ -642,70 +610,6 @@ async def run_deck_solver_sensitivity_api(request: Request, body: DeckSolverSens
             extra_args=body.extra_args,
         )
         return success_response(data, "DeckSolver 灵敏度流程执行成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
-@router.post("/solver/pbs/deck_solver/run")
-async def run_pbs_deck_solver_api(request: Request, body: PBSSolverRunRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        kwargs = _pbs_solver_run_kwargs(body, "DeckSolver")
-        if body.async_submit:
-            data = submit_background_task(
-                task_type="solver.pbs.deck_solver.run",
-                fn=run_pbs_solver_job,
-                kwargs=kwargs,
-                request_payload=model_to_dict(body),
-                task_kind="external_solver",
-            )
-            return success_response(data, "PBS DeckSolver 任务已提交")
-        data = run_pbs_solver_job(**kwargs)
-        return success_response(data, "PBS DeckSolver 求解成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
-@router.post("/solver/pbs/bulk_solver/run")
-async def run_pbs_bulk_solver_api(request: Request, body: PBSSolverRunRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        kwargs = _pbs_solver_run_kwargs(body, "BulkSolver")
-        if body.async_submit:
-            data = submit_background_task(
-                task_type="solver.pbs.bulk_solver.run",
-                fn=run_pbs_solver_job,
-                kwargs=kwargs,
-                request_payload=model_to_dict(body),
-                task_kind="external_solver",
-            )
-            return success_response(data, "PBS BulkSolver 任务已提交")
-        data = run_pbs_solver_job(**kwargs)
-        return success_response(data, "PBS BulkSolver 求解成功")
-    except AppError as exc:
-        return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
-    except Exception as exc:
-        app_exc = server_error(exc)
-        return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
-
-
-@router.post("/solver/pbs/job/status")
-async def get_pbs_job_status_api(request: Request, body: PBSJobStatusRequest):
-    await log_request(request, model_to_dict(body))
-    try:
-        data = get_pbs_job_status(
-            project_id=body.project_id,
-            env=body.env,
-            job_id=body.job_id,
-            timeout_sec=body.timeout_sec,
-        )
-        return success_response(data, "PBS 任务状态获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:

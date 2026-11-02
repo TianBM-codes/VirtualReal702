@@ -2,7 +2,6 @@ import json
 import time
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
 from uuid import uuid4
 
 from config import APP_CONFIG, DB_CONFIG, DB_DIALECT, DB_INIT_ON_STARTUP
@@ -81,81 +80,23 @@ async def model_update_lifespan(application):
 app.router.lifespan_context = model_update_lifespan
 
 
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="milliseconds")
 
 
 @app.middleware("http")
 async def log_request_timing(request: Request, call_next):
-    start_perf = time.perf_counter()
-    start_iso = _now_iso()
+    started = time.perf_counter()
     request_id = uuid4().hex[:12]
-
-    # 读取 body 并回填，让下游路由仍能正常读取
-    raw_body = await request.body()
-
-    async def _receive():
-        return {"type": "http.request", "body": raw_body, "more_body": False}
-
-    request._receive = _receive
-
-    try:
-        body_text = raw_body.decode("utf-8")
-    except Exception:
-        body_text = f"<binary {len(raw_body)} bytes>"
-
-    # Log receipt immediately so we still know what reached the server
-    # even if downstream code crashes before a normal response is built.
-    request_info = {
-        "event": "request_start",
-        "request_id": request_id,
-        "time": start_iso,
-        "method": request.method,
-        "path": request.url.path,
-        "query": str(request.url.query or ""),
-        "client_ip": request.client.host if request.client else None,
-        "body": body_text,
-    }
-    print("[HTTP Timing] " + json.dumps(request_info, ensure_ascii=False, default=str))
-
     try:
         response = await call_next(request)
-    except Exception as exc:
-        end_iso = _now_iso()
-        elapsed_ms = round((time.perf_counter() - start_perf) * 1000.0, 3)
-        error_info = {
-            "event": "request_error",
-            "request_id": request_id,
-            "start_time": start_iso,
-            "end_time": end_iso,
-            "elapsed_ms": elapsed_ms,
-            "method": request.method,
-            "path": request.url.path,
-            "query": str(request.url.query or ""),
-            "client_ip": request.client.host if request.client else None,
-            "error": repr(exc),
-            "body": body_text,
-        }
-        print("[HTTP Timing] " + json.dumps(error_info, ensure_ascii=False, default=str))
+    except Exception:
+        print(json.dumps({"request_id": request_id, "method": request.method,
+                          "path": request.url.path, "status": "failed"}))
         raise
-
-    end_iso = _now_iso()
-    elapsed_ms = round((time.perf_counter() - start_perf) * 1000.0, 3)
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 3)
     response.headers["X-Elapsed-Time-Ms"] = str(elapsed_ms)
-    response_info = {
-        "event": "request_end",
-        "request_id": request_id,
-        "start_time": start_iso,
-        "end_time": end_iso,
-        "elapsed_ms": elapsed_ms,
-        "method": request.method,
-        "path": request.url.path,
-        "query": str(request.url.query or ""),
-        "client_ip": request.client.host if request.client else None,
-        "status_code": response.status_code,
-        "body": body_text,
-    }
-    print("[HTTP Timing] " + json.dumps(response_info, ensure_ascii=False, default=str))
+    print(json.dumps({"request_id": request_id, "method": request.method,
+                      "path": request.url.path, "status": response.status_code,
+                      "elapsed_ms": elapsed_ms}))
     return response
 
 

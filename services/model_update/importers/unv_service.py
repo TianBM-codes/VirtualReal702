@@ -951,46 +951,8 @@ def get_deform_sensor_positions(project_id, scale=1.0, static_result_id=None, lo
         conn.close()
 
 
-def dump_unv_modal_shapes_to_vtk(project_id, output_path):
-    """
-    可视化试验模态振型, 生成vtk文件
-    :param project_id:
-    :@param output_path:
-    :return:
-    """
-    res_json = get_modal_shape(project_id)
-    if res_json is not None:
-        node_pos = np.reshape(np.array(res_json["points"]["position"], dtype=float), (-1, 3))
-        eles = res_json["elements"]["index"]
-        all_eles = {"line": np.reshape(np.array(eles, dtype=int), (-1, 2))}
-        modal_shape = {}
-        for iter_shape in res_json["modal_shape"]:
-            name = f"{iter_shape['order']}_{iter_shape['frequency']}"
-            modal_pos = np.reshape(np.array(iter_shape["position"]["real"], dtype=float), (-1, 3))
-            modal_shape["unit"] = "Hz"
-            modal_shape[name] = modal_pos
-        meshio.write_points_cells(filename=output_path,
-                                  points=node_pos,
-                                  cells=all_eles,
-                                  point_data=modal_shape)
 
 
-def dump_unv_modal_to_json(project_id, output_path):
-    """
-    导出文件至json
-    :param project_id:
-    :param output_path:
-    :return:
-    """
-    res_json = get_modal_shape(project_id)
-    if res_json is not None:
-        with open(output_path, 'w') as f:
-            json.dump(res_json, f, indent=4)
-        return {
-            "json_path": output_path,
-        }
-    else:
-        return {"message": ""}
 
 
 if __name__ == "__main__":

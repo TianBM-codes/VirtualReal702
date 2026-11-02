@@ -21,10 +21,7 @@ markdown-it-py==3.0.0
 matplotlib==3.9.4
 mdurl==0.1.2
 meshio==5.3.5
-mysql==0.0.3
-mysql-connector==2.2.9
 mysql-connector-python==9.4.0
-mysqlclient==2.2.7
 numpy==1.26.4
 packaging==26.1
 pillow==11.3.0
