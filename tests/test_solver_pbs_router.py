@@ -1,7 +1,7 @@
 import pytest
 
 
-def test_pbs_abaqus_run_route(monkeypatch):
+def test_pbs_deck_solver_run_route(monkeypatch):
     fastapi = pytest.importorskip("fastapi")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -13,7 +13,7 @@ def test_pbs_abaqus_run_route(monkeypatch):
     def fake_run_pbs_solver_job(**kwargs):
         captured.update(kwargs)
         return {
-            "workflow": "pbs_abaqus_run",
+            "workflow": "pbs_deck_solver_run",
             "job_id": "12345",
             "resolved_job_state": "C",
         }
@@ -25,7 +25,7 @@ def test_pbs_abaqus_run_route(monkeypatch):
     client = TestClient(app)
 
     response = client.post(
-        "/solver/pbs/abaqus/run",
+        "/solver/pbs/deck_solver/run",
         json={
             "project_id": 32,
             "env": "dev",
@@ -43,7 +43,7 @@ def test_pbs_abaqus_run_route(monkeypatch):
     assert payload["code"] == 200
     assert payload["data"]["job_id"] == "12345"
     assert captured["project_id"] == 32
-    assert captured["application"] == "Abaqus"
+    assert captured["application"] == "DeckSolver"
     assert captured["env"] == "dev"
     assert captured["submit_overrides"] == {"CORES": 32}
 

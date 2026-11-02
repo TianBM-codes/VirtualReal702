@@ -1,43 +1,49 @@
 # -*- coding: utf-8 -*-
-"""导出 Abaqus ODB 里某个场的原始值到 CSV，跨全部 instance。
+"""导出 DeckSolver ODB 里某个场的原始值到 CSV，跨全部 instance。
 
 同时导出两种位置(都是"未平均"的原始数据)：
-  - INTEGRATION_POINT：积分点原值              -> abaqus_<field>_ip.csv
-  - ELEMENT_NODAL    ：积分点外推到单元节点后的值 -> abaqus_<field>_en.csv
+  - INTEGRATION_POINT：积分点原值              -> deck_solver_<field>_ip.csv
+  - ELEMENT_NODAL    ：积分点外推到单元节点后的值 -> deck_solver_<field>_en.csv
 
-在装了 Abaqus 的机器上运行(Abaqus Python 2.7 或新版 Python 3):
-    abaqus python tests/dump_abq_s.py <odb路径> [field=S] [step=Step-1] [frame=1] [invariant]
+在装了 DeckSolver 的机器上运行(DeckSolver Python 2.7 或新版 Python 3):
+    deck_solver python tests/dump_abq_s.py <odb路径> [field=S] [step=Step-1] [frame=1] [invariant]
 
 第 5 个参数是不变量(可选)：给了就用 getScalarField(invariant=...) 导出标量，
 与本平台合成场 S_<INV> 对照。例如对 Mises：
-    abaqus python tests/dump_abq_s.py model.odb S Step-1 1 MISES
-        -> abaqus_S_MISES_ip.csv / abaqus_S_MISES_en.csv
-这正是 Abaqus 默认 Mises 云图的口径(积分点算 Mises -> 外推标量 -> 平均)。
+    deck_solver python tests/dump_abq_s.py model.odb S Step-1 1 MISES
+        -> deck_solver_S_MISES_ip.csv / deck_solver_S_MISES_en.csv
+这正是 DeckSolver 默认 Mises 云图的口径(积分点算 Mises -> 外推标量 -> 平均)。
 
 最后分别打印两种位置的全装配 min/max，用于和 tests/dump_ours_s.py 对照。
 """
+
+import os as _runtime_os
+import sys as _runtime_sys
+_runtime_sys.path.insert(0, _runtime_os.path.abspath(_runtime_os.path.join(
+    _runtime_os.path.dirname(__file__), '..')))
+
 import sys
 import csv
 from odbAccess import openOdb
 
 try:
-    from abaqusConstants import ELEMENT_NODAL, INTEGRATION_POINT
+    from result_constants import ELEMENT_NODAL, INTEGRATION_POINT
 except Exception:
     ELEMENT_NODAL = None
     INTEGRATION_POINT = None
 
-# 不变量名 -> abaqusConstants 常量(可用的才放进来)
+# 不变量名 -> result_constants 常量(可用的才放进来)
 INV_CONSTS = {}
 for _name in ('MISES', 'TRESCA', 'PRESS', 'INV3', 'MAX_PRINCIPAL',
               'MID_PRINCIPAL', 'MIN_PRINCIPAL', 'MAGNITUDE'):
     try:
-        INV_CONSTS[_name] = getattr(__import__('abaqusConstants'), _name)
+        INV_CONSTS[_name] = getattr(__import__('result_constants'), _name)
     except Exception:
         pass
 
 
 def _open_csv(path):
-    # Abaqus 新版是 Python 3、老版是 2.7，csv 打开方式不同
+    # DeckSolver 新版是 Python 3、老版是 2.7，csv 打开方式不同
     if sys.version_info[0] >= 3:
         return open(path, 'w', newline='')
     return open(path, 'wb')
@@ -131,15 +137,15 @@ def main():
             fo_ip = fo.getSubset(position=INTEGRATION_POINT)
         except Exception:
             fo_ip = fo
-    _dump(fo_ip, comp_labels, odb, 'abaqus_%s_ip.csv' % tag, 'ip')
+    _dump(fo_ip, comp_labels, odb, 'deck_solver_%s_ip.csv' % tag, 'ip')
 
     print('--- ELEMENT_NODAL (外推到节点, 未平均) ---')
     if ELEMENT_NODAL is None:
-        print('[!] 当前 Abaqus 不支持 abaqusConstants.ELEMENT_NODAL，跳过')
+        print('[!] 当前 DeckSolver 不支持 result_constants.ELEMENT_NODAL，跳过')
     else:
         try:
             fo_en = fo.getSubset(position=ELEMENT_NODAL)
-            _dump(fo_en, comp_labels, odb, 'abaqus_%s_en.csv' % tag, 'nodeLabel')
+            _dump(fo_en, comp_labels, odb, 'deck_solver_%s_en.csv' % tag, 'nodeLabel')
         except Exception as exc:
             print('[!] getSubset(ELEMENT_NODAL) 失败:', exc)
 

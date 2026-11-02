@@ -1,4 +1,4 @@
-"""Run the real export functions with ODB boundaries stubbed, without Abaqus.
+"""Run the real export functions with ODB boundaries stubbed, without DeckSolver.
 
 The executable driver imports odbAccess and replaces stdout at import time.
 Select its function definitions to isolate those interpreter side effects.
@@ -15,7 +15,7 @@ import pytest
 
 
 def _exporter():
-    source = Path(__file__).resolve().parents[1] / "src/l1/abaqus_dump.py"
+    source = Path(__file__).resolve().parents[1] / "src/l1/deck_solver_dump.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     names = {"mkdirs", "npsave", "safe", "_canon_inst", "_fmt_t",
              "_copy_assembly_set_files", "dump_assembly", "dump_sets"}

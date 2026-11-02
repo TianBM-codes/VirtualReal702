@@ -1,7 +1,7 @@
 """
 INP 模型树打印脚本
 
-按照 Abaqus CAE Model Tree 的层级格式打印解析结果，便于快速核查解析是否正确。
+按照 DeckSolver CAE Model Tree 的层级格式打印解析结果，便于快速核查解析是否正确。
 
 用法:
     python tools/inp_tree.py model.inp
@@ -105,7 +105,7 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
         # Elements grouped by type
         type_groups = {}
         for elem in part.elements.values():
-            key = f"{elem.abaqus_type} → {elem.factory_type}"
+            key = f"{elem.deck_solver_type} → {elem.factory_type}"
             type_groups.setdefault(key, []).append(elem.label)
         elem_items = list(type_groups.items())
         eln = len(elem_items)
@@ -335,7 +335,7 @@ def print_tree(model: InpModel, show_labels: bool = True, max_labels: int = 8):
 def main():
     arg_use = False
     if arg_use:
-        parser = argparse.ArgumentParser(description="Print Abaqus INP model tree")
+        parser = argparse.ArgumentParser(description="Print DeckSolver INP model tree")
         parser.add_argument("inp", help="Input .inp file")
         parser.add_argument("--no-labels", action="store_true",
                             help="Don't print individual label lists")
@@ -352,10 +352,10 @@ def main():
                    show_labels=not args.no_labels,
                    max_labels=args.max_labels)
     else:
-        # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\2d_cpe8p_gc_smallsliding.inp"
-        # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\backhoe_deform_scoopdump_xpl.inp"
+        # inp = r"D:\WorkSpace\FEM\DeckSolver\2023\win_b64\SMA\samples\job_archive\samples\2d_cpe8p_gc_smallsliding.inp"
+        # inp = r"D:\WorkSpace\FEM\DeckSolver\2023\win_b64\SMA\samples\job_archive\samples\backhoe_deform_scoopdump_xpl.inp"
         # inp = r"D:\WorkSpace\WebThreeJS\PyModel2JsonDataFolder\model\inp\door.inp"
-        # inp = r"D:\WorkSpace\FEM\Abaqus\2023\win_b64\SMA\samples\job_archive\samples\ReactorHead_reference.inp"
+        # inp = r"D:\WorkSpace\FEM\DeckSolver\2023\win_b64\SMA\samples\job_archive\samples\ReactorHead_reference.inp"
         inp = r"C:\Users\12594\xwechat_files\wxid_j1zkqj0iq2n521_b4a6\msg\file\2026-05\zt_gx1_3ce.inp"
         model = parse_inp(inp)
         print_tree(model,

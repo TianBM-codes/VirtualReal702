@@ -45,12 +45,12 @@
 模态等分析的 `frame_value` 不代表时间。壳截面点附在曲线 label 末尾。
 `matches` 返回名称、测点坐标、方向及匹配节点信息。
 
-位移为 `u·n`。张量通过 Abaqus `ELEMENT_NODAL` 外推，先坐标变换取方向的 11 分量，再按节点、截面点算术平均。
+位移为 `u·n`。张量通过 DeckSolver `ELEMENT_NODAL` 外推，先坐标变换取方向的 11 分量，再按节点、截面点算术平均。
 应变 `E` 在当前帧缺失时采用 `LE`，`actual_fields` 列出实际读取的字段。
 缺失或投影失败的点返回 `null`，不会填零，字段提取错误保留在 `issues`。
 
-需要已就绪的 ODB 结果组、可访问的原始 ODB 和 `APP_ABAQUS_CMD`。
-ODB 只读打开，提取在独立 Abaqus Python 进程及服务器线程池执行，最长 3600 秒。
+需要已就绪的 ODB 结果组、可访问的原始 ODB 和 `APP_DECK_SOLVER_CMD`。
+ODB 只读打开，提取在独立 DeckSolver Python 进程及服务器线程池执行，最长 3600 秒。
 
 ## 传感器曲线
 
@@ -140,11 +140,11 @@ TXT 导入支持同名的 `work_condition_id`、`measurement_id` 请求字段，
 python -m pytest tests/test_sensor_curve.py tests/test_sensor_node_history.py tests/test_odb_node_history_sensors.py -q
 ```
 
-真实 Abaqus 集成测试（PowerShell）：
+真实 DeckSolver 集成测试（PowerShell）：
 
 ```powershell
-$env:RUN_ABAQUS_HISTORY_TEST='1'
-python -m pytest tests/test_sensor_node_history_abaqus.py -q
+$env:RUN_DECK_SOLVER_HISTORY_TEST='1'
+python -m pytest tests/test_sensor_node_history_deck_solver.py -q
 ```
 
 集成测试验证多个 step/frame、旋转局部张量坐标、斜向应变投影和 `E→LE` 回退。

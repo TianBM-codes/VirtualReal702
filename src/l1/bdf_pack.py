@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-bdf_pack.py — Layer 1 extraction for Nastran BDF files.
+bdf_pack.py — Layer 1 extraction for BulkSolver BDF files.
 
 Usage:
     python src/l1/bdf_pack.py --bdf /path/to/model.bdf --workspace /data/<job_id>/
@@ -34,11 +34,11 @@ from src.l1.manifest_schema import MANIFEST_SCHEMA
 
 # ─── Element type mappings ────────────────────────────────────────────────────
 
-# Nastran card → (Abaqus etype name, n_corner_nodes, n_faces_per_elem)
+# BulkSolver card → (DeckSolver etype name, n_corner_nodes, n_faces_per_elem)
 # None entries are dispatched by node count via SOLID_BY_NNODE below.
 # n_corner_nodes for high-order elements is the corner-node count only;
 # mid-nodes beyond that are discarded (L2 only needs corner geometry).
-NASTRAN_TO_ABAQUS = {
+BULK_SOLVER_TO_DECK_SOLVER = {
     # Shells — linear
     'CQUAD4': ('S4R',    4, 1),
     'CQUADR': ('S4R',    4, 1),   # rotational-DOF variant, same geometry
@@ -225,7 +225,7 @@ _FAST_IGNORED_CARDS = {
     "VECTOR", "TITLE", "LABEL", "DISP", "STRESS", "STRAIN", "FORCE",
     "OLOAD", "GPFORCE", "GROUNDCHECK", "AUTOSPC", "SET", "SET1", "SET3",
 }
-_FAST_FALLBACK_GEOM_CARDS = set(NASTRAN_TO_ABAQUS) - _FAST_SUPPORTED_ELEMS
+_FAST_FALLBACK_GEOM_CARDS = set(BULK_SOLVER_TO_DECK_SOLVER) - _FAST_SUPPORTED_ELEMS
 _BDF_FLOAT_EXP_RE = re.compile(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([+-]\d+)$")
 
 
@@ -303,7 +303,7 @@ def _scan_fast_bdf(path):
 
     This intentionally covers the common large-deck geometry subset first:
     GRID + CQUAD4/CTRIA3 + PSHELL/MAT1. If we see geometry that needs
-    pyNastran's full object model, the caller falls back to the legacy path.
+    bulk_provider's full object model, the caller falls back to the legacy path.
     """
     nodes_l, xs, ys, zs = [], [], [], []
     quads_l, quads_p, quads_g = [], [], []
@@ -576,7 +576,7 @@ def _refine_shell_sections(h5_path, angle_thresh_deg=20.0):
             '+'.join(shell_etypes), n_before, n_after))
 
 
-# ─── pyNastran xref helpers ───────────────────────────────────────────────────
+# ─── bulk_provider xref helpers ───────────────────────────────────────────────────
 
 def _unwrap_mid(mid_attr):
     """
@@ -606,11 +606,11 @@ def _first_val(v, default=0.0):
 
 
 def _section_meta(prop):
-    """(section_type, thickness_or_None, material_name) for a pyNastran property.
+    """(section_type, thickness_or_None, material_name) for a bulk_provider property.
     Thickness is only meaningful for shells/shear panels; None otherwise."""
     ptype = prop.type
     if ptype == 'PSHELL':
-        # pyNastran uses mid1 for PSHELL, not mid
+        # bulk_provider uses mid1 for PSHELL, not mid
         mid_raw = getattr(prop, 'mid1', None) or getattr(prop, 'mid', None)
         return 'SHELL', _first_val(getattr(prop, 't', None)), _unwrap_mid(mid_raw)
     if ptype in ('PCOMP', 'PCOMPG'):
@@ -662,7 +662,7 @@ def _combo_label(sec_type, thk_key, pid):
 # ─── Main packing logic ───────────────────────────────────────────────────────
 
 def _pack_model(model, inst_name, workspace, source_bdf_path=None):
-    """Write L1 HDF5 + manifest.db for a pre-loaded pyNastran model (BDF or OP2Geom).
+    """Write L1 HDF5 + manifest.db for a pre-loaded bulk_provider model (BDF or OP2Geom).
 
     source_bdf_path: absolute path to the originating .bdf/.dat/.nas file, recorded
     into manifest.db (l1_meta) so op2_pack can later re-read it to rotate nodal
@@ -675,7 +675,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
     # ── Nodes ─────────────────────────────────────────────────────────────────
     print('  Extracting nodes ...')
     t0 = time.time()
-    # pyNastran ≥1.3: get_xyz_in_coord returns ndarray ordered by sorted nids
+    # bulk_provider ≥1.3: get_xyz_in_coord returns ndarray ordered by sorted nids
     node_labels = np.array(sorted(model.nodes.keys()), dtype=np.int32)
     node_coords = model.get_xyz_in_coord(cid=0).astype(np.float64)
     N_nodes = len(node_labels)
@@ -684,7 +684,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
     # ── Classify and group elements ───────────────────────────────────────────
     print('  Classifying elements ...')
     t0 = time.time()
-    # abaqus_etype → {labels, conn_gids, pids, n_faces, n_corner}
+    # deck_solver_etype → {labels, conn_gids, pids, n_faces, n_corner}
     etype_groups = {}
     skipped_counts = {}
     node_label_set = set(node_labels.tolist())  # for GRID-point validation
@@ -696,7 +696,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
             skipped_counts[card] = skipped_counts.get(card, 0) + 1
             continue
 
-        entry = NASTRAN_TO_ABAQUS.get(card)
+        entry = BULK_SOLVER_TO_DECK_SOLVER.get(card)
         if entry is None:
             if card in ('CHEXA', 'CPENTA', 'CTETRA'):
                 nids_all = list(elem.node_ids)
@@ -706,12 +706,12 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                     skipped_counts['{}_{}'.format(card, nnode)] = (
                         skipped_counts.get('{}_{}'.format(card, nnode), 0) + 1)
                     continue
-                abaqus_name, n_corner, n_faces = mapped
+                deck_solver_name, n_corner, n_faces = mapped
             else:
                 skipped_counts[card] = skipped_counts.get(card, 0) + 1
                 continue
         else:
-            abaqus_name, n_corner, n_faces = entry
+            deck_solver_name, n_corner, n_faces = entry
 
         # Extract up to n_corner GRID node IDs.
         # For MASS elements (n_corner=1) use only the first valid GRID node.
@@ -728,8 +728,8 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
             # Grounded spring/damper: a 2-node SPRING2/DASHPOT2 whose other end is
             # grounded (only 1 valid GRID). Render it at its single GRID as a point
             # instead of dropping it. Anything else with too few GRIDs is skipped.
-            if abaqus_name in _LINE_TO_POINT and len(raw_nids) >= 1:
-                abaqus_name = _LINE_TO_POINT[abaqus_name]   # SPRING2→SPRING1, DASHPOT2→DASHPOT1
+            if deck_solver_name in _LINE_TO_POINT and len(raw_nids) >= 1:
+                deck_solver_name = _LINE_TO_POINT[deck_solver_name]   # SPRING2→SPRING1, DASHPOT2→DASHPOT1
                 n_corner, n_faces = 1, 0
                 nids = raw_nids[:1]
             else:
@@ -745,12 +745,12 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
         if pid == 0:
             pid = -1
 
-        if abaqus_name not in etype_groups:
-            etype_groups[abaqus_name] = {
+        if deck_solver_name not in etype_groups:
+            etype_groups[deck_solver_name] = {
                 'labels': [], 'conn_gids': [], 'pids': [],
                 'n_faces': n_faces, 'n_corner': n_corner,
             }
-        g = etype_groups[abaqus_name]
+        g = etype_groups[deck_solver_name]
         g['labels'].append(eid)
         g['conn_gids'].append(nids)
         g['pids'].append(pid)
@@ -774,7 +774,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
     sid_to_mat = {}
     sid_to_sty = {}
     # section_assignment grouping: collapse all PIDs sharing the same
-    # (section_type, thickness) into ONE legend group. Real Nastran decks may
+    # (section_type, thickness) into ONE legend group. Real BulkSolver decks may
     # define 1000+ PSHELLs that differ only by material — grouping per-PID would
     # explode the legend, so we group by the engineering section instead.
     pid_to_combo = {}          # pid -> (section_type, thickness_key)
@@ -837,7 +837,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
             str_ds(f, 'section_names', section_names)
 
         # Elements
-        for abaqus_name, g in etype_groups.items():
+        for deck_solver_name, g in etype_groups.items():
             labels_arr = np.array(g['labels'],   dtype=np.int32)
             conn_gids  = np.array(g['conn_gids'], dtype=np.int32)  # [M, n_corner]
             n_corner   = conn_gids.shape[1]
@@ -850,7 +850,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
             sec_ids = np.array([pid_to_sid.get(p, -1) for p in g['pids']], dtype=np.int32)
 
             # face_* arrays (needed by L2 surface extraction)
-            face_def = FACE_DEFS.get(abaqus_name, [])
+            face_def = FACE_DEFS.get(deck_solver_name, [])
             fei_list, fseq_list, fnc_list = [], [], []
             for ei, row in enumerate(conn_rows):
                 for fi, face_local in enumerate(face_def):
@@ -858,7 +858,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                     fseq_list.append(fi)
                     fnc_list.append([int(row[k]) for k in face_local])
 
-            grp = f.require_group('elements/{}'.format(abaqus_name))
+            grp = f.require_group('elements/{}'.format(deck_solver_name))
             grp.create_dataset('labels',     data=labels_arr)
             grp.create_dataset('conn',       data=conn_rows)
             grp.create_dataset('section_id', data=sec_ids)
@@ -875,7 +875,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                                    data=np.array(fseq_list, dtype=np.int32))
                 grp.create_dataset('face_node_conn', data=fnc_padded)
             # Zero-face element types (line/point/spring/mass: B31, MASS, SPRING…)
-            # write NO face datasets — consistent with abaqus_dump / inp exporter
+            # write NO face datasets — consistent with deck_solver_dump / inp exporter
             # so L2 collect_faces skips them via the "face_node_conn not in grp"
             # check. (Writing an empty 1-D face_node_conn would crash collect_faces
             # at `Mf, w = fnc.shape`.)
@@ -904,8 +904,8 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                 if ck is not None:
                     combo_to_labels.setdefault(ck, []).append(int(lbl))
 
-            etd_rows.append((inst_name, abaqus_name, len(labels_arr), 0, n_corner, n_faces_et))
-            print('    {}: {} elem(s)'.format(abaqus_name, len(labels_arr)))
+            etd_rows.append((inst_name, deck_solver_name, len(labels_arr), 0, n_corner, n_faces_et))
+            print('    {}: {} elem(s)'.format(deck_solver_name, len(labels_arr)))
 
         # Sections — one group per (type, thickness) combo. The group key is the
         # human-readable label (e.g. "SHELL_1 (h=3.5)") which L3 surfaces as the
@@ -956,7 +956,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
                 f.create_dataset('instance_sets/node_sets/{}'.format(set_safe), data=ids_arr)
                 isets_node_counts[set_safe] = len(ids_arr)
 
-        # Instance sets — SET3 (element sets, stored in bdf.set3s in some pyNastran versions)
+        # Instance sets — SET3 (element sets, stored in bdf.set3s in some bulk_provider versions)
         isets_elem_counts = {}
         for sid, s in getattr(model, 'set3s', {}).items():
             set_safe = safe('SET3_{}'.format(sid))
@@ -1011,7 +1011,7 @@ def _pack_model(model, inst_name, workspace, source_bdf_path=None):
         grp.create_dataset('transform', data=np.eye(4, dtype=np.float64))
         grp.create_dataset('part_name', data=part_name.encode('utf-8'))
 
-    # ── 8. Write sets/sets.h5 (stub — Nastran has no assembly sets) ───────────
+    # ── 8. Write sets/sets.h5 (stub — BulkSolver has no assembly sets) ───────────
     sets_path = os.path.join(sets_dir, 'sets.h5')
     with h5py.File(sets_path, 'w') as _f:
         pass
@@ -1132,7 +1132,7 @@ def _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=None):
         if section_names:
             str_ds(f, "section_names", section_names)
 
-        for abaqus_name, g in etype_groups.items():
+        for deck_solver_name, g in etype_groups.items():
             labels_arr = np.asarray(g["labels"], dtype=np.int32)
             conn_gids = np.asarray(g["conn_gids"], dtype=np.int32)
             pids_arr = np.asarray(g["pids"], dtype=np.int32)
@@ -1148,14 +1148,14 @@ def _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=None):
             if not np.all(valid_elem):
                 dropped = int(np.count_nonzero(~valid_elem))
                 print("  WARNING: dropped {} {} element(s) with missing GRID".format(
-                    dropped, abaqus_name))
+                    dropped, deck_solver_name))
                 labels_arr = labels_arr[valid_elem]
                 conn_rows = conn_rows[valid_elem]
                 pids_arr = pids_arr[valid_elem]
 
             sec_ids = np.array([pid_to_sid.get(int(p), -1) for p in pids_arr],
                                dtype=np.int32)
-            face_def = FACE_DEFS.get(abaqus_name, [])
+            face_def = FACE_DEFS.get(deck_solver_name, [])
             fei_list, fseq_list, fnc_list = [], [], []
             for ei, row in enumerate(conn_rows):
                 for fi, face_local in enumerate(face_def):
@@ -1163,7 +1163,7 @@ def _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=None):
                     fseq_list.append(fi)
                     fnc_list.append([int(row[k]) for k in face_local])
 
-            grp = f.require_group("elements/{}".format(abaqus_name))
+            grp = f.require_group("elements/{}".format(deck_solver_name))
             grp.create_dataset("labels", data=labels_arr)
             grp.create_dataset("conn", data=conn_rows)
             grp.create_dataset("section_id", data=sec_ids)
@@ -1196,9 +1196,9 @@ def _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=None):
                 ck = pid_to_combo.get(int(pid))
                 if ck is not None:
                     combo_to_labels.setdefault(ck, []).append(int(lbl))
-            etd_rows.append((inst_name, abaqus_name, len(labels_arr), 0,
+            etd_rows.append((inst_name, deck_solver_name, len(labels_arr), 0,
                              n_corner, n_faces_et))
-            print("    {}: {} elem(s)".format(abaqus_name, len(labels_arr)))
+            print("    {}: {} elem(s)".format(deck_solver_name, len(labels_arr)))
 
         for ck in sorted(combo_info,
                          key=lambda c: (c[0], c[1] if c[1] is not None else -1.0)):
@@ -1292,7 +1292,7 @@ def _try_fast_pack(bdf_path, workspace, inst_name):
     if parsed is None:
         if _FAST_BDF_MODE == "force":
             raise RuntimeError("fast BDF path forced but unavailable: {}".format(fallback_reason))
-        print("  Fast BDF path: fallback to pyNastran ({})".format(fallback_reason))
+        print("  Fast BDF path: fallback to bulk_provider ({})".format(fallback_reason))
         return False
     print("  Fast BDF scan done. ({})".format(_fmt_t(time.time() - t0)))
     _write_fast_bdf_pack(parsed, inst_name, workspace, source_bdf_path=bdf_path)

@@ -38,7 +38,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def load_bdf_nodes(bdf_path):
     """读 BDF,返回 {node_id: [x, y, z]}(basic 坐标系)。"""
-    from pyNastran.bdf.bdf import BDF
+    from src.utils.external_runtime import load_bulk_module as _load_bulk_module
+    BDF = _load_bulk_module('bdf.bdf').BDF
     bdf = BDF(debug=False)
     bdf.read_bdf(bdf_path, xref=True)
     coords = {}
@@ -52,9 +53,10 @@ def load_op2_modes(op2_path):
     读 OP2 eigenvectors,返回 (node_ids [N], shapes [n_modes, N, 3], freqs [n_modes])。
     freqs 由特征值换算:f = sqrt(eign) / (2*pi)。
     """
-    from pyNastran.op2.op2 import OP2
+    from src.utils.external_runtime import load_bulk_module as _load_bulk_module
+    OP2 = _load_bulk_module('op2.op2').OP2
     op2 = OP2(debug=False)
-    # post=-2 的 OP2 文件结尾会触发 pyNastran 的 FatalError,关闭该检查即可正常读完
+    # post=-2 的 OP2 文件结尾会触发 bulk_provider 的 FatalError,关闭该检查即可正常读完
     op2.stop_on_unclosed_file = False
     op2.read_op2(op2_path, build_dataframe=False)
     if not op2.eigenvectors:

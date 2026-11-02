@@ -136,7 +136,7 @@ def diag_instance(inst_name, geom_path):
             n_zero    = int((sid_arr == 0).sum())
             n_nonzero = n_total - n_zero
 
-            # 检查 Case E: section_id.npy 里是否有 -1（abaqus_dump 标记的未分配）
+            # 检查 Case E: section_id.npy 里是否有 -1（deck_solver_dump 标记的未分配）
             sid_npy_path = f'elements/{etype}/section_id'
             n_minus1 = 0
             if sid_npy_path in f:
@@ -207,7 +207,7 @@ def main():
     print("诊断完成")
     print()
     print("Case 说明:")
-    print("  [CASE A] sections 分组不存在 → abaqus_dump 未提取截面或全部失败")
+    print("  [CASE A] sections 分组不存在 → deck_solver_dump 未提取截面或全部失败")
     print("  [CASE B] element_set 名含 / \\ 空格 → safe() 编码后不一致，key 查不到")
     print("  [CASE C] element_set 属性为空 → sa.region.name 为空字符串")
     print("  [CASE D] element_set 完全找不到 → 可能是 assembly-level set")
@@ -216,8 +216,8 @@ def main():
     print()
     print("修复建议:")
     print("  CASE B: compute_section_ids() 里 key 改为 safe(eset) 即可")
-    print("  CASE D: abaqus_dump 里需要也收集 assembly-level elementSets")
-    print("  CASE E: abaqus_dump 里 sections_info 改为 list 而非 dict")
+    print("  CASE D: deck_solver_dump 里需要也收集 assembly-level elementSets")
+    print("  CASE E: deck_solver_dump 里 sections_info 改为 list 而非 dict")
 
 
 if __name__ == '__main__':

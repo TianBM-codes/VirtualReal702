@@ -4351,7 +4351,7 @@
                   "additionalContent": [],
                   "examples": [
                     {
-                      "value": "{\n    \"odb_path\": \"D:/data/odb/demo.odb\",\n    \"workspace\": \"D:/data/sensitivity/demo_workspace\",\n    \"abaqus\": \"abaqus\",\n    \"python3\": null,\n    \"keep_raw\": false\n}",
+                      "value": "{\n    \"odb_path\": \"D:/data/odb/demo.odb\",\n    \"workspace\": \"D:/data/sensitivity/demo_workspace\",\n    \"deck_solver\": \"deck_solver\",\n    \"python3\": null,\n    \"keep_raw\": false\n}",
                       "mediaType": "application/json",
                       "description": ""
                     }
@@ -4382,7 +4382,7 @@
                     "commonParameters": {},
                     "requestBody": {
                       "parameters": [],
-                      "data": "{\n    \"odb_path\": \"D:/data/odb/demo.odb\",\n    \"workspace\": \"D:/data/sensitivity/demo_workspace\",\n    \"abaqus\": \"abaqus\",\n    \"python3\": null,\n    \"keep_raw\": false\n}",
+                      "data": "{\n    \"odb_path\": \"D:/data/odb/demo.odb\",\n    \"workspace\": \"D:/data/sensitivity/demo_workspace\",\n    \"deck_solver\": \"deck_solver\",\n    \"python3\": null,\n    \"keep_raw\": false\n}",
                       "type": "application/json",
                       "generateMode": "normal"
                     },
@@ -6507,9 +6507,9 @@
                 "workspace": {
                   "type": "string"
                 },
-                "abaqus": {
+                "deck_solver": {
                   "type": "string",
-                  "default": "abaqus"
+                  "default": "deck_solver"
                 },
                 "python3": {
                   "type": [
@@ -6529,7 +6529,7 @@
               "x-apifox-orders": [
                 "odb_path",
                 "workspace",
-                "abaqus",
+                "deck_solver",
                 "python3",
                 "keep_raw"
               ]
@@ -10019,7 +10019,7 @@
     {
       "id": "7419173",
       "name": "VirtualReal702 Model Update API",
-      "description": "Model-updating focused APIs exposed by `app.py`.\n\nSuggested smoke-test order in Apifox:\n1. `POST /import/bdf`\n2. `POST /optimization/parameter/create`\n3. `POST /optimization/parameter`\n4. `POST /import/op2/modal/store`\n5. `POST /correlation/modal/compute`\n6. `POST /optimization/response/modal_frequency/create_from_match`\n7. `POST /optimization/response`\n8. `POST /optimization/sol200/config/sync_from_catalog`\n9. `POST /optimization/sol200/parameter`\n10. `POST /optimization/sol200/response`\n11. `POST /solver/nastran/sol200/generate`\n\nNotes:\n- Start service with `python app.py`, default server is `http://127.0.0.1:5000`.\n- `POST /import/bdf` now builds both `PROPERTY_<pid>` and `MAT1_<mid>` capability sets for dynamic model-updating.\n- `POST /optimization/response/modal_frequency/create_from_match` accepts `mac_threshold` in either 0-1 or 0-100 scale.\n- ODB visualization APIs under `src/l3` are intentionally omitted here.\n",
+      "description": "Model-updating focused APIs exposed by `app.py`.\n\nSuggested smoke-test order in Apifox:\n1. `POST /import/bdf`\n2. `POST /optimization/parameter/create`\n3. `POST /optimization/parameter`\n4. `POST /import/op2/modal/store`\n5. `POST /correlation/modal/compute`\n6. `POST /optimization/response/modal_frequency/create_from_match`\n7. `POST /optimization/response`\n8. `POST /optimization/sol200/config/sync_from_catalog`\n9. `POST /optimization/sol200/parameter`\n10. `POST /optimization/sol200/response`\n11. `POST /solver/bulk_solver/sol200/generate`\n\nNotes:\n- Start service with `python app.py`, default server is `http://127.0.0.1:5000`.\n- `POST /import/bdf` now builds both `PROPERTY_<pid>` and `MAT1_<mid>` capability sets for dynamic model-updating.\n- `POST /optimization/response/modal_frequency/create_from_match` accepts `mac_threshold` in either 0-1 or 0-100 scale.\n- ODB visualization APIs under `src/l3` are intentionally omitted here.\n",
       "moduleVariables": [],
       "openApiInfo": {
         "title": "VirtualReal702 Model Update API",

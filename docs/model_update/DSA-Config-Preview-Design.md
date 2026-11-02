@@ -2,7 +2,7 @@
 
 ## 目标
 
-第一阶段只实现“数据库 -> DSA JSON 配置预览”。接口只读数据库，不调用 Abaqus，不生成最终 inp，也不改已有灵敏度求解、误差分析、VTU 导出链路。
+第一阶段只实现“数据库 -> DSA JSON 配置预览”。接口只读数据库，不调用 DeckSolver，不生成最终 inp，也不改已有灵敏度求解、误差分析、VTU 导出链路。
 
 接口：
 
@@ -94,7 +94,7 @@ POST /sensitivity/dsa/config/preview
 确认预览合理后，可以调用：
 
 ```http
-POST /sensitivity/abaqus/dsa/inp/generate
+POST /sensitivity/deck_solver/dsa/inp/generate
 ```
 
 请求：

@@ -2,7 +2,7 @@
 
 Uses private input copies and snapshots of tracked scripts; never upgrades the
 source ODB or changes the working checkout. Requires psutil, h5py and NumPy in
-the host interpreter, plus an installed Abaqus command.
+the host interpreter, plus an installed DeckSolver command.
 """
 import argparse
 from collections import deque
@@ -49,7 +49,7 @@ def sha256(path):
 
 def snapshot(ref, target):
     commit = subprocess.check_output(['git', 'rev-parse', ref], cwd=REPO, text=True).strip()
-    files = ['src/l1/abaqus_dump.py', 'src/l1/l1_pack.py',
+    files = ['src/l1/deck_solver_dump.py', 'src/l1/l1_pack.py',
              'src/l1/manifest_schema.py', 'src/l2/ingest.py']
     blobs = {}
     for name in files:
@@ -222,7 +222,7 @@ def main():
     parser.add_argument('--source', required=True)
     parser.add_argument('--before', default='982b82a')
     parser.add_argument('--after', default='HEAD')
-    parser.add_argument('--abaqus', default=r'C:\SIMULIA\Commands\abaqus.bat')
+    parser.add_argument('--deck_solver', default=r'C:\SIMULIA\Commands\deck_solver.bat')
     parser.add_argument('--output', required=True)
     parser.add_argument('--interval', type=float, default=0.25)
     parser.add_argument('--stage-timeout', type=int, default=10800)
@@ -251,7 +251,7 @@ def main():
     private_source = prepare / 'original_copy.odb'
     shutil.copy2(source, private_source)
     upgrade = run_stage(root, 'prepare', 'upgrade',
-                        [args.abaqus, '-upgrade', '-job', 'upgraded_model', '-odb', private_source],
+                        [args.deck_solver, '-upgrade', '-job', 'upgraded_model', '-odb', private_source],
                         prepare, args.interval, args.stage_timeout)
     upgraded = prepare / 'upgraded_model.odb'
     run['preparation'] = upgrade
@@ -276,7 +276,7 @@ def main():
         version['workspace'] = str(workspace)
         snapshot_root = Path(version['snapshot'])
         commands = [
-            ('dump', [args.abaqus, 'python', snapshot_root / 'src/l1/abaqus_dump.py',
+            ('dump', [args.deck_solver, 'python', snapshot_root / 'src/l1/deck_solver_dump.py',
                       '--odb', odb, '--out', workspace, '--invariants', 'full']),
             ('pack', [sys.executable, snapshot_root / 'src/l1/l1_pack.py', '--workspace', workspace]),
             ('l2', [sys.executable, snapshot_root / 'src/l2/ingest.py', '--workspace', workspace]),

@@ -245,57 +245,57 @@ def _unv2412_trace_polylines(kind: str, node_ids: List[int]) -> List[List[int]]:
 def _create_unv2412_element(element_id: int, kind: str, node_ids: List[int]):
     try:
         if kind == "line":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CBEAM", fem_software="NASTRAN")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CBEAM", fem_software="BULK_SOLVER")[0]
             elem.setFaces(node_ids[:2])
             return elem
 
         if kind == "tria3":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CTRIA3", fem_software="NASTRAN")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CTRIA3", fem_software="BULK_SOLVER")[0]
             elem.setFaces(node_ids[:3])
             return elem
 
         if kind == "tria6":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="S6", fem_software="ABAQUS")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="S6", fem_software="DECK_SOLVER")[0]
             elem.setFaces(node_ids[:6])
             return elem
 
         if kind == "quad4":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CQUAD4", fem_software="NASTRAN")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CQUAD4", fem_software="BULK_SOLVER")[0]
             elem.setFaces(node_ids[:4])
             return elem
 
         if kind == "quad8":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="S8", fem_software="ABAQUS")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="S8", fem_software="DECK_SOLVER")[0]
             elem.setFaces(node_ids[:8])
             return elem
 
         if kind == "tetra4":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CTETRA", fem_software="NASTRAN")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CTETRA", fem_software="BULK_SOLVER")[0]
             elem.setFaces(node_ids[:4])
             return elem
 
         if kind == "tetra10":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="C3D10", fem_software="ABAQUS")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="C3D10", fem_software="DECK_SOLVER")[0]
             elem.setFaces(node_ids[:10])
             return elem
 
         if kind == "wedge6":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CPENTA", fem_software="NASTRAN")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CPENTA", fem_software="BULK_SOLVER")[0]
             elem.setFaces(node_ids[:6])
             return elem
 
         if kind == "wedge15":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="C3D15", fem_software="ABAQUS")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="C3D15", fem_software="DECK_SOLVER")[0]
             elem.setFaces(node_ids[:15])
             return elem
 
         if kind == "hexa8":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CHEXA", fem_software="NASTRAN")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="CHEXA", fem_software="BULK_SOLVER")[0]
             elem.setFaces(node_ids[:8])
             return elem
 
         if kind == "hexa20":
-            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="C3D20", fem_software="ABAQUS")[0]
+            elem = MeshElementFactory.CreateElement(e_id=element_id, e_type="C3D20", fem_software="DECK_SOLVER")[0]
             elem.setFaces(node_ids[:20])
             return elem
     except Exception:
@@ -505,7 +505,7 @@ def parse_unv(filename: str):
                 if v == 0:
                     if len(current_poly) > 1:
                         for ii in range(len(current_poly) - 1):
-                            iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type='CBEAM', fem_software='NASTRAN')
+                            iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type='CBEAM', fem_software='BULK_SOLVER')
                             elements.append(iter_ele)
                             iter_ele.setFaces([current_poly[ii], current_poly[ii + 1]])
                         trace_lines.append(current_poly)
@@ -515,7 +515,7 @@ def parse_unv(filename: str):
             if len(current_poly) > 1:
                 trace_lines.append(current_poly)
                 for ii in range(len(current_poly) - 1):
-                    iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type='CBEAM', fem_software='NASTRAN')
+                    iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type='CBEAM', fem_software='BULK_SOLVER')
                     elements.append(iter_ele)
                     iter_ele.setFaces([current_poly[ii], current_poly[ii + 1]])
 
@@ -956,7 +956,7 @@ def _parse_unv_streaming(filename: str):
                 if value == 0:
                     if len(current_poly) > 1:
                         for ii in range(len(current_poly) - 1):
-                            iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type="CBEAM", fem_software="NASTRAN")
+                            iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type="CBEAM", fem_software="BULK_SOLVER")
                             elements.append(iter_ele)
                             iter_ele.setFaces([current_poly[ii], current_poly[ii + 1]])
                         trace_lines.append(current_poly)
@@ -966,7 +966,7 @@ def _parse_unv_streaming(filename: str):
             if len(current_poly) > 1:
                 trace_lines.append(current_poly)
                 for ii in range(len(current_poly) - 1):
-                    iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type="CBEAM", fem_software="NASTRAN")
+                    iter_ele, _ = MeshElementFactory.CreateElement(e_id=-1, e_type="CBEAM", fem_software="BULK_SOLVER")
                     elements.append(iter_ele)
                     iter_ele.setFaces([current_poly[ii], current_poly[ii + 1]])
             continue

@@ -2,7 +2,7 @@
 
 ## Goal
 
-This project is used for model updating around Abaqus and test data.
+This project is used for model updating around DeckSolver and test data.
 
 Current high-level workflow:
 
@@ -11,7 +11,7 @@ Current high-level workflow:
 3. Match test points to FE nodes and later match DOFs.
 4. Compute confidence factors such as DAC / DSF.
 5. Extract candidate parameters and sets from a normal `inp` file so users can create optimization parameters.
-6. Later, external tooling will modify `inp`, run Abaqus, generate `odb`, and extract results.
+6. Later, external tooling will modify `inp`, run DeckSolver, generate `odb`, and extract results.
 
 ## Current Decisions
 
@@ -24,7 +24,7 @@ Current high-level workflow:
 
 ### FE Parameter Strategy
 
-- The input `inp` is a normal Abaqus `inp`, not an optimization-specific one.
+- The input `inp` is a normal DeckSolver `inp`, not an optimization-specific one.
 - Therefore the system does not try to identify "official optimization parameters" directly.
 - Instead, it extracts candidate scalar values that are stable and easy to write back later.
 - Users will choose:
@@ -156,10 +156,10 @@ Added in `app.py`:
 - automatic rotation detection specialized for more difficult partial-overlap / noisy cases beyond the current generic rigid-fit approach
 - rotational DOF matching (`RX/RY/RZ`)
 - direct FE modal extraction from `odb`
-- FE response catalog extraction directly from Abaqus result files
+- FE response catalog extraction directly from DeckSolver result files
 - mode-pair recommendation / auto-pairing policy beyond raw DAC sorting
 - `inp` writing-back for created optimization parameters
-- full optimization run orchestration (`inp` modify -> Abaqus run -> `odb` extract)
+- full optimization run orchestration (`inp` modify -> DeckSolver run -> `odb` extract)
 
 ## API Summary
 
@@ -442,7 +442,7 @@ Implemented:
 Not implemented yet:
 
 - rotational DOF matching
-- direct FE modal extraction from Abaqus result files
+- direct FE modal extraction from DeckSolver result files
 - automatic recommended mode pairing policy
 - writing back `inp`
 

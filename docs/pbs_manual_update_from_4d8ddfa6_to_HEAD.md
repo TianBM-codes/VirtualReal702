@@ -29,12 +29,12 @@ ae5ff4e 2026-05-22 update 代办
 40fc789 2026-05-21 Merge fix/block-merge into main
 d41e59a 2026-05-21 fix(projects): GET /{id} 项目不存在时返回空结构而非404
 aa85726 2026-05-21 fix(l3): 无模型时各端点返回空正常结构而非404
-c5e6869 2026-05-21 fix(abaqus_dump): 合并同key的多个bulkDataBlock，修复并行分块导致的shape不一致
-a9080e8 2026-05-21 tools: 新增 diag_dump_shapes.py 诊断 abaqus_dump npy shape 一致性
+c5e6869 2026-05-21 fix(deck_solver_dump): 合并同key的多个bulkDataBlock，修复并行分块导致的shape不一致
+a9080e8 2026-05-21 tools: 新增 diag_dump_shapes.py 诊断 deck_solver_dump npy shape 一致性
 a492da5 2026-05-21 Merge branch 'main' of http://62.234.179.217:43127/RealVirtual/--702
 51b5c7d 2026-05-21 UNV导入支持下载功能
-dcdd3a3 2026-05-21 fix(abaqus_dump): canonical对齐补等值校验，防止searchsorted错误映射
-11f40d8 2026-05-21 fix(abaqus_dump): STATUS等标量场的1D数据崩溃 + 元素删除后逐帧shape不一致
+dcdd3a3 2026-05-21 fix(deck_solver_dump): canonical对齐补等值校验，防止searchsorted错误映射
+11f40d8 2026-05-21 fix(deck_solver_dump): STATUS等标量场的1D数据崩溃 + 元素删除后逐帧shape不一致
 8111183 2026-05-21 Merge branch 'main' of http://62.234.179.217:43127/RealVirtual/--702
 c077c63 2026-05-21 频率匹配
 237f1f2 2026-05-21 add log
@@ -122,7 +122,7 @@ cefa0b0 2026-05-20 fix(viewer): 补上 vtxIdxs 解构，region highlight 变形�
    - 错误详情里会带：
      - `"field": "project_config.pbs"`
 
-3. **Abaqus/Nastran 的应用参数必须从 `project_config.pbs` 补齐**
+3. **DeckSolver/BulkSolver 的应用参数必须从 `project_config.pbs` 补齐**
    - `get_application_config()` 不再只检查 `platform`。
    - 现在会同时校验这 4 个字段：
      - `application_id`
@@ -134,14 +134,14 @@ cefa0b0 2026-05-20 fix(viewer): 补上 vtxIdxs 解构，region highlight 变形�
 
 4. **支持从 `project_config.pbs.applications` 读取嵌套应用配置**
    - `_normalize_project_application_settings()` 增加了对
-     - `pbs.Abaqus`
-     - `pbs.abaqus`
-     - `pbs.applications.Abaqus`
-     - `pbs.applications.abaqus`
+     - `pbs.DeckSolver`
+     - `pbs.deck_solver`
+     - `pbs.applications.DeckSolver`
+     - `pbs.applications.deck_solver`
      的兼容读取。
 
-5. **Nastran 提交载荷不再带 `MEMORY`**
-   - 旧版 `build_submit_payload()` 会给 Nastran 带 `MEMORY`。
+5. **BulkSolver 提交载荷不再带 `MEMORY`**
+   - 旧版 `build_submit_payload()` 会给 BulkSolver 带 `MEMORY`。
    - 新版已删掉该字段。
    - 所以如果你另一台机器的 `PBS` 平台不接受 `MEMORY`，这个改动是必须打上的。
 
@@ -245,7 +245,7 @@ cefa0b0 2026-05-20 fix(viewer): 补上 vtxIdxs 解构，region highlight 变形�
 1. `PBSEnvironmentConfig` 的测试构造参数改为 `api_paths`
 2. 验证项目级 PBS 配置缺失时报错
 3. 验证应用配置缺字段时报错
-4. 验证 Nastran 提交载荷不再包含 `MEMORY`
+4. 验证 BulkSolver 提交载荷不再包含 `MEMORY`
 
 ### 4.5 `tests/test_solver_pbs_router.py`
 
@@ -282,7 +282,7 @@ cefa0b0 2026-05-20 fix(viewer): 补上 vtxIdxs 解构，region highlight 变形�
      - `CORES`
      - `HOSTS`
      - `PRECISION`
-   - Nastran 不要再配 `MEMORY`
+   - BulkSolver 不要再配 `MEMORY`
 
 ## 7. 如果你只想做“最小 PBS 可用补丁”
 

@@ -1,5 +1,5 @@
 """导出"我们这边" L1 HDF5 里某个 NODAL 矢量场(U / UR / RF ...)的原始值，
-逐 instance、逐分量、外加幅值(MAGNITUDE)统计 min/max，用于和 Abaqus 对照。
+逐 instance、逐分量、外加幅值(MAGNITUDE)统计 min/max，用于和 DeckSolver 对照。
 
 U / UR / RF 这类是节点场(NODAL)，不走积分点外推，所以不能用 dump_ours_s.py
 (那个只导 INTEGRATION_POINT / ELEMENT_NODAL)。本脚本专门读 /NODAL。

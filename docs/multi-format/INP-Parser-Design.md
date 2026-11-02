@@ -1,6 +1,6 @@
 # INP Parser 设计文档
 
-> 目标：通用化 Abaqus INP 解析，支持多 Part / 多 Instance / Assembly、非线性材料、工况载荷等完整内容。
+> 目标：通用化 DeckSolver INP 解析，支持多 Part / 多 Instance / Assembly、非线性材料、工况载荷等完整内容。
 > 初稿时间：2026-03-28；v2 补充闭环策略：2026-03-28；v3 实现完成记录：2026-03-30
 > 参与方：Claude（后端）、Gemini（前端）、Codex（review）
 
@@ -8,7 +8,7 @@
 
 ## 核心设计原则：Data Fidelity（数据保真）
 
-> **INP Parser 的成功标志：其导出产物在 L1 HDF5 结构、标签语义及变换矩阵表示上，应与 `abaqus_dump.py` 从 ODB 抽取的产物无异。**
+> **INP Parser 的成功标志：其导出产物在 L1 HDF5 结构、标签语义及变换矩阵表示上，应与 `deck_solver_dump.py` 从 ODB 抽取的产物无异。**
 
 这条原则决定了框架的所有设计取舍：
 
@@ -37,12 +37,12 @@
 
 ## 二、已知问题（代码层面）
 
-1. **节点无 Part 隔离**：`self.nodes` / `self.global_node_hash` 是全局的，多 Part 时不同 Part 的节点标签可以重叠（Abaqus 允许），直接冲突
+1. **节点无 Part 隔离**：`self.nodes` / `self.global_node_hash` 是全局的，多 Part 时不同 Part 的节点标签可以重叠（DeckSolver 允许），直接冲突
 2. **Set 无命名空间**：`self.ele_sets` 是全局 dict，Part 级和 Assembly 级同名 set 会覆盖
 3. **游标状态不一致**：各 `Read*` 函数推进 `iter_line` 的位置不统一，容易在扩展时引入漏行或重复读
 4. **ReadBoundary / ReadSurface 是空存根**：只跳行，数据丢弃
 5. **Elset 嵌套未支持**：Elset 内的成员可以是另一个 elset 的名字，当前直接 `int()` 会 ValueError（try/except 静默跳过）
-6. **Set 合并语义**：Abaqus 允许同名 set 多次定义，取并集；当前对 Elset 会覆盖而非合并
+6. **Set 合并语义**：DeckSolver 允许同名 set 多次定义，取并集；当前对 Elset 会覆盖而非合并
 
 ---
 
@@ -53,7 +53,7 @@
 | 问题 | 说明 |
 |---|---|
 | `*Include, input=file.inp` | 递归文件包含，常见于大模型拆分；完全缺失 |
-| 关键字大小写 | Abaqus 关键字不区分大小写，当前用 `.lower()` 基本处理了，但参数值（如 set 名）在某些地方未做统一处理 |
+| 关键字大小写 | DeckSolver 关键字不区分大小写，当前用 `.lower()` 基本处理了，但参数值（如 set 名）在某些地方未做统一处理 |
 | 数据行续行 | 关键字行以逗号结尾时，下一行是同一条关键字的延续（参数过多时）；数据行同理（高阶单元节点数超出一行）。当前高阶单元的跨行读取是特殊处理的，但关键字行续行未处理 |
 | 参数化输入 | `*Parameter` 关键字 + `<param>` 占位符，用于参数化建模；较少见但存在 |
 | 文件编码 | 通常 ASCII，但模型名/注释可能含非 ASCII 字符 |
@@ -94,7 +94,7 @@
 | `*Node, nset=xxx` | 节点定义时可以直接内联指定所属 nset |
 | `*Node, system=C/S` | 圆柱/球坐标系下定义节点，需要坐标转换 |
 | 高阶单元续行 | C3D20 有20个节点，必须跨多行；当前有特殊处理但逻辑不统一 |
-| 节点标签不连续 | Abaqus 中节点/单元标签可以是任意非负整数，不一定从1开始也不一定连续 |
+| 节点标签不连续 | DeckSolver 中节点/单元标签可以是任意非负整数，不一定从1开始也不一定连续 |
 
 **单元类型覆盖缺口（可视化相关）：**
 
@@ -215,7 +215,7 @@
 | 多点约束 | `*MPC` | BEAM/TIE/LINK/PIN 等类型 |
 | 线性方程约束 | `*Equation` | 自由度的线性组合约束 |
 | 接触对 | `*Contact Pair` | 主从面接触 |
-| 通用接触 | `*Contact` + `*Contact Inclusions` | 全局接触定义（Abaqus/Explicit 常用）|
+| 通用接触 | `*Contact` + `*Contact Inclusions` | 全局接触定义（DeckSolver/Explicit 常用）|
 | 接触属性 | `*Surface Interaction` / `*Contact Property Assignment` | 摩擦、法向行为 |
 | 预紧力 | `*Pre-tension Section` | 螺栓预紧 |
 
@@ -267,7 +267,7 @@ Nset-1, 1, 1, 1.0
 | 静力 | `*Static` | 线性/非线性静力 |
 | Riks 弧长 | `*Static, riks` | 后屈曲分析 |
 | 动力隐式 | `*Dynamic` | 时域动力响应 |
-| 动力显式 | `*Dynamic, explicit` | 显式积分（ABAQUS/Explicit）|
+| 动力显式 | `*Dynamic, explicit` | 显式积分（DECK_SOLVER/Explicit）|
 | 粘弹性 | `*Visco` | |
 | 特征频率 | `*Frequency` | 模态分析 |
 | 屈曲 | `*Buckle` | 线性屈曲 |
@@ -418,7 +418,7 @@ class StepResolvedState:
 ```
 
 **继承规则：**
-- 默认：前一 Step 的 BC 继承到下一 Step（Abaqus 行为）
+- 默认：前一 Step 的 BC 继承到下一 Step（DeckSolver 行为）
 - `*Boundary, op=NEW`：清除该 Step 中所有之前的同类 BC，重新施加
 - `*Boundary, op=MOD`（默认）：在已有 BC 上叠加/修改
 - Amplitude 绑定：记录在 BCDeclaration 上，Resolver 阶段关联 Amplitude 对象
@@ -456,7 +456,7 @@ ELEMENT_FACE_TABLE: Dict[str, Dict[str, List[int]]] = {
 
 Resolver 在展开 Surface 时：
 1. 遍历 Surface 引用的 Elset
-2. 对每个单元查 `ELEMENT_FACE_TABLE[abaqus_type][face_id]`
+2. 对每个单元查 `ELEMENT_FACE_TABLE[deck_solver_type][face_id]`
 3. 得到该面的节点标签列表
 4. 输出 `[(elem_label, face_id, node_labels), ...]`
 
@@ -651,15 +651,15 @@ registry.register("PLASTIC", PlasticHandler, contexts=[CTX_MATERIAL])
 
 | # | 问题 | 决策 |
 |---|---|---|
-| 1 | 单元类型映射 | **重写**：在解析阶段直接将 Abaqus 单元类型映射到 `MeshElementFactory` 枚举值，不依赖现有代码的后续转换逻辑；同时在 Element 上保留原始 Abaqus 类型字符串（见下方补充说明） |
+| 1 | 单元类型映射 | **重写**：在解析阶段直接将 DeckSolver 单元类型映射到 `MeshElementFactory` 枚举值，不依赖现有代码的后续转换逻辑；同时在 Element 上保留原始 DeckSolver 类型字符串（见下方补充说明） |
 | 2 | 非线性材料解析目标 | **仅保存参数**：存储各属性的原始数值数据，不在解析阶段做行为建模或计算 |
-| 3 | UMAT 支持 | **不支持**：专注 Abaqus 内置材料模型，遇到 `*User Material` 记录警告后跳过 |
+| 3 | UMAT 支持 | **不支持**：专注 DeckSolver 内置材料模型，遇到 `*User Material` 记录警告后跳过 |
 | 4 | Instance 坐标变换 | **保留原始坐标 + 变换矩阵**：Resolver 阶段不修改节点坐标，存储平移向量和旋转矩阵，与 ODB L1 处理方式一致 |
 | 5 | 温度相关材料参数 | **离散点列表**：按 `[(value, temperature), ...]` 存储，便于后续插值计算和可视化 |
 
 ### 补充说明：单元类型映射的原始信息保留
 
-几何形状相同但积分方案不同的单元（如 `C3D8` 与 `C3D8R`、`S4` 与 `S4R`）映射到同一个 `MeshElementFactory` 枚举值，但**必须在 Element 对象上额外保留原始 Abaqus 类型字符串**。
+几何形状相同但积分方案不同的单元（如 `C3D8` 与 `C3D8R`、`S4` 与 `S4R`）映射到同一个 `MeshElementFactory` 枚举值，但**必须在 Element 对象上额外保留原始 DeckSolver 类型字符串**。
 
 原因：缩减积分（Reduced Integration）、非协调模式（Incompatible Modes，如 `C3D8I`）、杂交单元（Hybrid，如 `C3D8H`）等变体在几何可视化上无差异，但在后续分析判断（积分点数量、沙漏控制、不可压缩性处理等）上有本质区别。
 
@@ -670,7 +670,7 @@ registry.register("PLASTIC", PlasticHandler, contexts=[CTX_MATERIAL])
 class Element:
     label: int
     factory_type: ElementType      # 映射后的枚举，用于可视化
-    abaqus_type: str               # 原始字符串，如 "C3D8R"，用于分析
+    deck_solver_type: str               # 原始字符串，如 "C3D8R"，用于分析
     node_labels: List[int]
     # ...
 ```
@@ -678,7 +678,7 @@ class Element:
 映射表示例（完整表由同事维护）：
 
 ```python
-ABAQUS_TO_FACTORY: Dict[str, ElementType] = {
+DECK_SOLVER_TO_FACTORY: Dict[str, ElementType] = {
     # 实体
     "C3D8":   ElementType.HEX8,
     "C3D8R":  ElementType.HEX8,   # 缩减积分，几何同 C3D8
@@ -708,21 +708,21 @@ ABAQUS_TO_FACTORY: Dict[str, ElementType] = {
 | `src/inp/resolver.py` | Layer 3 | Set 嵌套展开（循环检测），Assembly 引用解析，Rodrigues 变换矩阵 |
 | `src/inp/topology.py` | 拓扑知识库 | `get_face_nodes(factory_type, face_id)` —— Surface 展开用 |
 | `src/inp/diagnostics.py` | 诊断 | 13 个错误码，非破坏性收集 |
-| `src/inp/exporter.py` | Layer 4 | InpModel → L1 HDF5 + manifest.db，与 `abaqus_dump.py` 输出格式一致 |
+| `src/inp/exporter.py` | Layer 4 | InpModel → L1 HDF5 + manifest.db，与 `deck_solver_dump.py` 输出格式一致 |
 | `src/inp/__init__.py` | 公共 API | `parse_inp(filepath) → InpModel` |
 
 ### 工具脚本
 
 | 脚本 | 用途 |
 |---|---|
-| `tools/inp_tree.py` | 按 Abaqus CAE 模型树格式打印解析结果，快速核查 |
+| `tools/inp_tree.py` | 按 DeckSolver CAE 模型树格式打印解析结果，快速核查 |
 | `tools/inp_to_vtu.py` | 导出 VTU 格式，可用 ParaView 可视化 |
 | `tools/inp_to_l1.py` | **主入口**：INP → L1 workspace，之后直接接 L2 `ingest.py` |
 
 ### 完整使用流程
 
 ```bash
-# 1. INP → L1 HDF5（新路径，无需 Abaqus）
+# 1. INP → L1 HDF5（新路径，无需 DeckSolver）
 python tools/inp_to_l1.py model.inp /data/my_workspace
 
 # 2. L2 预处理（与 ODB 路径完全相同，无需修改）
@@ -736,7 +736,7 @@ gunicorn src.l3.main:app -w 2 -k uvicorn.workers.UvicornWorker
 
 **face_node_conn 的语义**：存节点的 *行号*（row index，即在 `nodes/labels` 数组中的位置），而非节点标签本身。这与 L2 `ingest.py` 的期望完全一致。
 
-**高阶单元降阶**：C3D10/C3D15/C3D20 等高阶单元，Exporter 只取前 N 个角节点（corner nodes）参与面定义，中间节点舍弃。这与 `abaqus_dump.py` 的 `FACE_DEFS` 行为一致。
+**高阶单元降阶**：C3D10/C3D15/C3D20 等高阶单元，Exporter 只取前 N 个角节点（corner nodes）参与面定义，中间节点舍弃。这与 `deck_solver_dump.py` 的 `FACE_DEFS` 行为一致。
 
 **已验证**：`door.inp`（37558 节点，33986 单元）解析 0 错误，249 个无害关键字静默跳过。3 种材料（ELASTIC_E2800_RO1200、ELASTIC_E210E3_RO7890、ELASTIC_E76E3_RO2500）正确写入 L1 H5，L3 color-code 接口按材料上色验证通过。
 

@@ -3,8 +3,8 @@
 """
 odb_explore.py — ODB 交互式探索工具（开发调试用）
 
-用法（需 Abaqus 2024+，内置 Python 3）:
-    abaqus python odb_explore.py /path/to/your.odb
+用法（需 DeckSolver 2024+，内置 Python 3）:
+    deck_solver python odb_explore.py /path/to/your.odb
 
 ODB 只打开一次，然后可以反复输入命令查询，不用每次重启。
 输入 help 查看所有命令，输入 quit 退出。
@@ -16,7 +16,7 @@ import os
 try:
     import odbAccess
 except ImportError:
-    print("ERROR: 必须用 'abaqus python odb_explore.py' 运行，不能用普通 python3")
+    print("ERROR: 必须用 'deck_solver python odb_explore.py' 运行，不能用普通 python3")
     sys.exit(1)
 
 
@@ -310,7 +310,7 @@ def repl(odb):
 
 def main():
     if len(sys.argv) < 2:
-        print("用法: abaqus python odb_explore.py /path/to/your.odb")
+        print("用法: deck_solver python odb_explore.py /path/to/your.odb")
         sys.exit(1)
     odb_path = sys.argv[1]
     odb = open_odb(odb_path)

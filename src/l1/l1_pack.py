@@ -6,7 +6,7 @@ l1_pack.py — Layer 1, Phase 2: npy + JSON → HDF5 + manifest.db
 运行方式（普通 Python 3，需 h5py）:
     python l1_pack.py --workspace <workspace>
 
-前提: abaqus_dump.py 已成功运行，<workspace>/l1_raw/ 目录存在。
+前提: deck_solver_dump.py 已成功运行，<workspace>/l1_raw/ 目录存在。
 
 输出:
     <workspace>/
@@ -384,7 +384,7 @@ def pack_geometry(raw_dir, workspace, meta, db_conn):
                         grp.create_dataset('section_type',  data=sec_arr)
 
             # Coupling spider lines (DCOUP3D / CONN3D / SPRING2 ... expanded into
-            # ref→leaf segments by abaqus_dump). Same dataset key the INP exporter
+            # ref→leaf segments by deck_solver_dump). Same dataset key the INP exporter
             # writes, so L2 collect_couplings + L3 /couplings + the front end's
             # RBE2-spider display all work unchanged for the ODB path too.
             cpl_path = os.path.join(d, 'couplings_positions.npy')
@@ -596,7 +596,7 @@ def pack_sets(raw_dir, workspace, meta, db_conn):
                             cnt = len(arr)
                             # Restore original names from safe names is impractical;
                             # use safe name as set_name key in manifest (consistent with
-                            # what abaqus_dump.py wrote).
+                            # what deck_solver_dump.py wrote).
                             if dsname == 'node_labels':
                                 db_conn.execute(
                                     "INSERT OR REPLACE INTO node_sets VALUES (?,?,?,?,?)",
@@ -942,7 +942,7 @@ def write_meta(workspace, db_conn):
 
 def patch_sections_into_geom(raw_dir, workspace):
     """
-    Patch sections data extracted by abaqus_dump into INP-derived geometry H5 files.
+    Patch sections data extracted by deck_solver_dump into INP-derived geometry H5 files.
 
     Reads from raw_dir/sections/<inst_safe>/:
       sections.json, section_names.json, isets/elem_sets/<safe>.npy
@@ -1047,7 +1047,7 @@ def main():
         rg_safe = safe(result_group)
         raw_dir = os.path.join(workspace, 'l1_raw', 'rg_{}'.format(rg_safe))
         if not os.path.exists(raw_dir):
-            print("ERROR: {} not found. Run abaqus_dump.py --mode extract first.".format(raw_dir))
+            print("ERROR: {} not found. Run deck_solver_dump.py --mode extract first.".format(raw_dir))
             sys.exit(1)
         meta_path = os.path.join(raw_dir, 'dump_meta.json')
         if not os.path.exists(meta_path):
@@ -1087,7 +1087,7 @@ def main():
 
         db_conn.close()
 
-        # Patch sections into geometry H5 if abaqus_dump wrote them (INP+ODB mode).
+        # Patch sections into geometry H5 if deck_solver_dump wrote them (INP+ODB mode).
         # Writes a marker so job_runner knows to re-run L2.
         try:
             if patch_sections_into_geom(raw_dir, workspace):
@@ -1111,7 +1111,7 @@ def main():
     raw_dir = os.path.join(workspace, 'l1_raw')
 
     if not os.path.exists(raw_dir):
-        print("ERROR: l1_raw/ not found. Run abaqus_dump.py first.")
+        print("ERROR: l1_raw/ not found. Run deck_solver_dump.py first.")
         sys.exit(1)
 
     meta_path = os.path.join(raw_dir, 'dump_meta.json')

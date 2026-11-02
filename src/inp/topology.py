@@ -1,11 +1,11 @@
 """
 Topology Hub: element face definitions for Surface resolution.
 
-Face node indices are 0-based and follow Abaqus node ordering within the element.
+Face node indices are 0-based and follow DeckSolver node ordering within the element.
 This table is used by the Resolver to expand Surface entries into
 (elem_label, face_id, local_node_indices) tuples.
 
-Reference: Abaqus Analysis User's Guide, Section "Element library"
+Reference: DeckSolver Analysis User's Guide, Section "Element library"
 """
 from __future__ import annotations
 from typing import Dict, List, Optional, Tuple

@@ -90,7 +90,7 @@ class InpParser(object):
     """
     功能为解析Inp文件, 初始化数据库单元节点及相关信息, 只负责解析和传递, 其他功能均在其他类中,
     同样的, 其他类也不会包含任何解析输入文件的功能或者函数
-    TODO: http://130.149.89.49:2080/v6.14/ ABAQUS帮助文档
+    TODO: http://130.149.89.49:2080/v6.14/ DECK_SOLVER帮助文档
     """
 
     def __init__(self, input_path, check_model=False):
@@ -123,8 +123,8 @@ class InpParser(object):
 
         Reference:
             1. http://wufengyun.com:888/books/usi/default.htm
-            2. ABAQUS keyword browser table & Keyword support from the input file readers
-            3.《ABAQUS有限元分析实例详解》P26  图2-30 数据库的结构示意图
+            2. DECK_SOLVER keyword browser table & Keyword support from the input file readers
+            3.《DECK_SOLVER有限元分析实例详解》P26  图2-30 数据库的结构示意图
         """
         with open(self.inp_path, 'r') as inp_f:
             self.iter_line = inp_f.readline()
@@ -249,7 +249,7 @@ class InpParser(object):
                 sp_line.pop()
             first_line_node_count = len(sp_line) - 1
             eleId = int(sp_line[0])
-            iter_ele, _, n_cnt = MeshElementFactory.CreateElement(e_type.strip(), fem_software="ABAQUS", use_low_order=True, e_id=eleId)
+            iter_ele, _, n_cnt = MeshElementFactory.CreateElement(e_type.strip(), fem_software="DECK_SOLVER", use_low_order=True, e_id=eleId)
             nds = np.zeros(n_cnt, dtype=np.uint32)
             ele_ids.append(int(sp_line[0]))
             sp_line[-1] = sp_line[-1].strip()  # 去掉\n换行符
@@ -549,7 +549,7 @@ class InpParser(object):
         """
         self.iter_line = f_handle.readline().strip()
         while self.iter_line.lower() != "*end step":
-            if self.iter_line == "*AbaqusBoundary":
+            if self.iter_line == "*DeckSolverBoundary":
                 self.ReadBoundary(f_handle)
             elif "*cload" in self.iter_line.lower():
                 if "amplitude" in self.iter_line.lower():
@@ -698,8 +698,8 @@ class InpParser(object):
 
 if __name__ == "__main__":
     # print(ReadSectionLine("*Beam Section, elset=_PickedSet8, material=Material-1, temperature=GRADIENTS, section=PIPE\n"))
-    # input_file = r"../numerical example/ABAQUS/Job-1.inp"
-    # input_file = f"D:/WorkSpace/FEM/NumericalCases/examples/ABAQUS/static/linear/Plane/aircraft-wing.inp"
+    # input_file = r"../numerical example/DECK_SOLVER/Job-1.inp"
+    # input_file = f"D:/WorkSpace/FEM/NumericalCases/examples/DECK_SOLVER/static/linear/Plane/aircraft-wing.inp"
     # input_file = r"D:\WorkSpace\WebThreeJS\PyModelToJson\model\inp\door.inp"
     # input_file = r"../PyModel2JsonDataFolder/model/inp/engine.inp"
     input_file = r"D:\WorkSpace\WebThreeJS\PyModel2JsonDataFolder\model\inp\door.inp"

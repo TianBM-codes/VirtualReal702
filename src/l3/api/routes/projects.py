@@ -73,7 +73,7 @@ def _prepare_source_reference(*, source_path: str, source_kind: str) -> dict:
       1. 记住原始路径 / 原始文件名（用于展示与后续 runner 落地）；
       2. 若原始名含非 ASCII，额外算一个纯 ASCII 的「过程文件别名名」——真正的
          ASCII 硬链接由 runner 在 workspace 内落地（见 file_fetch.resolve_runner_source），
-         Abaqus/pyNastran 只认 ASCII 路径，而原文件始终不动。
+         DeckSolver/bulk_provider 只认 ASCII 路径，而原文件始终不动。
     """
     original_source_path = str(source_path)
     original_source_file = _basename_from_source_path(original_source_path)
@@ -461,12 +461,12 @@ def _build_project_result_catalog(proj, repo) -> dict:
 
 
 def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str:
-    allowed = {"inp", "odb", "bdf", "op2", "cdb", "rst", "sipesc_unv"}
+    allowed = {"inp", "odb", "bdf", "op2", "sipesc_unv"}
     if explicit is not None:
         source_type = explicit.strip().lower()
         if source_type not in allowed:
             raise ValidationError(
-                "source_type must be one of: inp, odb, bdf, op2, cdb, rst, sipesc_unv",
+                "source_type must be one of: inp, odb, bdf, op2, sipesc_unv",
                 {"source_type": explicit},
             )
     else:
@@ -474,6 +474,8 @@ def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str
 
     parsed_path = urlparse(source_path).path if _is_http_url(source_path) else source_path
     suffix = Path(parsed_path).suffix.lower()
+    if suffix in {".cdb", ".rst"}:
+        raise ValidationError("Unsupported source format in this edition")
     inferred = None
     if suffix == ".inp":
         inferred = "inp"
@@ -483,10 +485,6 @@ def _detect_source_type(source_path: str, explicit: Optional[str] = None) -> str
         inferred = "bdf"
     elif suffix == ".op2":
         inferred = "op2"
-    elif suffix == ".cdb":
-        inferred = "cdb"
-    elif suffix == ".rst":
-        inferred = "rst"
     elif suffix == ".unv":
         inferred = "sipesc_unv"
 

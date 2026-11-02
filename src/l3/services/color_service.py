@@ -63,7 +63,7 @@ _HIGHLIGHT = (0.95, 0.55, 0.10)
 
 def _build_global_section_color_map(idx: "ModelIndex") -> Dict[str, Tuple[float, float, float]]:
     """
-    Build a {region_label: (r,g,b)} map that mirrors Abaqus sequential assignment:
+    Build a {region_label: (r,g,b)} map that mirrors DeckSolver sequential assignment:
     sort all instances alphabetically, then number their regions 1,2,3... and assign
     palette colours in that global order.  Same label always gets the same colour
     regardless of which instance's get_color_code / get_legend_entries is called.
@@ -233,7 +233,7 @@ def get_schemes(idx: ModelIndex, instance: str) -> dict:
     if has_sec:
         schemes.append("section_type")
 
-    # section_assignment: color by actual Abaqus section assignment (distinct
+    # section_assignment: color by actual DeckSolver section assignment (distinct
     # from "section" above, which is averaging regions).
     if _has_section_assignments(idx, instance):
         schemes.append("section_assignment")
@@ -805,7 +805,7 @@ def _codes_from_elsets(
 #
 # IMPORTANT: this is a different concept from the existing scheme="section",
 # which colors by *averaging regions* (surface union-find domains, "Region N").
-# Here we color by the actual Abaqus *section assignment*: each element belongs
+# Here we color by the actual DeckSolver *section assignment*: each element belongs
 # to exactly one section (via that section's element_set), so element counts are
 # well-defined for ALL elements incl. interior — they are the element_set sizes.
 # ---------------------------------------------------------------------------

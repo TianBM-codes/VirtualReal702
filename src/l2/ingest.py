@@ -48,7 +48,7 @@ SHELL_ELEM_CODES = frozenset({0, 1, 8})   # S3/S4R/S4/STRI65
 LINE_ELEM_CODES  = frozenset({9, 10})
 POINT_ELEM_CODES = frozenset({11})
 
-# Keep in sync with src/l1/abaqus_dump.py ELEM_TYPE_CODE.
+# Keep in sync with src/l1/deck_solver_dump.py ELEM_TYPE_CODE.
 ELEM_TYPE_CODE = {
     # shells / membranes
     'S3': 0,  'S3R': 0,  'S6': 0,   'STRI3': 0,
@@ -77,8 +77,8 @@ ELEM_TYPE_CODE = {
     'M3D3': 0, 'M3D4': 1, 'M3D4R': 1,
 }
 
-# Abaqus variant suffixes ordered longest-first (see also src/l1/abaqus_dump.py).
-_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+# DeckSolver variant suffixes ordered longest-first (see also src/l1/deck_solver_dump.py).
+_DECK_SOLVER_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
 
 
 def _resolve_elem_code(etype_str):
@@ -88,7 +88,7 @@ def _resolve_elem_code(etype_str):
         code = ELEM_TYPE_CODE.get(s)
         if code is not None:
             return code
-        for suf in _ABAQUS_VARIANT_SUFFIXES:
+        for suf in _DECK_SOLVER_VARIANT_SUFFIXES:
             if s.endswith(suf) and len(s) > len(suf):
                 s = s[:-len(suf)]
                 break
@@ -226,7 +226,7 @@ def collect_lines(geom_h5, coords_global):
 
     Returns:
         positions   [N, 2, 3] float32  — N segments, 2 endpoints, xyz
-        elem_labels [N]       int32    — Abaqus element label per segment
+        elem_labels [N]       int32    — DeckSolver element label per segment
         node_rows   [N, 2]    int32    — geometry node row per endpoint
             (row into nodes/labels / coords_global; lets L3 look up per-node
             displacement so the beams follow the deformed shape)
@@ -269,7 +269,7 @@ def collect_points(geom_h5, coords_global):
 
     Returns:
         positions   [N, 3] float32  — node position per point element
-        elem_labels [N]    int32    — Abaqus element label
+        elem_labels [N]    int32    — DeckSolver element label
         node_rows   [N]    int32    — geometry node row per point (for deform)
     """
     pos_list   = []
@@ -497,17 +497,17 @@ def build_indexed_geometry(coords_global, surf_fnc,
 #
 # Quadratic elements (C3D20/C3D10/C3D15, quadratic shells) carry edge mid-nodes
 # that often hold the field extrema.  The corner-only face pipeline above never
-# samples them, so the cloud map and legend disagree with Abaqus.  Here each
+# samples them, so the cloud map and legend disagree with DeckSolver.  Here each
 # high-order *surface* face is subdivided into smaller triangles whose vertices
 # include the edge mid-nodes (A2: boundary nodes only, no synthesized face
 # centre).  See docs/l2/HighOrder-Midside-Subdivision-Design.md.
 #
 # Boundary column sequences index columns of the FULL connectivity (conn_full;
-# corner nodes first, then edge mid-nodes — Abaqus node ordering), laid out as
+# corner nodes first, then edge mid-nodes — DeckSolver node ordering), laid out as
 # [corner0, mid01, corner1, mid12, ...] around the face perimeter.
 
 # Solid high-order faces, keyed by ELEM_TYPE_CODE, indexed by face_seq-1
-# (face_seq matches the order in src/l1/abaqus_dump.py FACE_DEFS).
+# (face_seq matches the order in src/l1/deck_solver_dump.py FACE_DEFS).
 FACE_DEFS_FULL = {
     # C3D10 tet: 4 six-node triangular faces
     5: [
@@ -1165,7 +1165,7 @@ def _compute_orientation_axes(origin, point_a, point_b):
     """
     Compute orthonormal 3×3 axes from origin + two reference points.
 
-    Convention (matches Abaqus *ORIENTATION RECTANGULAR):
+    Convention (matches DeckSolver *ORIENTATION RECTANGULAR):
       e1 = normalize(point_a - origin)          — local 1-axis
       e3 = normalize(cross(e1, point_b - origin)) — normal to the 1-2 plane
       e2 = cross(e3, e1)                         — local 2-axis

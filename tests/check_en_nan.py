@@ -5,7 +5,7 @@
 
 合成不变量场(S_MISES/S_PRESS/...)若由早于 commit f5e6ebf 的 L1 提取，其
 ELEMENT_NODAL 块会整块写成 NaN —— 此时 L3 会退回 INTEGRATION_POINT_FLAT，
-云图不外推/不平均、也吃不到中节点细分，于是和 Abaqus 的平滑场对不上。
+云图不外推/不平均、也吃不到中节点细分，于是和 DeckSolver 的平滑场对不上。
 本脚本逐 instance/etype 打印两种位置的有限值比例，一眼看出 EN 是否为空。
 """
 import sys

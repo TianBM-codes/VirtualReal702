@@ -2,12 +2,12 @@
 
 ## 项目背景
 
-Abaqus ODB 仿真结果文件的后端查询与可视化服务。
+DeckSolver ODB 仿真结果文件的后端查询与可视化服务。
 后端负责数据解析、存储、索引与计算，前端（Three.js）只负责渲染。
 
 ## 核心需求
 
-- 解析 Abaqus `.odb` 文件（节点、单元、集合、截面、材料、结果）
+- 解析 DeckSolver `.odb` 文件（节点、单元、集合、截面、材料、结果）
 - 支持 ~10M 节点规模、~30 帧结果
 - 前端全部基于三角面片渲染（Triangle Soup）
 - 渲染模式：节点平滑 / 单元均色 / 属性着色
@@ -52,7 +52,7 @@ POST /api/jobs  →  L1 转储（需 license）→  L2 预处理  →  ready
 ```
 ODB 文件
   │
-  ▼ Layer 1：ODB 忠实转储（需 Abaqus license，一次性）
+  ▼ Layer 1：ODB 忠实转储（需 DeckSolver license，一次性）
   │  保留 ODB 原始层次结构，不做任何加工
   │  l1/assembly.h5, geometry/<inst>.h5, sets/sets.h5, results/<step>__<field>.h5
   │
@@ -84,7 +84,7 @@ ODB 文件
 
 ## Blocker 验证项（开发前必须跑）
 
-**Abaqus PoC**：`getSubset(position=NODAL)` 对壳单元截面点（BOT/MID/TOP）
+**DeckSolver PoC**：`getSubset(position=NODAL)` 对壳单元截面点（BOT/MID/TOP）
 的实际输出结构。验证脚本约 20 行，需要包含壳截面点输出的最小 ODB 文件。
 
 - 通过 → L1 NODAL 路径可用，三种渲染模式均支持平滑着色

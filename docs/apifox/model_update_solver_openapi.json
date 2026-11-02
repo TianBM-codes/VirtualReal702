@@ -198,18 +198,18 @@
         }
       }
     },
-    "/solver/abaqus/sensitivity": {
+    "/solver/deck_solver/sensitivity": {
       "post": {
         "tags": [
           "solver"
         ],
-        "summary": "运行 Abaqus 材料参数灵敏度流程",
+        "summary": "运行 DeckSolver 材料参数灵敏度流程",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AbaqusSensitivityRunRequest"
+                "$ref": "#/components/schemas/DeckSolverSensitivityRunRequest"
               },
               "examples": {
                 "default": {
@@ -226,7 +226,7 @@
                     "element_vars": [
                       "S"
                     ],
-                    "abaqus": "abaqus",
+                    "deck_solver": "deck_solver",
                     "job_name": "door_sensitivity",
                     "cpus": 4,
                     "interactive": true,
@@ -255,18 +255,18 @@
         }
       }
     },
-    "/solver/abaqus/adjoint": {
+    "/solver/deck_solver/adjoint": {
       "post": {
         "tags": [
           "solver"
         ],
-        "summary": "运行 Abaqus 壳厚度 Adjoint 灵敏度流程",
+        "summary": "运行 DeckSolver 壳厚度 Adjoint 灵敏度流程",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AbaqusAdjointRunRequest"
+                "$ref": "#/components/schemas/DeckSolverAdjointRunRequest"
               },
               "examples": {
                 "default": {
@@ -274,7 +274,7 @@
                     "input_inp": "D:/models/shell_panel.inp",
                     "output_inp": "D:/runs/shell_panel_adjoint.inp",
                     "response_nset": "NRESP",
-                    "abaqus": "abaqus",
+                    "deck_solver": "deck_solver",
                     "job_name": "shell_panel_adjoint",
                     "cpus": 4,
                     "interactive": true,
@@ -303,18 +303,18 @@
         }
       }
     },
-    "/solver/nastran/sol103": {
+    "/solver/bulk_solver/sol103": {
       "post": {
         "tags": [
           "solver"
         ],
-        "summary": "转换并运行 Nastran SOL103 模态流程",
+        "summary": "转换并运行 BulkSolver SOL103 模态流程",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NastranSol103RunRequest"
+                "$ref": "#/components/schemas/BulkSolverSol103RunRequest"
               },
               "examples": {
                 "default": {
@@ -328,7 +328,7 @@
                       "dynamic.norm": 2,
                       "compute.lumped": true
                     },
-                    "nastran": "nastran",
+                    "bulk_solver": "bulk_solver",
                     "run_solver": true,
                     "timeout_sec": 7200,
                     "extra_args": [
@@ -424,9 +424,9 @@
             "type": "integer",
             "default": 0
           },
-          "abaqus": {
+          "deck_solver": {
             "type": "string",
-            "default": "abaqus"
+            "default": "deck_solver"
           },
           "python3": {
             "type": "string"
@@ -475,7 +475,7 @@
           }
         ]
       },
-      "AbaqusSensitivityRunRequest": {
+      "DeckSolverSensitivityRunRequest": {
         "type": "object",
         "required": [
           "input_inp"
@@ -509,9 +509,9 @@
               "type": "string"
             }
           },
-          "abaqus": {
+          "deck_solver": {
             "type": "string",
-            "default": "abaqus"
+            "default": "deck_solver"
           },
           "job_name": {
             "type": "string"
@@ -539,7 +539,7 @@
           }
         }
       },
-      "AbaqusAdjointRunRequest": {
+      "DeckSolverAdjointRunRequest": {
         "type": "object",
         "required": [
           "input_inp"
@@ -554,9 +554,9 @@
           "response_nset": {
             "type": "string"
           },
-          "abaqus": {
+          "deck_solver": {
             "type": "string",
-            "default": "abaqus"
+            "default": "deck_solver"
           },
           "job_name": {
             "type": "string"
@@ -584,7 +584,7 @@
           }
         }
       },
-      "NastranSol103RunRequest": {
+      "BulkSolverSol103RunRequest": {
         "type": "object",
         "required": [
           "input_bdf"
@@ -601,9 +601,9 @@
             "additionalProperties": true,
             "default": {}
           },
-          "nastran": {
+          "bulk_solver": {
             "type": "string",
-            "default": "nastran"
+            "default": "bulk_solver"
           },
           "run_solver": {
             "type": "boolean",

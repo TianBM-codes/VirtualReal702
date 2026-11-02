@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
 import numpy as np
-from pyNastran.op2.op2_geom import read_op2_geom
+from src.utils.external_runtime import BulkSymbol
+read_op2_geom = BulkSymbol('op2.op2_geom', 'read_op2_geom')
 from MeshElementFactory import MeshElementFactory
 from FemNode import FemNode
 from MeshCleaner import RotateByAxisScipy
@@ -52,7 +53,7 @@ class Op2Parser(object):
             element, _ = MeshElementFactory.CreateElement(
                 e_type=elem_type,
                 e_id=eid,
-                fem_software="NASTRAN",
+                fem_software="BULK_SOLVER",
             )
             if element is not None:
                 element.setFaces(elem_node_ids)
@@ -167,7 +168,7 @@ def ParseOP2AndWriteToJson(
         no_output_json=True
 ):
     """
-    解析 Nastran OP2 文件，输出：
+    解析 BulkSolver OP2 文件，输出：
       1）Three.js BufferGeometry JSON；
       2）VTK 网格（使用 meshio），便于用 ParaView 等检查结果。
 
@@ -221,7 +222,7 @@ def ParseOP2AndWriteToJson(
             element, _ = MeshElementFactory.CreateElement(
                 e_type=elem_type,
                 e_id=eid,
-                fem_software="NASTRAN",
+                fem_software="BULK_SOLVER",
             )
             if element is not None:
                 element.setFaces(elem_node_ids)
@@ -471,10 +472,10 @@ if __name__ == "__main__":
     # op2_file = "model/op2/modal_sol103.op2"
     # op2_file = "model/op2/fem24.op2"
     # op2_file = "model/bdf/out-final.op2"
-    op2_file = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\nastran\op2\powertrain.op2"
-    output_json = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\nastran\op2\fem_undeform.json"
-    output_vtk = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\nastran\op2\nastran_model-7.vtk"
-    output_vtu = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\nastran\op2\powertrain.vtu"
+    op2_file = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\bulk_solver\op2\powertrain.op2"
+    output_json = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\bulk_solver\op2\fem_undeform.json"
+    output_vtk = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\bulk_solver\op2\bulk_solver_model-7.vtk"
+    output_vtu = fr"D:\WorkSpace\ThreeJS\PyModel2JsonDataFolder\model\bulk_solver\op2\powertrain.vtu"
 
     # ParseOP2ToVTU(op2_file, output_vtu)
     # ParseOP2AndWriteToJson(

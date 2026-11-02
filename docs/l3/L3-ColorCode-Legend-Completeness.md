@@ -87,7 +87,7 @@ color_service.get_legend()
 
 ### PSHELL material_name 为空（bdf_pack.py）
 
-pyNastran 中 `PSHELL` 属性的材料引用字段名为 `mid1`，不是 `mid`。
+bulk_provider 中 `PSHELL` 属性的材料引用字段名为 `mid1`，不是 `mid`。
 `PSOLID` 用 `mid`。之前代码统一用 `getattr(prop, 'mid', None)`，
 对 PSHELL 返回 `None`，写入 H5 的 `material_name` 为空字符串，
 导致所有壳单元显示为 `(none)`。

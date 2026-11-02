@@ -7,14 +7,13 @@
 
 ## 背景
 
-当前服务仅支持 Abaqus ODB 格式（结果文件，包含网格 + 计算结果）。
+当前服务仅支持 DeckSolver ODB 格式（结果文件，包含网格 + 计算结果）。
 同事提出扩展支持以下格式：
 
 | 格式 | 求解器 | 类型 | 配套结果文件 |
 |---|---|---|---|
-| BDF | MSC/NX Nastran | 输入文件（前处理） | .OP2 |
-| INP | Abaqus | 输入文件（前处理） | .ODB |
-| CDB | ANSYS MAPDL | 数据库文件 | .RST |
+| BDF | MSC/NX BulkSolver | 输入文件（前处理） | .OP2 |
+| INP | DeckSolver | 输入文件（前处理） | .ODB |
 
 **关键区别**：ODB 是后处理文件，自带结果；BDF/INP/CDB 是前处理文件，本身只有网格，结果在单独文件里。
 
@@ -23,7 +22,7 @@
 ## 需求确认（2026-03-28）
 
 ### BDF
-- 已用 pyNastran 完成解析
+- 已用 bulk_provider 完成解析
 - 需求：展示有限元网格、支持不同 set 集合的单元显示、点击选择创建 set 等基本操作
 - **当前阶段：纯几何，不涉及结果**
 
@@ -47,7 +46,7 @@
 
 | 层 | 改动量 | 说明 |
 |---|---|---|
-| **L1** | 大 | 现有 L1 强依赖 Abaqus Python API；BDF/INP/CDB 需要各自独立的解析器，但输出 HDF5 schema 需保持一致 |
+| **L1** | 大 | 现有 L1 强依赖 DeckSolver Python API；BDF/INP/CDB 需要各自独立的解析器，但输出 HDF5 schema 需保持一致 |
 | **L2** | 小 | 只要 L1 输出 schema 不变，L2 几乎不用动；需要一个单元类型名称跨求解器的映射层（如 CQUAD4 → S4R） |
 | **L3** | 小 | 读 L2 HDF5，格式无关；需增加"无结果模式"分支（geometry-only） |
 | **manifest.db** | 极小 | 加一列 `source_format` |

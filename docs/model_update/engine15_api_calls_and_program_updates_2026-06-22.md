@@ -12,7 +12,7 @@
 
 1. `services/model_update/importers/op2_service.py`
    - 当项目目录下没有 `manifest.db` 时，参数映射不再直接失败。
-   - 对纯 Nastran/BDF 场景回退为单实例 `BDF_MODEL`。
+   - 对纯 BulkSolver/BDF 场景回退为单实例 `BDF_MODEL`。
    - 这条修复建议保留。
 
 2. `services/model_update/analysis/bayesian_service.py`
@@ -24,7 +24,7 @@
    - 这条修复建议保留。
 
 4. `tests/test_op2_sensitivity_store_cloud.py`
-   - 为上面的 Nastran-only 工作区兜底补了测试。
+   - 为上面的 BulkSolver-only 工作区兜底补了测试。
    - 这条测试建议保留。
 
 ### 1.2 建议写入主程序默认行为的内容
@@ -104,7 +104,7 @@
 
 接口：
 
-- `POST /solver/nastran/sol103/run_and_store_modal`
+- `POST /solver/bulk_solver/sol103/run_and_store_modal`
 
 请求体：
 
@@ -195,7 +195,7 @@
 
 接口：
 
-- `POST /solver/nastran/sol200/run_and_store`
+- `POST /solver/bulk_solver/sol200/run_and_store`
 
 请求体：
 
@@ -278,7 +278,7 @@
 
 接口：
 
-- `POST /solver/nastran/sol200/run_and_store`
+- `POST /solver/bulk_solver/sol200/run_and_store`
 
 请求体：
 
@@ -362,7 +362,7 @@
 
 接口：
 
-- `POST /solver/nastran/sol200/run_and_store`
+- `POST /solver/bulk_solver/sol200/run_and_store`
 
 请求体：
 
@@ -436,6 +436,6 @@
 
 ## 7. 本次最值得保留的结论
 
-1. 主程序里值得保留的是“纯 Nastran/BDF 项目不再强依赖 manifest.db”这组修复。
+1. 主程序里值得保留的是“纯 BulkSolver/BDF 项目不再强依赖 manifest.db”这组修复。
 2. 宽边界不是通用默认值，但很值得做成可选模式。
 3. 对 `engine15` 第一阶来说，边界放宽后效果明显改善，说明之前“变化慢”的首要原因确实是参数边界太紧。

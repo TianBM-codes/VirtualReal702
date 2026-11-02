@@ -72,11 +72,11 @@ def test_database_matches_are_read_only_and_names_bound(monkeypatch):
 def test_service_launch_and_cleanup(monkeypatch):
     monkeypatch.setattr(service, "_resolve_source", lambda *args: ("job.odb", "default_result"))
     monkeypatch.setattr(service, "_load_matches", lambda *args: [{"name": "SG1"}])
-    monkeypatch.setattr(service, "resolve_abaqus_command", lambda: "abaqus")
+    monkeypatch.setattr(service, "resolve_deck_solver_command", lambda: "deck_solver")
     files = []
 
     def run(command, **kwargs):
-        assert command[:2] == ["abaqus", "python"]
+        assert command[:2] == ["deck_solver", "python"]
         assert Path(command[2]).is_file()
         files.append(Path(command[3]))
         assert json.loads(files[0].read_text())["sensors"] == [{"name": "SG1"}]
@@ -89,7 +89,7 @@ def test_service_launch_and_cleanup(monkeypatch):
 
 
 def test_worker_all_frames_fallback_sections_and_direction_failures(monkeypatch):
-    # Reuse the existing minimal ODB objects; the real Abaqus transformation
+    # Reuse the existing minimal ODB objects; the real DeckSolver transformation
     # itself still requires a real ODB/CAE comparison.
     from test_odb_node_history_sensors import Asm, Instance, Value
     monkeypatch.setitem(sys.modules, "odbAccess", types.ModuleType("odbAccess"))

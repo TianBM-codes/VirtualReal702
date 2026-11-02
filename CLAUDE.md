@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 本项目是一个 FEM（有限元）后处理与模型修正平台，包含两条并行主线，共用同一个 FastAPI 进程（`app.py`）：
 
-**主线 1 — ODB 可视化服务**：读取 Abaqus ODB 仿真文件，通过三层流水线（L1 提取 → L2 预处理 → L3 服务）将大规模 FEM 数据（最多 ~10M 节点、~30 帧）推送给 Three.js 前端做 3D 云图渲染。
+**主线 1 — ODB 可视化服务**：读取 DeckSolver ODB 仿真文件，通过三层流水线（L1 提取 → L2 预处理 → L3 服务）将大规模 FEM 数据（最多 ~10M 节点、~30 帧）推送给 Three.js 前端做 3D 云图渲染。
 
 **主线 2 — 模型修正服务**：基于试验数据（UNV 模态、BDF 静力）与仿真结果的对比，计算灵敏度矩阵，通过贝叶斯优化迭代修正 FEM 模型参数（材料属性、壳厚等），结果写回 MySQL。
 
@@ -71,10 +71,10 @@ python src/job_runner.py   # 进程 2：L1/L2 流水线 runner（可嵌入 app.p
 
 **配置**：服务从 `service_config.json`（项目根目录）读取，也可以用环境变量覆盖。关键字段：`DB_HOST/PORT/USER/PASSWORD/DATABASE`（MySQL），`APP_PORT`（默认 5000），`APP_EMBEDDED_RUNNER`（1=job_runner 作为 app.py 的后台线程自动启动，0=需要手动启另一个进程，Windows 默认 0）。`APP_ODB_FIELDS`（ODB 解析字段白名单，逗号分隔、按基础字段名匹配、支持 `*`，默认 `U,S,E,LE,NT*,TEMP`，`all`=全量；结果组 `parse_options.fields` 可覆盖，传 `field_prefix` / 模型修正 DSA 结果组不套白名单）。
 
-**L1 Extraction (requires Abaqus license):**
+**L1 Extraction (requires DeckSolver license):**
 ```bash
-# Phase 1: Run under Abaqus Python 2.7 — dumps ODB to temporary .npy files
-abaqus python src/l1/abaqus_dump.py --odb /path/to/model.odb --out /data/<odb_id>/
+# Phase 1: Run under DeckSolver Python 2.7 — dumps ODB to temporary .npy files
+deck_solver python src/l1/deck_solver_dump.py --odb /path/to/model.odb --out /data/<odb_id>/
 
 # Phase 2: Run under Python 3 — packs .npy → HDF5 + manifest.db
 python src/l1/l1_pack.py --workspace /data/<odb_id>/
@@ -92,8 +92,8 @@ cd viewer && npm install && npm run dev
 
 ## Three-Layer Architecture
 
-### L1 — Faithful ODB Dump (`src/l1/abaqus_dump.py` + `src/l1/l1_pack.py`)
-Two-phase extraction: `abaqus_dump.py` runs under Abaqus Python 2.7 to extract data to `.npy` files; `l1_pack.py` runs under standard Python 3 to pack them into HDF5 + SQLite. Data is stored as-is — no processing, no coordinate transforms applied. Output structure:
+### L1 — Faithful ODB Dump (`src/l1/deck_solver_dump.py` + `src/l1/l1_pack.py`)
+Two-phase extraction: `deck_solver_dump.py` runs under DeckSolver Python 2.7 to extract data to `.npy` files; `l1_pack.py` runs under standard Python 3 to pack them into HDF5 + SQLite. Data is stored as-is — no processing, no coordinate transforms applied. Output structure:
 ```
 /data/<odb_id>/
   l1/
@@ -144,7 +144,7 @@ Job lifecycle tracked in manifest: `submitted → l1_running → l1_done → l2_
 
 ## Key Design Decisions
 
-- **No Abaqus at runtime:** L1 extraction requires Abaqus Python 2.7; L2/L3 use standard Python 3 only.
+- **No DeckSolver at runtime:** L1 extraction requires DeckSolver Python 2.7; L2/L3 use standard Python 3 only.
 - **Concurrent safety:** HDF5/SQLite are single-writer. Job runner (L1/L2) is a separate process from the L3 web service; multiple L3 Gunicorn workers can read in parallel (HDF5 is multi-reader safe). User sets stored as compressed BLOBs in SQLite to avoid HDF5 multi-process write conflicts.
 - **Memory model:** L3 loads 2–3 active ODB workspaces (~2 GB each); Gunicorn workers share static numpy indices via copy-on-write fork.
 - **Result caching in L3（统一缓存层 + 预计算）:** 所有 L3 结果缓存经 `src/l3/services/cache_store.py` 统一管理（设计见 `docs/l3/L3-Precompute-Cache-Design.md`）：进程内 LRU（`APP_SCALAR_CACHE_MB`，默认 512MB/worker，0=关闭全部结果缓存）+ 工作区磁盘 `<workspace>/l3_cache/`（`model/` 只依赖几何，`groups/<result_group>/` 依赖结果，下分 arrays/json/payloads；整个目录共用 `APP_SCALAR_DISK_CACHE_MB` 上限，默认 102400=100GB，按 mtime 淘汰，-1=不限容量；是"L3 只写 manifest.db"约定的唯一例外）。key 含结果文件 (mtime_ns,size) 与 render.h5 签名，源文件重写自动失效；删项目随工作区删、L2 ingest 开始时清空 l3_cache、结果组重新解析前删该组目录。缓存内容：frame-scalars / frame-colors 归一化与 set 过滤前的顶点标量、图例范围、顶点位移向量（vertex-displacements / modal-shape / modal-animation 共用）、suggest-scale 统计、deformed-positions 与 modal-animation 最终响应包、color-code 面分类编码、color-code 响应包（key 含当前改色/改名）、legend-entries 几何部分（改色/改名每次现查）、region-mesh-edges / region-outline 响应包、element-mesh-edges 响应包。**全量预计算**（2026-10-21 起，`services/precompute_plan.py`，设计 `docs/l3/L3-Full-Precompute-Cache-Proposal.md`）：几何类（color-code 各 scheme 与每个单元集合单选的面分类/着色包/图例条目、每个区域的区域边线与外轮廓（2026-10-23 起，`services/region_edge_service.py`）、单元边线）+ 每个 step **全部帧** × 默认分量与全部实际分量 × smooth/flat 的 frame-scalars/frame-scalar-range、每帧 U 位移与变形统计、每帧 deformed-positions 响应包（scale=该帧建议值，2026-10-26 起）、FREQUENCY 步每阶 modal-animation 响应包（scale=建议值、n_frames=20）；**只覆盖 viewer 实际调用的接口**（2026-10-22 起，frame-colors / raw-values 等 viewer 不调用的不预算，首次请求时现算）。新导入/追加结果/L2 重跑在 ready 前由 runner 严格执行（`readiness_service.prepare_workspace`，按“结果组 × step × 字段”分给 `precompute_worker` 子进程并行，`APP_PRECOMPUTE_WORKERS` 0=自动/1=串行）；旧项目补算靠后台预热执行同一计划（`services/warmup_service.py`，有解析任务时让路、跨进程文件锁去重），**`APP_WARMUP` 默认 0（2026-10-21 起关闭自动预热）**，设 1 才在模型加载/新结果组就绪时自动补算，手动 `POST /results/warmup` 不受影响。
@@ -161,17 +161,17 @@ services/model_update/
     inp_service.py            — INP目录提取、测点匹配、DOF匹配、响应目录构建、DAC/DSF计算
     sensitivity_service.py    — 灵敏度计算编排（DSA工作流、结果存储）
     bayesian_service.py       — 贝叶斯模型修正迭代主逻辑
-    solver_service.py         — 求解器调度（Abaqus/Nastran）
+    solver_service.py         — 求解器调度（DeckSolver/BulkSolver）
     inp_tree_service.py       — INP 文件树状结构解析
     model_update_meta_service.py  — 项目元数据管理
     project_source_service.py / project_status_service.py
   importers/
-    bdf_service.py            — Nastran BDF 文件导入
+    bdf_service.py            — BulkSolver BDF 文件导入
     unv_service.py            — UNV 试验模态数据导入
   solver_prep/
-    abaqus_sensitivity.py     — 生成 Abaqus DSA inp 文件
-    abaqus_adjoint.py         — 生成 Abaqus adjoint inp 文件
-    nastran_sol103.py         — 转换 Nastran SOL103 输入文件
+    deck_solver_sensitivity.py     — 生成 DeckSolver DSA inp 文件
+    deck_solver_adjoint.py         — 生成 DeckSolver adjoint inp 文件
+    bulk_solver_sol103.py         — 转换 BulkSolver SOL103 输入文件
 
 webapi/                       — 模型修正 REST API（挂载到 app.py 的 FastAPI app）
   routes.py                   — 汇总所有子路由
@@ -182,7 +182,7 @@ webapi/                       — 模型修正 REST API（挂载到 app.py 的 F
     matching.py     — /pair/node_point, /get/pair_node_point_result, /transform/*
     sensitivity.py  — /sensitivity/* （计算、导出、workspace 管理）
     optimization.py — /optimization/parameter/create, /optimization/bayesian/run, /add/response
-    solver.py       — Abaqus/Nastran 求解器直接触发接口
+    solver.py       — DeckSolver/BulkSolver 求解器直接触发接口
     system.py       — 健康检查等
 ```
 
@@ -211,7 +211,7 @@ webapi/                       — 模型修正 REST API（挂载到 app.py 的 F
 
 ## INP 解析器（`src/inp/`）
 
-Abaqus INP 文件的纯 Python 解析器，被模型修正服务广泛使用：
+DeckSolver INP 文件的纯 Python 解析器，被模型修正服务广泛使用：
 
 ```
 src/inp/
@@ -222,7 +222,7 @@ src/inp/
   topology.py       — 从解析结果提取拓扑关系（单元-节点连接）
   parameter_mapping.py — 提取设计参数、响应定义（用于灵敏度/优化）
   summary.py / diagnostics.py / exporter.py — 辅助工具
-  abaqus_sensitivity_tool.py — 生成 Abaqus 灵敏度分析的 INP 模板
+  deck_solver_sensitivity_tool.py — 生成 DeckSolver 灵敏度分析的 INP 模板
 ```
 
 ## 独立模态服务（`src/modal_service/`）
@@ -237,17 +237,17 @@ uvicorn src.modal_service.main:app --reload --port 8001
 
 | 文件 | 作用 |
 |---|---|
-| `MeshElementFactory.py` | 单元类型工厂，按 Abaqus 单元名称返回角节点数、面连接等信息 |
+| `MeshElementFactory.py` | 单元类型工厂，按 DeckSolver 单元名称返回角节点数、面连接等信息 |
 | `FemToolsUNVParser.py` | UNV 格式解析器（FEMTools 试验数据） |
-| `BDFParserPyNastran.py` | pyNastran 的 BDF 读取封装 |
+| `BDFParserBulkProvider.py` | bulk_provider 的 BDF 读取封装 |
 | `CustomException.py` | 项目级自定义异常 |
 | `FemNode.py` | 有限元节点数据类 |
 | `utils/VirtualRealUtils.py` | 通用工具函数 |
 
 ## Known Blockers
 
-- **Blocker A (Shell Sections):** PoC needed for `getSubset(position=NODAL)` on shell mid-surface/bottom/top points in Abaqus Python API.
-- **Blocker B (Transform Attributes):** Verify `localCsys.origin/.xAxis/.yAxis/.zAxis` attribute names in the target Abaqus version.
+- **Blocker A (Shell Sections):** PoC needed for `getSubset(position=NODAL)` on shell mid-surface/bottom/top points in DeckSolver Python API.
+- **Blocker B (Transform Attributes):** Verify `localCsys.origin/.xAxis/.yAxis/.zAxis` attribute names in the target DeckSolver version.
 
 ## Documentation Map
 
@@ -261,7 +261,7 @@ uvicorn src.modal_service.main:app --reload --port 8001
 | `docs/l3/L3-Render-Assembly-Design.md` | How L3 assembles render buffers from L1/L2 data |
 | `docs/l3/L3-Module-Boundary.md` | Router/Service/Repository responsibility separation |
 | `docs/l3/Pipeline-Resume-Design.md` | 导入流水线断点续做（缓存准备中断后不重跑 L1/L2）设计备忘，未实施 |
-| `docs/l1/abaqus_dump_guide.md` | Practical guide for running L1 extraction |
+| `docs/l1/deck_solver_dump_guide.md` | Practical guide for running L1 extraction |
 | `docs/Special-Element-Handling.md` | 特殊单元（耦合/连接器/质量/弹簧）在 ODB/INP 两路径的解析与显示约定 |
 | `docs/维护注意事项.md` | 运维/数据修复的坑与工具（result_blocks 修复、结果路径解析约定等） |
 | `temp/` | Historical design iterations (v1–v4) and review notes; not authoritative |

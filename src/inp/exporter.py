@@ -2,7 +2,7 @@
 Layer 4: INP → L1-compatible HDF5 Exporter
 
 Converts an InpModel (fully resolved) into the same L1 directory layout that
-abaqus_dump.py + l1_pack.py produce, so that L2 ingest.py can process INP
+deck_solver_dump.py + l1_pack.py produce, so that L2 ingest.py can process INP
 files without modification.
 
 Output layout (under <workspace>/):
@@ -43,7 +43,7 @@ def _safe(name: str) -> str:
     return name.replace("/", "__").replace("\\", "__").replace(" ", "_")
 
 # ---------------------------------------------------------------------------
-# Face definitions  (mirrors FACE_DEFS in abaqus_dump.py exactly)
+# Face definitions  (mirrors FACE_DEFS in deck_solver_dump.py exactly)
 #
 # Key  = ELEM_TYPE_CODE integer (same as L2's ELEM_TYPE_CODE dict)
 # Value = list of faces; each face = list of 0-based *corner node row* indices
@@ -213,7 +213,7 @@ def _build_transform_matrix(inst) -> np.ndarray:
     """
     Build a 4×4 homogeneous transform matrix from Instance.translation + .rotation.
 
-    Abaqus instance placement:
+    DeckSolver instance placement:
       1. Apply rotation  R  (axis-angle, axis given as two points)
       2. Apply translation T
 
@@ -227,7 +227,7 @@ def _build_transform_matrix(inst) -> np.ndarray:
     tx, ty, tz = inst.translation
     T = np.array([tx, ty, tz], dtype=np.float64)
 
-    # Abaqus instance positioning order:
+    # DeckSolver instance positioning order:
     #   1. Translate part by T
     #   2. Rotate about the axis defined by (center, axis_point), angle_deg
     #
@@ -281,11 +281,11 @@ def _build_section_maps(
     maps for one instance.
 
     Two sources are merged:
-      1. Sections defined inside the part (native Abaqus/CAE layout).
+      1. Sections defined inside the part (native DeckSolver/CAE layout).
       2. Sections defined inside the *Assembly block referencing an
          instance-scoped elset (flattened / Hypermesh / ANSA layout).
 
-    Elset names are matched case-insensitively because Abaqus treats set names
+    Elset names are matched case-insensitively because DeckSolver treats set names
     as case-insensitive — e.g. a `*Solid Section, elset=ALLELEMS` must still
     match `*Element, elset=AllElems`. A case-sensitive lookup here was the bug
     that left material_name empty ("none" in the legend).
@@ -363,11 +363,11 @@ def _write_geometry_h5(
     bbox_min = coords_arr.min(axis=0).tolist()
     bbox_max = coords_arr.max(axis=0).tolist()
 
-    # ---- Group elements by Abaqus type string ----------------------------
+    # ---- Group elements by DeckSolver type string ----------------------------
     # Each group: list of (elem_label, [node_labels...])
     type_groups: Dict[str, List[Tuple[int, List[int]]]] = {}
     for elem_label, elem in part.elements.items():
-        atype = elem.abaqus_type.upper()
+        atype = elem.deck_solver_type.upper()
         type_groups.setdefault(atype, []).append((elem_label, elem.node_labels))
 
     # ---- Write HDF5 --------------------------------------------------
@@ -470,7 +470,7 @@ def _compute_elem_and_faces(
                 if local_idx < len(corners):
                     fnc[out, col] = label_to_row.get(corners[local_idx], -1)
             fei[out] = elem_row
-            fsq[out] = face_seq_0 + 1   # 1-based, matching abaqus_dump.py
+            fsq[out] = face_seq_0 + 1   # 1-based, matching deck_solver_dump.py
             out += 1
 
     return elem_labels, conn, fnc[:out], fei[:out], fsq[:out]
@@ -491,7 +491,7 @@ def _write_sets(
     (both inst_name and set_name are uppercased to match the ODB side).
 
     Two sources are merged, both keyed under the instance:
-      1. Part-level Elsets (native CAE layout, mostly Abaqus-generated
+      1. Part-level Elsets (native CAE layout, mostly DeckSolver-generated
          _PickedSetNN property sets).
       2. Assembly-level Elsets whose `instance_name` resolves to this instance
          (flattened / CAE assembly layout). In a CAE-exported INP the
@@ -522,7 +522,7 @@ def _write_sets(
         for set_name, elset, scope in items:
             if not elset.elem_labels:
                 continue
-            # Normalize the set name to UPPERCASE to match the ODB side: Abaqus
+            # Normalize the set name to UPPERCASE to match the ODB side: DeckSolver
             # stores every set name uppercase inside the ODB (irreversibly), so an
             # INP-sourced workspace must do the same or the same model imported as
             # INP vs ODB would disagree (e.g. INP '_PickedSet6' vs ODB
@@ -531,7 +531,7 @@ def _write_sets(
             # (integer labels) is untouched, and section→elset resolution already
             # matches case-insensitively.
             set_name = set_name.upper()
-            # Internal sets (Abaqus-generated _PICKEDSETNN / surface _SN sets)
+            # Internal sets (DeckSolver-generated _PICKEDSETNN / surface _SN sets)
             # are stored too, just flagged via is_internal so callers can later
             # tell them apart from user-named sets. No filtering is applied here.
             is_internal = 1 if getattr(elset, "internal", False) else 0
@@ -641,7 +641,7 @@ def _append_coupling_lines(h5_path: str, model, part) -> None:
         # Both KINEMATIC and DISTRIBUTING couplings carry a ref node + surface and
         # expand to identical ref→leaf spider lines; render both. (In the ODB path
         # distributing couplings instead surface as DCOUP3D elements — see
-        # src/l1/abaqus_dump.py — but reach the same couplings/positions format.)
+        # src/l1/deck_solver_dump.py — but reach the same couplings/positions format.)
         if coup.coupling_type not in ("KINEMATIC", "DISTRIBUTING"):
             continue
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from BDFParserPyNastran import BDFParser
+from BDFParserBulkProvider import BDFParser
 from services.model_update.analysis.fem_catalog_service import _build_octree
 from services.model_update.importers.bdf_service import _build_bdf_octree_node_data, _build_bdf_property_set_capabilities
 

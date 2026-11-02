@@ -307,7 +307,7 @@ async def lifespan(app: FastAPI):
         started = start_embedded_runner(
             registry_db=settings.registry_db_path,
             data_root=settings.data_root,
-            abaqus_cmd=settings.abaqus_cmd,
+            deck_solver_cmd=settings.deck_solver_cmd,
             poll_interval=settings.runner_poll_interval,
             odb_fields=settings.odb_fields,
         )

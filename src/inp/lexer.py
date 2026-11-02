@@ -2,7 +2,7 @@
 Layer 1: Lexer
 
 Converts a raw INP file (possibly with *Include directives) into a flat list
-of KeywordBlocks. Each block represents one Abaqus keyword invocation.
+of KeywordBlocks. Each block represents one DeckSolver keyword invocation.
 
 Responsibilities:
 - Recursive *Include expansion (with cycle detection)

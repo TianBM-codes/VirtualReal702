@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def exporter():
-    return _load_functions('src/l1/abaqus_dump.py', {
+    return _load_functions('src/l1/deck_solver_dump.py', {
         '_main_checked', 'dump_results', 'reshape_ip_block',
         'reshape_element_nodal_block', '_block_data_2d', '_block_sp_num',
         'mkdirs', 'npsave', 'jdump', 'safe', '_canon_inst', '_fmt_t',
@@ -55,7 +55,7 @@ def test_extrapolation_memory_failure_is_fatal_after_structure_was_discovered(ex
         calls.append(kwargs)
         if len(calls) == 1:
             return SimpleNamespace(bulkDataBlocks=[en])
-        raise MemoryError('Abaqus extrapolation ran out of memory')
+        raise MemoryError('DeckSolver extrapolation ran out of memory')
     field = SimpleNamespace(bulkDataBlocks=[ip], componentLabels=['S11'], validInvariants=[],
                             getSubset=subset)
     frame = SimpleNamespace(fieldOutputs={'S': field}, frameValue=1, description='')
@@ -92,10 +92,10 @@ def _runner(lines, returncode=0):
         return proc
     namespace = {
         'deque': deque, 'subprocess': SimpleNamespace(Popen=launch, PIPE=-1, STDOUT=-2),
-        'logger': logging.getLogger(__name__), 'DUMP_SCRIPT': ROOT / 'src/l1/abaqus_dump.py',
+        'logger': logging.getLogger(__name__), 'DUMP_SCRIPT': ROOT / 'src/l1/deck_solver_dump.py',
         '_log_job': lambda *args, **kwargs: events.append((args, kwargs)),
         '_update_project_geom_status': lambda *args: statuses.append(args),
-        'os': os, 'ABAQUS_CMD': 'abaqus', 'INVARIANTS_MODE': 'none',
+        'os': os, 'DECK_SOLVER_CMD': 'deck_solver', 'INVARIANTS_MODE': 'none',
         '_kw': lambda text: text, '_bad': lambda text: text, '_esc': lambda text: text,
     }
     _load_functions('src/job_runner.py',

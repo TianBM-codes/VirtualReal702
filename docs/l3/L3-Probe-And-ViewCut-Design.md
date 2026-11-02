@@ -29,7 +29,7 @@
 
 ### 1.1 交互模式
 
-Abaqus 的 Probe Values 交互分两层：
+DeckSolver 的 Probe Values 交互分两层：
 
 - **悬停（Hover）**：鼠标在模型上移动时，光标旁出现小气泡显示当前最近的节点/单元 ID，同时临时高亮该节点或单元
 - **点击（Click）**：将当前悬停的探针结果"钉"进下方浮窗表格，可累积多条记录
@@ -126,7 +126,7 @@ function onMouseMove(event) {
 
 > **定义**：节点模式的 S,Mises 值 = **命中单元**（即用户点击位置所在的那个单元）上的 Von Mises 应力，不是该节点所有附属单元的平均。
 >
-> **原因**：用户点击的是某个单元的表面，"命中单元"是用户行为的直接对象。附属单元列表是拓扑参考信息，不参与应力计算。这与 Abaqus 的 probe 行为一致。
+> **原因**：用户点击的是某个单元的表面，"命中单元"是用户行为的直接对象。附属单元列表是拓扑参考信息，不参与应力计算。这与 DeckSolver 的 probe 行为一致。
 
 - 从命中单元的 INTEGRATION_POINT 或 ELEMENT_NODAL 位置读取 S11/S22/S33/S12/S13/S23
 - Von Mises 公式：`√(0.5 × ((S11-S22)² + (S22-S33)² + (S33-S11)² + 6×(S12² + S13² + S23²)))`
@@ -134,7 +134,7 @@ function onMouseMove(event) {
 - 若当前帧无 S 字段，显示 `—`
 - 响应里 `result.source_elem_label` 字段注明应力来源的单元号，避免歧义
 
-> **待补充**：Abaqus 默认采用 nodal averaging（把包含该节点的所有相邻单元外推至节点处的应力求平均），结果在节点处更平滑。当前选择"命中单元"语义实现简单、语义清晰，后续若需要支持 averaging 模式，可作为独立选项追加，不影响现有逻辑。
+> **待补充**：DeckSolver 默认采用 nodal averaging（把包含该节点的所有相邻单元外推至节点处的应力求平均），结果在节点处更平滑。当前选择"命中单元"语义实现简单、语义清晰，后续若需要支持 averaging 模式，可作为独立选项追加，不影响现有逻辑。
 
 ---
 
@@ -199,7 +199,7 @@ elem_labels = elem_label_data[offsets[i]:offsets[i+1]]
 
 **为什么不用字典**：百万节点模型下 Python dict 内存开销大，CSR numpy 数组更紧凑，且与 HDF5 直接对应。
 
-**实施位置**：在 `l1_pack.py` 的打包阶段生成（不依赖 Abaqus Python 2.7），构建成本是 O(N_elem × avg_nodes_per_elem)，对 10M 节点模型约 1–2 秒。
+**实施位置**：在 `l1_pack.py` 的打包阶段生成（不依赖 DeckSolver Python 2.7），构建成本是 O(N_elem × avg_nodes_per_elem)，对 10M 节点模型约 1–2 秒。
 
 **旧 workspace 兼容策略**：
 
@@ -420,7 +420,7 @@ sliderX.addEventListener('input', e => {
 | C3D4 | 4 | 6 | 四面体，直接使用 4 个角节点 |
 | C3D6 | 6 | 9 | 楔形（三棱柱），直接使用 6 个角节点 |
 | C3D8 / C3D8R | 8 | 12 | 六面体，直接使用 8 个角节点 |
-| C3D10 | 10 | 6 | 高阶四面体，只取前 4 个角节点（Abaqus 排序） |
+| C3D10 | 10 | 6 | 高阶四面体，只取前 4 个角节点（DeckSolver 排序） |
 | C3D20 / C3D20R | 20 | 12 | 高阶六面体，只取前 8 个角节点 |
 
 Shell / Beam 单元（etype 名称以 S、B、M、STRI、SAX、SC 开头）自动跳过，不参与截面计算。
@@ -485,7 +485,7 @@ const fillMat = new THREE.MeshBasicMaterial({
 
 **补面开关按钮**：UI 中 View Cut 面板提供"补面"按钮（toggle），点击后切换 `sectionMesh.visible`，可在有无填充面之间切换。轮廓线（`sectionEdges`）始终保持显示，方便对比。
 
-**模型显示风格（Abaqus 风格）**：
+**模型显示风格（DeckSolver 风格）**：
 - 基础模型：亮绿色（`rgb(56, 184, 56)` 近似）
 - 单元网格线：黑色（`0x111111`）
 - 截面填充面：灰蓝色（`0xc8d0dc`）

@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-odb_node_history.py — 从 Abaqus ODB 读取指定节点在各 step / frame 的结果，导出 CSV；
+odb_node_history.py — 从 DeckSolver ODB 读取指定节点在各 step / frame 的结果，导出 CSV；
 也可以按试验测点坐标找最近节点，并给出沿测点测量方向的投影值，直接和试验数据对比。
 
 临时性的独立脚本（单文件，不依赖本仓库其他模块，拷走即可用），用于和试验数据
 各加载级做对比。常量导入、实例名规范化、frame 选择等写法沿用
-src/l1/abaqus_dump.py（Abaqus Python 2.7 / 3 都能跑）。
+src/l1/deck_solver_dump.py（DeckSolver Python 2.7 / 3 都能跑）。
 
-必须用 Abaqus 自带的 Python 运行：
+必须用 DeckSolver 自带的 Python 运行：
 
-    abaqus python odb_node_history.py --odb Job-1.odb --list
-    abaqus python odb_node_history.py --odb Job-1.odb \\
+    deck_solver python odb_node_history.py --odb Job-1.odb --list
+    deck_solver python odb_node_history.py --odb Job-1.odb \\
         --nodes PART-1-1.101,PART-1-1.205 --fields U,S,E --out node_history.csv
 
     # 试验测点：只按坐标找最近节点（所属 instance / part 和节点号），不导结果
-    abaqus python odb_node_history.py --odb Job-1.odb --sensors sensors.csv --match-only
+    deck_solver python odb_node_history.py --odb Job-1.odb --sensors sensors.csv --match-only
     # 试验测点：找节点 + 导出结果 + 沿测点方向的投影值
-    abaqus python odb_node_history.py --odb Job-1.odb --sensors sensors.csv --out sg.csv
+    deck_solver python odb_node_history.py --odb Job-1.odb --sensors sensors.csv --out sg.csv
 
 参数：
   --odb         ODB 文件路径
@@ -70,15 +70,21 @@ UTF-8 或 Excel 默认的 GBK 编码都可以，逗号或 Tab 分隔。
   - 方向投影（n 为单位化后的测量方向）：
       U       u·n，沿 n 的位移
       S/E/LE  nᵀ·T·n，沿 n 的正应力 / 正应变，应变片测到的就是这个量
-    张量用 Abaqus 自己的坐标变换（getTransformedField）：建一个 1 轴 = n 的直角坐标系，
+    张量用 DeckSolver 自己的坐标变换（getTransformedField）：建一个 1 轴 = n 的直角坐标系，
     把每个单元的外推值转过去取 11 分量，再按节点平均（截面点同样分开）。壳单元和带
     *Orientation 的单元的分量写在各自的局部坐标系里、应变的剪切分量是工程剪应变（2 倍关系），
-    这些都交给 Abaqus 处理，不会拿全局方向去乘局部分量。壳只有面内应力，结果是 n 投影到
+    这些都交给 DeckSolver 处理，不会拿全局方向去乘局部分量。壳只有面内应力，结果是 n 投影到
     壳面内那个方向上的值。
     在 CAE 里核对：按运行时打印的三个点建同样的直角坐标系，Result Options → Transformation
     选 User-specified 并选中它，平均阈值设 100%，查该节点的 S11 / E11（Unique Nodal）。
 """
 from __future__ import print_function
+
+import os as _runtime_os
+import sys as _runtime_sys
+_runtime_sys.path.insert(0, _runtime_os.path.abspath(_runtime_os.path.join(
+    _runtime_os.path.dirname(__file__), '..')))
+
 
 import argparse
 import codecs
@@ -93,13 +99,13 @@ import numpy as np
 try:
     import odbAccess
 except ImportError:
-    print("ERROR: odbAccess not found. Must run under 'abaqus python'.")
+    print("ERROR: odbAccess not found. Must run under 'deck_solver python'.")
     sys.exit(1)
 
-# ELEMENT_NODAL 常量：abaqusConstants 或 odbAccess 上取（同 abaqus_dump.py）
+# ELEMENT_NODAL 常量：result_constants 或 odbAccess 上取（同 deck_solver_dump.py）
 _ELEM_NODAL = None
 try:
-    from abaqusConstants import ELEMENT_NODAL as _ELEM_NODAL  # noqa: F401
+    from result_constants import ELEMENT_NODAL as _ELEM_NODAL  # noqa: F401
 except Exception:
     try:
         _ELEM_NODAL = odbAccess.ELEMENT_NODAL
@@ -109,7 +115,7 @@ except Exception:
 # 方向投影建直角坐标系用的常量，取法同上
 _CARTESIAN = None
 try:
-    from abaqusConstants import CARTESIAN as _CARTESIAN  # noqa: F401
+    from result_constants import CARTESIAN as _CARTESIAN  # noqa: F401
 except Exception:
     _CARTESIAN = getattr(odbAccess, "CARTESIAN", None)
 
@@ -123,7 +129,7 @@ MATCH_HEADER = ["sensor", "x", "y", "z", "dx", "dy", "dz", "instance", "part", "
 PROJ_PREFIX = "proj:"
 
 
-# ─── 小工具（沿用 abaqus_dump.py） ────────────────────────────────────────────
+# ─── 小工具（沿用 deck_solver_dump.py） ────────────────────────────────────────────
 
 def _canon_inst(name):
     """Instance 名统一大写（与 L1 流水线一致）。"""
@@ -165,7 +171,7 @@ def _sp_desc(value):
 
 
 def _open_csv(path):
-    """Py2（Abaqus 2023 及更早）csv 要用二进制模式，否则 Windows 下每行多一个空行。
+    """Py2（DeckSolver 2023 及更早）csv 要用二进制模式，否则 Windows 下每行多一个空行。
     两边都带 UTF-8 BOM，测点名有中文时 Excel 也能直接打开。"""
     if PY2:
         fh = open(path, "wb")
@@ -201,7 +207,7 @@ def _dedupe(keys):
 
 
 def _part_name(odb, inst_name):
-    """instance 对应的 part 名。属性名随 Abaqus 版本不同（同 abaqus_dump.py），都取不到时
+    """instance 对应的 part 名。属性名随 DeckSolver 版本不同（同 deck_solver_dump.py），都取不到时
     按 CAE 默认命名 "<part>-<序号>" 反推，且要求该 part 在 odb.parts 里确实存在。"""
     inst = odb.rootAssembly.instances[inst_name]
     name = getattr(inst, "partName", None)
@@ -490,7 +496,7 @@ def write_sensor_matches(path, sensors):
 def _tensor_from_components(labels, comps, field):
     """按分量名（S11、E12、LE23……）组装 3x3 对称张量，缺的分量补 0（平面应力等）。
 
-    Abaqus 输出的剪切应变 E12 等是工程剪应变 γ，张量分量 = γ/2。
+    DeckSolver 输出的剪切应变 E12 等是工程剪应变 γ，张量分量 = γ/2。
     """
     t = np.zeros((3, 3))
     for name, v in zip(labels, comps):
@@ -534,7 +540,7 @@ def rows_for_nodal(fo, region, inst, wanted):
 
 def _element_nodal_subset(fo, region):
     if _ELEM_NODAL is None:
-        raise RuntimeError("ELEMENT_NODAL constant unavailable in this Abaqus version")
+        raise RuntimeError("ELEMENT_NODAL constant unavailable in this DeckSolver version")
     return fo.getSubset(region=region, position=_ELEM_NODAL)
 
 
@@ -571,7 +577,7 @@ def rows_for_element_nodal(fo, sub, inst, wanted):
 def make_direction_csys(asm, dkey, idx):
     """建 1 轴 = 方向 n 的直角坐标系（只在内存里，ODB 是只读打开的，不会写回）。"""
     if _CARTESIAN is None:
-        raise RuntimeError("CARTESIAN constant unavailable in this Abaqus version")
+        raise RuntimeError("CARTESIAN constant unavailable in this DeckSolver version")
     n = [float(c) for c in dkey]
     e = [0.0, 0.0, 0.0]
     e[int(np.argmin(np.abs(n)))] = 1.0       # 与 n 最不平行的坐标轴，只用来定 1-2 平面

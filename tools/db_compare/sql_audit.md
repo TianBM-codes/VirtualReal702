@@ -1861,7 +1861,7 @@ CREATE TABLE IF NOT EXISTS t_mt_py_fem_supported_quantity ( quantity_code VARCHA
 MySQL:
 
 ```sql
-CREATE TABLE IF NOT EXISTS t_mt_py_fem_quantity_set_capability ( id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID', pid BIGINT NOT NULL COMMENT '工程ID', quantity_code VARCHAR(32) NOT NULL COMMENT '修正量编码', set_name VARCHAR(200) NOT NULL COMMENT '集合名称', set_type VARCHAR(32) NOT NULL COMMENT '集合类型', set_scope VARCHAR(32) NOT NULL COMMENT '集合范围', instance_name VARCHAR(200) NULL COMMENT '实例名称', part_name VARCHAR(200) NULL COMMENT '零件名称', set_role VARCHAR(64) NOT NULL COMMENT '集合角色', element_family VARCHAR(32) NULL COMMENT '单元族', section_type VARCHAR(64) NULL COMMENT '截面类型', material_name VARCHAR(200) NULL COMMENT '材料名称', member_count INT NOT NULL DEFAULT 0 COMMENT '成员数量', supports_global TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持全局参数', supports_local TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持局部参数', current_value DOUBLE NULL COMMENT '共享当前值', is_internal TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否为Abaqus自动生成的内部集合(_PickedSetNN)，1=内部 0=用户', extra_json JSON NULL COMMENT '扩展信息', PRIMARY KEY (id), UNIQUE KEY uk_pid_quantity_set_capability (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name), KEY idx_pid_quantity_code (pid, quantity_code), KEY idx_pid_set_name (pid, set_name, set_type, set_scope) ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='修正量与集合能力目录表';
+CREATE TABLE IF NOT EXISTS t_mt_py_fem_quantity_set_capability ( id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID', pid BIGINT NOT NULL COMMENT '工程ID', quantity_code VARCHAR(32) NOT NULL COMMENT '修正量编码', set_name VARCHAR(200) NOT NULL COMMENT '集合名称', set_type VARCHAR(32) NOT NULL COMMENT '集合类型', set_scope VARCHAR(32) NOT NULL COMMENT '集合范围', instance_name VARCHAR(200) NULL COMMENT '实例名称', part_name VARCHAR(200) NULL COMMENT '零件名称', set_role VARCHAR(64) NOT NULL COMMENT '集合角色', element_family VARCHAR(32) NULL COMMENT '单元族', section_type VARCHAR(64) NULL COMMENT '截面类型', material_name VARCHAR(200) NULL COMMENT '材料名称', member_count INT NOT NULL DEFAULT 0 COMMENT '成员数量', supports_global TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持全局参数', supports_local TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持局部参数', current_value DOUBLE NULL COMMENT '共享当前值', is_internal TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否为DeckSolver自动生成的内部集合(_PickedSetNN)，1=内部 0=用户', extra_json JSON NULL COMMENT '扩展信息', PRIMARY KEY (id), UNIQUE KEY uk_pid_quantity_set_capability (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name), KEY idx_pid_quantity_code (pid, quantity_code), KEY idx_pid_set_name (pid, set_name, set_type, set_scope) ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='修正量与集合能力目录表';
 ```
 
 达梦候选:
@@ -5870,7 +5870,7 @@ INSERT INTO t_mt_py_fem_manual_parameter (pid, parameter_name, parameter_type, s
 INSERT INTO t_mt_py_fem_manual_parameter (pid, parameter_name, parameter_type, scatter, upper_bound, lower_bound) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE parameter_type = VALUES(parameter_type), scatter = VALUES(scatter), upper_bound = VALUES(upper_bound), lower_bound = VALUES(lower_bound), updated_at = CURRENT_TIMESTAMP
 ```
 
-### SQL0294 services/model_update/analysis/nastran_sol200_service.py:172
+### SQL0294 services/model_update/analysis/bulk_solver_sol200_service.py:172
 
 - 类型：`SELECT`
 - 特性：`portable_or_unknown`
@@ -5890,7 +5890,7 @@ SELECT COALESCE(MAX(parameter_no), 0) AS max_no FROM t_mt_py_fem_sol200_paramete
 SELECT COALESCE(MAX(parameter_no), 0) AS max_no FROM t_mt_py_fem_sol200_parameter_config WHERE pid = ?
 ```
 
-### SQL0295 services/model_update/analysis/nastran_sol200_service.py:181
+### SQL0295 services/model_update/analysis/bulk_solver_sol200_service.py:181
 
 - 类型：`INSERT`
 - 特性：`values_function`
@@ -5910,7 +5910,7 @@ INSERT INTO t_mt_py_fem_sol200_parameter_config (pid, parameter_no, parameter_na
 INSERT INTO t_mt_py_fem_sol200_parameter_config (pid, parameter_no, parameter_name, parameter_type, property_id, material_id, element_id, initial_value, lower_bound, upper_bound, extra_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ```
 
-### SQL0296 services/model_update/analysis/nastran_sol200_service.py:240
+### SQL0296 services/model_update/analysis/bulk_solver_sol200_service.py:240
 
 - 类型：`SELECT`
 - 特性：`portable_or_unknown`
@@ -5930,7 +5930,7 @@ SELECT parameter_no, parameter_name, parameter_type, property_id, material_id, e
 SELECT parameter_no, parameter_name, parameter_type, property_id, material_id, element_id, initial_value, lower_bound, upper_bound, extra_json FROM t_mt_py_fem_sol200_parameter_config WHERE pid = ? ORDER BY parameter_no ASC
 ```
 
-### SQL0297 services/model_update/analysis/nastran_sol200_service.py:285
+### SQL0297 services/model_update/analysis/bulk_solver_sol200_service.py:285
 
 - 类型：`DELETE`
 - 特性：`portable_or_unknown`
@@ -5950,7 +5950,7 @@ DELETE FROM t_mt_py_fem_sol200_parameter_config WHERE pid = %s
 DELETE FROM t_mt_py_fem_sol200_parameter_config WHERE pid = ?
 ```
 
-### SQL0298 services/model_update/analysis/nastran_sol200_service.py:355
+### SQL0298 services/model_update/analysis/bulk_solver_sol200_service.py:355
 
 - 类型：`SELECT`
 - 特性：`portable_or_unknown`
@@ -5970,7 +5970,7 @@ SELECT COALESCE(MAX(response_no), 0) AS max_no FROM t_mt_py_fem_sol200_response_
 SELECT COALESCE(MAX(response_no), 0) AS max_no FROM t_mt_py_fem_sol200_response_config WHERE pid = ?
 ```
 
-### SQL0299 services/model_update/analysis/nastran_sol200_service.py:364
+### SQL0299 services/model_update/analysis/bulk_solver_sol200_service.py:364
 
 - 类型：`INSERT`
 - 特性：`values_function`
@@ -5990,7 +5990,7 @@ INSERT INTO t_mt_py_fem_sol200_response_config (pid, response_no, response_name,
 INSERT INTO t_mt_py_fem_sol200_response_config (pid, response_no, response_name, response_type, mode_number, extra_json) VALUES (?, ?, ?, ?, ?, ?)
 ```
 
-### SQL0300 services/model_update/analysis/nastran_sol200_service.py:413
+### SQL0300 services/model_update/analysis/bulk_solver_sol200_service.py:413
 
 - 类型：`SELECT`
 - 特性：`portable_or_unknown`
@@ -6010,7 +6010,7 @@ SELECT response_no, response_name, response_type, mode_number, extra_json FROM t
 SELECT response_no, response_name, response_type, mode_number, extra_json FROM t_mt_py_fem_sol200_response_config WHERE pid = ? ORDER BY response_no ASC
 ```
 
-### SQL0301 services/model_update/analysis/nastran_sol200_service.py:454
+### SQL0301 services/model_update/analysis/bulk_solver_sol200_service.py:454
 
 - 类型：`DELETE`
 - 特性：`portable_or_unknown`
@@ -6668,146 +6668,6 @@ UPDATE t_mt_measuring_point_info SET x_position = x_position * %s, y_position = 
 
 ```sql
 UPDATE t_mt_measuring_point_info SET x_position = x_position * ?, y_position = y_position * ?, z_position = z_position * ?, x_position_ori = x_position_ori * ?, y_position_ori = y_position_ori * ?, z_position_ori = z_position_ori * ? WHERE project_id = ?
-```
-
-### SQL0334 services/model_update/importers/ansys_mu_common.py:153
-
-- 类型：`INSERT`
-- 特性：`on_duplicate_key_update, values_function`
-- 参数数量：`5`
-- 验证状态：`skipped`
-- 说明：参数化 SQL 需要业务样例参数
-
-MySQL:
-
-```sql
-INSERT INTO t_mt_py_fem_supported_quantity (quantity_code, quantity_name, unit, enabled, sort_no) VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE quantity_name=VALUES(quantity_name), unit=VALUES(unit), enabled=VALUES(enabled), sort_no=VALUES(sort_no)
-```
-
-达梦候选:
-
-```sql
-MERGE INTO t_mt_py_fem_supported_quantity t USING (SELECT ? AS quantity_code, ? AS quantity_name, ? AS unit, ? AS enabled, ? AS sort_no FROM DUAL) s ON (t.quantity_code = s.quantity_code) WHEN MATCHED THEN UPDATE SET t.quantity_name = s.quantity_name, t.unit = s.unit, t.enabled = s.enabled, t.sort_no = s.sort_no WHEN NOT MATCHED THEN INSERT (quantity_code, quantity_name, unit, enabled, sort_no) VALUES (s.quantity_code, s.quantity_name, s.unit, s.enabled, s.sort_no)
-```
-
-### SQL0335 services/model_update/importers/ansys_mu_common.py:167
-
-- 类型：`INSERT`
-- 特性：`values_function`
-- 参数数量：`3`
-- 验证状态：`skipped`
-- 说明：参数化 SQL 需要业务样例参数
-
-MySQL:
-
-```sql
-INSERT INTO t_mt_py_fem_material_overview (Id, pid, Type) VALUES (%s,%s,%s)
-```
-
-达梦候选:
-
-```sql
-INSERT INTO t_mt_py_fem_material_overview (Id, pid, Type) VALUES (?,?,?)
-```
-
-### SQL0336 services/model_update/importers/ansys_mu_common.py:171
-
-- 类型：`INSERT`
-- 特性：`values_function`
-- 参数数量：`6`
-- 验证状态：`skipped`
-- 说明：参数化 SQL 需要业务样例参数
-
-MySQL:
-
-```sql
-INSERT INTO t_mt_py_fem_isotropic (Id, pid, RHO, E, NU, GE) VALUES (%s,%s,%s,%s,%s,%s)
-```
-
-达梦候选:
-
-```sql
-INSERT INTO t_mt_py_fem_isotropic (Id, pid, RHO, E, NU, GE) VALUES (?,?,?,?,?,?)
-```
-
-### SQL0337 services/model_update/importers/ansys_mu_common.py:182
-
-- 类型：`INSERT`
-- 特性：`values_function`
-- 参数数量：`3`
-- 验证状态：`skipped`
-- 说明：参数化 SQL 需要业务样例参数
-
-MySQL:
-
-```sql
-INSERT INTO t_mt_py_fem_property (Id, pid, Type) VALUES (%s,%s,%s)
-```
-
-达梦候选:
-
-```sql
-INSERT INTO t_mt_py_fem_property (Id, pid, Type) VALUES (?,?,?)
-```
-
-### SQL0338 services/model_update/importers/ansys_mu_common.py:186
-
-- 类型：`INSERT`
-- 特性：`values_function`
-- 参数数量：`5`
-- 验证状态：`skipped`
-- 说明：参数化 SQL 需要业务样例参数
-
-MySQL:
-
-```sql
-INSERT INTO t_mt_py_fem_shell_property (Id, pid, Thickness, NSM, THETA) VALUES (%s,%s,%s,%s,%s)
-```
-
-达梦候选:
-
-```sql
-INSERT INTO t_mt_py_fem_shell_property (Id, pid, Thickness, NSM, THETA) VALUES (?,?,?,?,?)
-```
-
-### SQL0339 services/model_update/importers/ansys_mu_common.py:193
-
-- 类型：`INSERT`
-- 特性：`on_duplicate_key_update, values_function`
-- 参数数量：`16`
-- 验证状态：`skipped`
-- 说明：参数化 SQL 需要业务样例参数
-
-MySQL:
-
-```sql
-INSERT INTO t_mt_py_fem_quantity_set_capability (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name, set_role, element_family, section_type, material_name, member_count, supports_global, supports_local, current_value, extra_json) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE set_role=VALUES(set_role), element_family=VALUES(element_family), section_type=VALUES(section_type), material_name=VALUES(material_name), member_count=VALUES(member_count), supports_global=VALUES(supports_global), supports_local=VALUES(supports_local), current_value=VALUES(current_value), extra_json=VALUES(extra_json)
-```
-
-达梦候选:
-
-```sql
-MERGE INTO t_mt_py_fem_quantity_set_capability t USING (SELECT ? AS pid, ? AS quantity_code, ? AS set_name, ? AS set_type, ? AS set_scope, ? AS instance_name, ? AS part_name, ? AS set_role, ? AS element_family, ? AS section_type, ? AS material_name, ? AS member_count, ? AS supports_global, ? AS supports_local, ? AS current_value, ? AS extra_json FROM DUAL) s ON (t.pid = s.pid AND t.quantity_code = s.quantity_code AND t.set_name = s.set_name AND t.set_type = s.set_type AND t.set_scope = s.set_scope AND t.instance_name = s.instance_name AND t.part_name = s.part_name) WHEN MATCHED THEN UPDATE SET t.set_role = s.set_role, t.element_family = s.element_family, t.section_type = s.section_type, t.material_name = s.material_name, t.member_count = s.member_count, t.supports_global = s.supports_global, t.supports_local = s.supports_local, t.current_value = s.current_value, t.extra_json = s.extra_json WHEN NOT MATCHED THEN INSERT (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name, set_role, element_family, section_type, material_name, member_count, supports_global, supports_local, current_value, extra_json) VALUES (s.pid, s.quantity_code, s.set_name, s.set_type, s.set_scope, s.instance_name, s.part_name, s.set_role, s.element_family, s.section_type, s.material_name, s.member_count, s.supports_global, s.supports_local, s.current_value, s.extra_json)
-```
-
-### SQL0340 services/model_update/importers/ansys_mu_common.py:216
-
-- 类型：`INSERT`
-- 特性：`on_duplicate_key_update, values_function`
-- 参数数量：`7`
-- 验证状态：`skipped`
-- 说明：参数化 SQL 需要业务样例参数
-
-MySQL:
-
-```sql
-INSERT INTO t_mt_py_fem_node_octree_cache (pid, source_file_path, cache_file_path, node_count, instance_count, bbox_min, bbox_max, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE cache_file_path=VALUES(cache_file_path), node_count=VALUES(node_count), instance_count=VALUES(instance_count), bbox_min=VALUES(bbox_min), bbox_max=VALUES(bbox_max), updated_at=CURRENT_TIMESTAMP
-```
-
-达梦候选:
-
-```sql
-MERGE INTO t_mt_py_fem_node_octree_cache t USING (SELECT ? AS pid, ? AS source_file_path, ? AS cache_file_path, ? AS node_count, ? AS instance_count, ? AS bbox_min, ? AS bbox_max, CURRENT_TIMESTAMP AS updated_at FROM DUAL) s ON (t.pid = s.pid AND t.source_file_path = s.source_file_path) WHEN MATCHED THEN UPDATE SET t.cache_file_path = s.cache_file_path, t.node_count = s.node_count, t.instance_count = s.instance_count, t.bbox_min = s.bbox_min, t.bbox_max = s.bbox_max, t.updated_at = CURRENT_TIMESTAMP WHEN NOT MATCHED THEN INSERT (pid, source_file_path, cache_file_path, node_count, instance_count, bbox_min, bbox_max, updated_at) VALUES (s.pid, s.source_file_path, s.cache_file_path, s.node_count, s.instance_count, s.bbox_min, s.bbox_max, s.updated_at)
 ```
 
 ### SQL0341 services/model_update/importers/bdf_octree_bundle_import.py:32

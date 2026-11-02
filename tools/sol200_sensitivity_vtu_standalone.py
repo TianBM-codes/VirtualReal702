@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from pyNastran.bdf.bdf import BDF
+from src.utils.external_runtime import BulkSymbol
+BDF = BulkSymbol('bdf.bdf', 'BDF')
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -18,12 +19,12 @@ from services.model_update.importers.op2_service import store_op2_sensitivity_cl
 
 
 RUN_CONFIG = {
-    "nastran_command": r"C:/MSC.Software/MSC_Nastran/20180/bin/nastran.exe",
+    "bulk_solver_command": r"C:/MSC.Software/MSC_BulkSolver/20180/bin/bulk_solver.exe",
     "input_bdf": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_py.bdf",
     "output_bdf": r"D:/WorkSpace/OtherProjects/VirtualReal702/run/fem15_all_elem_e_sol200.bdf",
     "project_id": 3,
     "batch_no": "sol200_all_elements_e",
-    "case_name": "nastran_sol200_phase1",
+    "case_name": "bulk_solver_sol200_phase1",
     "parameter_preset": {
         "preset": "all_elements_e",
         "lower_scale": 0.01,
@@ -59,15 +60,15 @@ def run_sol200_frequency_sensitivity(config: Dict[str, Any]) -> Dict[str, Any]:
     preset = dict(config.get("parameter_preset") or {})
     run_solver = bool(config.get("run_solver", True))
     timeout_sec = config.get("timeout_sec")
-    nastran_command = str(config.get("nastran_command") or os.environ.get("NASTRAN_COMMAND") or "").strip()
+    bulk_solver_command = str(config.get("bulk_solver_command") or os.environ.get("BULK_SOLVER_COMMAND") or "").strip()
     extra_args = [str(item) for item in (config.get("extra_args") or []) if str(item).strip()]
 
     if not responses:
         raise RuntimeError("responses are required")
     if str(preset.get("preset") or "").strip().lower() != "all_elements_e":
         raise RuntimeError("only parameter_preset.preset='all_elements_e' is supported")
-    if run_solver and not nastran_command:
-        raise RuntimeError("nastran_command is required when run_solver=True")
+    if run_solver and not bulk_solver_command:
+        raise RuntimeError("bulk_solver_command is required when run_solver=True")
 
     for response in responses:
         if str(response.get("type") or "").upper() != "FREQ":
@@ -93,8 +94,8 @@ def run_sol200_frequency_sensitivity(config: Dict[str, Any]) -> Dict[str, Any]:
 
     solver_payload = None
     if run_solver:
-        solver_payload = _run_nastran(
-            nastran_command=nastran_command,
+        solver_payload = _run_bulk_solver(
+            bulk_solver_command=bulk_solver_command,
             bdf_path=generated["output_bdf"],
             timeout_sec=int(timeout_sec) if timeout_sec is not None else None,
             extra_args=extra_args,
@@ -113,7 +114,7 @@ def run_sol200_frequency_sensitivity(config: Dict[str, Any]) -> Dict[str, Any]:
         "workflow": "sol200_freq_sensitivity",
         "project_id": int(config["project_id"]),
         "batch_no": str(config["batch_no"]),
-        "case_name": str(config.get("case_name") or "nastran_sol200_phase1"),
+        "case_name": str(config.get("case_name") or "bulk_solver_sol200_phase1"),
         "input_bdf": input_bdf,
         "localized_input_bdf": localized_input_bdf,
         "output_bdf": generated["output_bdf"],
@@ -167,7 +168,7 @@ def store_sensitivity_to_system(
 ) -> Dict[str, Any]:
     project_id = int(config["project_id"])
     batch_no = str(config["batch_no"])
-    case_name = str(config.get("case_name") or "nastran_sol200_phase1")
+    case_name = str(config.get("case_name") or "bulk_solver_sol200_phase1")
     response_names = [str(item["name"]) for item in (config.get("responses") or []) if str(item.get("name") or "").strip()]
     cloud_result_group = str(config.get("cloud_result_group") or "").strip() or None
     cloud_step_name = str(config.get("cloud_step_name") or "Sensitivity").strip() or "Sensitivity"
@@ -335,15 +336,15 @@ def _generate_sol200_deck(
     }
 
 
-def _run_nastran(
-    nastran_command: str,
+def _run_bulk_solver(
+    bulk_solver_command: str,
     bdf_path: str,
     timeout_sec: Optional[int],
     extra_args: Sequence[str],
 ) -> Dict[str, Any]:
     bdf = Path(bdf_path).resolve()
     completed = subprocess.run(
-        [nastran_command, str(bdf)] + [str(item) for item in extra_args],
+        [bulk_solver_command, str(bdf)] + [str(item) for item in extra_args],
         cwd=str(bdf.parent),
         capture_output=True,
         text=True,
@@ -351,7 +352,7 @@ def _run_nastran(
         check=False,
     )
     return {
-        "command": [nastran_command, str(bdf)] + [str(item) for item in extra_args],
+        "command": [bulk_solver_command, str(bdf)] + [str(item) for item in extra_args],
         "returncode": int(completed.returncode),
         "stdout_tail": completed.stdout[-4000:],
         "stderr_tail": completed.stderr[-4000:],
@@ -733,7 +734,7 @@ def _abs_file(path: str, field_name: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Standalone SOL200 frequency sensitivity -> system h5 workflow")
-    parser.add_argument("--skip-solver", action="store_true", help="Reuse existing sensitivity csv instead of running Nastran")
+    parser.add_argument("--skip-solver", action="store_true", help="Reuse existing sensitivity csv instead of running BulkSolver")
     args = parser.parse_args()
 
     run_config = dict(RUN_CONFIG)

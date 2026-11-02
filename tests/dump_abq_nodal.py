@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""导出 Abaqus ODB 里某个 NODAL 矢量场(U / UR / RF ...)的原始值，
+"""导出 DeckSolver ODB 里某个 NODAL 矢量场(U / UR / RF ...)的原始值，
 逐 instance、逐分量、外加幅值(MAGNITUDE)统计 min/max，和 tests/dump_ours_nodal.py 对照。
 
-U / UR / RF 这类节点场在 ODB 里就是 NODAL 位置；Abaqus 默认按全局坐标系报告。
+U / UR / RF 这类节点场在 ODB 里就是 NODAL 位置；DeckSolver 默认按全局坐标系报告。
 
-在装了 Abaqus 的机器上运行(Abaqus Python 2.7 或新版 Python 3):
-    abaqus python tests/dump_abq_nodal.py <odb> [field=U] [step=Step-1] [frame=1]
+在装了 DeckSolver 的机器上运行(DeckSolver Python 2.7 或新版 Python 3):
+    deck_solver python tests/dump_abq_nodal.py <odb> [field=U] [step=Step-1] [frame=1]
 
 输出:
   - 控制台: 每个 instance 各分量 + 幅值的 min/max，最后再打印全装配 global 汇总
-  - CSV: abaqus_<field>_nodal.csv (instance, nodeLabel, comp..., MAG)
+  - CSV: deck_solver_<field>_nodal.csv (instance, nodeLabel, comp..., MAG)
 
 判读要点(和 ours 对照):
   - 只有某些 instance 的分量对不上、幅值对  → 那些 instance 多半有旋转，坐标系口径不一致
   - 各 instance 都对、只是 global 不一致      → 我们这边全局并集漏了节点
-  - Abaqus 这里 UR 各 instance 也全 0         → 模型物理上 UR 就该是 0(纯实体)，不是我们的 bug
-  - Abaqus 这里 UR 非 0、我们全 0             → L1 提取把 UR 丢了/填零了，是 bug
+  - DeckSolver 这里 UR 各 instance 也全 0         → 模型物理上 UR 就该是 0(纯实体)，不是我们的 bug
+  - DeckSolver 这里 UR 非 0、我们全 0             → L1 提取把 UR 丢了/填零了，是 bug
 """
 import sys
 import csv
@@ -58,7 +58,7 @@ def main():
     print('field=%s  componentLabels=%s  position(s)=%s'
           % (field, comp_labels, [str(l.position) for l in fo.locations]))
 
-    out_csv = 'abaqus_%s_nodal.csv' % field
+    out_csv = 'deck_solver_%s_nodal.csv' % field
     f = _open_csv(out_csv)
     w = csv.writer(f)
     w.writerow(['instance', 'nodeLabel'] + comp_labels + ['MAG'])

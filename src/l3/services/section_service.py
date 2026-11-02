@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # ── Element-edge tables (corner-node indices, 0-based) ────────────────────────
 # Each tuple (a, b) means: edge connects conn[a] and conn[b].
-# Order follows Abaqus standard node numbering.
+# Order follows DeckSolver standard node numbering.
 
 _EDGES_4 = [                                        # C3D4 tet
     (0, 1), (0, 2), (0, 3),
@@ -50,7 +50,7 @@ _ETYPE_CONFIG = {
     4:  (_EDGES_4, 4),
     6:  (_EDGES_6, 6),
     8:  (_EDGES_8, 8),
-    10: (_EDGES_4, 4),   # C3D10: use first 4 corner nodes (Abaqus ordering)
+    10: (_EDGES_4, 4),   # C3D10: use first 4 corner nodes (DeckSolver ordering)
     20: (_EDGES_8, 8),   # C3D20: use first 8 corner nodes
 }
 

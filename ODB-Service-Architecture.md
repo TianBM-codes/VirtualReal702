@@ -1,4 +1,4 @@
-# Abaqus ODB 后端查询与可视化服务
+# DeckSolver ODB 后端查询与可视化服务
 ## 架构设计说明
 
 **版本**：v5
@@ -31,7 +31,7 @@
    - [8.5 L3 内存管理策略](#85-l3-内存管理策略)
 9. [实现参考（开发者速查）](#9-实现参考开发者速查)
    - [9.1 ODB 数据模型](#91-odb-数据模型)
-   - [9.2 Abaqus Python API](#92-abaqus-python-apiabaqus_dumppy-实现参考)
+   - [9.2 DeckSolver Python API](#92-deck_solver-python-apideck_solver_dumppy-实现参考)
    - [9.3 单元类型参考表](#93-单元类型参考表)
    - [9.4 关键算法伪代码](#94-关键算法伪代码ingestpy)
    - [9.5 实现规范](#95-实现规范不能模糊的细节)
@@ -47,7 +47,7 @@
                                             │
                          ┌──────────────────┘
                          ▼ 后台 worker
-                   Layer 1：忠实转储（abaqus_dump.py，需 license）
+                   Layer 1：忠实转储（deck_solver_dump.py，需 license）
                    │  status: l1_running → l1_done
                    │
                    ├── /data/<odb_id>/l1/assembly.h5
@@ -74,11 +74,11 @@
 
 ### 1.1 各层职责详解
 
-#### Layer 1 — ODB 忠实转储（abaqus_dump.py）
+#### Layer 1 — ODB 忠实转储（deck_solver_dump.py）
 
 **目标**：完整、无损地将 ODB 二进制格式转换为 HDF5/SQLite，保留 ODB 原始语义与层次结构，不做任何加工。
 
-**运行时机**：一次性（需 Abaqus license，`abaqus python abaqus_dump.py`）
+**运行时机**：一次性（需 DeckSolver license，`deck_solver python deck_solver_dump.py`）
 
 **输入**：`.odb` 文件
 
@@ -99,7 +99,7 @@
 
 #### Layer 2 — 预处理（ingest.py）
 
-**目标**：基于 L1 数据生成前端渲染与交互所需的全部加工数据；不依赖 Abaqus license，可在普通服务器上运行。
+**目标**：基于 L1 数据生成前端渲染与交互所需的全部加工数据；不依赖 DeckSolver license，可在普通服务器上运行。
 
 **运行时机**：一次性批处理（L1 完成后执行，`python ingest.py`）
 
@@ -400,7 +400,7 @@ l1/
 
 ### 2.6.1 数据形状示例与 bulkDataBlocks 映射
 
-> 本节说明各 dataset 的维度从哪里来、Abaqus 原始数据怎么变成这个形状，及文件大小量级。
+> 本节说明各 dataset 的维度从哪里来、DeckSolver 原始数据怎么变成这个形状，及文件大小量级。
 
 #### L369/L370：NODAL `data` / `invariants`
 
@@ -424,10 +424,10 @@ invariants [30, 50000, 2]   float32  →  Mises, Max_Principal       = 12 MB
 **bulkDataBlocks → dataset 的映射逻辑**：
 
 ```python
-# Abaqus NODAL block.data 原始形状：(N, ncomp)
+# DeckSolver NODAL block.data 原始形状：(N, ncomp)
 # 不同帧 stack → 最终 [num_frames, N, ncomp]
 
-# abaqus_dump.py 写入策略（在内存中按帧积累，最后写 HDF5）：
+# deck_solver_dump.py 写入策略（在内存中按帧积累，最后写 HDF5）：
 nodal_frames = []   # 每帧 append 一个 [N, ncomp]
 for frame in step.frames:
     for block in frame.fieldOutputs['S'].bulkDataBlocks:
@@ -459,7 +459,7 @@ data      [30, 5000, 8, 6]   float32
 **bulkDataBlocks 原始形状**（关键）：
 
 ```
-Abaqus 原始：block.data.shape = (M × n_ip, ncomp)
+DeckSolver 原始：block.data.shape = (M × n_ip, ncomp)
              block.elementLabels.shape = (M × n_ip,)  ← 每 IP 重复一次 elem_label
              block.integrationPointLabels.shape = (M × n_ip,)
 
@@ -571,7 +571,7 @@ with h5py.File(result_path, 'w') as f:
 当前保留内存不足的失败处理：可选结果读取不吞掉 `MemoryError`，runner 校验
 `ODB_DUMP_COMPLETE`，防止 Windows 启动器返回码失真后继续打包。
 失败经项目/结果组既有状态和 `error_message` 字段返回前端，持久化数据格式和接口结构不变。
-详见 `docs/l1/abaqus_dump_guide.md` 的“大 ODB 内存不足的失败处理”。
+详见 `docs/l1/deck_solver_dump_guide.md` 的“大 ODB 内存不足的失败处理”。
 
 **参见**：Section 9.2 有完整的 bulkDataBlocks 遍历骨架；Section 9.5 有 HDF5 chunk shape 策略；Section 5.2 有读取侧的维度切片代码（`frame_idx, :, sp_idx, ip_idx, comp_idx`）。
 
@@ -788,22 +788,21 @@ CREATE TABLE element_sets (
   instance_name TEXT,
   h5_path       TEXT,
   element_count INTEGER,
-  is_internal   INTEGER NOT NULL DEFAULT 0,  -- 1 = Abaqus 自动生成的内部集合(_PickedSetNN)，0 = 用户命名集合
+  is_internal   INTEGER NOT NULL DEFAULT 0,  -- 1 = DeckSolver 自动生成的内部集合(_PickedSetNN)，0 = 用户命名集合
   PRIMARY KEY (set_name, instance_name)
 );
 -- is_internal 由 INP 导出链路写入：*Elset 带 internal 关键字（CAE 生成的
 -- _PickedSetNN，被 *Solid Section 引用）标记为 1，其余为 0。当前仅作信息存储，
--- list_element_sets 接口暂不按此过滤；ODB/BDF/ANSYS 链路写入时走默认值 0。
 --
 -- 【命名约定·大小写】set_name 在写 sets.h5 / manifest 时统一规范化为大写，与
--- instance 名的大写约定（见 manifest_schema.canon_instance）同源同理：Abaqus 生成
+-- instance 名的大写约定（见 manifest_schema.canon_instance）同源同理：DeckSolver 生成
 -- ODB 时已把所有 set 名烙成大写（不可逆），而 INP 保留用户原始大小写，两侧按字面
 -- 比较时同一模型的 set 名会对不上（典型：内部集 _PickedSet6 vs _PICKEDSET6）。
 --   · INP 侧：exporter._write_sets() 写库前显式 set_name.upper()。
---   · ODB 侧：set 名全部来自 Abaqus ODB 的 repository key（elementSets.items()、
---     内部集走 sectionAssignment.region.name），本就是大写；abaqus_dump 的 safe()
+--   · ODB 侧：set 名全部来自 DeckSolver ODB 的 repository key（elementSets.items()、
+--     内部集走 sectionAssignment.region.name），本就是大写；deck_solver_dump 的 safe()
 --     不改大小写，l1_pack 重建也不改 —— 故未加显式 .upper()。
--- 决定（2026-06-16）：ODB 侧维持现状（依赖 Abaqus 隐式大写，不加显式保险），仅作
+-- 决定（2026-06-16）：ODB 侧维持现状（依赖 DeckSolver 隐式大写，不加显式保险），仅作
 -- 此记录；若日后真出现 ODB 链路写入小写 set 名的情况，再在 l1_pack 的 4 个重建点
 -- 补 .upper()。只规范化展示用的名字，单元归属（整数 label）不受影响。
 
@@ -1096,7 +1095,7 @@ h5py IO：await run_in_threadpool(_read)  # 防事件循环阻塞
 
 ── 后台 worker（每个 ODB 串行执行 Step 1 → Step 2）────────────
 
-Step 1：abaqus_dump.py（需 Abaqus license，workspace = /data/<odb_id>/）
+Step 1：deck_solver_dump.py（需 DeckSolver license，workspace = /data/<odb_id>/）
   · registry.db status → l1_running
   · 遍历 Assembly → Instances
   · 写 l1/assembly.h5（变换矩阵）
@@ -1109,7 +1108,7 @@ Step 1：abaqus_dump.py（需 Abaqus license，workspace = /data/<odb_id>/）
   · registry.db status → l1_done
   · 通知 L3 加载该 ODB 的 L1 索引（可响应 /api/odb/{odb_id}/l1/* 端点）
 
-Step 2：ingest.py（纯 Python，不依赖 Abaqus license）
+Step 2：ingest.py（纯 Python，不依赖 DeckSolver license）
   · registry.db status → l2_running
   · 读 L1，计算全局坐标（局部坐标 × 变换矩阵）
   · 高阶单元线性化（取角节点，中间节点忽略）
@@ -1200,7 +1199,7 @@ CREATE TABLE odb_jobs (
 submitted
   │
   ▼ 后台 worker 取到作业
-l1_running  ──(abaqus_dump.py 失败)──→  error
+l1_running  ──(deck_solver_dump.py 失败)──→  error
   │
   ▼ L1 完成，manifest.db 基础表写好
 l1_done    ──可响应 L1 raw 查询，但无渲染──
@@ -1214,7 +1213,7 @@ ready      ──基础解析、高级索引和约定首屏缓存已准备成功
 
 **说明**：
 - L1 和 L2 串行执行（同一 ODB 顺序排队）
-- 多个 ODB 可并行：L1 受 Abaqus license 数量限制（通常 1 个并行）；L2 纯 Python 可多并行
+- 多个 ODB 可并行：L1 受 DeckSolver license 数量限制（通常 1 个并行）；L2 纯 Python 可多并行
 - `l1_done` 状态下 `/api/odb/{odb_id}/l1/*` 端点可用，渲染相关端点返回 `202 Accepted`（含 `Retry-After` 响应头）
 
 **Job-Runner 部署约定（关键）**：job-runner **必须作为独立进程部署**，与 Web 服务（gunicorn）完全分离。不得在 FastAPI `startup` 事件或 worker 进程内启动 job 线程——gunicorn 4 workers 会导致 4 个进程各自争抢同一 ODB 作业，造成重复处理和 SQLite 写冲突。
@@ -1368,13 +1367,13 @@ class OdbRegistry:
 
 ## 9. 实现参考（开发者速查）
 
-> 本章面向不熟悉有限元/Abaqus 的开发者，补充所有"不看这章就会卡死"的领域知识、API 用法和实现规范。
+> 本章面向不熟悉有限元/DeckSolver 的开发者，补充所有"不看这章就会卡死"的领域知识、API 用法和实现规范。
 
 ---
 
 ### 9.1 ODB 数据模型
 
-ODB（Output Database）是 Abaqus 仿真软件的专有二进制结果文件。
+ODB（Output Database）是 DeckSolver 仿真软件的专有二进制结果文件。
 
 **层次结构**：
 
@@ -1427,12 +1426,12 @@ ODB 文件
 
 ---
 
-### 9.2 Abaqus Python API（abaqus_dump.py 实现参考）
+### 9.2 DeckSolver Python API（deck_solver_dump.py 实现参考）
 
-`abaqus_dump.py` 必须在 Abaqus 自带的受限 Python 环境中运行，不能用系统 Python：
+`deck_solver_dump.py` 必须在 DeckSolver 自带的受限 Python 环境中运行，不能用系统 Python：
 
 ```bash
-abaqus python abaqus_dump.py --odb /path/to/model.odb --out /data/<odb_id>/
+deck_solver python deck_solver_dump.py --odb /path/to/model.odb --out /data/<odb_id>/
 ```
 
 **核心遍历骨架**：
@@ -1456,7 +1455,7 @@ for inst_name, instance in assembly.instances.items():
     elem_by_type = {}
     for elem in instance.elements:
         t = elem.type                           # 字符串：'S4R', 'C3D8R', 'C3D20', ...
-        conn = list(elem.connectivity)          # 节点 label 列表（Abaqus 原始顺序）
+        conn = list(elem.connectivity)          # 节点 label 列表（DeckSolver 原始顺序）
         elem_by_type.setdefault(t, {'labels': [], 'conn': []})
         elem_by_type[t]['labels'].append(elem.label)
         elem_by_type[t]['conn'].append(conn)
@@ -1504,9 +1503,9 @@ for step_name, step in odb.steps.items():
 odb.close()
 ```
 
-**`procedureType` 字符串映射**（Abaqus 原始值 → manifest.db `procedure` 字段）：
+**`procedureType` 字符串映射**（DeckSolver 原始值 → manifest.db `procedure` 字段）：
 
-| Abaqus `step.procedureType` | manifest `procedure` |
+| DeckSolver `step.procedureType` | manifest `procedure` |
 |----------------------------|---------------------|
 | `'STATIC_GENERAL'`, `'STATIC_RIKS'` | `'STATIC'` |
 | `'FREQUENCY'` | `'FREQUENCY'` |
@@ -1517,7 +1516,7 @@ odb.close()
 **注意事项**：
 - 同一帧的同一 `(inst, position, elem_type)` 可能出现多个 bulkDataBlock（边界情况）→ 合并时按 label 排序去重再 stack
 - `block.instance` 有时为 `None`（装配体级结果），此时跳过或归入 `__assembly__`
-- Abaqus 的 `validInvariants` 是枚举对象，用 `str()` 转字符串：`'MISES'`/`'MAX_PRINCIPAL'` 等
+- DeckSolver 的 `validInvariants` 是枚举对象，用 `str()` 转字符串：`'MISES'`/`'MAX_PRINCIPAL'` 等
 
 ---
 
@@ -1538,7 +1537,7 @@ odb.close()
 | `C3D15`, `C3D15H` | 15节点三棱柱（高阶）| 6 | 15 | 5 | ✓ | **6** |
 | `C3D20`, `C3D20R`, `C3D20H` | 20节点六面体（高阶）| 8 | 20 | 6 | ✓ | **7** |
 
-**编码字典**（abaqus_dump.py 与 ingest.py 共用同一份）：
+**编码字典**（deck_solver_dump.py 与 ingest.py 共用同一份）：
 
 ```python
 ELEM_TYPE_CODE = {
@@ -1555,7 +1554,7 @@ ELEM_N_CORNER = {0: 3, 1: 4, 2: 4, 3: 6, 4: 8, 5: 4, 6: 6, 7: 8}  # code → 角
 HIGH_ORDER_CODES = {5, 6, 7}   # 需写 _highorder.h5 的 code 集合
 ```
 
-**六面体 C3D8R 面定义**（Abaqus 标准，索引 0-based 对应 `connectivity` 顺序）：
+**六面体 C3D8R 面定义**（DeckSolver 标准，索引 0-based 对应 `connectivity` 顺序）：
 
 ```
 节点编号（0-based，角节点）：
@@ -1714,7 +1713,7 @@ def get_instance_transform(instance) -> np.ndarray:
     if csys is None:
         return np.eye(4, dtype=np.float64)   # 未移动的 Instance
 
-    # ⚠️ 下列属性名需在真实 ODB 上验证（Abaqus 版本差异）
+    # ⚠️ 下列属性名需在真实 ODB 上验证（DeckSolver 版本差异）
     origin = np.array(csys.origin,  dtype=np.float64)   # 平移向量 [3]
     x_axis = np.array(csys.xAxis,   dtype=np.float64)   # 旋转矩阵第一列
     y_axis = np.array(csys.yAxis,   dtype=np.float64)
@@ -1820,7 +1819,7 @@ while True:
     if odb_id:
         ws = f"/data/{odb_id}"
         # L1
-        ret = subprocess.run(["abaqus", "python", "abaqus_dump.py",
+        ret = subprocess.run(["deck_solver", "python", "deck_solver_dump.py",
                               "--odb", get_odb_path(odb_id), "--out", ws])
         status = 'l1_done' if ret.returncode == 0 else 'error'
         update_status(odb_id, status)
@@ -1842,7 +1841,7 @@ while True:
 **PoC 脚本**（需要含壳单元且有截面点应力输出的 ODB，约 5 分钟）：
 
 ```python
-# abaqus python poc_shell_nodal.py
+# deck_solver python poc_shell_nodal.py
 import odbAccess
 
 odb  = odbAccess.openOdb('test_shell.odb', readOnly=True)
@@ -1874,10 +1873,10 @@ odb.close()
 
 #### Blocker B：Instance 变换矩阵 API（中优先级）
 
-在真实 ODB 上打印 `instance.localCsys` 的类型和属性，确认 9.5 节代码中 `origin`/`xAxis`/`yAxis`/`zAxis` 属性名在当前 Abaqus 版本是否正确。
+在真实 ODB 上打印 `instance.localCsys` 的类型和属性，确认 9.5 节代码中 `origin`/`xAxis`/`yAxis`/`zAxis` 属性名在当前 DeckSolver 版本是否正确。
 
 ```python
-# abaqus python poc_transform.py
+# deck_solver python poc_transform.py
 import odbAccess
 odb = odbAccess.openOdb('test.odb', readOnly=True)
 for name, inst in odb.rootAssembly.instances.items():

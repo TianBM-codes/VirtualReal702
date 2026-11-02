@@ -17,10 +17,10 @@
 ## 1. 已知坑一：混合模型缺面内/面外不变量（L1）
 
 - **现象**：实体+壳混合模型，应力/应变只出 Max/Min/Mid Principal 和 Abs，**缺 in-plane / out-of-plane**。纯壳模型正常。
-- **根因**：Abaqus `first_field.validInvariants` 对混合场返回各单元类型的**交集**。
+- **根因**：DeckSolver `first_field.validInvariants` 对混合场返回各单元类型的**交集**。
   实体没有面内/面外主应力，交集 = 实体 ∩ 壳，面内三项被实体拖没 → 进不了
   `active_invs` → 不生成。
-- **修复**：`src/l1/abaqus_dump.py` 取到 `invariants` 后，用
+- **修复**：`src/l1/deck_solver_dump.py` 取到 `invariants` 后，用
   `getScalarField(MAX_INPLANE_PRINCIPAL)` 探测有没有壳/膜块，有就把
   `MAX_INPLANE_PRINCIPAL / MIN_INPLANE_PRINCIPAL / OUTOFPLANE_PRINCIPAL` 补回。
   下游对实体块按 `_SHELL_ONLY_INVS` 置 NaN（前端置灰），与纯壳模型一致。
@@ -92,7 +92,7 @@
 
 ---
 
-相关代码：`src/l1/abaqus_dump.py`（validInvariants 探测补回、`_SHELL_ONLY_INVS`、
+相关代码：`src/l1/deck_solver_dump.py`（validInvariants 探测补回、`_SHELL_ONLY_INVS`、
 `_NUMPY_ONLY_INVS`）、`src/l3/services/result_service.py`（`_scalar_elem_pos_by_idx`、
 `_extract_component`）。相关文档：`docs/l1/不变量计算公式表.md`、
 `docs/Special-Element-Handling.md`。

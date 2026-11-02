@@ -5,8 +5,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import uuid4
 
-from pyNastran.converters.format_converter import process_ugrid
-
 from config import APP_CONFIG, DB_CONFIG, DB_DIALECT, DB_INIT_ON_STARTUP
 from db import initialize_database_runtime
 from fastapi import Request

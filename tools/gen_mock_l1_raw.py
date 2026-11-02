@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gen_mock_l1_raw.py — 生成与 abaqus_dump.py 输出完全一致的 mock l1_raw 目录。
+gen_mock_l1_raw.py — 生成与 deck_solver_dump.py 输出完全一致的 mock l1_raw 目录。
 
-用途：在没有 Abaqus license / ODB 文件的情况下测试 l1_pack.py → L2 → L3 全流程。
+用途：在没有 DeckSolver license / ODB 文件的情况下测试 l1_pack.py → L2 → L3 全流程。
 
 生成规格：
   - 11 个 Instance（PART-1-1 ~ PART-11-11），每个是 10×10 节点网格
@@ -22,7 +22,7 @@ import os
 
 import numpy as np
 
-# ─── Constants (mirrors abaqus_dump.py) ───────────────────────────────────────
+# ─── Constants (mirrors deck_solver_dump.py) ───────────────────────────────────────
 
 # S4R: code=1, 4 corner nodes, 1 face [0,1,2,3]
 S4R_CODE     = 1

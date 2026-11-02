@@ -66,7 +66,7 @@ class Config:
         R = self._req
 
         # paths
-        self.ABAQUS_CMD     = str(R(d, "paths", "abaqus_cmd"))
+        self.DECK_SOLVER_CMD     = str(R(d, "paths", "deck_solver_cmd"))
         self.WORK_DIR       = str(R(d, "paths", "work_dir"))
         self.JOB_NAME       = str(R(d, "paths", "job_name"))
         self.INP_FILE       = str(R(d, "paths", "inp_file"))
@@ -288,7 +288,7 @@ def update_parameters_in_parameter_inp(parameter_inp_path, param_names, param_va
 
 
 # =============================================================================
-# Abaqus 提交 / 后处理调用
+# DeckSolver 提交 / 后处理调用
 # =============================================================================
 def clean_job_files(cfg):
     work_dir = os.path.abspath(cfg.WORK_DIR)
@@ -304,7 +304,7 @@ def clean_job_files(cfg):
                 pass
 
 
-def run_abaqus_job(cfg):
+def run_deck_solver_job(cfg):
     job_name = cfg.JOB_NAME
     work_dir = os.path.abspath(cfg.WORK_DIR)
     inp_path = os.path.join(work_dir, cfg.INP_FILE)
@@ -317,7 +317,7 @@ def run_abaqus_job(cfg):
     clean_job_files(cfg)
 
     cmd = 'cmd /c ""%s" job=%s input=%s interactive"' % (
-        cfg.ABAQUS_CMD, job_name, cfg.INP_FILE,
+        cfg.DECK_SOLVER_CMD, job_name, cfg.INP_FILE,
     )
 
     print("=" * 72)
@@ -348,7 +348,7 @@ def run_abaqus_job(cfg):
 
     if result.returncode != 0:
         raise RuntimeError(
-            "Abaqus submission failed (rc=%d). See %s" %
+            "DeckSolver submission failed (rc=%d). See %s" %
             (result.returncode, submit_log)
         )
 
@@ -367,7 +367,7 @@ def run_abaqus_job(cfg):
 
     if not appeared:
         raise RuntimeError(
-            "Abaqus launcher returned rc=0, but no job files were created. "
+            "DeckSolver launcher returned rc=0, but no job files were created. "
             "Check %s" % submit_log
         )
 
@@ -378,7 +378,7 @@ def run_abaqus_job(cfg):
         if ("COMPLETED" not in sta_txt
                 and "THE ANALYSIS HAS COMPLETED SUCCESSFULLY" not in sta_txt):
             raise RuntimeError(
-                "Abaqus created STA but did not complete successfully. "
+                "DeckSolver created STA but did not complete successfully. "
                 "Check %s, %s, %s, %s" %
                 (sta_file, msg_file, dat_file, submit_log)
             )
@@ -389,7 +389,7 @@ def run_abaqus_job(cfg):
                 created.append(fn)
         created.sort()
         raise RuntimeError(
-            "Abaqus launcher returned rc=0, but no STA file was created.\n"
+            "DeckSolver launcher returned rc=0, but no STA file was created.\n"
             "Created files: %s\n"
             "Check %s" % (created, submit_log)
         )
@@ -406,7 +406,7 @@ def run_extract_odb(cfg):
         raise RuntimeError("ODB file not found: %s" % odb_path)
 
     cmd = 'cmd /c ""%s" python "%s" "%s" "%s" "%s" "%s""' % (
-        cfg.ABAQUS_CMD,
+        cfg.DECK_SOLVER_CMD,
         cfg.EXTRACT_SCRIPT,
         cfg.ODB_FILE,
         cfg.RESP_CSV,
@@ -724,7 +724,7 @@ def apply_bounds_and_limit(p_old, p_new, cfg):
 # 提交 + 提取 打包
 # =============================================================================
 def run_and_extract(cfg):
-    run_abaqus_job(cfg)
+    run_deck_solver_job(cfg)
     run_extract_odb(cfg)
 
     resp_csv = os.path.join(os.path.abspath(cfg.WORK_DIR), cfg.RESP_CSV)

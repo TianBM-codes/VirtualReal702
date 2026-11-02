@@ -98,8 +98,10 @@ def test_read_bdf_safe_renumbers_duplicate_property_ids_by_type(tmp_path):
 
 
 def test_read_bdf_safe_renumbers_duplicate_property_ids_after_ascii_retry(tmp_path, monkeypatch):
-    from pyNastran.bdf.bdf import BDF
-    from pyNastran.bdf.errors import DuplicateIDsError
+    from src.utils.external_runtime import load_bulk_module as _load_bulk_module
+    BDF = _load_bulk_module('bdf.bdf').BDF
+    from src.utils.external_runtime import load_bulk_module as _load_bulk_module
+    DuplicateIDsError = _load_bulk_module('bdf.errors').DuplicateIDsError
 
     bdf_path = tmp_path / "duplicate_properties_utf8.bdf"
     bdf_path.write_text(

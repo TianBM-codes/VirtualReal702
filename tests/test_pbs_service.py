@@ -118,8 +118,8 @@ def test_run_pbs_solver_job_merges_project_pbs_settings(monkeypatch, tmp_path):
         "_load_project_pbs_settings",
         lambda project_id: {
             "env": "prod",
-            "ApplicationId": "Abaqus",
-            "ApplicationName": "Abaqus",
+            "ApplicationId": "DeckSolver",
+            "ApplicationName": "DeckSolver",
             "VERSION": "2022",
             "CORES": 48,
             "HOSTS": 1,
@@ -150,7 +150,7 @@ def test_run_pbs_solver_job_merges_project_pbs_settings(monkeypatch, tmp_path):
                 "download_file": "/api/files/download",
             },
             applications={
-                "Abaqus": {
+                "DeckSolver": {
                     "cores": 8,
                     "hosts": 1,
                     "precision": "both",
@@ -164,16 +164,16 @@ def test_run_pbs_solver_job_merges_project_pbs_settings(monkeypatch, tmp_path):
 
     result = pbs_service.run_pbs_solver_job(
         project_id=32,
-        application="Abaqus",
+        application="DeckSolver",
         input_file=str(input_file),
         timeout_sec=30,
         wait=False,
     )
 
-    app_config = captured["config"].applications["Abaqus"]
+    app_config = captured["config"].applications["DeckSolver"]
     assert captured["config"].name == "prod"
-    assert app_config["application_id"] == "Abaqus"
-    assert app_config["application_name"] == "Abaqus"
+    assert app_config["application_id"] == "DeckSolver"
+    assert app_config["application_name"] == "DeckSolver"
     assert app_config["platform"] == "MultiCore-48c-394G|Free:528|Total:672"
     assert app_config["version"] == "2022"
     assert app_config["cores"] == 48
@@ -194,8 +194,8 @@ def test_run_pbs_solver_job_sanitizes_default_job_name_for_non_ascii_file(monkey
 
         def get_application_config(self, application):
             return {
-                "application_id": "Abaqus",
-                "application_name": "Abaqus",
+                "application_id": "DeckSolver",
+                "application_name": "DeckSolver",
                 "version": "2022",
                 "platform": "queue-a",
                 "primary_file_exts": [".inp"],
@@ -211,8 +211,8 @@ def test_run_pbs_solver_job_sanitizes_default_job_name_for_non_ascii_file(monkey
         "_load_project_pbs_settings",
         lambda project_id: {
             "env": "prod",
-            "ApplicationId": "Abaqus",
-            "ApplicationName": "Abaqus",
+            "ApplicationId": "DeckSolver",
+            "ApplicationName": "DeckSolver",
             "VERSION": "2022",
             "CORES": 48,
             "HOSTS": 1,
@@ -243,7 +243,7 @@ def test_run_pbs_solver_job_sanitizes_default_job_name_for_non_ascii_file(monkey
                 "download_file": "/api/files/download",
             },
             applications={
-                "Abaqus": {
+                "DeckSolver": {
                     "cores": 8,
                     "hosts": 1,
                     "precision": "off",
@@ -257,7 +257,7 @@ def test_run_pbs_solver_job_sanitizes_default_job_name_for_non_ascii_file(monkey
 
     result = pbs_service.run_pbs_solver_job(
         project_id=32,
-        application="Abaqus",
+        application="DeckSolver",
         input_file=str(input_file),
         wait=False,
     )
@@ -331,7 +331,7 @@ def test_run_pbs_solver_job_requires_project_pbs_config(monkeypatch, tmp_path):
     with pytest.raises(Exception) as exc_info:
         pbs_service.run_pbs_solver_job(
             project_id=32,
-            application="Abaqus",
+            application="DeckSolver",
             input_file=str(input_file),
             wait=False,
         )
@@ -348,7 +348,7 @@ def test_run_pbs_solver_job_requires_project_application_fields(monkeypatch, tmp
         "_load_project_pbs_settings",
         lambda project_id: {
             "env": "prod",
-            "ApplicationId": "Abaqus",
+            "ApplicationId": "DeckSolver",
         },
     )
     monkeypatch.setattr(
@@ -374,7 +374,7 @@ def test_run_pbs_solver_job_requires_project_application_fields(monkeypatch, tmp
                 "download_file": "/api/files/download",
             },
             applications={
-                "Abaqus": {
+                "DeckSolver": {
                     "cores": 8,
                     "hosts": 1,
                     "precision": "off",
@@ -388,7 +388,7 @@ def test_run_pbs_solver_job_requires_project_application_fields(monkeypatch, tmp
     with pytest.raises(Exception) as exc_info:
         pbs_service.run_pbs_solver_job(
             project_id=32,
-            application="Abaqus",
+            application="DeckSolver",
             input_file=str(input_file),
             wait=False,
         )
@@ -397,7 +397,7 @@ def test_run_pbs_solver_job_requires_project_application_fields(monkeypatch, tmp
     assert "project_config.pbs" in str(exc_info.value)
 
 
-def test_build_submit_payload_for_nastran_does_not_include_memory():
+def test_build_submit_payload_for_bulk_solver_does_not_include_memory():
     client = pbs_service.PBSClient(
         pbs_service.PBSEnvironmentConfig(
             name="dev",
@@ -419,9 +419,9 @@ def test_build_submit_payload_for_nastran_does_not_include_memory():
                 "download_file": "/api/files/download",
             },
             applications={
-                "Nastran": {
-                    "application_id": "Nastran",
-                    "application_name": "Nastran",
+                "BulkSolver": {
+                    "application_id": "BulkSolver",
+                    "application_name": "BulkSolver",
                     "version": "2019",
                     "platform": "queue-a",
                     "cores": 8,
@@ -433,7 +433,7 @@ def test_build_submit_payload_for_nastran_does_not_include_memory():
     )
 
     payload = client.build_submit_payload(
-        application="Nastran",
+        application="BulkSolver",
         job_name="demo",
         remote_primary_file="/stage/demo.bdf",
         remote_job_dir="/stage/job/demo",
@@ -443,7 +443,7 @@ def test_build_submit_payload_for_nastran_does_not_include_memory():
     assert "MEMORY" not in payload
 
 
-def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch, tmp_path):
+def test_run_pbs_solver_job_uses_local_result_group_parse_for_deck_solver(monkeypatch, tmp_path):
     input_file = tmp_path / "model.inp"
     input_file.write_text("*Heading\n", encoding="utf-8")
     odb_file = tmp_path / "job_a.odb"
@@ -458,8 +458,8 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
 
         def get_application_config(self, application):
             return {
-                "application_id": "Abaqus",
-                "application_name": "Abaqus",
+                "application_id": "DeckSolver",
+                "application_name": "DeckSolver",
                 "version": "2022",
                 "platform": "queue-a",
                 "primary_file_exts": [".inp"],
@@ -479,8 +479,8 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
         "_load_project_pbs_settings",
         lambda project_id: {
             "env": "prod",
-            "ApplicationId": "Abaqus",
-            "ApplicationName": "Abaqus",
+            "ApplicationId": "DeckSolver",
+            "ApplicationName": "DeckSolver",
             "VERSION": "2022",
             "CORES": 48,
             "HOSTS": 1,
@@ -511,9 +511,9 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
                 "download_file": "/api/files/download",
             },
             applications={
-                "Abaqus": {
-                    "application_id": "Abaqus",
-                    "application_name": "Abaqus",
+                "DeckSolver": {
+                    "application_id": "DeckSolver",
+                    "application_name": "DeckSolver",
                     "version": "2022",
                     "platform": "queue-a",
                     "cores": 8,
@@ -543,7 +543,7 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
 
     result = pbs_service.run_pbs_solver_job(
         project_id=32,
-        application="Abaqus",
+        application="DeckSolver",
         input_file=str(input_file),
         job_name="job_a",
         wait=True,
@@ -559,7 +559,7 @@ def test_run_pbs_solver_job_uses_local_result_group_parse_for_abaqus(monkeypatch
     assert captured["status_updates"][-1] == (32, {"simulation_result_status": 1})
 
 
-def test_run_pbs_solver_job_uses_modal_import_parse_for_nastran(monkeypatch, tmp_path):
+def test_run_pbs_solver_job_uses_modal_import_parse_for_bulk_solver(monkeypatch, tmp_path):
     input_file = tmp_path / "model.bdf"
     input_file.write_text("BEGIN BULK\n", encoding="utf-8")
     op2_file = tmp_path / "job_n.op2"
@@ -574,8 +574,8 @@ def test_run_pbs_solver_job_uses_modal_import_parse_for_nastran(monkeypatch, tmp
 
         def get_application_config(self, application):
             return {
-                "application_id": "Nastran",
-                "application_name": "Nastran",
+                "application_id": "BulkSolver",
+                "application_name": "BulkSolver",
                 "version": "2019",
                 "platform": "queue-n",
                 "primary_file_exts": [".bdf"],
@@ -595,8 +595,8 @@ def test_run_pbs_solver_job_uses_modal_import_parse_for_nastran(monkeypatch, tmp
         "_load_project_pbs_settings",
         lambda project_id: {
             "env": "prod",
-            "ApplicationId": "Nastran",
-            "ApplicationName": "Nastran",
+            "ApplicationId": "BulkSolver",
+            "ApplicationName": "BulkSolver",
             "VERSION": "2019",
             "CORES": 8,
             "PLATFORM": "queue-n",
@@ -625,9 +625,9 @@ def test_run_pbs_solver_job_uses_modal_import_parse_for_nastran(monkeypatch, tmp
                 "download_file": "/api/files/download",
             },
             applications={
-                "Nastran": {
-                    "application_id": "Nastran",
-                    "application_name": "Nastran",
+                "BulkSolver": {
+                    "application_id": "BulkSolver",
+                    "application_name": "BulkSolver",
                     "version": "2019",
                     "platform": "queue-n",
                     "cores": 8,
@@ -650,7 +650,7 @@ def test_run_pbs_solver_job_uses_modal_import_parse_for_nastran(monkeypatch, tmp
 
     result = pbs_service.run_pbs_solver_job(
         project_id=32,
-        application="Nastran",
+        application="BulkSolver",
         input_file=str(input_file),
         job_name="job_n",
         wait=True,
@@ -667,7 +667,7 @@ def test_run_pbs_solver_job_uses_modal_import_parse_for_nastran(monkeypatch, tmp
     }
 
 
-def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_abaqus_failure(monkeypatch, tmp_path):
+def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_deck_solver_failure(monkeypatch, tmp_path):
     input_file = tmp_path / "model.inp"
     input_file.write_text("*Heading\n", encoding="utf-8")
     odb_file = tmp_path / "job_a.odb"
@@ -680,8 +680,8 @@ def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_abaqus_failure
         "_load_project_pbs_settings",
         lambda project_id: {
             "env": "prod",
-            "ApplicationId": "Abaqus",
-            "ApplicationName": "Abaqus",
+            "ApplicationId": "DeckSolver",
+            "ApplicationName": "DeckSolver",
             "VERSION": "2022",
             "CORES": 48,
             "HOSTS": 1,
@@ -712,9 +712,9 @@ def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_abaqus_failure
                 "download_file": "/api/files/download",
             },
             applications={
-                "Abaqus": {
-                    "application_id": "Abaqus",
-                    "application_name": "Abaqus",
+                "DeckSolver": {
+                    "application_id": "DeckSolver",
+                    "application_name": "DeckSolver",
                     "version": "2022",
                     "platform": "queue-a",
                     "cores": 8,
@@ -733,8 +733,8 @@ def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_abaqus_failure
 
         def get_application_config(self, application):
             return {
-                "application_id": "Abaqus",
-                "application_name": "Abaqus",
+                "application_id": "DeckSolver",
+                "application_name": "DeckSolver",
                 "version": "2022",
                 "platform": "queue-a",
                 "primary_file_exts": [".inp"],
@@ -763,7 +763,7 @@ def test_run_pbs_solver_job_sets_simulation_result_status_to_2_on_abaqus_failure
     with pytest.raises(RuntimeError):
         pbs_service.run_pbs_solver_job(
             project_id=32,
-            application="Abaqus",
+            application="DeckSolver",
             input_file=str(input_file),
             job_name="job_a",
             wait=True,

@@ -4,7 +4,7 @@
 
 ## 一、总体架构
 
-整个修正框架由三个层次构成，Nastran 负责求解，Python 负责组装与优化：
+整个修正框架由三个层次构成，BulkSolver 负责求解，Python 负责组装与优化：
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -21,7 +21,7 @@
 └──────────┼──────────────────────────────────────────────────────┘
            ▼
   ┌─────────────────────────┐
-  │      Nastran 求解层      │
+  │      BulkSolver 求解层      │
   │                         │
   │  SOL103 → Φ_sim, f_sim  │  （验证迭代点）
   │  SOL200 → ∂Φ/∂p, ∂f/∂p │  （计算灵敏度）
@@ -180,10 +180,10 @@ $$\boxed{\frac{\partial J}{\partial p_k} = -\alpha \sum_{n=1}^{N_m} \mathbf{g}_{
 - 关注前 3 阶模态
 - 传感器节点编号：101, 102, 103, 104, 105（均为 Z 方向）
 
-```nastran
+```bulk_solver
 $-----------------------------------------------------------------------
 $  SOL200 Modal Sensitivity Extraction for MAC-Based Model Updating
-$  用途：提取振型灵敏度和频率灵敏度，不在 Nastran 内做优化
+$  用途：提取振型灵敏度和频率灵敏度，不在 BulkSolver 内做优化
 $-----------------------------------------------------------------------
 SOL 200
 TIME 3600
@@ -203,7 +203,7 @@ $--- 灵敏度矩阵输出到 .pch 文件 ---
 DSAPRT(END, FORMATTED, EXPORT)
 
 $--- 优化参数：DESMAX=0 表示仅计算初始点灵敏度，不迭代 ---
-$   （注：部分 Nastran 版本需 DESMAX=1 才触发灵敏度计算，可先试 0）
+$   （注：部分 BulkSolver 版本需 DESMAX=1 才触发灵敏度计算，可先试 0）
 
 $--- 子工况：法模分析 ---
 SUBCASE 10
@@ -354,7 +354,7 @@ $
 ```python
 import numpy as np
 import re
-from pyNastran.op2.op2 import OP2
+from bulk_provider.op2.op2 import OP2
 
 # ============================================================
 # 模块 1：读取 SOL103/SOL200 的 OP2 文件，提取振型和频率
@@ -386,7 +386,7 @@ def read_modes_from_op2(op2_path: str, sensor_nodes: list, dof: int = 3):
     n_sensors = len(sensor_nodes)
     phi_sim = np.zeros((n_sensors, n_modes))
     
-    dof_map = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}  # Nastran DOF → 索引
+    dof_map = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}  # BulkSolver DOF → 索引
     dof_idx = dof_map[dof]
     
     for mode_idx in range(n_modes):
@@ -642,14 +642,14 @@ def update_bdf_parameters(bdf_template_path: str,
         f.write(content)
 
 
-def run_nastran(bdf_path: str, nastran_exe: str = 'nastran'):
-    """提交 Nastran 作业并等待完成。"""
+def run_bulk_solver(bdf_path: str, bulk_solver_exe: str = 'bulk_solver'):
+    """提交 BulkSolver 作业并等待完成。"""
     result = subprocess.run(
-        [nastran_exe, bdf_path, 'scr=yes', 'delete=f06,log'],
+        [bulk_solver_exe, bdf_path, 'scr=yes', 'delete=f06,log'],
         capture_output=True, text=True, timeout=3600
     )
     if result.returncode != 0:
-        raise RuntimeError(f'Nastran failed:\n{result.stderr}')
+        raise RuntimeError(f'BulkSolver failed:\n{result.stderr}')
 
 
 # ============================================================
@@ -669,7 +669,7 @@ def mac_model_updating(
     alpha:          float = 1.0,
     beta:           float = 0.1,
     max_iter:       int  = 50,
-    nastran_exe:    str  = 'nastran',
+    bulk_solver_exe:    str  = 'bulk_solver',
     workdir:        str  = './sol200_work'
 ):
     import os
@@ -680,7 +680,7 @@ def mac_model_updating(
     iteration = [0]
     history = {'J': [], 'params': [], 'mac_diag': []}
     
-    def nastran_solve_and_sensitivity(p):
+    def bulk_solver_solve_and_sensitivity(p):
         """
         给定参数 p，运行 SOL200，返回振型、频率及其灵敏度。
         """
@@ -692,7 +692,7 @@ def mac_model_updating(
         update_bdf_parameters(bdf_template, bdf_path, p, desvar_ids)
         
         # 2. 运行 SOL200（DESMAX=0 仅计算灵敏度）
-        run_nastran(bdf_path, nastran_exe)
+        run_bulk_solver(bdf_path, bulk_solver_exe)
         
         # 3. 读取振型和频率
         phi_sim, freqs_sim = read_modes_from_op2(op2_path, sensor_nodes, dof)
@@ -718,7 +718,7 @@ def mac_model_updating(
         nonlocal params
         params = p
         
-        phi_sim, freqs_sim, dPhi_dp, dfreq_dp = nastran_solve_and_sensitivity(p)
+        phi_sim, freqs_sim, dPhi_dp, dfreq_dp = bulk_solver_solve_and_sensitivity(p)
         
         # 确定匹配对（MAC 最大值匹配）
         mac_raw = compute_mac_matrix(phi_exp, phi_sim)
@@ -772,7 +772,7 @@ def mac_model_updating(
 
 ```python
 def verify_mac_sensitivity(phi_exp, phi_sim, dPhi_dp, pairs, 
-                            bdf_path, nastran_exe, sensor_nodes, dof,
+                            bdf_path, bulk_solver_exe, sensor_nodes, dof,
                             param_idx=0, h=1e-4):
     """
     对第 param_idx 个设计变量，用有限差分验证 MAC 灵敏度。
@@ -815,7 +815,7 @@ def verify_mac_sensitivity(phi_exp, phi_sim, dPhi_dp, pairs,
 
 ### 6.1 DRESP1 数量的控制
 
-传感器数 × 阶数 = DRESP1 数目。例如 30 个传感器 × 5 阶 = 150 个 DRESP1。Nastran SOL200 对大量 DRESP1 的处理效率仍然可接受，但建议：
+传感器数 × 阶数 = DRESP1 数目。例如 30 个传感器 × 5 阶 = 150 个 DRESP1。BulkSolver SOL200 对大量 DRESP1 的处理效率仍然可接受，但建议：
 
 - 只定义**实际参与修正的阶次**的振型分量响应
 - 若传感器为多方向（X、Y、Z），则三个方向分别定义 DRESP1
@@ -849,7 +849,7 @@ SOL200 输出的振型为**质量归一化振型**（$\boldsymbol{\phi}^T \mathb
 
 ```python
 p_normalized = (p - lb) / (ub - lb)  # 优化器使用归一化变量
-p_physical   = lb + p_normalized * (ub - lb)  # 传入 Nastran 的物理量
+p_physical   = lb + p_normalized * (ub - lb)  # 传入 BulkSolver 的物理量
 ```
 
 ### 6.5 建议的参数初值策略

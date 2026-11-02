@@ -1,7 +1,7 @@
 """
 INP → L1 HDF5 工具
 
-将 INP 文件导出为与 abaqus_dump.py + l1_pack.py 相同的 L1 目录布局，
+将 INP 文件导出为与 deck_solver_dump.py + l1_pack.py 相同的 L1 目录布局，
 之后可直接运行 L2 ingest.py 处理。
 
 用法:

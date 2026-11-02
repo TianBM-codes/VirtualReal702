@@ -10,7 +10,7 @@ run_l1.py — 一键运行 L1 Phase 1 + Phase 2
     --out    输出 workspace 目录（会自动创建）
     --keep-raw  不删除 l1_raw/ 临时目录（默认删除）
     --python3   Phase 2 使用的 Python 解释器路径（默认：当前解释器）
-    --abaqus    abaqus 可执行文件名或完整路径（默认：abaqus）
+    --deck_solver    deck_solver 可执行文件名或完整路径（默认：deck_solver）
 
 Windows 示例：
     python tools/run_l1.py --odb "E:\\models\\model.odb" --out "E:\\ws\\model"
@@ -54,8 +54,8 @@ def parse_args():
                    help="保留 l1_raw/ 临时目录（默认删除）")
     p.add_argument("--python3",  default=sys.executable,
                    help="Phase 2 使用的 Python 解释器（默认：当前 Python）")
-    p.add_argument("--abaqus",   default="abaqus",
-                   help="abaqus 可执行文件名或路径（默认：abaqus）")
+    p.add_argument("--deck_solver",   default="deck_solver",
+                   help="deck_solver 可执行文件名或路径（默认：deck_solver）")
     return p.parse_args()
 
 
@@ -92,16 +92,16 @@ def main():
     if not os.path.exists(odb):
         fail(f"ODB 文件不存在: {odb}")
 
-    phase1_script = os.path.join(repo, "src", "l1", "abaqus_dump.py")
+    phase1_script = os.path.join(repo, "src", "l1", "deck_solver_dump.py")
     phase2_script = os.path.join(repo, "src", "l1", "l1_pack.py")
 
     for f in [phase1_script, phase2_script]:
         if not os.path.exists(f):
             fail(f"脚本不存在: {f}")
 
-    # ── Phase 1: ODB → npy (abaqus python) ───────────────────────────────────
+    # ── Phase 1: ODB → npy (deck_solver python) ───────────────────────────────────
     cmd1 = [
-        args.abaqus, "python", phase1_script,
+        args.deck_solver, "python", phase1_script,
         "--odb", odb,
         "--out", out,
     ]

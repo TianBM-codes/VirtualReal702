@@ -26,7 +26,7 @@ from src.l3.infra.registry_repo import RegistryRepo
 from src.l3.services.node_table_service import get_instance_fields
 from tools.odb_client import ODBClient, _select_component_values
 
-from .abaqusDSAInpGenerator import (
+from .deck_solverDSAInpGenerator import (
     COMMENT_EMPTY_SECTION,
     DEFAULT_INCLUDE_FILE,
     UPDATED_MAIN_INP,
@@ -43,10 +43,10 @@ from .l3_local_bridge_service import (
     submit_project_result_group_and_wait as _submit_local_project_result_group_and_wait,
     write_external_field_local,
 )
-from .model_update_meta_service import resolve_abaqus_command
+from .model_update_meta_service import resolve_deck_solver_command
 from .project_path_service import resolve_project_cal_subdir, resolve_project_workspace
 from .project_source_service import resolve_project_source_inp_path
-from .solver_service import delete_abaqus_process_files, run_abaqus_job, run_abaqus_sensitivity_job
+from .solver_service import delete_deck_solver_process_files, run_deck_solver_job, run_deck_solver_sensitivity_job
 
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
 _AGGREGATIONS = {"max_abs", "mean_abs", "max", "min", "mean"}
@@ -403,7 +403,7 @@ def build_workspace_from_odb(
         project_id: Optional[int],
         odb_path: str,
         workspace: str,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
 ) -> dict:
@@ -427,8 +427,8 @@ def build_workspace_from_odb(
         odb_abs,
         "--out",
         workspace_abs,
-        "--abaqus",
-        resolve_abaqus_command(abaqus),
+        "--deck_solver",
+        resolve_deck_solver_command(deck_solver),
     ]
     if keep_raw:
         cmd.append("--keep-raw")
@@ -1246,20 +1246,20 @@ def _parse_id_list(raw_value) -> List[int]:
     return labels
 
 
-def _normalize_abaqus_dsa_response_variables(
+def _normalize_deck_solver_dsa_response_variables(
         *,
         region_type: str,
         variables: List[str],
 ) -> Tuple[List[str], List[Dict[str, str]]]:
     """
-    将数据库里偏“分量语义”的变量，映射成 Abaqus DSA 设计响应更常用的基础变量。
+    将数据库里偏“分量语义”的变量，映射成 DeckSolver DSA 设计响应更常用的基础变量。
 
     例如：
     - U1/U2/U3 -> U
     - UR1/UR2/UR3 -> UR
 
     这样做的原因很简单：前端/数据库通常喜欢按分量表达，
-    但 Abaqus 在 *NODE RESPONSE 这里更常接受基础变量名。
+    但 DeckSolver 在 *NODE RESPONSE 这里更常接受基础变量名。
     """
     normalized: List[str] = []
     mappings: List[Dict[str, str]] = []
@@ -1513,7 +1513,7 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
             except json.JSONDecodeError:
                 variables = []
         variables = [str(item).strip() for item in (variables or []) if str(item).strip()]
-        variables, variable_mappings = _normalize_abaqus_dsa_response_variables(
+        variables, variable_mappings = _normalize_deck_solver_dsa_response_variables(
             region_type=region_type,
             variables=variables,
         )
@@ -1531,8 +1531,8 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
         if variables and variable_mappings:
             warnings.append(
                 {
-                    "code": "RESPONSE_VARIABLES_MAPPED_TO_ABAQUS_BASE",
-                    "message": "检测到分量型响应变量，已在 DSA 预览中自动映射为 Abaqus 更容易接受的基础变量名",
+                    "code": "RESPONSE_VARIABLES_MAPPED_TO_DECK_SOLVER_BASE",
+                    "message": "检测到分量型响应变量，已在 DSA 预览中自动映射为 DeckSolver 更容易接受的基础变量名",
                     "response_no": row.get("response_no"),
                     "request_no": row.get("request_no"),
                     "set_name": set_name,
@@ -1623,7 +1623,7 @@ def _serialize_mother_set_remainders(
 
 def _build_dsa_elastic_materials(main_lines: List[str], tasks: List[dict]) -> List[str]:
     """Clone each selected material so unselected elements keep their original E."""
-    from .abaqusDSAInpGenerator import _build_parameter_alias_map
+    from .deck_solverDSAInpGenerator import _build_parameter_alias_map
 
     aliases = _build_parameter_alias_map(tasks)
     material_blocks = {}
@@ -2886,7 +2886,7 @@ def store_dsa_sensitivity_results(
         response_frequency: int = 1,
         node_vars: Optional[List[str]] = None,
         element_vars: Optional[List[str]] = None,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -2916,7 +2916,7 @@ def store_dsa_sensitivity_results(
         analysis_inp_path = input_inp_abs
 
         if run_solver or (not resolved_workspace and not resolved_odb_path):
-            solver_payload = run_abaqus_sensitivity_job(
+            solver_payload = run_deck_solver_sensitivity_job(
                 input_inp=input_inp_abs,
                 output_dir=output_dir,
                 response_elset=response_elset,
@@ -2924,7 +2924,7 @@ def store_dsa_sensitivity_results(
                 response_frequency=int(response_frequency),
                 node_vars=node_vars,
                 element_vars=element_vars,
-                abaqus=abaqus,
+                deck_solver=deck_solver,
                 job_name=job_name,
                 cpus=cpus,
                 interactive=interactive,
@@ -2940,7 +2940,7 @@ def store_dsa_sensitivity_results(
                 solver_result = solver_payload.get("solver") or {}
                 if not solver_result.get("ok"):
                     raise ValidationError(
-                        "abaqus sensitivity solver run failed",
+                        "deck_solver sensitivity solver run failed",
                         {
                             "project_id": int(project_id),
                             "batch_no": normalized_batch_no,
@@ -2952,7 +2952,7 @@ def store_dsa_sensitivity_results(
                 resolved_odb_path = (solver_result.get("artifacts") or {}).get("odb")
                 if not resolved_odb_path:
                     raise NotFoundError(
-                        "odb artifact not found after abaqus sensitivity run",
+                        "odb artifact not found after deck_solver sensitivity run",
                         {"project_id": int(project_id), "batch_no": normalized_batch_no},
                     )
 
@@ -2977,7 +2977,7 @@ def store_dsa_sensitivity_results(
             position=position,
             aggregation=aggregation,
             frame=frame,
-            abaqus=abaqus,
+            deck_solver=deck_solver,
             python3=python3,
             keep_raw=keep_raw,
             timeout=timeout,
@@ -3015,7 +3015,7 @@ def run_sensitivity_inp_and_store(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: Optional[int] = None,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         base_url: Optional[str] = None,
         keep_raw: bool = False,
@@ -3056,10 +3056,10 @@ def run_sensitivity_inp_and_store(
     )
 
     def _run():
-        solver_payload = run_abaqus_job(
+        solver_payload = run_deck_solver_job(
             input_inp=input_inp_abs,
             output_dir=output_dir_abs,
-            abaqus=abaqus,
+            deck_solver=deck_solver,
             job_name=job_name,
             project_id=int(project_id),
             cpus=cpus,
@@ -3071,7 +3071,7 @@ def run_sensitivity_inp_and_store(
         solver_result = solver_payload.get("solver") or {}
         if not solver_result.get("ok"):
             raise ValidationError(
-                "abaqus sensitivity solver run failed",
+                "deck_solver sensitivity solver run failed",
                 {
                     "project_id": int(project_id),
                     "batch_no": normalized_batch_no,
@@ -3087,7 +3087,7 @@ def run_sensitivity_inp_and_store(
         resolved_odb_path = (solver_result.get("artifacts") or {}).get("odb")
         if not resolved_odb_path:
             raise NotFoundError(
-                "odb artifact not found after abaqus sensitivity run",
+                "odb artifact not found after deck_solver sensitivity run",
                 {"project_id": int(project_id), "batch_no": normalized_batch_no},
             )
 
@@ -3115,12 +3115,12 @@ def run_sensitivity_inp_and_store(
                 project_id=int(project_id),
                 odb_path=str(resolved_odb_path),
                 workspace=resolved_workspace,
-                abaqus=abaqus,
+                deck_solver=deck_solver,
                 python3=python3,
                 keep_raw=keep_raw,
             )
         deleted_process_files = (
-            delete_abaqus_process_files(Path(output_dir_abs), resolved_job_name)
+            delete_deck_solver_process_files(Path(output_dir_abs), resolved_job_name)
             if cleanup_process_files
             else []
         )
@@ -3140,7 +3140,7 @@ def run_sensitivity_inp_and_store(
             position=position,
             aggregation=aggregation,
             frame=workspace_frame,
-            abaqus=abaqus,
+            deck_solver=deck_solver,
             python3=python3,
             keep_raw=keep_raw,
             timeout=timeout,
@@ -3222,7 +3222,7 @@ def generate_sensitivity_inp_and_store(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: Optional[int] = None,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         base_url: Optional[str] = None,
         keep_raw: bool = False,
@@ -3309,7 +3309,7 @@ def generate_sensitivity_inp_and_store(
             position=resolved_position,
             aggregation=aggregation,
             frame=frame,
-            abaqus=abaqus,
+            deck_solver=deck_solver,
             python3=python3,
             base_url=base_url,
             keep_raw=keep_raw,
@@ -5195,7 +5195,7 @@ def _export_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -5228,7 +5228,7 @@ def _export_sensitivity_vtu(
             project_id=None,
             odb_path=odb_path,
             workspace=workspace,
-            abaqus=abaqus,
+            deck_solver=deck_solver,
             python3=python3,
             keep_raw=keep_raw,
         )
@@ -5707,7 +5707,7 @@ def export_dsa_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -5727,7 +5727,7 @@ def export_dsa_sensitivity_vtu(
         position=position,
         aggregation=aggregation,
         frame=frame,
-        abaqus=abaqus,
+        deck_solver=deck_solver,
         python3=python3,
         keep_raw=keep_raw,
         timeout=timeout,
@@ -5749,7 +5749,7 @@ def export_adjoint_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -5769,7 +5769,7 @@ def export_adjoint_sensitivity_vtu(
         position=position,
         aggregation=aggregation,
         frame=frame,
-        abaqus=abaqus,
+        deck_solver=deck_solver,
         python3=python3,
         keep_raw=keep_raw,
         timeout=timeout,
@@ -5792,7 +5792,7 @@ def export_odb_sensitivity_vtu(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: int = 0,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -5812,7 +5812,7 @@ def export_odb_sensitivity_vtu(
         position=position,
         aggregation=aggregation,
         frame=frame,
-        abaqus=abaqus,
+        deck_solver=deck_solver,
         python3=python3,
         keep_raw=keep_raw,
         timeout=timeout,

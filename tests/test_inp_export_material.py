@@ -5,7 +5,7 @@ These cover three layouts that previously left material_name empty (shown as
 "none" in the L3 color-code legend):
 
   1. Part-level section whose elset name differs only in case from the
-     *Element elset (Abaqus set names are case-insensitive).
+     *Element elset (DeckSolver set names are case-insensitive).
   2. Section assignment written inside the *Assembly block, referencing an
      instance-scoped elset (flattened / Hypermesh / ANSA layout).
   3. Flat (no *Assembly) INP with a case-mismatched section elset.

@@ -1,20 +1,20 @@
-from services.model_update.analysis import nastran_sol200_service
+from services.model_update.analysis import bulk_solver_sol200_service
 
 
 def test_sync_sol200_config_from_catalog_maps_selected_parameters_and_modal_frequency_responses(monkeypatch):
     created_parameters = []
     created_responses = []
 
-    monkeypatch.setattr(nastran_sol200_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(nastran_sol200_service, "clear_sol200_parameter_config_entries", lambda project_id: None)
-    monkeypatch.setattr(nastran_sol200_service, "clear_sol200_response_config_entries", lambda project_id: None)
+    monkeypatch.setattr(bulk_solver_sol200_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(bulk_solver_sol200_service, "clear_sol200_parameter_config_entries", lambda project_id: None)
+    monkeypatch.setattr(bulk_solver_sol200_service, "clear_sol200_response_config_entries", lambda project_id: None)
     monkeypatch.setattr(
-        nastran_sol200_service,
+        bulk_solver_sol200_service,
         "create_sol200_parameter_config_entry",
         lambda **kwargs: created_parameters.append(kwargs) or kwargs,
     )
     monkeypatch.setattr(
-        nastran_sol200_service,
+        bulk_solver_sol200_service,
         "create_sol200_response_config_entry",
         lambda **kwargs: created_responses.append(kwargs) or kwargs,
     )
@@ -61,7 +61,7 @@ def test_sync_sol200_config_from_catalog_maps_selected_parameters_and_modal_freq
         },
     )
 
-    result = nastran_sol200_service.sync_sol200_config_from_catalog(
+    result = bulk_solver_sol200_service.sync_sol200_config_from_catalog(
         project_id=3,
         overwrite=True,
     )
@@ -80,16 +80,16 @@ def test_sync_sol200_config_from_catalog_maps_modal_displacement_responses(monke
     created_parameters = []
     created_responses = []
 
-    monkeypatch.setattr(nastran_sol200_service, "ensure_tables_exist", lambda: None)
-    monkeypatch.setattr(nastran_sol200_service, "clear_sol200_parameter_config_entries", lambda project_id: None)
-    monkeypatch.setattr(nastran_sol200_service, "clear_sol200_response_config_entries", lambda project_id: None)
+    monkeypatch.setattr(bulk_solver_sol200_service, "ensure_tables_exist", lambda: None)
+    monkeypatch.setattr(bulk_solver_sol200_service, "clear_sol200_parameter_config_entries", lambda project_id: None)
+    monkeypatch.setattr(bulk_solver_sol200_service, "clear_sol200_response_config_entries", lambda project_id: None)
     monkeypatch.setattr(
-        nastran_sol200_service,
+        bulk_solver_sol200_service,
         "create_sol200_parameter_config_entry",
         lambda **kwargs: created_parameters.append(kwargs) or kwargs,
     )
     monkeypatch.setattr(
-        nastran_sol200_service,
+        bulk_solver_sol200_service,
         "create_sol200_response_config_entry",
         lambda **kwargs: created_responses.append(kwargs) or kwargs,
     )
@@ -132,7 +132,7 @@ def test_sync_sol200_config_from_catalog_maps_modal_displacement_responses(monke
         },
     )
 
-    result = nastran_sol200_service.sync_sol200_config_from_catalog(project_id=3, overwrite=True)
+    result = bulk_solver_sol200_service.sync_sol200_config_from_catalog(project_id=3, overwrite=True)
 
     assert result["response_count"] == 1
     assert created_responses[0]["response_name"] == "MODE1_NODE3_U3"

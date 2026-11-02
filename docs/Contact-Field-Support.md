@@ -17,7 +17,7 @@
 它们的两个特殊之处：
 
 1. **只在接触面那一圈节点上有值**。模型其余节点不是"值为 0"，而是**根本没有数据**。
-   Abaqus CAE 把无数据区域画成灰白色，只有接触面显示云图。
+   DeckSolver CAE 把无数据区域画成灰白色，只有接触面显示云图。
 2. **ODB 里的字段名自带接触对后缀**。fieldOutputs 的 key 不是 `CPRESS`，而是类似
    `CPRESS   ASSEMBLY_S_SET-3_CNS_/ASSEMBLY_M_SURF-1`（从面/主面名拼在字段名后面，
    用空格分隔）。CAE 下拉里那个干净的 `CPRESS` 是 CAE 自己合成的聚合项；
@@ -32,7 +32,7 @@
 
 **已经支持（不用改）：**
 
-- **L1 稀疏落盘**：L1 按 block 存 `labels + data`（`abaqus_dump.py` 的 NODAL 块存
+- **L1 稀疏落盘**：L1 按 block 存 `labels + data`（`deck_solver_dump.py` 的 NODAL 块存
   `block.nodeLabels` 的并集），不假设"所有节点都有值"。
 - **L3 云图（frame-scalars）**：`result_service._expand_sparse_nodal_to_geometry_rows`
   会把带 labels 的稀疏 NODAL 数据映射回完整几何节点行，缺数据的节点填 NaN，
@@ -53,7 +53,7 @@
 
 ## 3. 方案
 
-### 3.1 L1：字段名归一化 + 同名接触对合并（`abaqus_dump.py`）
+### 3.1 L1：字段名归一化 + 同名接触对合并（`deck_solver_dump.py`）
 
 **识别规则**：字段名按第一个空白符拆成两段，若第二段**含 `/` 或以 `ASSEMBLY` 开头**，
 则视为"带 region 后缀的字段"，基名 = 第一段，region = 第二段。
@@ -77,7 +77,7 @@
 本来就不分单元类型），保证 HDF5 路径恒为 `/NODAL/<inst>/…`，与 L3 读取路径一致。
 ELEMENT_NODAL / WHOLE_ELEMENT 等位置的 `_auto` 兜底保持不变。
 
-### 3.3 L1：并行 launcher 按逻辑字段分组（`abaqus_dump_parallel.py`）
+### 3.3 L1：并行 launcher 按逻辑字段分组（`deck_solver_dump_parallel.py`）
 
 同基名的字段必须分到**同一个 worker**（否则两个 worker 写同一个字段目录会互相覆盖）。
 chunk 划分从"按字段"改为"按逻辑字段组"。
@@ -145,7 +145,7 @@ chunk 划分从"按字段"改为"按逻辑字段组"。
 > 注意方向：不是"保留从面、丢主面"，而是"**丢节点集（_CNS_）那一侧，保留有面
 > 的那一侧**"。本例里被丢的恰好是从面。
 
-**修复（L1）**：`abaqus_dump.py` 把 region 拆成两段，若**恰好一段**带 `_CNS_`
+**修复（L1）**：`deck_solver_dump.py` 把 region 拆成两段，若**恰好一段**带 `_CNS_`
 后缀（节点集侧），解析该集合属于哪些 instance（依次试
 `S_SET-3_CNS_`→`S_SET-3`→`SET-3_CNS_`→`SET-3`，先查 assembly 级
 nodeSets/surfaces/elementSets，再查 instance 级），**丢弃这些 instance 的 NODAL

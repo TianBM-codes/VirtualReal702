@@ -6,9 +6,9 @@
 输入为 `run/static.inp`，原始结果为 `run/static.odb`。
 工程实际目录：`D:/WorkSpace/Temp/702Input/database/2026101201`。
 
-真实链路：通过工程创建接口导入 INP → 解析集合和材料并入 MySQL → 将用户提供的 WY4 坐标写入测点表 → 节点匹配接口 → 参数创建接口 → 响应创建接口 → 从数据库生成 DSA 输入 → Abaqus 2026 求解 → 结果登记和 HDF5 提取 → 灵敏度矩阵写入 MySQL → 合并云图场 → HTTP 查询五个显示接口。
+真实链路：通过工程创建接口导入 INP → 解析集合和材料并入 MySQL → 将用户提供的 WY4 坐标写入测点表 → 节点匹配接口 → 参数创建接口 → 响应创建接口 → 从数据库生成 DSA 输入 → DeckSolver 2026 求解 → 结果登记和 HDF5 提取 → 灵敏度矩阵写入 MySQL → 合并云图场 → HTTP 查询五个显示接口。
 
-WY4 坐标 `(0, -0.07635, 0)` 匹配到 `PART-1-1` 节点 `4`，节点坐标 `(0, -0.07625000178813934, 0)`，距离 `9.999821186065794e-05`。响应 UY 对应 Abaqus 的 U2。
+WY4 坐标 `(0, -0.07635, 0)` 匹配到 `PART-1-1` 节点 `4`，节点坐标 `(0, -0.07625000178813934, 0)`，距离 `9.999821186065794e-05`。响应 UY 对应 DeckSolver 的 U2。
 参数为 `E@Set-149`，GLOBAL，初始值 `210000000000`。仅为测试设置上下限 `105000000000` / `315000000000`，scatter `0.1`，使用范围 UPDATE / SENSITIVITY。
 
 成功灵敏度任务 `f9172a7a-c525-470d-a1d0-80ef3d1d7b2f`，批次 `3`，分析记录 `60`。
@@ -52,11 +52,11 @@ python tools/verify_static_sensitivity_api.py --base-url http://127.0.0.1:18070 
 5. 字段列表把 frame 序号当成响应节点号。对 `4:U2` 描述解析真实节点号和分量。
 
 新增 E 路径目前沿用壳集合拆分逻辑，仅支持主 INP 中定义的常数各向同性材料；更复杂材料明确报错。没有验证实体/梁 E 参数生成。
-新增回归测试 `tests/test_static_e_dsa_generation.py`，本次没有运行 pytest，验证采用实际 HTTP、MySQL、Abaqus 和文件数据。
+新增回归测试 `tests/test_static_e_dsa_generation.py`，本次没有运行 pytest，验证采用实际 HTTP、MySQL、DeckSolver 和文件数据。
 
 ## 原始 ODB 的版本问题
 
-原始 `static.odb` 来自旧版 Abaqus，当前 Abaqus 2026 无法直接打开。
+原始 `static.odb` 来自旧版 DeckSolver，当前 DeckSolver 2026 无法直接打开。
 在工程下运行 upgrade，生成 `static_upgraded.odb`，以 `baseline_upgraded` 结果组成功导入。原始文件未修改。
 首次失败的 `baseline` 和厚度测试批次 `1` 保留供排查；请使用批次 `3` 的 E 结果，不要把批次 `1` 当成 E 灵敏度。
 

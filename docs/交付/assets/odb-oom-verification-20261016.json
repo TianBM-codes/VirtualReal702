@@ -1,6 +1,6 @@
 {
   "commit": "c77b3455b7708f6bbf9a5399ee994bd88725a4be",
-  "method": "Injected exceptions in real Abaqus Python; actual runner, SQLite and HTTP API",
+  "method": "Injected exceptions in real DeckSolver Python; actual runner, SQLite and HTTP API",
   "original_odb_opened": false,
   "large_array_allocated": false,
   "http_port": 53125,
@@ -30,7 +30,7 @@
                 "display_name": "模拟内存不足",
                 "status": "error",
                 "consistency_check": "count-only",
-                "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "steps": [],
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_builtin\\simulated.odb"
@@ -55,7 +55,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_builtin\\simulated.odb"
@@ -77,7 +77,7 @@
                 "result_group": "default_result",
                 "display_name": "模拟内存不足",
                 "status": "error",
-                "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_builtin\\simulated.odb",
                 "instances": [],
@@ -96,7 +96,7 @@
           "ts": "2026-10-16 14:15:25",
           "level": "step",
           "stage": "l1_dump",
-          "message": "<span class=\"kw\">L1 阶段 1</span>：Abaqus 导出（abaqus_dump.py）启动",
+          "message": "<span class=\"kw\">L1 阶段 1</span>：DeckSolver 导出（deck_solver_dump.py）启动",
           "percent": 5
         },
         {
@@ -141,7 +141,7 @@
           "ts": "2026-10-16 14:15:27",
           "level": "info",
           "stage": "l1_dump",
-          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked",
+          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked",
           "percent": null
         },
         {
@@ -195,7 +195,7 @@
           "ts": "2026-10-16 14:15:27",
           "level": "error",
           "stage": "l1_dump",
-          "message": "<span class=\"bad\">L1 阶段 1 失败</span> (rc=1)：tion\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+          "message": "<span class=\"bad\">L1 阶段 1 失败</span> (rc=1)：tion\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
           "percent": null
         }
       ],
@@ -225,7 +225,7 @@
                 "display_name": "模拟内存不足",
                 "status": "error",
                 "consistency_check": "count-only",
-                "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "steps": [],
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy\\simulated.odb"
@@ -250,7 +250,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy\\simulated.odb"
@@ -270,7 +270,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_builtin\\simulated.odb"
@@ -292,7 +292,7 @@
                 "result_group": "default_result",
                 "display_name": "模拟内存不足",
                 "status": "error",
-                "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy\\simulated.odb",
                 "instances": [],
@@ -311,7 +311,7 @@
           "ts": "2026-10-16 14:15:27",
           "level": "step",
           "stage": "l1_dump",
-          "message": "<span class=\"kw\">L1 阶段 1</span>：Abaqus 导出（abaqus_dump.py）启动",
+          "message": "<span class=\"kw\">L1 阶段 1</span>：DeckSolver 导出（deck_solver_dump.py）启动",
           "percent": 5
         },
         {
@@ -356,7 +356,7 @@
           "ts": "2026-10-16 14:15:29",
           "level": "info",
           "stage": "l1_dump",
-          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked",
+          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked",
           "percent": null
         },
         {
@@ -410,7 +410,7 @@
           "ts": "2026-10-16 14:15:29",
           "level": "error",
           "stage": "l1_dump",
-          "message": "<span class=\"bad\">L1 阶段 1 失败</span> (rc=1)：File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+          "message": "<span class=\"bad\">L1 阶段 1 失败</span> (rc=1)：File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
           "percent": null
         }
       ],
@@ -440,7 +440,7 @@
                 "display_name": "模拟内存不足",
                 "status": "error",
                 "consistency_check": "count-only",
-                "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "steps": [],
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy_zero\\simulated.odb"
@@ -465,7 +465,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy_zero\\simulated.odb"
@@ -485,7 +485,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy\\simulated.odb"
@@ -505,7 +505,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_builtin\\simulated.odb"
@@ -527,7 +527,7 @@
                 "result_group": "default_result",
                 "display_name": "模拟内存不足",
                 "status": "error",
-                "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy_zero\\simulated.odb",
                 "instances": [],
@@ -546,7 +546,7 @@
           "ts": "2026-10-16 14:15:29",
           "level": "step",
           "stage": "l1_dump",
-          "message": "<span class=\"kw\">L1 阶段 1</span>：Abaqus 导出（abaqus_dump.py）启动",
+          "message": "<span class=\"kw\">L1 阶段 1</span>：DeckSolver 导出（deck_solver_dump.py）启动",
           "percent": 5
         },
         {
@@ -591,7 +591,7 @@
           "ts": "2026-10-16 14:15:31",
           "level": "info",
           "stage": "l1_dump",
-          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked",
+          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked",
           "percent": null
         },
         {
@@ -654,7 +654,7 @@
           "ts": "2026-10-16 14:15:31",
           "level": "error",
           "stage": "l1_dump",
-          "message": "<span class=\"bad\">L1 阶段 1 失败</span> (rc=1)：20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+          "message": "<span class=\"bad\">L1 阶段 1 失败</span> (rc=1)：20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
           "percent": null
         }
       ],
@@ -684,7 +684,7 @@
                 "display_name": "模拟内存不足",
                 "status": "error",
                 "consistency_check": "count-only",
-                "error_message": "extract failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "extract failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "steps": [],
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\append_numpy_zero\\simulated.odb"
@@ -709,7 +709,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "extract failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "extract failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\append_numpy_zero\\simulated.odb"
@@ -729,7 +729,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy_zero\\simulated.odb"
@@ -749,7 +749,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_numpy\\simulated.odb"
@@ -769,7 +769,7 @@
                   "display_name": "模拟内存不足",
                   "status": "error",
                   "consistency_check": "count-only",
-                  "error_message": "abaqus_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                  "error_message": "deck_solver_dump failed: SIMULATED_ODB_MEMORY_FAILURE: builtin\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 17, in fail\n    raise MemoryError('simulated insufficient memory during ODB extraction')\nMemoryError: simulated insufficient memory during ODB extraction\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                   "steps": [],
                   "source_file": "simulated.odb",
                   "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\project_builtin\\simulated.odb"
@@ -791,7 +791,7 @@
                 "result_group": "default_result",
                 "display_name": "模拟内存不足",
                 "status": "error",
-                "error_message": "extract failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+                "error_message": "extract failed: SIMULATED_ODB_MEMORY_FAILURE: numpy\nNUMPY_VERSION: 1.22.4\nODB_DUMP_FAILED: MemoryError: insufficient memory during ODB extraction\nTraceback (most recent call last):\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
                 "source_file": "simulated.odb",
                 "source_path": "E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\append_numpy_zero\\simulated.odb",
                 "instances": [],
@@ -810,7 +810,7 @@
           "ts": "2026-10-16 14:15:31",
           "level": "step",
           "stage": "rg_extract",
-          "message": "[<span class=\"kw\">default_result</span>] 结果组解析：一致性校验 + 提取（abaqus_dump extract）",
+          "message": "[<span class=\"kw\">default_result</span>] 结果组解析：一致性校验 + 提取（deck_solver_dump extract）",
           "percent": null
         },
         {
@@ -855,7 +855,7 @@
           "ts": "2026-10-16 14:15:33",
           "level": "info",
           "stage": "rg_extract",
-          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked",
+          "message": "  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked",
           "percent": null
         },
         {
@@ -918,7 +918,7 @@
           "ts": "2026-10-16 14:15:33",
           "level": "error",
           "stage": "rg_extract",
-          "message": "[<span class=\"kw\">default_result</span>] <span class=\"bad\">结果提取失败</span> (rc=1)：20260424\\V2\\--702\\src\\l1\\abaqus_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
+          "message": "[<span class=\"kw\">default_result</span>] <span class=\"bad\">结果提取失败</span> (rc=1)：20260424\\V2\\--702\\src\\l1\\deck_solver_dump.py\", line 2946, in _main_checked\n    main()\n  File \"E:\\code\\VirtualReal702_20260424\\V2\\--702\\benchmark_results\\odb_oom_validation_20261016\\http_run_4\\fault_driver.py\", line 16, in fail\n    raise _ArrayMemoryError((9674696,), np.dtype('int64'))\nnumpy.core._exceptions._ArrayMemoryError: Unable to allocate 73.8 MiB for an array with shape (9674696,) and data type int64\nSIMULATED_LAUNCHER_EXIT_ZERO\nODB 提取内存不足：已停止后续打包。请释放其他程序/已加载模型的内存，检查 Windows 虚拟内存，或换用内存更大的机器重试。",
           "percent": null
         }
       ],

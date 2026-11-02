@@ -1264,10 +1264,10 @@ def _detect_bdf_parser(runner_log: Path) -> str:
         return "unknown"
     if "Fast BDF scan done." in text:
         return "fast path"
-    if "Fast BDF path: fallback to pyNastran" in text:
-        return "pyNastran (fast-path fallback)"
+    if "Fast BDF path: fallback to bulk_provider" in text:
+        return "bulk_provider (fast-path fallback)"
     if "Reading BDF" in text:
-        return "pyNastran"
+        return "bulk_provider"
     return "unknown"
 
 

@@ -4,20 +4,20 @@ from types import SimpleNamespace
 import pytest
 
 from services.model_update.analysis.solver_service import (
-    _build_abaqus_command,
+    _build_deck_solver_command,
     _copy_missing_relative_includes,
     _ensure_sol200_include_dependencies,
     _build_project_result_parse_options,
-    _build_nastran_command,
+    _build_bulk_solver_command,
     _run_local_solver,
-    run_abaqus_adjoint_job,
-    run_abaqus_job,
-    run_abaqus_sensitivity_job,
-    run_nastran_sol103_and_store_modal_results,
-    run_nastran_sol103_job,
+    run_deck_solver_adjoint_job,
+    run_deck_solver_job,
+    run_deck_solver_sensitivity_job,
+    run_bulk_solver_sol103_and_store_modal_results,
+    run_bulk_solver_sol103_job,
     run_solver_and_parse_project_result,
 )
-from services.model_update.solver_prep.nastran_sol103 import build_sol103_controls
+from services.model_update.solver_prep.bulk_solver_sol103 import build_sol103_controls
 
 
 def _write_text(path: Path, text: str) -> Path:
@@ -25,7 +25,7 @@ def _write_text(path: Path, text: str) -> Path:
     return path
 
 
-def test_run_abaqus_sensitivity_job_prepares_files_without_running_solver(tmp_path: Path):
+def test_run_deck_solver_sensitivity_job_prepares_files_without_running_solver(tmp_path: Path):
     input_inp = _write_text(
         tmp_path / "model.inp",
         """*Heading
@@ -43,20 +43,20 @@ def test_run_abaqus_sensitivity_job_prepares_files_without_running_solver(tmp_pa
 """,
     )
 
-    result = run_abaqus_sensitivity_job(
+    result = run_deck_solver_sensitivity_job(
         input_inp=str(input_inp),
         output_dir=str(tmp_path / "out"),
         run_solver=False,
     )
 
-    assert result["workflow"] == "abaqus_sensitivity"
+    assert result["workflow"] == "deck_solver_sensitivity"
     assert Path(result["generated_files"]["design_parameter_inp"]).exists()
     assert Path(result["generated_files"]["analysis_inp"]).exists()
     assert result["solver"] is None
-    assert result["command_preview"][0].lower().endswith("abaqus.bat") or result["command_preview"][0] == "abaqus"
+    assert result["command_preview"][0].lower().endswith("deck_solver.bat") or result["command_preview"][0] == "deck_solver"
 
 
-def test_run_abaqus_sensitivity_job_copies_relative_include_dependencies(tmp_path: Path):
+def test_run_deck_solver_sensitivity_job_copies_relative_include_dependencies(tmp_path: Path):
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     _write_text(source_dir / "extra.inc", "*Comment\n")
@@ -78,7 +78,7 @@ def test_run_abaqus_sensitivity_job_copies_relative_include_dependencies(tmp_pat
 """,
     )
 
-    result = run_abaqus_sensitivity_job(
+    result = run_deck_solver_sensitivity_job(
         input_inp=str(input_inp),
         output_dir=str(tmp_path / "out"),
         run_solver=False,
@@ -90,7 +90,7 @@ def test_run_abaqus_sensitivity_job_copies_relative_include_dependencies(tmp_pat
     assert Path(copied[0]).read_text(encoding="utf-8") == "*Comment\n"
 
 
-def test_run_abaqus_adjoint_job_prepares_inp_without_running_solver(tmp_path: Path):
+def test_run_deck_solver_adjoint_job_prepares_inp_without_running_solver(tmp_path: Path):
     input_inp = _write_text(
         tmp_path / "shell_model.inp",
         """*Heading
@@ -116,15 +116,15 @@ def test_run_abaqus_adjoint_job_prepares_inp_without_running_solver(tmp_path: Pa
 """,
     )
 
-    result = run_abaqus_adjoint_job(
+    result = run_deck_solver_adjoint_job(
         input_inp=str(input_inp),
         run_solver=False,
     )
 
-    assert result["workflow"] == "abaqus_adjoint_shell"
+    assert result["workflow"] == "deck_solver_adjoint_shell"
     assert Path(result["generated_files"]["analysis_inp"]).exists()
     assert result["solver"] is None
-    assert result["command_preview"][0].lower().endswith("abaqus.bat") or result["command_preview"][0] == "abaqus"
+    assert result["command_preview"][0].lower().endswith("deck_solver.bat") or result["command_preview"][0] == "deck_solver"
 
 
 def test_copy_missing_relative_includes_only_copies_existing_relative_files(tmp_path: Path):
@@ -153,7 +153,7 @@ def test_copy_missing_relative_includes_only_copies_existing_relative_files(tmp_
     assert (target_dir / "a.inc").read_text(encoding="utf-8") == "A\n"
 
 
-def test_run_local_solver_marks_abaqus_stdout_errors_as_failure(monkeypatch, tmp_path: Path):
+def test_run_local_solver_marks_deck_solver_stdout_errors_as_failure(monkeypatch, tmp_path: Path):
     from services.model_update.analysis import solver_service
 
     monkeypatch.setattr(
@@ -161,14 +161,14 @@ def test_run_local_solver_marks_abaqus_stdout_errors_as_failure(monkeypatch, tmp
         "run",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=0,
-            stdout="Abaqus Error: Analysis Input File Processor exited with an error\n",
+            stdout="DeckSolver Error: Analysis Input File Processor exited with an error\n",
             stderr="",
         ),
     )
     monkeypatch.setattr(solver_service, "_collect_artifacts", lambda *args, **kwargs: {})
 
     payload = _run_local_solver(
-        command=["abaqus", "job=demo", "input=demo.inp"],
+        command=["deck_solver", "job=demo", "input=demo.inp"],
         workdir=tmp_path,
         artifact_stem="demo",
         artifact_suffixes=(".inp", ".odb"),
@@ -179,7 +179,7 @@ def test_run_local_solver_marks_abaqus_stdout_errors_as_failure(monkeypatch, tmp
     assert payload["ok"] is False
 
 
-def test_run_nastran_sol103_job_converts_bdf_without_running_solver(tmp_path: Path):
+def test_run_bulk_solver_sol103_job_converts_bdf_without_running_solver(tmp_path: Path):
     input_bdf = _write_text(
         tmp_path / "model.bdf",
         """SOL 101
@@ -190,18 +190,18 @@ ENDDATA
 """,
     )
 
-    result = run_nastran_sol103_job(
+    result = run_bulk_solver_sol103_job(
         input_bdf=str(input_bdf),
         settings={"dynamic.vectors": 8},
         run_solver=False,
     )
 
     output_bdf = Path(result["output_bdf"])
-    assert result["workflow"] == "nastran_sol103_run"
+    assert result["workflow"] == "bulk_solver_sol103_run"
     assert output_bdf.exists()
     assert "SOL 103" in output_bdf.read_text(encoding="utf-8")
     assert result["solver"] is None
-    assert result["command_preview"][0].lower().endswith("nastran.exe") or result["command_preview"][0] == "nastran"
+    assert result["command_preview"][0].lower().endswith("bulk_solver.exe") or result["command_preview"][0] == "bulk_solver"
 
 
 def test_build_sol103_controls_embed_geometry_true_uses_post_minus_1():
@@ -226,9 +226,9 @@ def test_build_sol103_controls_embed_geometry_false_uses_post_minus_2():
     assert "PARAM   POST          -2" in controls
 
 
-def test_build_abaqus_command_uses_basename_and_runtime_flags():
-    command = _build_abaqus_command(
-        abaqus="abq2024",
+def test_build_deck_solver_command_uses_basename_and_runtime_flags():
+    command = _build_deck_solver_command(
+        deck_solver="abq2024",
         inp_path=Path(r"D:\tmp\job with space.inp"),
         job_name="demo_job",
         cpus=8,
@@ -246,17 +246,17 @@ def test_build_abaqus_command_uses_basename_and_runtime_flags():
     ]
 
 
-def test_build_abaqus_command_uses_configured_default(monkeypatch):
+def test_build_deck_solver_command_uses_configured_default(monkeypatch):
     from services.model_update.analysis import solver_service
 
     monkeypatch.setattr(
         solver_service,
-        "resolve_abaqus_command",
-        lambda abaqus=None: "C:/SIMULIA/Commands/abaqus.bat" if not abaqus else abaqus,
+        "resolve_deck_solver_command",
+        lambda deck_solver=None: "C:/SIMULIA/Commands/deck_solver.bat" if not deck_solver else deck_solver,
     )
 
-    command = _build_abaqus_command(
-        abaqus=None,
+    command = _build_deck_solver_command(
+        deck_solver=None,
         inp_path=Path(r"D:\tmp\demo.inp"),
         job_name="demo_job",
         cpus=None,
@@ -265,7 +265,7 @@ def test_build_abaqus_command_uses_configured_default(monkeypatch):
     )
 
     assert command == [
-        "C:/SIMULIA/Commands/abaqus.bat",
+        "C:/SIMULIA/Commands/deck_solver.bat",
         "job=demo_job",
         "input=demo.inp",
     ]
@@ -287,7 +287,7 @@ def test_ensure_sol200_include_dependencies_copies_design_model_to_workdir(tmp_p
     assert (workdir / "design_model.bdf").read_text(encoding="utf-8") == "BEGIN BULK\nENDDATA\n"
 
 
-def test_run_nastran_sol200_job_copies_design_model_before_solver(monkeypatch, tmp_path: Path):
+def test_run_bulk_solver_sol200_job_copies_design_model_before_solver(monkeypatch, tmp_path: Path):
     from services.model_update.analysis import solver_service
 
     output_bdf = _write_text(tmp_path / "case_sol200.bdf", "SOL 200\nCEND\n")
@@ -296,7 +296,7 @@ def test_run_nastran_sol200_job_copies_design_model_before_solver(monkeypatch, t
 
     monkeypatch.setattr(
         solver_service,
-        "generate_nastran_sol200_job",
+        "generate_bulk_solver_sol200_job",
         lambda **kwargs: {
             "input_bdf": str(tmp_path / "input.bdf"),
             "output_bdf": str(output_bdf),
@@ -310,8 +310,8 @@ def test_run_nastran_sol200_job_copies_design_model_before_solver(monkeypatch, t
     )
     monkeypatch.setattr(
         solver_service,
-        "_build_nastran_command",
-        lambda **kwargs: ["nastran", output_bdf.name],
+        "_build_bulk_solver_command",
+        lambda **kwargs: ["bulk_solver", output_bdf.name],
     )
     monkeypatch.setattr(
         solver_service,
@@ -321,7 +321,7 @@ def test_run_nastran_sol200_job_copies_design_model_before_solver(monkeypatch, t
     monkeypatch.setattr(solver_service, "_materialize_requested_sensitivity_csv", lambda **kwargs: None)
     monkeypatch.setattr(solver_service, "_cleanup_sol200_intermediate_artifacts", lambda **kwargs: [])
 
-    result = solver_service.run_nastran_sol200_job(
+    result = solver_service.run_bulk_solver_sol200_job(
         input_bdf=str(tmp_path / "input.bdf"),
         output_bdf=str(output_bdf),
         run_solver=True,
@@ -333,15 +333,15 @@ def test_run_nastran_sol200_job_copies_design_model_before_solver(monkeypatch, t
     assert captured["workdir"] == tmp_path
 
 
-def test_build_nastran_command_keeps_relative_bdf_name():
-    command = _build_nastran_command(
-        nastran="nastran.exe",
+def test_build_bulk_solver_command_keeps_relative_bdf_name():
+    command = _build_bulk_solver_command(
+        bulk_solver="bulk_solver.exe",
         bdf_path=Path(r"D:\tmp\case_sol103.bdf"),
         extra_args=["scr=yes", "old=no"],
     )
 
     assert command == [
-        "nastran.exe",
+        "bulk_solver.exe",
         "case_sol103.bdf",
         "scr=yes",
         "old=no",
@@ -373,14 +373,14 @@ def test_build_project_result_parse_options_keeps_non_dsa_field_prefix():
     assert options["field_prefix"] == "SENS"
 
 
-def test_run_nastran_sol103_and_store_modal_results_uses_generated_bdf_for_op2_import(monkeypatch):
+def test_run_bulk_solver_sol103_and_store_modal_results_uses_generated_bdf_for_op2_import(monkeypatch):
     from services.model_update.analysis import solver_service
 
     captured = {}
 
     monkeypatch.setattr(
         solver_service,
-        "run_nastran_sol103_job",
+        "run_bulk_solver_sol103_job",
         lambda **kwargs: {
             "input_bdf": kwargs["input_bdf"],
             "output_bdf": "D:/demo/model_sol103.bdf",
@@ -400,7 +400,7 @@ def test_run_nastran_sol103_and_store_modal_results_uses_generated_bdf_for_op2_i
         lambda project_id, overwrite, modes: {"project_id": project_id, "overwrite": overwrite, "mode_count": len(modes)},
     )
 
-    result = run_nastran_sol103_and_store_modal_results(
+    result = run_bulk_solver_sol103_and_store_modal_results(
         project_id=9,
         input_bdf="D:/demo/model.bdf",
         output_bdf="D:/demo/model_sol103.bdf",
@@ -411,7 +411,7 @@ def test_run_nastran_sol103_and_store_modal_results_uses_generated_bdf_for_op2_i
     assert Path(result["op2_path"]) == Path("D:/demo/model_sol103.op2")
 
 
-def test_run_abaqus_job_sets_simulation_result_status_to_2_on_solver_failure(monkeypatch, tmp_path: Path):
+def test_run_deck_solver_job_sets_simulation_result_status_to_2_on_solver_failure(monkeypatch, tmp_path: Path):
     from services.model_update.analysis import solver_service
 
     input_inp = _write_text(tmp_path / "failed_case.inp", "*Heading\n")
@@ -432,7 +432,7 @@ def test_run_abaqus_job_sets_simulation_result_status_to_2_on_solver_failure(mon
         lambda project_id, **fields: captured.setdefault("status_updates", []).append((project_id, fields)),
     )
 
-    result = run_abaqus_job(
+    result = run_deck_solver_job(
         input_inp=str(input_inp),
         output_dir=str(tmp_path / "out"),
         project_id=1001,
@@ -443,7 +443,7 @@ def test_run_abaqus_job_sets_simulation_result_status_to_2_on_solver_failure(mon
     assert captured["status_updates"][-1] == (1001, {"simulation_result_status": 2})
 
 
-def test_run_abaqus_job_cleans_stale_lock_file_before_solver_launch(monkeypatch, tmp_path: Path):
+def test_run_deck_solver_job_cleans_stale_lock_file_before_solver_launch(monkeypatch, tmp_path: Path):
     from services.model_update.analysis import solver_service
 
     output_dir = tmp_path / "out"
@@ -460,7 +460,7 @@ def test_run_abaqus_job_cleans_stale_lock_file_before_solver_launch(monkeypatch,
 
     monkeypatch.setattr(solver_service, "_run_local_solver", fake_run_local_solver)
 
-    result = run_abaqus_job(
+    result = run_deck_solver_job(
         input_inp=str(input_inp),
         output_dir=str(output_dir),
         run_solver=True,
@@ -481,7 +481,7 @@ def test_run_solver_and_parse_project_result_for_inp_skips_project_creation(monk
 
     monkeypatch.setattr(
         solver_service,
-        "run_abaqus_job",
+        "run_deck_solver_job",
         lambda **kwargs: {
             "job_name": kwargs.get("job_name") or "case_a",
             "solver": {
@@ -530,7 +530,7 @@ ENDDATA
 
     monkeypatch.setattr(
         solver_service,
-        "run_nastran_sol103_job",
+        "run_bulk_solver_sol103_job",
         lambda **kwargs: {
             "output_bdf": "D:/demo/demo_sol103.bdf",
             "solver": {
@@ -555,7 +555,7 @@ ENDDATA
     )
 
     assert result["source_type"] == "bdf"
-    assert result["solver_type"] == "nastran"
+    assert result["solver_type"] == "bulk_solver"
     assert Path(result["artifacts"]["result_file"]) == Path("D:/demo/demo_sol103.op2")
     assert captured["project_id"] == 1002
     assert Path(captured["source_path"]) == Path("D:/demo/demo_sol103.op2")
@@ -569,7 +569,7 @@ def test_run_solver_and_parse_project_result_accepts_absolute_path(monkeypatch, 
 
     monkeypatch.setattr(
         solver_service,
-        "run_abaqus_job",
+        "run_deck_solver_job",
         lambda **kwargs: {
             "job_name": kwargs.get("job_name") or "absolute_case",
             "solver": {
@@ -596,7 +596,7 @@ def test_run_solver_and_parse_project_result_accepts_absolute_path(monkeypatch, 
     assert Path(result["artifacts"]["input_file"]) == input_inp.resolve()
 
 
-def test_run_solver_and_parse_project_result_sets_simulation_result_status_to_2_on_abaqus_parse_failure(
+def test_run_solver_and_parse_project_result_sets_simulation_result_status_to_2_on_deck_solver_parse_failure(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -609,7 +609,7 @@ def test_run_solver_and_parse_project_result_sets_simulation_result_status_to_2_
 
     monkeypatch.setattr(
         solver_service,
-        "run_abaqus_job",
+        "run_deck_solver_job",
         lambda **kwargs: {
             "job_name": kwargs.get("job_name") or "parse_fail",
             "solver": {
@@ -637,3 +637,19 @@ def test_run_solver_and_parse_project_result_sets_simulation_result_status_to_2_
         )
 
     assert captured["status_updates"][-1] == (1004, {"simulation_result_status": 2})
+
+
+@pytest.mark.parametrize("banner", [
+    "VendorRuntime Error: input rejected",
+    "VendorRuntime/Analysis exited with errors",
+    "analysis input file processor exited with an error",
+])
+def test_generic_solver_detects_failure_without_product_name(banner):
+    from services.model_update.analysis.solver_service import _deck_solver_output_has_error_markers
+    assert _deck_solver_output_has_error_markers(banner, "")
+
+
+def test_solver_protocol_accepts_custom_executable_name():
+    from services.model_update.analysis.solver_service import _looks_like_deck_solver_command
+    assert _looks_like_deck_solver_command(["/opt/runtime/compute", "job=demo", "input=demo.inp"])
+    assert not _looks_like_deck_solver_command(["/opt/runtime/other", "demo.bdf"])

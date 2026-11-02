@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-诊断 abaqus_dump.py 输出目录中各 block 的 npy shape 一致性。
+诊断 deck_solver_dump.py 输出目录中各 block 的 npy shape 一致性。
 
 用法：
     python3 tests/diag_dump_shapes.py <raw_dir>
 
-raw_dir = abaqus_dump.py --out 指定的工作目录
+raw_dir = deck_solver_dump.py --out 指定的工作目录
 （里面有 results/ 子目录和 meta.json）
 
 只打印存在 shape 不一致的 block，输出可直接贴给 Claude 诊断。
@@ -41,7 +41,7 @@ def scan_field(field_dir):
         n_ip    = binfo.get('n_ip')
         ncomp   = binfo.get('ncomp')
 
-        # 重建 block 目录（与 abaqus_dump.py get_block_dir 逻辑相同）
+        # 重建 block 目录（与 deck_solver_dump.py get_block_dir 逻辑相同）
         parts = [field_dir, inst.replace('/', '__'), pos]
         if etype:
             parts.append(etype.replace('/', '__'))

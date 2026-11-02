@@ -117,7 +117,7 @@ def _store_dsa_kwargs(body: SensitivityStoreDsaRequest) -> dict:
         "response_frequency": body.response_frequency,
         "node_vars": body.node_vars,
         "element_vars": body.element_vars,
-        "abaqus": body.abaqus,
+        "deck_solver": body.deck_solver,
         "python3": body.python3,
         "keep_raw": body.keep_raw,
         "timeout": body.timeout,
@@ -147,7 +147,7 @@ def _run_and_store_kwargs(body: SensitivityRunAndStoreRequest) -> dict:
         "position": body.position,
         "aggregation": body.aggregation,
         "frame": body.frame,
-        "abaqus": body.abaqus,
+        "deck_solver": body.deck_solver,
         "python3": body.python3,
         "base_url": body.base_url,
         "keep_raw": body.keep_raw,
@@ -185,7 +185,7 @@ def _generate_run_and_store_kwargs(body: SensitivityGenerateRunAndStoreRequest) 
         "position": body.position,
         "aggregation": body.aggregation,
         "frame": body.frame,
-        "abaqus": body.abaqus,
+        "deck_solver": body.deck_solver,
         "python3": body.python3,
         "base_url": body.base_url,
         "keep_raw": body.keep_raw,
@@ -204,7 +204,7 @@ def _generate_run_and_store_kwargs(body: SensitivityGenerateRunAndStoreRequest) 
     }
 
 
-@router.post("/sensitivity/abaqus/calculate_and_store")
+@router.post("/sensitivity/deck_solver/calculate_and_store")
 @router.post("/sensitivity/calculate_and_store")
 async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaRequest):
     await log_request(request, model_to_dict(body))
@@ -228,7 +228,7 @@ async def sensitivity_store_dsa(request: Request, body: SensitivityStoreDsaReque
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/sensitivity/abaqus/run_and_store")
+@router.post("/sensitivity/deck_solver/run_and_store")
 @router.post("/sensitivity/run_and_store")
 async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndStoreRequest):
     await log_request(request, model_to_dict(body))
@@ -252,7 +252,7 @@ async def sensitivity_run_and_store(request: Request, body: SensitivityRunAndSto
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/sensitivity/abaqus/generate_run_and_store")
+@router.post("/sensitivity/deck_solver/generate_run_and_store")
 @router.post("/sensitivity/generate_run_and_store")
 async def sensitivity_generate_run_and_store(request: Request, body: SensitivityGenerateRunAndStoreRequest):
     await log_request(request, model_to_dict(body))
@@ -311,7 +311,7 @@ async def sensitivity_dsa_config_preview(request: Request, body: SensitivityDsaC
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/sensitivity/abaqus/dsa/inp/generate")
+@router.post("/sensitivity/deck_solver/dsa/inp/generate")
 @router.post("/sensitivity/dsa/inp/generate")
 async def sensitivity_dsa_inp_generate(request: Request, body: SensitivityDsaInpGenerateRequest):
     await log_request(request, model_to_dict(body))
@@ -421,7 +421,7 @@ async def build_sensitivity_workspace(request: Request, body: SensitivityBuildWo
             project_id=body.project_id,
             odb_path=body.odb_path,
             workspace=body.workspace,
-            abaqus=body.abaqus,
+            deck_solver=body.deck_solver,
             python3=body.python3,
             keep_raw=body.keep_raw,
         )
@@ -495,7 +495,7 @@ async def sensitivity_export_vtu(request: Request, body: SensitivityExportVtuReq
             position=body.position,
             aggregation=body.aggregation,
             frame=body.frame,
-            abaqus=body.abaqus,
+            deck_solver=body.deck_solver,
             python3=body.python3,
             keep_raw=body.keep_raw,
             timeout=body.timeout,
@@ -531,7 +531,7 @@ async def sensitivity_export_dsa_vtu(request: Request, body: SensitivityExportDs
             position=body.position,
             aggregation=body.aggregation,
             frame=body.frame,
-            abaqus=body.abaqus,
+            deck_solver=body.deck_solver,
             python3=body.python3,
             keep_raw=body.keep_raw,
             timeout=body.timeout,
@@ -566,7 +566,7 @@ async def sensitivity_export_adjoint_vtu(request: Request, body: SensitivityExpo
             position=body.position,
             aggregation=body.aggregation,
             frame=body.frame,
-            abaqus=body.abaqus,
+            deck_solver=body.deck_solver,
             python3=body.python3,
             keep_raw=body.keep_raw,
             timeout=body.timeout,

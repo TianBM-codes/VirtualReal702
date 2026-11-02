@@ -5,7 +5,7 @@ Node time-value query service.
 
 时间的两种口径
 --------------
-  - 传 step   → time 是该 step 内的局部时间（即 Abaqus 的 step time，
+  - 传 step   → time 是该 step 内的局部时间（即 DeckSolver 的 step time，
                 对应 manifest frames 表的 frame_value）。
   - 不传 step → time 是全局时间：按 step_number 顺序，把各 step 的时长
                 （= 该 step 最后一帧的 frame_value）首尾相接累加。

@@ -1,4 +1,4 @@
-"""Inject ODB memory errors in Abaqus and verify the real runner/HTTP responses.
+"""Inject ODB memory errors in DeckSolver and verify the real runner/HTTP responses.
 
 Uses a fresh registry/workspace and a temporary extraction driver. Never opens an
 ODB or allocates a huge array. Production extraction and API code stay unchanged.
@@ -55,7 +55,7 @@ def save(path, value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, help='New, isolated output directory')
-    parser.add_argument('--abaqus', default=r'C:\SIMULIA\Commands\abaqus.bat')
+    parser.add_argument('--deck_solver', default=r'C:\SIMULIA\Commands\deck_solver.bat')
     args = parser.parse_args()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -82,7 +82,7 @@ def main():
     driver = output / 'fault_driver.py'
     driver.write_text(CHILD_SOURCE, encoding='utf-8')
     runner.DUMP_SCRIPT = driver
-    runner.ABAQUS_CMD = args.abaqus
+    runner.DECK_SOLVER_CMD = args.deck_solver
     launches = []
     real_popen = subprocess.Popen
 
@@ -144,7 +144,7 @@ def main():
                     conn.execute("UPDATE result_groups SET status='running' WHERE project_id=?",
                                  (name,))
             os.environ['ODB_OOM_VERIFY_CONFIG'] = json.dumps({
-                'dump_script': str(ROOT / 'src/l1/abaqus_dump.py'),
+                'dump_script': str(ROOT / 'src/l1/deck_solver_dump.py'),
                 'kind': kind, 'force_zero': force_zero,
             })
             before = len(launches)
@@ -198,7 +198,7 @@ def main():
         save(output / 'summary.json', {
             'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
                                               text=True).strip(),
-            'method': 'Injected exceptions in real Abaqus Python; actual runner, SQLite and HTTP API',
+            'method': 'Injected exceptions in real DeckSolver Python; actual runner, SQLite and HTTP API',
             'original_odb_opened': False, 'large_array_allocated': False,
             'http_port': port, 'registry': str(registry_path), 'cases': results, 'ok': True,
         })

@@ -104,7 +104,7 @@ Chrome 155 / Windows，GPU为NVIDIA GeForce RTX 3080 Laptop GPU（ANGLE D3D11）
 Python测试覆盖配置优先级、非法档位、真实应用中间件参数和压缩/identity的无损响应；
 Node测试覆盖重复坐标、舍入容差、首次变形、复用关联、恢复和重载重新关联。
 专用API日志核对为GET 136次、POST拾取查询 1次、OPTIONS预检 1次，其他写操作0次。
-没有运行任何ODB导入或Abaqus提取命令。
+没有运行任何ODB导入或DeckSolver提取命令。
 
 ## 5 原始记录与复测入口
 

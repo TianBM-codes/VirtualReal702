@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from typing import Optional
 from config import _load_service_config
 
@@ -13,22 +13,22 @@ def _service_config_path() -> Path:
     return _repo_root() / "service_config.json"
 
 
-def resolve_abaqus_command(abaqus: Optional[str] = None) -> str:
-    explicit = str(abaqus or "").strip()
+def resolve_deck_solver_command(deck_solver: Optional[str] = None) -> str:
+    explicit = str(deck_solver or "").strip()
     if explicit:
         return explicit
 
     payload = _load_service_config()
-    return str(payload.get("APP_ABAQUS_CMD") or "abaqus").strip() or "abaqus"
+    return str(payload.get("APP_DECK_SOLVER_CMD") or "deck_solver").strip() or "deck_solver"
 
 
-def resolve_nastran_command(nastran: Optional[str] = None) -> str:
-    explicit = str(nastran or "").strip()
+def resolve_bulk_solver_command(bulk_solver: Optional[str] = None) -> str:
+    explicit = str(bulk_solver or "").strip()
     if explicit:
         return explicit
 
     payload = _load_service_config()
-    return str(payload.get("NASTRAN") or "nastran").strip() or "nastran"
+    return str(payload.get("BULK_SOLVER") or "bulk_solver").strip() or "bulk_solver"
 
 
 def resolve_bayesian_output_dir(output_dir: Optional[str] = None) -> Optional[str]:

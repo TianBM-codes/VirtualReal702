@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .model import InpModel
 
-# ── Element type buckets (by Abaqus type string) ──────────────────────────────
+# ── Element type buckets (by DeckSolver type string) ──────────────────────────────
 # Each set maps to one UI row in the element-type distribution table.
 
 _BEAM_2NODE = frozenset({
@@ -100,7 +100,7 @@ def compute_inp_summary(model: "InpModel") -> dict:
             if node.z > zmax: zmax = node.z
 
         for elem in part.elements.values():
-            at = elem.abaqus_type.upper()
+            at = elem.deck_solver_type.upper()
             if at in _ROTATION_DOF_TYPES:
                 has_rotation = True
             if at in _POINT:        free_point  += 1

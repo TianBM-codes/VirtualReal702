@@ -1,7 +1,7 @@
 """tools/odb_node_history.py 的试验测点功能：测点表解析、坐标匹配最近节点、方向投影。
 
-脚本 import 时需要 Abaqus 的 odbAccess，这里塞一个空模块占位，ODB 用最小的假对象模拟，
-只覆盖纯 Python 逻辑。Abaqus 坐标变换（getTransformedField）本身算得对不对，
+脚本 import 时需要 DeckSolver 的 odbAccess，这里塞一个空模块占位，ODB 用最小的假对象模拟，
+只覆盖纯 Python 逻辑。DeckSolver 坐标变换（getTransformedField）本身算得对不对，
 要在真 ODB 上和 CAE 对照（做法见脚本文档）。
 """
 import csv

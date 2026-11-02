@@ -2,7 +2,7 @@
 
 ## 背景
 
-Abaqus DSA（设计灵敏度分析）输出的字段以参数为单位分散存储：`d_U_T1`、`d_U_T2`……每个字段覆盖的是对应参数（Tn）控制的响应节点集上的灵敏度值，彼此独立，不构成全局单元视图。
+DeckSolver DSA（设计灵敏度分析）输出的字段以参数为单位分散存储：`d_U_T1`、`d_U_T2`……每个字段覆盖的是对应参数（Tn）控制的响应节点集上的灵敏度值，彼此独立，不构成全局单元视图。
 
 本方案将这些离散场合并为以"响应节点 × 分量"为键的全局元素场，便于可视化和后续分析。
 
@@ -76,13 +76,13 @@ INP 文件
         → 响应节点集（存于 INP，解析时可知响应节点 labels）
 ```
 
-### 第二阶段：Abaqus 求解
+### 第二阶段：DeckSolver 求解
 
-Abaqus 跑 DSA，输出 ODB，包含字段 `d_U_T1` … `d_U_TN`。
+DeckSolver 跑 DSA，输出 ODB，包含字段 `d_U_T1` … `d_U_TN`。
 
 ### 第三阶段：ODB 解析 → H5 打包
 
-- `abaqus_dump.py`（Abaqus Python 2.7）：从 ODB 提取各字段到 `.npy`
+- `deck_solver_dump.py`（DeckSolver Python 2.7）：从 ODB 提取各字段到 `.npy`
 - `l1_pack.py`（Python 3）：`.npy` → H5，更新 `manifest.db result_blocks`
 
 每个字段在 H5 中：`[num_frames, num_response_nodes, num_components]`
@@ -307,7 +307,7 @@ async def sensitivity_merge_fields(
 ### 方式一：集成调用（推荐，一次完成）
 
 ```json
-POST /sensitivity/abaqus/run_and_store
+POST /sensitivity/deck_solver/run_and_store
 {
   "project_id": 1001,
   "input_inp": "/data/job.inp",
@@ -340,7 +340,7 @@ POST /sensitivity/abaqus/run_and_store
 ### 方式二：分步调用
 
 ```
-POST /sensitivity/abaqus/run_and_store   （merge_fields 默认 false，行为不变）
+POST /sensitivity/deck_solver/run_and_store   （merge_fields 默认 false，行为不变）
     → 拿到 workspace、step、field_prefix、project_result_parse.result_group
 
 POST /sensitivity/merge_fields

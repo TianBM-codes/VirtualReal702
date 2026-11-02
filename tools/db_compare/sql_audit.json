@@ -1308,7 +1308,7 @@
       "line": 406,
       "call": "ddl_list",
       "kind": "CREATE",
-      "mysql_sql": "CREATE TABLE IF NOT EXISTS t_mt_py_fem_quantity_set_capability ( id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID', pid BIGINT NOT NULL COMMENT '工程ID', quantity_code VARCHAR(32) NOT NULL COMMENT '修正量编码', set_name VARCHAR(200) NOT NULL COMMENT '集合名称', set_type VARCHAR(32) NOT NULL COMMENT '集合类型', set_scope VARCHAR(32) NOT NULL COMMENT '集合范围', instance_name VARCHAR(200) NULL COMMENT '实例名称', part_name VARCHAR(200) NULL COMMENT '零件名称', set_role VARCHAR(64) NOT NULL COMMENT '集合角色', element_family VARCHAR(32) NULL COMMENT '单元族', section_type VARCHAR(64) NULL COMMENT '截面类型', material_name VARCHAR(200) NULL COMMENT '材料名称', member_count INT NOT NULL DEFAULT 0 COMMENT '成员数量', supports_global TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持全局参数', supports_local TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持局部参数', current_value DOUBLE NULL COMMENT '共享当前值', is_internal TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否为Abaqus自动生成的内部集合(_PickedSetNN)，1=内部 0=用户', extra_json JSON NULL COMMENT '扩展信息', PRIMARY KEY (id), UNIQUE KEY uk_pid_quantity_set_capability (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name), KEY idx_pid_quantity_code (pid, quantity_code), KEY idx_pid_set_name (pid, set_name, set_type, set_scope) ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='修正量与集合能力目录表';",
+      "mysql_sql": "CREATE TABLE IF NOT EXISTS t_mt_py_fem_quantity_set_capability ( id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID', pid BIGINT NOT NULL COMMENT '工程ID', quantity_code VARCHAR(32) NOT NULL COMMENT '修正量编码', set_name VARCHAR(200) NOT NULL COMMENT '集合名称', set_type VARCHAR(32) NOT NULL COMMENT '集合类型', set_scope VARCHAR(32) NOT NULL COMMENT '集合范围', instance_name VARCHAR(200) NULL COMMENT '实例名称', part_name VARCHAR(200) NULL COMMENT '零件名称', set_role VARCHAR(64) NOT NULL COMMENT '集合角色', element_family VARCHAR(32) NULL COMMENT '单元族', section_type VARCHAR(64) NULL COMMENT '截面类型', material_name VARCHAR(200) NULL COMMENT '材料名称', member_count INT NOT NULL DEFAULT 0 COMMENT '成员数量', supports_global TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持全局参数', supports_local TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否支持局部参数', current_value DOUBLE NULL COMMENT '共享当前值', is_internal TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否为DeckSolver自动生成的内部集合(_PickedSetNN)，1=内部 0=用户', extra_json JSON NULL COMMENT '扩展信息', PRIMARY KEY (id), UNIQUE KEY uk_pid_quantity_set_capability (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name), KEY idx_pid_quantity_code (pid, quantity_code), KEY idx_pid_set_name (pid, set_name, set_type, set_scope) ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='修正量与集合能力目录表';",
       "dm_sql": "CREATE TABLE IF NOT EXISTS t_mt_py_fem_quantity_set_capability ( id BIGINT NOT NULL IDENTITY(1,1), pid BIGINT NOT NULL, quantity_code VARCHAR(32) NOT NULL, set_name VARCHAR(200) NOT NULL, set_type VARCHAR(32) NOT NULL, set_scope VARCHAR(32) NOT NULL, instance_name VARCHAR(200) NULL, part_name VARCHAR(200) NULL, set_role VARCHAR(64) NOT NULL, element_family VARCHAR(32) NULL, section_type VARCHAR(64) NULL, material_name VARCHAR(200) NULL, member_count INT NOT NULL DEFAULT 0, supports_global SMALLINT NOT NULL DEFAULT 0, supports_local SMALLINT NOT NULL DEFAULT 0, current_value DOUBLE NULL, is_internal SMALLINT NOT NULL DEFAULT 0, extra_json CLOB NULL, PRIMARY KEY (id), CONSTRAINT uk_pid_quantity_set_capability UNIQUE (pid, quantity_code, set_name, set_type, set_scope, instance_name, part_name), );COMMENT='修正量与集合能力目录表';",
       "features": [
         "auto_increment",
@@ -4225,7 +4225,7 @@
     },
     {
       "id": "SQL0294",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 172,
       "call": "execute",
       "kind": "SELECT",
@@ -4238,7 +4238,7 @@
     },
     {
       "id": "SQL0295",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 181,
       "call": "execute",
       "kind": "INSERT",
@@ -4253,7 +4253,7 @@
     },
     {
       "id": "SQL0296",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 240,
       "call": "execute",
       "kind": "SELECT",
@@ -4266,7 +4266,7 @@
     },
     {
       "id": "SQL0297",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 285,
       "call": "execute",
       "kind": "DELETE",
@@ -4279,7 +4279,7 @@
     },
     {
       "id": "SQL0298",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 355,
       "call": "execute",
       "kind": "SELECT",
@@ -4292,7 +4292,7 @@
     },
     {
       "id": "SQL0299",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 364,
       "call": "execute",
       "kind": "INSERT",
@@ -4307,7 +4307,7 @@
     },
     {
       "id": "SQL0300",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 413,
       "call": "execute",
       "kind": "SELECT",
@@ -4320,7 +4320,7 @@
     },
     {
       "id": "SQL0301",
-      "file": "services/model_update/analysis/nastran_sol200_service.py",
+      "file": "services/model_update/analysis/bulk_solver_sol200_service.py",
       "line": 454,
       "call": "execute",
       "kind": "DELETE",
@@ -4774,7 +4774,7 @@
     },
     {
       "id": "SQL0334",
-      "file": "services/model_update/importers/ansys_mu_common.py",
+      "file": "services/model_update/importers/removed_solver_mu_common.py",
       "line": 153,
       "call": "execute",
       "kind": "INSERT",
@@ -4790,7 +4790,7 @@
     },
     {
       "id": "SQL0335",
-      "file": "services/model_update/importers/ansys_mu_common.py",
+      "file": "services/model_update/importers/removed_solver_mu_common.py",
       "line": 167,
       "call": "execute",
       "kind": "INSERT",
@@ -4805,7 +4805,7 @@
     },
     {
       "id": "SQL0336",
-      "file": "services/model_update/importers/ansys_mu_common.py",
+      "file": "services/model_update/importers/removed_solver_mu_common.py",
       "line": 171,
       "call": "execute",
       "kind": "INSERT",
@@ -4820,7 +4820,7 @@
     },
     {
       "id": "SQL0337",
-      "file": "services/model_update/importers/ansys_mu_common.py",
+      "file": "services/model_update/importers/removed_solver_mu_common.py",
       "line": 182,
       "call": "execute",
       "kind": "INSERT",
@@ -4835,7 +4835,7 @@
     },
     {
       "id": "SQL0338",
-      "file": "services/model_update/importers/ansys_mu_common.py",
+      "file": "services/model_update/importers/removed_solver_mu_common.py",
       "line": 186,
       "call": "execute",
       "kind": "INSERT",
@@ -4850,7 +4850,7 @@
     },
     {
       "id": "SQL0339",
-      "file": "services/model_update/importers/ansys_mu_common.py",
+      "file": "services/model_update/importers/removed_solver_mu_common.py",
       "line": 193,
       "call": "execute",
       "kind": "INSERT",
@@ -4866,7 +4866,7 @@
     },
     {
       "id": "SQL0340",
-      "file": "services/model_update/importers/ansys_mu_common.py",
+      "file": "services/model_update/importers/removed_solver_mu_common.py",
       "line": 216,
       "call": "execute",
       "kind": "INSERT",

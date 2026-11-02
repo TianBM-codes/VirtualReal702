@@ -7,10 +7,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import meshio
 import numpy as np
-from pyNastran.bdf.bdf import BDF
+from src.utils.external_runtime import BulkSymbol
+BDF = BulkSymbol('bdf.bdf', 'BDF')
 
-from BDFParserPyNastran import BDFParser
-from src.l1.pynastran_op2_compat import read_op2_compat, read_op2_geom_compat
+from BDFParserBulkProvider import BDFParser
+from src.l1.bulk_provider_op2_compat import read_op2_compat, read_op2_geom_compat
 from src.l3.core.errors import NotFoundError, ValidationError
 
 
@@ -132,7 +133,7 @@ def _read_op2(op2_path: str):
     except Exception:
         # Some production OP2 files carry enough modal result data for
         # sensitivity/import workflows, but their embedded geometry cannot be
-        # fully cross-referenced by pyNastran. Fall back to plain OP2 parsing
+        # fully cross-referenced by bulk_provider. Fall back to plain OP2 parsing
         # so modal frequencies/vectors can still be imported.
         return read_op2_compat(op2_path, debug=False)
 
@@ -767,7 +768,7 @@ def _parse_formatted_sensitivity_csv(
         if can_match_by_name:
             row = [float(value_map[str(param_name)]) for param_name in available_parameter_names]
         elif len(values) == len(available_parameter_names):
-            # MSC Nastran commonly truncates DESVAR labels to 8 chars in the
+            # MSC BulkSolver commonly truncates DESVAR labels to 8 chars in the
             # formatted sensitivity CSV. When that happens, multiple design
             # variables can collapse to the same visible token (for example
             # `T@PROPERTY_181362` -> `T@PROPER`). In that case name-based lookup
@@ -941,7 +942,7 @@ def preview_op2_sensitivity(
         if chosen is not None:
             warnings.append({
                 "code": "SENSITIVITY_FORMATTED_CSV_PARSED",
-                "message": "formatted Nastran sensitivity csv was parsed successfully; supported response blocks include EIGN/FREQ and DISP",
+                "message": "formatted BulkSolver sensitivity csv was parsed successfully; supported response blocks include EIGN/FREQ and DISP",
             })
         else:
             chosen = _parse_text_matrix_file(result_path, expected_shape=expected_shape)
@@ -1054,7 +1055,7 @@ def _resolve_cloud_target_instances(workspace: str, column_meta: dict) -> List[s
         return [instance_name]
 
     manifest_path = os.path.join(os.path.abspath(workspace), "manifest.db")
-    # Nastran-only modal/BDF projects can legitimately skip the L3 workspace
+    # BulkSolver-only modal/BDF projects can legitimately skip the L3 workspace
     # packaging step, so manifest.db may not exist. In that case we still want
     # Bayesian history artifacts to record a usable single-instance mapping.
     if not os.path.exists(manifest_path):
@@ -1074,7 +1075,7 @@ def _resolve_cloud_target_instances(workspace: str, column_meta: dict) -> List[s
             return [only_name]
 
     raise ValidationError(
-        "cannot resolve target instance for Nastran sensitivity cloud export",
+        "cannot resolve target instance for BulkSolver sensitivity cloud export",
         {
             "workspace": os.path.abspath(workspace),
             "parameter_name": column_meta.get("parameter_name"),
@@ -1140,7 +1141,7 @@ def _build_op2_parameter_columns_with_mappings(
                     targets.append(int(eid))
         else:
             raise ValidationError(
-                "unsupported Nastran sensitivity parameter type for cloud export",
+                "unsupported BulkSolver sensitivity parameter type for cloud export",
                 {
                     "parameter_name": parameter_name,
                     "parameter_type": parameter_type,
@@ -1150,7 +1151,7 @@ def _build_op2_parameter_columns_with_mappings(
 
         if not targets:
             raise ValidationError(
-                "no target elements were resolved for Nastran sensitivity parameter",
+                "no target elements were resolved for BulkSolver sensitivity parameter",
                 {
                     "parameter_name": parameter_name,
                     "parameter_type": parameter_type,
@@ -1313,7 +1314,7 @@ def store_op2_sensitivity_cloud(
     resolved_bdf_path = str(preview.get("source", {}).get("bdf_path") or bdf_path or "").strip()
     if not resolved_bdf_path:
         raise ValidationError(
-            "bdf_path is required for Nastran sensitivity cloud export",
+            "bdf_path is required for BulkSolver sensitivity cloud export",
             {"project_id": int(project_id), "batch_no": str(batch_no)},
         )
 

@@ -204,10 +204,10 @@ def _extract_component(data: np.ndarray, component_idx: Optional[int],
     if data.ndim == 1:
         return data.astype(np.float32)
     if component_idx is None:
-        # Scalar fields (e.g. Abaqus invariants S_PRESS / S_INV3 / principal
+        # Scalar fields (e.g. DeckSolver invariants S_PRESS / S_INV3 / principal
         # stresses, which are stored as ncomp==1) must keep their sign. Taking the
         # L2 norm of a single component is just abs(), which flips negative values
-        # positive and makes the cloud map disagree with Abaqus. Only true vector
+        # positive and makes the cloud map disagree with DeckSolver. Only true vector
         # fields (U, RF, …) should collapse to a magnitude.
         if data.shape[-1] == 1:
             return data[..., 0].astype(np.float32)
@@ -309,7 +309,7 @@ def _mask_partial_nan_triangles_soup(scalar_vertex: np.ndarray) -> np.ndarray:
     Triangle Soup [Nt*3]：稀疏 NODAL 场（接触输出 CPRESS/CSHEAR 等）里，接触面
     边缘节点会被相邻侧面的三角形共享，逐顶点插值会把颜色"拖"到无数据的侧面上
     （云图溢出）。这里把"三个角只要有一个 NaN"的三角形整体置 NaN（前端渲灰），
-    得到与 Abaqus 一致的干净单面边界。只适用于 soup 顶点序（长度为 3 的倍数）；
+    得到与 DeckSolver 一致的干净单面边界。只适用于 soup 顶点序（长度为 3 的倍数）；
     稠密场没有 NaN，原样返回，行为不变。
     """
     if scalar_vertex.size == 0 or scalar_vertex.size % 3 != 0:
@@ -331,7 +331,7 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
     Returns None if no etype group was found.
 
     global_range = (val_min, val_max) from surface faces only (NaN excluded),
-    matching Abaqus which bases its legend on the visible surface.
+    matching DeckSolver which bases its legend on the visible surface.
     """
     Rf = len(src_etype)
     scalar_face = np.full(Rf, np.nan, dtype=np.float32)
@@ -382,7 +382,7 @@ def _scalar_elem_pos_by_idx(f, position: str, instance: str, frame_idx: int,
 
     if not found_any:
         return None
-    # global_range from surface faces only (matches Abaqus: legend uses visible surface values)
+    # global_range from surface faces only (matches DeckSolver: legend uses visible surface values)
     valid_face = scalar_face[np.isfinite(scalar_face)]
     if valid_face.size == 0:
         # 区分两种"全 NaN":
@@ -1534,7 +1534,7 @@ def _en_per_vertex_averaged(
 
     Returns (scalar_vertex [Nv] float32, num_frames, global_range) or None.
     global_range = (val_min, val_max) from surface post-averaged values only,
-    matching Abaqus which bases its legend on the averaged values of the
+    matching DeckSolver which bases its legend on the averaged values of the
     visible exterior surface nodes.
 
     Per domain:
@@ -1699,7 +1699,7 @@ def _en_per_vertex_averaged(
         scalar_vertex[flat_vtx[ent_hit]] = ent_val[ent_hit]
 
     # Step 5: global range from surface post-averaged values only.
-    # Abaqus legend = min/max of averaged nodal values on the visible surface.
+    # DeckSolver legend = min/max of averaged nodal values on the visible surface.
     # np.isfinite excludes vertices with no matching element data (NaN) so they
     # don't corrupt the range via nan_to_num(nan=0.0) later.
     surf_valid = scalar_vertex[np.isfinite(scalar_vertex)]
@@ -1824,7 +1824,7 @@ def _en_range_geometry(geom_f, geom_h5_path: str, all_element_domain, domain_ver
         conn = geom_grp['conn'][:]               # [N_geom, n_corner] int32
         # Prefer full connectivity (corner + mid-nodes) so mid-node
         # extrema — which often hold the field min/max on high-order
-        # elements — are included in the legend range, matching Abaqus.
+        # elements — are included in the legend range, matching DeckSolver.
         conn_full = _load_full_conn_rows(geom_f, geom_h5_path, etype_key)
         if (conn_full is not None
                 and conn_full.shape[0] == conn.shape[0]

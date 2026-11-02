@@ -512,7 +512,7 @@ async def get_line_elements(odb_id: str, instance: str):
             Interleaved endpoint pairs — row 2i and 2i+1 are the two endpoints
             of segment i.  Ready to feed into a Three.js LineSegments geometry.
       - "elem_labels":    [N]   int32
-            Abaqus element label for each segment (for picking).
+            DeckSolver element label for each segment (for picking).
 
     Header:
       X-Line-Count: number of line segments N (not rows)

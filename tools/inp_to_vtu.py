@@ -513,7 +513,7 @@ def _build_odb_results(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Abaqus INP to VTU via meshio")
+    parser = argparse.ArgumentParser(description="Convert DeckSolver INP to VTU via meshio")
     parser.add_argument("inp", help="Input .inp file")
     parser.add_argument("vtu", help="Output .vtu file")
     parser.add_argument("--no-transform", action="store_true",

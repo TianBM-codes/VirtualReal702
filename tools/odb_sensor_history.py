@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Abaqus Python 2.7/3 worker for the sensor history API.
+"""DeckSolver Python 2.7/3 worker for the sensor history API.
 
 Reuses odb_node_history's extraction and transformation rules; never rematches
-coordinates. JSON files isolate Abaqus from the web server's Python runtime.
+coordinates. JSON files isolate DeckSolver from the web server's Python runtime.
 """
 from __future__ import print_function
 import io
@@ -14,7 +14,7 @@ import odb_node_history as history
 
 
 def _native_strings(value):
-    # Abaqus 2023's C++ bindings reject Python 2 unicode arguments, including
+    # DeckSolver 2023's C++ bindings reject Python 2 unicode arguments, including
     # openOdb paths and repository keys loaded from JSON.
     if history.PY2:
         if isinstance(value, dict):

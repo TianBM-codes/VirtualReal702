@@ -110,7 +110,7 @@
       <span><b>读者</b> 项目评审 · 甲方技术负责人（主）／接手开发者（次）</span>
     </div>
     <div class="lead">
-      一句话主线：<b>把不同求解器（Abaqus / Nastran）产出的模型文件，从上传、解析、预处理，
+      一句话主线：<b>把不同求解器（DeckSolver / BulkSolver）产出的模型文件，从上传、解析、预处理，
       一路送到浏览器里做三维云图交互；并在此之上用物理试验数据反过来校准仿真模型。</b>
     </div>
   </div>
@@ -139,7 +139,7 @@
   <table>
     <tr><th>痛点</th><th>具体表现</th><th>本平台的破解</th></tr>
     <tr><td><b>许可证墙</b></td><td>后处理软件按席位收费，设计师/项目经理/甲方看不了结果</td><td>发布成网页，浏览器直接看，免 license</td></tr>
-    <tr><td><b>格式墙</b></td><td>Abaqus（INP/ODB）与 Nastran（BDF/OP2）互不兼容，多工况对比要手工转换</td><td>上游 L1 统一归一化，四种格式一套管道</td></tr>
+    <tr><td><b>格式墙</b></td><td>DeckSolver（INP/ODB）与 BulkSolver（BDF/OP2）互不兼容，多工况对比要手工转换</td><td>上游 L1 统一归一化，四种格式一套管道</td></tr>
     <tr><td><b>规模墙</b></td><td>桌面客户端全量加载，千万节点内存爆、单帧几十秒</td><td>离线预处理 + 二进制协议 + GPU 渲染</td></tr>
   </table>
   </div>
@@ -153,13 +153,12 @@
       <text x="95" y="66" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)">多格式模型文件</text>
       <g font-size="12" fill="var(--ink)">
         <rect x="36" y="82" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--l1)"/>
-        <text x="95" y="103" text-anchor="middle">Abaqus INP/ODB</text>
+        <text x="95" y="103" text-anchor="middle">DeckSolver INP/ODB</text>
         <rect x="36" y="124" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--l1)"/>
-        <text x="95" y="145" text-anchor="middle">Nastran BDF/OP2</text>
+        <text x="95" y="145" text-anchor="middle">BulkSolver BDF/OP2</text>
         <rect x="36" y="166" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--fe)"/>
         <text x="95" y="187" text-anchor="middle">试验 UNV 模态</text>
         <rect x="36" y="208" width="118" height="34" rx="7" fill="var(--card)" stroke="var(--fe)"/>
-        <text x="95" y="229" text-anchor="middle">Ansys CDB/RST</text>
       </g>
       <!-- process -->
       <rect x="230" y="30" width="430" height="320" rx="14" fill="none" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5 4"/>
@@ -292,7 +291,7 @@
       <!-- L1 -->
       <rect x="30" y="16" width="720" height="70" rx="12" fill="var(--l1s)" stroke="var(--l1)"/>
       <text x="46" y="40" font-size="14" font-weight="800" fill="var(--l1)">L1 · 格式适配与忠实提取</text>
-      <text x="46" y="62" font-size="12" fill="var(--ink)">INP→inp_pack ｜ ODB→abaqus_dump(Py2.7)+l1_pack ｜ BDF→bdf_pack ｜ OP2→op2_pack</text>
+      <text x="46" y="62" font-size="12" fill="var(--ink)">INP→inp_pack ｜ ODB→deck_solver_dump(Py2.7)+l1_pack ｜ BDF→bdf_pack ｜ OP2→op2_pack</text>
       <text x="46" y="79" font-size="11.5" fill="var(--muted)">📦 统一输出 HDF5 + manifest.db</text>
       <text x="700" y="34" font-size="10.5" text-anchor="end" fill="var(--red)">一次性 · ODB需license</text>
       <!-- L2 -->
@@ -327,10 +326,9 @@
 
   <h3>2.1 环节一：多格式上传与忠实提取 <span class="pill p-l1">L1</span></h3>
   <div class="dims">
-    <div class="dim d1"><div class="h">难点</div><p>Abaqus 与 Nastran 是两套"方言"（单元命名/坐标系/结果组织都不同）；ODB 是私有二进制，只能用受限的 Abaqus Python 2.7 读，还装不了 h5py、占 license。</p></div>
+    <div class="dim d1"><div class="h">难点</div><p>DeckSolver 与 BulkSolver 是两套"方言"（单元命名/坐标系/结果组织都不同）；ODB 是私有二进制，只能用受限的 DeckSolver Python 2.7 读，还装不了 h5py、占 license。</p></div>
     <div class="dim d2"><div class="h">思路</div><p>在最上游就把格式差异"焊死"成同一套内部表示（HDF5 + manifest.db 路由）。新增格式只加一个 L1 适配器，其他层零改动。ODB 用两阶段拆分隔离 license。</p></div>
     <div class="dim d3"><div class="h">实现</div><p>受限环境只"读"（导出 .npy），标准环境只"写"（打包 HDF5），中间用临时文件交接。忠实原则：只搬运不加工，保留全部原始精度。</p></div>
-    <div class="dim d4"><div class="h">结构</div><p><code>src/l1/</code>：abaqus_dump / l1_pack / inp_pack / bdf_pack / op2_pack / cdb_pack / rst_pack；manifest_schema 定义路由表。</p></div>
     <div class="dim d5"><div class="h">效果</div><p>四格式四工作流统一接入；几何与结果解耦，可多工况追加；license 严格隔离在提取阶段。</p></div>
   </div>
   <div class="callout"><span class="t">manifest.db —— 路由中枢</span>
@@ -450,7 +448,7 @@
   <p class="sub">第 2 章讲"正常流程"，这一章讲真正的硬骨头——那些"不报错、但结果悄悄错了"的坑，最能体现工程功力。</p>
 
   <h3>3.1 应力云图数值口径与商业软件严格对齐 <span class="pill" style="background:var(--reds);color:var(--red)">最难</span></h3>
-  <p>云图上的"应力值"不是仿真直接吐的数字，而是从单元内部"积分点"的原始张量，经过外推、算 Mises/主应力/不变量、正负号处理算出来的。Abaqus 这套口径是不公开的"潜规则"，<b>任何一步差一点，云图就偏离 3%~5%，而且不报错</b>——只能靠对照脚本逐值比对揪出来。真实踩过的坑：</p>
+  <p>云图上的"应力值"不是仿真直接吐的数字，而是从单元内部"积分点"的原始张量，经过外推、算 Mises/主应力/不变量、正负号处理算出来的。DeckSolver 这套口径是不公开的"潜规则"，<b>任何一步差一点，云图就偏离 3%~5%，而且不报错</b>——只能靠对照脚本逐值比对揪出来。真实踩过的坑：</p>
   <ul>
     <li>Mises 是非线性量，"先在积分点算 Mises 再外推" ≠ "先外推张量再算"，前者会算出物理上不可能的<b>负 Mises</b>；</li>
     <li>第三不变量 INV3 漏了系数与开方；"Abs 变体"应取"绝对值更大的主应力但<b>保留符号</b>"；</li>
@@ -486,7 +484,7 @@
     </svg>
     <figcaption>图 6 · 混合 solid-shell 的"交集 vs 并集"陷阱——通用原则：并集要置灰，交集要补回</figcaption>
   </figure>
-  <p>所有公式集中在 <code>src/l1/abaqus_dump.py::_compute_invariants_numpy</code>，配 <code>docs/l1/不变量计算公式表.md</code> 做公式台账逐条记录修正历史，并有回归测试固化。</p>
+  <p>所有公式集中在 <code>src/l1/deck_solver_dump.py::_compute_invariants_numpy</code>，配 <code>docs/l1/不变量计算公式表.md</code> 做公式台账逐条记录修正历史，并有回归测试固化。</p>
 
   <h3>3.2 大规模数据渲染：内存 / 传输 / 空间索引三件套</h3>
   <div class="tbl-scroll">
@@ -512,7 +510,7 @@
       <text x="415" y="106" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--l2)">✅ 方案A2：中节点细分</text>
       <text x="415" y="124" text-anchor="middle" font-size="10.5" fill="var(--muted)">6节点面→4子三角，8节点面→6子三角</text>
       <rect x="588" y="84" width="160" height="56" rx="10" fill="var(--card)" stroke="var(--l2)"/>
-      <text x="668" y="112" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--l2)">峰值对齐 Abaqus</text>
+      <text x="668" y="112" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--l2)">峰值对齐 DeckSolver</text>
       <text x="668" y="129" text-anchor="middle" font-size="10" fill="var(--muted)">8032 → 对齐 8324</text>
       <g stroke="var(--muted)" stroke-width="1.5" fill="none">
         <line x1="188" y1="66" x2="298" y2="38" marker-end="url(#ar7)"/>
@@ -523,8 +521,8 @@
     <figcaption>图 7 · 高阶单元中节点细分——与 3.1 同源：不报错，但云图峰值系统性偏低 3~4%</figcaption>
   </figure>
 
-  <h3>3.4 自研 Abaqus INP 解析器</h3>
-  <p>pyNastran 只认 Nastran；市面上没有输出能跟 ODB 提取严格对齐的开源 INP 解析库；而模型修正要在<b>不启动 license</b> 下解析/改写 INP。INP 陷阱不少：大小写不敏感、行尾逗号续行、<code>*INCLUDE</code> 递归防死循环、同名 Set 取并集、<code>*Coupling</code> 约束根本不是单元、要靠子块定性再"凭空"展开成几何线段。解法是四层职责严格分离：</p>
+  <h3>3.4 自研 DeckSolver INP 解析器</h3>
+  <p>bulk_provider 只认 BulkSolver；市面上没有输出能跟 ODB 提取严格对齐的开源 INP 解析库；而模型修正要在<b>不启动 license</b> 下解析/改写 INP。INP 陷阱不少：大小写不敏感、行尾逗号续行、<code>*INCLUDE</code> 递归防死循环、同名 Set 取并集、<code>*Coupling</code> 约束根本不是单元、要靠子块定性再"凭空"展开成几何线段。解法是四层职责严格分离：</p>
   <figure class="fig">
     <svg class="svgbox" viewBox="0 0 840 110" role="img" aria-label="INP解析器四层流水线">
       <defs><marker id="ar8" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--fe)"/></marker></defs>
@@ -559,7 +557,7 @@
   </figure>
 
   <h3>3.5 跨数据源一致性与特殊单元</h3>
-  <p><b>大小写坑</b>：Abaqus 把 ODB 集合名"烙成"大写不可逆，INP 保留原始大小写，字面比较对不上（<code>_PickedSet6</code> vs <code>_PICKEDSET6</code>）——解法是在名字第一次进入流水线的源头归一化，而不是在每个比较点打补丁。<b>特殊单元 spider 耦合</b>：同一约束有两种"变身"，两条完全不同的起点最终要拼出同一份数据：</p>
+  <p><b>大小写坑</b>：DeckSolver 把 ODB 集合名"烙成"大写不可逆，INP 保留原始大小写，字面比较对不上（<code>_PickedSet6</code> vs <code>_PICKEDSET6</code>）——解法是在名字第一次进入流水线的源头归一化，而不是在每个比较点打补丁。<b>特殊单元 spider 耦合</b>：同一约束有两种"变身"，两条完全不同的起点最终要拼出同一份数据：</p>
   <figure class="fig">
     <svg class="svgbox" viewBox="0 0 760 170" role="img" aria-label="ODB与INP路径殊途同归">
       <defs><marker id="ar9" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--muted)"/></marker></defs>
@@ -649,10 +647,9 @@
   <h4>三个技术要点</h4>
   <ul>
     <li><b>试验-仿真配准</b>：传感器坐标系与仿真节点坐标系往往不重合、有安装误差，用 <b>ICP 迭代最近点</b>自动刚体配准（支持仅平移 / 平移+旋转），再用八叉树最近邻落点，超容差允许剔除。</li>
-    <li><b>灵敏度不是"试出来"的</b>：不用有限差分，而是生成 Abaqus DSA / Nastran SOL200 专用输入，调用求解器自身的<b>解析灵敏度</b>能力，精度更高。三级映射链路 <code>d_U_1 → 参数序号 → 参数名 → INP Section</code> 是最容易困惑的地方。灵敏度矩阵做<b>无量纲归一化</b>（因为弹性模量 1e11 和壳厚 1e-3 数量级天差地别），反演才稳定。</li>
+    <li><b>灵敏度不是"试出来"的</b>：不用有限差分，而是生成 DeckSolver DSA / BulkSolver SOL200 专用输入，调用求解器自身的<b>解析灵敏度</b>能力，精度更高。三级映射链路 <code>d_U_1 → 参数序号 → 参数名 → INP Section</code> 是最容易困惑的地方。灵敏度矩阵做<b>无量纲归一化</b>（因为弹性模量 1e11 和壳厚 1e-3 数量级天差地别），反演才稳定。</li>
     <li><b>贝叶斯参数估计</b>（注意：不是机器学习里的"贝叶斯优化"）：用参数先验协方差+响应观测协方差构造增益矩阵（本质最小方差估计/类卡尔曼滤波），加 Tikhonov 阻尼防病态，参数夹到物理上下界。之所以不用遗传算法——<b>有精确梯度时十几次就收敛，无梯度方法要几百上千次</b>。</li>
   </ul>
-  <div class="callout"><span class="t">多求解器统一</span>主线二后扩展支持 Nastran（BDF/OP2）和 Ansys（CDB/RST），做法是"归一化 model dict + 统一落库函数"——无论数据来自哪个求解器，元数据落到同一批 MySQL 表，下游灵敏度/贝叶斯完全不区分来源。所有耗时操作走"提交任务→轮询状态"的异步模式。</div>
 
   <!-- ============ 5 ============ -->
   <h2 id="s5"><span class="num">五、</span>程序组织结构</h2>
@@ -666,7 +663,7 @@
     <tr><td>L3 服务</td><td><code>src/l3/</code></td><td>Router / Service / Repo 三层，HTTP + L3BE</td></tr>
     <tr><td>前端</td><td><code>viewer/</code></td><td>Vue3 + Three.js</td></tr>
     <tr><td>模型修正</td><td><code>services/model_update/</code>、<code>webapi/</code></td><td>匹配/灵敏度/贝叶斯 + REST</td></tr>
-    <tr><td>INP 解析器</td><td><code>src/inp/</code></td><td>两线共用，纯 Python 解析 Abaqus INP</td></tr>
+    <tr><td>INP 解析器</td><td><code>src/inp/</code></td><td>两线共用，纯 Python 解析 DeckSolver INP</td></tr>
     <tr><td>后台调度</td><td><code>src/job_runner.py</code></td><td>独立进程，认领并执行 L1/L2/导入任务</td></tr>
   </table>
   </div>
@@ -691,7 +688,6 @@
   <div class="tbl-scroll">
   <table>
     <tr><th>维度</th><th>达成效果</th></tr>
-    <tr><td><b>格式支持</b></td><td>Abaqus INP/ODB、Nastran BDF/OP2（含/不含嵌入几何）、Ansys CDB/RST；自动识别 + 一致性校验</td></tr>
     <tr><td><b>模型规模</b></td><td>≤ 1000 万节点、数十装配实例、数十分析步、数百帧</td></tr>
     <tr><td><b>免许可证</b></td><td>INP/BDF/OP2 全链路免 license，ODB 仅提取阶段需要</td></tr>
     <tr><td><b>免客户端</b></td><td>任意现代浏览器直接访问，无需安装插件</td></tr>
@@ -699,13 +695,13 @@
     <tr><td><b>振型动画</b></td><td>60 fps（GPU 着色器，与规模无关）</td></tr>
     <tr><td><b>云图切换</b></td><td>&lt; 500 ms（百万节点，只传颜色属性）</td></tr>
     <tr><td><b>并发内存</b></td><td>4 worker 共享 ≈ 2 GB（CoW）</td></tr>
-    <tr><td><b>数值精度</b></td><td>不变量公式逐位对齐 Abaqus，混合 solid-shell、高阶单元峰值均已对齐</td></tr>
+    <tr><td><b>数值精度</b></td><td>不变量公式逐位对齐 DeckSolver，混合 solid-shell、高阶单元峰值均已对齐</td></tr>
   </table>
   </div>
   <h4>功能清单</h4>
   <p style="font-size:14.5px;color:var(--muted)">三维旋转/平移/缩放 · 透视/正交切换 · 结果云图（平滑/平面着色）· 自定义图例区间 · 变形显示（nlgeom 自动锁定）· 单元/节点精确拾取（返回 ODB 原始标签与结果值）· 包围框区域选择 · 多点探针表格 · 截面切割（X/Y/Z，含填充与着色）· 模态振型动画（GPU/CPU 双模式）· 特征边线框 · 梁杆线单元 / 质量点 / 耦合蜘蛛线渲染 · 结果分量选择 · 多工况结果组切换 · 用户自定义集合 · 模型修正闭环（ICP 配准 / DAC-DSF-MAC / DSA 灵敏度 / 贝叶斯迭代 / 修正效果云图回写）。</p>
   <div class="callout"><span class="t">工程方法论沉淀</span>
-    项目最有价值的沉淀是一套<b>"逐位对齐 + 对照脚本 + 回归测试"</b>的方法论：对每个"不报错但会悄悄错"的数值口径问题（不变量公式、混合模型交并集、高阶单元峰值、Nastran 坐标系），都通过独立对照脚本逐值比对商业软件、定位修复、再用回归测试固化——避免同一个坑踩第二次。这比任何单一功能都更能体现团队真功夫。</div>
+    项目最有价值的沉淀是一套<b>"逐位对齐 + 对照脚本 + 回归测试"</b>的方法论：对每个"不报错但会悄悄错"的数值口径问题（不变量公式、混合模型交并集、高阶单元峰值、BulkSolver 坐标系），都通过独立对照脚本逐值比对商业软件、定位修复、再用回归测试固化——避免同一个坑踩第二次。这比任何单一功能都更能体现团队真功夫。</div>
 
   <!-- ============ 7 ============ -->
   <h2 id="s7"><span class="num">七、</span>附录 · 文档地图</h2>

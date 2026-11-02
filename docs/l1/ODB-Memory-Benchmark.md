@@ -1,19 +1,19 @@
 # ODB 解析内存与耗时对比
 
 > 当前已按用户要求撤回低内存实验，恢复原解析和打包算法，仅保留错误上报。下方实测属于历史固定版本，
-> 不是当前撤回版的耗时承诺。现行行为见 [大 ODB 内存不足的失败处理](abaqus_dump_guide.md#大-odb-内存不足的失败处理2026年10月16日)。
+> 不是当前撤回版的耗时承诺。现行行为见 [大 ODB 内存不足的失败处理](deck_solver_dump_guide.md#大-odb-内存不足的失败处理2026年10月16日)。
 
 2026年10月16日的完整实测见 [1440w ODB 内存优化实测](../交付/1440w-ODB内存优化实测-20261016.md)：
 主要进程物理峰值 9.87 → 6.01 GiB，总耗时 45分19秒 → 56分50秒，45 个 HDF5 文件的数据集内容一致。
 
 `tools/benchmark_odb_memory.py` 用同一份 ODB，顺序运行两个固定 Git 版本的完整文件处理流水线：
-Abaqus 原始数据提取（全部步骤、帧、字段和派生不变量）→ HDF5 打包 → L2 几何预处理。
+DeckSolver 原始数据提取（全部步骤、帧、字段和派生不变量）→ HDF5 打包 → L2 几何预处理。
 不启动 Web 服务、项目预加载或缓存预热，不连接模型修正 MySQL，也不包含 HTTP 排队和目录导入。
 因此记录的是文件解析流水线，不能直接当作正式项目从提交到页面显示的耗时。
 
 ## 执行方式
 
-要求运行环境已有 `psutil`、`numpy`、`h5py`、`scipy`，且能使用 Abaqus Python。
+要求运行环境已有 `psutil`、`numpy`、`h5py`、`scipy`，且能使用 DeckSolver Python。
 
 ```powershell
 & 'E:\tools\anaconda3\python.exe' -X utf8 -u tools/benchmark_odb_memory.py `
@@ -23,7 +23,7 @@ Abaqus 原始数据提取（全部步骤、帧、字段和派生不变量）→ 
 ```
 
 输出目录必须是本次新目录；脚本不会覆盖已有测试。版本先解析成完整提交号，再从 Git 导出
-实际运行的 `abaqus_dump.py`、`l1_pack.py`、`manifest_schema.py`、`ingest.py`，记录各自 Git 对象。
+实际运行的 `deck_solver_dump.py`、`l1_pack.py`、`manifest_schema.py`、`ingest.py`，记录各自 Git 对象。
 源码副本和工作区互相隔离，不切换或修改当前工作区的业务源码。
 
 源 ODB 先记录 SHA-256、大小和修改时间，再复制到测试目录升级。两版各从同一个升级产物复制
@@ -33,7 +33,7 @@ Abaqus 原始数据提取（全部步骤、帧、字段和派生不变量）→ 
 ## 内存口径
 
 每 0.25 秒采样启动器及其子进程，保留已发现子进程的引用，即使中间启动器先退出，也继续
-采样实际的 Abaqus Python 进程。每个阶段分别保存：
+采样实际的 DeckSolver Python 进程。每个阶段分别保存：
 
 - `peak_tree_rss_bytes`：进程树物理工作集之和的采样峰值；共享 DLL/文件页可能重复计算。
 - `peak_tree_private_bytes`：进程树私有提交内存之和的采样峰值；磁盘映射文件页不等同于私有内存。

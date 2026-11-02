@@ -215,7 +215,7 @@ def _build_transform(inst: Instance) -> np.ndarray:
     """
     Build a 4×4 homogeneous transformation matrix for an Instance.
 
-    Abaqus applies transforms as: first translate, then rotate.
+    DeckSolver applies transforms as: first translate, then rotate.
     The rotation is defined by two points on the axis line:
     - `center`: first point on the axis
     - `axis`: second point on the axis

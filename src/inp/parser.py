@@ -50,7 +50,7 @@ CTX_INSTANCE  = "INSTANCE"
 CTX_STEP      = "STEP"
 CTX_MATERIAL  = "MATERIAL"
 
-# BC type-keyword → expanded DOF ranges (Abaqus convention, 1-based)
+# BC type-keyword → expanded DOF ranges (DeckSolver convention, 1-based)
 _BC_TYPE_MAP: Dict[str, List[Tuple[int, int]]] = {
     "ENCASTRE":  [(1, 6)],
     "PINNED":    [(1, 3)],
@@ -248,7 +248,7 @@ class InpParser:
         """
         Parse translation + optional rotation from Instance data lines.
 
-        Abaqus *Instance transform syntax:
+        DeckSolver *Instance transform syntax:
         Line 1 (if present): tx, ty, tz
         Line 2 (if present): x1, y1, z1, x2, y2, z2, angle_deg
 
@@ -331,13 +331,13 @@ class InpParser:
     # ------------------------------------------------------------------
 
     def _handle_element(self, block: KeywordBlock) -> None:
-        abaqus_type = block.params.get("type", "").strip().upper()
-        factory_type = map_element_type(abaqus_type) or "UNKNOWN"
+        deck_solver_type = block.params.get("type", "").strip().upper()
+        factory_type = map_element_type(deck_solver_type) or "UNKNOWN"
 
         if factory_type == "UNKNOWN":
             self._diag.warning(
                 UNKNOWN_ELEMENT_TYPE,
-                f"Element type '{abaqus_type}' not in mapping table",
+                f"Element type '{deck_solver_type}' not in mapping table",
                 file=block.source_file, line=block.source_line,
             )
 
@@ -389,7 +389,7 @@ class InpParser:
 
             elem = Element(
                 label=elem_label,
-                abaqus_type=abaqus_type,
+                deck_solver_type=deck_solver_type,
                 factory_type=factory_type,
                 node_labels=node_labels,
             )
@@ -412,7 +412,7 @@ class InpParser:
             return
         is_generate = "generate" in block.params
         is_internal = "internal" in block.params
-        # Internal sets (Abaqus-generated, e.g. _PickedSetNN) are kept — they are
+        # Internal sets (DeckSolver-generated, e.g. _PickedSetNN) are kept — they are
         # referenced by *Solid Section / *Surface — but flagged so the exporter
         # hides them from the user-facing set list.
 
@@ -449,7 +449,7 @@ class InpParser:
             return
         is_generate = "generate" in block.params
         is_internal = "internal" in block.params
-        # Internal elsets (Abaqus-generated, e.g. _PickedSetNN) are kept — they
+        # Internal elsets (DeckSolver-generated, e.g. _PickedSetNN) are kept — they
         # are what *Solid Section assignments reference — but flagged so the
         # exporter hides them from the user-facing set list. Dropping them here
         # was the bug that left material_name empty ("none" in the legend).
@@ -802,7 +802,7 @@ class InpParser:
     def _handle_step(self, block: KeywordBlock) -> None:
         name   = block.params.get("name", f"Step-{len(self._model.steps)+1}")
         nlgeom = block.params.get("nlgeom", "").upper() in ("YES", "ON", "1", "")
-        # nlgeom defaults to NO in Abaqus; only YES if explicitly set
+        # nlgeom defaults to NO in DeckSolver; only YES if explicitly set
         nlgeom = block.params.get("nlgeom", "NO").upper() in ("YES", "ON", "1")
         step = StepDeclaration(name=name, nlgeom=nlgeom)
         self._model.steps.append(step)
@@ -973,7 +973,7 @@ class InpParser:
                                file=block.source_file, line=block.source_line)
 
     def _handle_coupling(self, block: KeywordBlock) -> None:
-        # Abaqus CAE exports "constraint name=", hand-written INPs often use "name="
+        # DeckSolver CAE exports "constraint name=", hand-written INPs often use "name="
         name = (block.params.get("constraint name")
                 or block.params.get("name", "")).strip()
         ref_node = block.params.get("ref node", block.params.get("ref_node", "")).strip()
@@ -1074,7 +1074,7 @@ _DESIGN_RESPONSE_SUB_KEYWORDS = {"ELEMENT RESPONSE", "NODE RESPONSE"}
 
 # ---------------------------------------------------------------------------
 # Known-harmless keywords that produce no useful data — skip silently
-# (no WARNING emitted, keeps output clean for typical Abaqus CAE exports)
+# (no WARNING emitted, keeps output clean for typical DeckSolver CAE exports)
 # ---------------------------------------------------------------------------
 _SILENT_SKIP_KEYWORDS = {
     # File header / metadata
@@ -1099,7 +1099,7 @@ _SILENT_SKIP_KEYWORDS = {
     # Controls / solver settings
     "CONTROLS", "SOLUTION TECHNIQUE",
     "SELECT EIGENMODES", "AMS",
-    # Misc Abaqus/CAE generated
+    # Misc DeckSolver/CAE generated
     "SYSTEM", "TRANSFORM", "NORMAL", "NODAL THICKNESS",
     "REBAR LAYER", "GASKET BEHAVIOR",
 }

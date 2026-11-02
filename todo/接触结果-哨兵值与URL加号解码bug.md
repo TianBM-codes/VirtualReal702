@@ -29,7 +29,7 @@ const rangeParam = `&global_min=${globalMin}&global_max=${globalMax}`
 
 ### 根本原因：接触结果数据里混着 `-3.4e+38` 哨兵值
 
-`-3.402823466386e+38` 正好是 **float32 的最小值（-FLT_MAX）**。Abaqus 输出接触类
+`-3.402823466386e+38` 正好是 **float32 的最小值（-FLT_MAX）**。DeckSolver 输出接触类
 结果时，对**没有发生接触的节点**用这个值当"此处无有效数据"的占位符，不是真实物理量。
 
 链路：前端多 instance 显示 → 先调 `/results/field-range` 算全局 min/max →
@@ -73,7 +73,7 @@ const rangeParam = `&global_min=${globalMin}&global_max=${globalMax}`
 
 **不会。** 阈值 1e30 和真实物理量差十几个数量级（应力最大也就 1e9~1e12 量级）；
 真算出 1e30 说明计算发散，本身不是有效结果。位移/应力/模态等正常场不含这个量级
-的值，过滤等于空操作。被过滤的接触节点显示灰色，与 Abaqus"未接触区域不参与云图"
+的值，过滤等于空操作。被过滤的接触节点显示灰色，与 DeckSolver"未接触区域不参与云图"
 的行为一致。
 
 ## 验证要点（改完后）

@@ -1,4 +1,4 @@
-"""Read stored sensor matches and extract directional histories using Abaqus."""
+"""Read stored sensor matches and extract directional histories using DeckSolver."""
 import json
 import os
 from pathlib import Path
@@ -11,7 +11,7 @@ from src.l3.core.config import settings
 from src.l3.core.errors import AppError, NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 from src.utils.file_fetch import is_http_url, resolve_runner_source
-from .model_update_meta_service import resolve_abaqus_command
+from .model_update_meta_service import resolve_deck_solver_command
 
 
 def _resolve_source(project_id, result_group):
@@ -36,7 +36,7 @@ def _resolve_source(project_id, result_group):
     source = str(group.get("source_path") or "")
     source_name = urlparse(source).path if is_http_url(source) else source
     if Path(source_name).suffix.lower() != ".odb":
-        raise ValidationError("测点方向时程目前仅支持 Abaqus ODB 结果组")
+        raise ValidationError("测点方向时程目前仅支持 DeckSolver ODB 结果组")
     if not is_http_url(source) and not os.path.isfile(source):
         raise NotFoundError("结果组的原始 ODB 文件不存在")
     workspace = repo.resolve_workspace(str(project["workspace"]), settings.data_root)
@@ -86,16 +86,16 @@ def _extract_sensor_node_history(project_id, sensors, fields, result_group=None)
         output_path = Path(temp_dir) / "history.json"
         request_path.write_text(json.dumps({"odb": source, "sensors": matches, "fields": fields},
                                            ensure_ascii=True), encoding="utf-8")
-        command = [resolve_abaqus_command(), "python", str(script), str(request_path), str(output_path)]
+        command = [resolve_deck_solver_command(), "python", str(script), str(request_path), str(output_path)]
         try:
-            # Keep potentially large Abaqus logs on disk instead of in server memory.
-            with (Path(temp_dir) / "abaqus.log").open("wb") as log:
+            # Keep potentially large DeckSolver logs on disk instead of in server memory.
+            with (Path(temp_dir) / "deck_solver.log").open("wb") as log:
                 process = subprocess.run(command, cwd=temp_dir, stdout=log, stderr=subprocess.STDOUT,
                                          timeout=3600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except subprocess.TimeoutExpired as exc:
             raise AppError("测点结果提取超时", code="EXTRACTION_TIMEOUT", status_code=504) from exc
         except OSError as exc:
-            raise AppError("无法启动 Abaqus，请检查 APP_ABAQUS_CMD 配置", code="ABAQUS_UNAVAILABLE") from exc
+            raise AppError("无法启动 DeckSolver，请检查 APP_DECK_SOLVER_CMD 配置", code="DECK_SOLVER_UNAVAILABLE") from exc
         payload = None
         if process.returncode == 0 and output_path.is_file():
             try:
@@ -103,11 +103,11 @@ def _extract_sensor_node_history(project_id, sensors, fields, result_group=None)
             except (ValueError, UnicodeError):
                 pass
         if not isinstance(payload, dict) or not isinstance(payload.get("sensors"), list):
-            log_path = Path(temp_dir) / "abaqus.log"
+            log_path = Path(temp_dir) / "deck_solver.log"
             with log_path.open("rb") as log:
                 log.seek(max(0, log_path.stat().st_size - 4000))
                 diagnostic = log.read().decode("utf-8", errors="replace")
-            raise AppError("Abaqus 测点结果提取失败", code="EXTRACTION_FAILED",
+            raise AppError("DeckSolver 测点结果提取失败", code="EXTRACTION_FAILED",
                            details={"diagnostic": diagnostic})
     return dict(payload, project_id=project_id, result_group=group, direction_coordinate_system="global")
 

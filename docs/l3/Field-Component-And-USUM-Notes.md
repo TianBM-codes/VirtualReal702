@@ -4,7 +4,7 @@
 
 ---
 
-## 1. OP2 结果字段（Nastran）
+## 1. OP2 结果字段（BulkSolver）
 
 ### HDF5 列布局
 
@@ -31,7 +31,7 @@ OP2 节点数少于 BDF 节点数时，未覆盖节点填 NaN。USUM 对这些�
 
 ---
 
-## 2. ODB 结果字段（Abaqus）
+## 2. ODB 结果字段（DeckSolver）
 
 ### HDF5 列布局
 
@@ -45,7 +45,7 @@ OP2 节点数少于 BDF 节点数时，未覆盖节点填 NaN。USUM 对这些�
 
 ### 为什么 ODB 没有 MAGNITUDE 列
 
-`abaqus_dump.py` 的 `_HIDDEN_INV_SUFFIXES`（第 191 行）把 MAGNITUDE 列为跳过项，注释原文：
+`deck_solver_dump.py` 的 `_HIDDEN_INV_SUFFIXES`（第 191 行）把 MAGNITUDE 列为跳过项，注释原文：
 
 > *MAGNITUDE is excluded — L3 computes it on-the-fly from components (identical result).*
 
@@ -86,5 +86,5 @@ disp_node = ds[frame_idx, :, :3].astype(np.float32)  # UX/UY/UZ only
 
 - 如果要给 ODB 也加 USUM/MAGNITUDE 支持，有两条路：
   1. 在 `l1_pack.py` 里写 data 时追加第 4 列（和 OP2 对齐）
-  2. 在 `abaqus_dump.py` 里把 MAGNITUDE 从 `_HIDDEN_INV_SUFFIXES` 移除，走独立字段存储路径
+  2. 在 `deck_solver_dump.py` 里把 MAGNITUDE 从 `_HIDDEN_INV_SUFFIXES` 移除，走独立字段存储路径
 - 扩展后需同步更新 `result_service.py` 变形相关读取（或确认 `[:3]` 切片已足够保护）

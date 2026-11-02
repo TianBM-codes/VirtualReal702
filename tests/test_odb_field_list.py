@@ -1,4 +1,4 @@
-"""ODB 字段白名单：abaqus_dump 的匹配规则 + job_runner 的 --field-list 取值优先级。"""
+"""ODB 字段白名单：deck_solver_dump 的匹配规则 + job_runner 的 --field-list 取值优先级。"""
 import ast
 import fnmatch
 import sys
@@ -12,15 +12,15 @@ REPO = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(scope="module")
 def dump():
-    # abaqus_dump.py 导入即要求 odbAccess，这里只抽出纯函数单独执行
-    src = (REPO / "src" / "l1" / "abaqus_dump.py").read_text(encoding="utf-8")
+    # deck_solver_dump.py 导入即要求 odbAccess，这里只抽出纯函数单独执行
+    src = (REPO / "src" / "l1" / "deck_solver_dump.py").read_text(encoding="utf-8")
     wanted = {"parse_field_list", "field_in_list", "split_region_field"}
     tree = ast.parse(src)
     mod = ast.Module(
         body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted],
         type_ignores=[])
     ns = {"fnmatch": fnmatch}
-    exec(compile(mod, "abaqus_dump_subset", "exec"), ns)
+    exec(compile(mod, "deck_solver_dump_subset", "exec"), ns)
     return types.SimpleNamespace(**{k: ns[k] for k in wanted})
 
 

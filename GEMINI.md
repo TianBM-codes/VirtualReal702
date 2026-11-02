@@ -1,6 +1,6 @@
 # ODB Service Design - Project Overview & Context
 
-This repository contains the design and early-stage implementation of a backend service for visualizing Abaqus ODB (Output Database) files. The system follows a three-layer architecture to handle large-scale FEM data efficiently.
+This repository contains the design and early-stage implementation of a backend service for visualizing DeckSolver ODB (Output Database) files. The system follows a three-layer architecture to handle large-scale FEM data efficiently.
 
 ## 🤝 协作约定 (Collaboration Conventions)
 **用户背景**：用户不熟悉有限元、HDF5、FastAPI、Three.js 等技术栈。在回答问题、解释设计决策、说明代码改动时，需要：
@@ -22,12 +22,12 @@ git push
 
 ## 🏗 Architecture (v5)
 
-The project is divided into three distinct layers to separate concerns and manage dependencies (like Abaqus licenses).
+The project is divided into three distinct layers to separate concerns and manage dependencies (like DeckSolver licenses).
 
 ### Layer 1: ODB Faithful Dump
 - **Goal:** Extract raw data from `.odb` files and store it in a structured HDF5/SQLite format without processing.
 - **Tools:** 
-    - `src/l1/abaqus_dump.py`: Runs in Abaqus Python (v2.7) environment to extract data to temporary `.npy` files.
+    - `src/l1/deck_solver_dump.py`: Runs in DeckSolver Python (v2.7) environment to extract data to temporary `.npy` files.
     - `src/l1/l1_pack.py`: Runs in standard Python 3 to pack temporary files into finalized HDF5 files and populate `manifest.db`.
 - **Output:** `l1/assembly.h5`, `l1/geometry/<inst>.h5`, `l1/results/<step>__<field>.h5`, and `manifest.db`.
 
@@ -45,7 +45,7 @@ The project is divided into three distinct layers to separate concerns and manag
 
 ## 🛠 Technology Stack
 
-- **Languages:** Python 2.7 (Abaqus env), Python 3.x (Service/Packing).
+- **Languages:** Python 2.7 (DeckSolver env), Python 3.x (Service/Packing).
 - **Data Storage:** 
     - **HDF5 (h5py):** Large multi-dimensional arrays (mesh, results).
     - **SQLite (sqlite3):** Metadata, job registry, and cross-layer routing (`manifest.db`).
@@ -57,10 +57,10 @@ The project is divided into three distinct layers to separate concerns and manag
 
 ## 🚀 Development Workflow
 
-### 1. Layer 1 Extraction (Requires Abaqus License)
+### 1. Layer 1 Extraction (Requires DeckSolver License)
 ```bash
 # Phase 1: Dump to temporary files
-abaqus python src/l1/abaqus_dump.py --odb path/to/model.odb --out /data/workspace_id/
+deck_solver python src/l1/deck_solver_dump.py --odb path/to/model.odb --out /data/workspace_id/
 
 # Phase 2: Pack to HDF5 and SQLite
 python src/l1/l1_pack.py --workspace /data/workspace_id/
@@ -92,7 +92,7 @@ gunicorn src.l3.main:app -w 4 -k uvicorn.workers.UvicornWorker
 ## ⚖️ Development Conventions
 
 - **Three-Layer Separation:** Never merge L1 (raw) and L2 (processed) data into the same files. Use `manifest.db` for routing.
-- **Instance-Level Scoping:** Abaqus labels (node/element) are unique only within an `Instance`. All queries must use `(instance_name, label)`.
+- **Instance-Level Scoping:** DeckSolver labels (node/element) are unique only within an `Instance`. All queries must use `(instance_name, label)`.
 - **Binary Payloads:** Large arrays must be served as `application/octet-stream` with metadata in JSON or HTTP headers.
 - **Multi-Process Safety:** The `job-runner` (L1/L2) must be a separate process from the L3 Web Service to avoid SQLite/HDF5 locking issues.
 - **CoW Optimization:** Load static indices and label maps into memory before forking Gunicorn workers to maximize Copy-on-Write (CoW) memory sharing.

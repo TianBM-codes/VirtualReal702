@@ -11,7 +11,7 @@
 
 本文是一份**图文并茂的交付说明**，主线是一句话：
 
-> **把不同求解器产出的模型文件（Abaqus / Nastran），从上传、解析、预处理，一路送到浏览器里做三维云图交互，并在此之上用试验数据反过来修正仿真模型。**
+> **把不同求解器产出的模型文件（DeckSolver / BulkSolver），从上传、解析、预处理，一路送到浏览器里做三维云图交互，并在此之上用试验数据反过来修正仿真模型。**
 
 - 面向评审读者：读**第 1～3 章**即可掌握"系统做什么、难在哪、怎么解决、达成了什么效果"。
 - 面向接手开发者：**第 4～6 章**给出程序组织结构、接口、关键代码位置。
@@ -39,12 +39,12 @@
 
 ### 1.1 要解决的工程问题
 
-传统 FEM 后处理工具（Abaqus CAE、HyperView、Femap 等）有三道墙，挡住了工程评审的效率：
+传统 FEM 后处理工具（DeckSolver CAE、HyperView、Femap 等）有三道墙，挡住了工程评审的效率：
 
 | 痛点 | 具体表现 |
 |---|---|
 | **许可证墙** | 后处理软件按席位收费，团队里只有少数人有 license，设计师/项目经理/甲方看不了结果 |
-| **格式墙** | Abaqus（INP/ODB）和 Nastran（BDF/OP2）互不兼容，多工况、多求解器对比要反复手工转换 |
+| **格式墙** | DeckSolver（INP/ODB）和 BulkSolver（BDF/OP2）互不兼容，多工况、多求解器对比要反复手工转换 |
 | **规模墙** | 桌面客户端全量加载，千万节点模型内存爆、单帧云图要等几十秒，撑不起评审现场的实时交互 |
 
 本平台的目标：**把仿真结果发布成一个网页服务，任何浏览器打开就能看三维云图，免 license、跨求解器、扛千万节点**；并在此基础上，**用物理试验数据自动校准仿真模型参数**。
@@ -56,10 +56,10 @@
 ```mermaid
 flowchart TB
     subgraph 输入[多格式模型文件]
-        INP[Abaqus INP<br/>几何]
-        ODB[Abaqus ODB<br/>几何+结果]
-        BDF[Nastran BDF<br/>几何]
-        OP2[Nastran OP2<br/>结果]
+        INP[DeckSolver INP<br/>几何]
+        ODB[DeckSolver ODB<br/>几何+结果]
+        BDF[BulkSolver BDF<br/>几何]
+        OP2[BulkSolver OP2<br/>结果]
         UNV[试验 UNV<br/>模态/静力]
     end
 
@@ -80,7 +80,7 @@ flowchart TB
     M2 -. 修正效果云图 .-> WEB
 ```
 
-- **主线一**（本文第 2、3 章）：读 Abaqus ODB / INP、Nastran BDF / OP2，通过三层流水线把最多 ~1000 万节点、数十帧的 FEM 数据推给 Three.js 前端做 3D 云图。
+- **主线一**（本文第 2、3 章）：读 DeckSolver ODB / INP、BulkSolver BDF / OP2，通过三层流水线把最多 ~1000 万节点、数十帧的 FEM 数据推给 Three.js 前端做 3D 云图。
 - **主线二**（本文第 4 章）：基于试验数据（UNV 模态、BDF 静力）与仿真结果的对比，算灵敏度矩阵，用贝叶斯迭代修正材料属性、壳厚等参数，结果写回 MySQL。
 - **两条主线唯一的耦合点**：主线二算出的"每个部件被改了多少"，会作为一个新的结果场写回主线一，于是评审可以像看应力云图一样，**在浏览器里直接看到这次修正动了模型的哪些地方**。
 
@@ -115,8 +115,8 @@ flowchart LR
 flowchart TB
     subgraph L1["L1 · 格式适配与忠实提取　【一次性 · ODB 阶段需 license】"]
         L1a["INP → inp_pack.py（纯 Python）"]
-        L1b["ODB → abaqus_dump.py(Py2.7) + l1_pack.py(Py3)"]
-        L1c["BDF → bdf_pack.py（pyNastran）"]
+        L1b["ODB → deck_solver_dump.py(Py2.7) + l1_pack.py(Py3)"]
+        L1c["BDF → bdf_pack.py（bulk_provider）"]
         L1d["OP2 → op2_pack / op2_geom_pack"]
         L1out["📦 统一输出：HDF5 文件集 + manifest.db"]
         L1a & L1b & L1c & L1d --> L1out
@@ -141,7 +141,7 @@ flowchart TB
 
 #### ① 技术难点
 
-Abaqus 和 Nastran 是两套完全不同的"方言"：单元命名不同（Abaqus 按形状/材料命名 `C3D8R`，Nastran 按连接关系命名 `CHEXA`）、坐标系约定不同、结果组织不同（Abaqus 是 Step/Frame/Field 三层树，Nastran 是 SOL/Subcase/Result 三层树）。更棘手的是 **ODB 是 Abaqus 私有二进制格式，唯一的读取方式是 Abaqus 自带的受限 Python 2.7 环境，而这个环境装不了 h5py**，还得占用稀缺的 license。
+DeckSolver 和 BulkSolver 是两套完全不同的"方言"：单元命名不同（DeckSolver 按形状/材料命名 `C3D8R`，BulkSolver 按连接关系命名 `CHEXA`）、坐标系约定不同、结果组织不同（DeckSolver 是 Step/Frame/Field 三层树，BulkSolver 是 SOL/Subcase/Result 三层树）。更棘手的是 **ODB 是 DeckSolver 私有二进制格式，唯一的读取方式是 DeckSolver 自带的受限 Python 2.7 环境，而这个环境装不了 h5py**，还得占用稀缺的 license。
 
 #### ② 技术思路
 
@@ -155,7 +155,7 @@ Abaqus 和 Nastran 是两套完全不同的"方言"：单元命名不同（Abaqu
 flowchart LR
     subgraph ODB路径["ODB 路径（两阶段，隔离 license）"]
         direction LR
-        O1["abaqus_dump.py<br/>(Abaqus Python 2.7)<br/>🔑需 license<br/>遍历 Assembly/Instance/<br/>Step/Frame/Field"]
+        O1["deck_solver_dump.py<br/>(DeckSolver Python 2.7)<br/>🔑需 license<br/>遍历 Assembly/Instance/<br/>Step/Frame/Field"]
         O2[".npy 临时文件"]
         O3["l1_pack.py<br/>(标准 Python 3 + h5py)<br/>打包成 HDF5"]
         O1 --> O2 --> O3
@@ -163,15 +163,14 @@ flowchart LR
     subgraph 其他路径["其他路径（纯 Python，无 license）"]
         direction TB
         P1["inp_pack.py → 自研 INP 解析器"]
-        P2["bdf_pack.py → pyNastran"]
+        P2["bdf_pack.py → bulk_provider"]
         P3["op2_pack.py / op2_geom_pack.py"]
-        P4["cdb_pack.py / rst_pack.py（Ansys）"]
     end
     O3 --> U["📦 统一 HDF5 + manifest.db"]
     P1 & P2 & P3 & P4 --> U
 ```
 
-- **两阶段的额外好处**：如果打包（Phase 2）出 bug，不用重新烧一次昂贵的 license 跑 Abaqus，直接拿已有的 `.npy` 重跑 `l1_pack.py` 即可。
+- **两阶段的额外好处**：如果打包（Phase 2）出 bug，不用重新烧一次昂贵的 license 跑 DeckSolver，直接拿已有的 `.npy` 重跑 `l1_pack.py` 即可。
 - **忠实原则**：L1 只搬运、不加工——不做坐标变换、不三角化、不裁数值，保留 ODB 的全部原始精度，把"加工"留给下一层。
 - **多帧布局**：结果统一存成 `[帧数, 节点数, 分量数]` 的三维张量，这样"取某一帧全模型"和"取某个节点全时程"都能一次磁盘读取完成。
 
@@ -179,13 +178,12 @@ flowchart LR
 
 ```
 src/l1/
-├── abaqus_dump.py       — ODB Phase 1（Abaqus Python 2.7）
+├── deck_solver_dump.py       — ODB Phase 1（DeckSolver Python 2.7）
 ├── l1_pack.py           — ODB Phase 2（打包 HDF5）
-├── inp_pack.py          — Abaqus INP 适配器
-├── bdf_pack.py          — Nastran BDF 适配器
-├── op2_pack.py          — Nastran OP2 纯结果
-├── op2_geom_pack.py     — Nastran OP2 含嵌入几何
-├── cdb_pack.py / rst_pack.py — Ansys 适配器
+├── inp_pack.py          — DeckSolver INP 适配器
+├── bdf_pack.py          — BulkSolver BDF 适配器
+├── op2_pack.py          — BulkSolver OP2 纯结果
+├── op2_geom_pack.py     — BulkSolver OP2 含嵌入几何
 └── manifest_schema.py   — manifest.db 表结构与实例名归一化 canon_instance()
 ```
 
@@ -388,26 +386,26 @@ viewer/（Vue 3 + Three.js + Pinia + Vite）
 
 ### 3.1 应力云图数值口径与商业软件严格对齐（最难，也最容易被低估）
 
-**难在哪（大白话）**：云图上的"应力值"不是仿真直接吐出来的数字，而是从每个单元内部若干"积分点"的原始张量，经过一连串数学变换（外推到节点、算 Mises/主应力/第三不变量、正负号处理）算出来的。Abaqus 这套变换的口径是不公开的"潜规则"，**任何一步差一点，云图数字就偏离 Abaqus 3%~5%，而且不会报错**——只能靠专门写对照脚本逐值比对才能揪出来。真实踩过的坑包括：
+**难在哪（大白话）**：云图上的"应力值"不是仿真直接吐出来的数字，而是从每个单元内部若干"积分点"的原始张量，经过一连串数学变换（外推到节点、算 Mises/主应力/第三不变量、正负号处理）算出来的。DeckSolver 这套变换的口径是不公开的"潜规则"，**任何一步差一点，云图数字就偏离 DeckSolver 3%~5%，而且不会报错**——只能靠专门写对照脚本逐值比对才能揪出来。真实踩过的坑包括：
 
 - Mises 是非线性量，"先在积分点算 Mises 再外推" ≠ "先外推张量再算 Mises"，前者会算出物理上不可能的**负 Mises 值**；
 - 第三不变量 INV3 漏了 `(27/2·J₃)^(1/3)` 的系数和开方；
 - "Abs 变体"应该是"取绝对值更大的主应力**但保留符号**"，不是真取绝对值；
 - 应变的剪切分量是工程剪应变 `γ=2ε`，算不变量前要先 ÷2 还原，且应变场不该算 Mises；
-- Abaqus 官方分量名 `MAX_INPLANE_PRINCIPAL`（无下划线）被误写成有下划线，导致面内不变量**从来没生成过**。
+- DeckSolver 官方分量名 `MAX_INPLANE_PRINCIPAL`（无下划线）被误写成有下划线，导致面内不变量**从来没生成过**。
 
 **最典型的坑 —— 混合 solid-shell 模型的"交集 vs 并集"陷阱**：
 
 ```mermaid
 flowchart TB
     A["混合模型<br/>既有实体单元(应力6分量)<br/>又有壳单元(应力4分量，<br/>但多面内/面外主应力)"]
-    A --> B{"Abaqus 原生 API<br/>对混合场返回什么？"}
+    A --> B{"DeckSolver 原生 API<br/>对混合场返回什么？"}
     B -->|"取交集"| C["❌ 静默丢掉壳独有的<br/>面内/面外不变量<br/>(不报错，你以为没这个量)"]
     B -->|"若反过来取并集"| D["❌ 纯壳实例选到实体专属分量<br/>→ 全 NaN 崩溃"]
     C & D --> E["✅ 项目方案：解耦<br/>主动探测壳块是否存在→<br/>交集漏掉的分量补回，<br/>实体块显式写 NaN<br/>(前端渲染成灰色而非报错)"]
 ```
 
-**沉淀出的通用原则**：凡是合并壳和实体的元数据，必须想清楚用并集还是交集——**并集要给缺数据置灰，交集要显式把缺的补回来**。所有公式集中在 `src/l1/abaqus_dump.py::_compute_invariants_numpy`，配 `docs/l1/不变量计算公式表.md` 做公式台账逐条记录修正历史，并有回归测试固化。
+**沉淀出的通用原则**：凡是合并壳和实体的元数据，必须想清楚用并集还是交集——**并集要给缺数据置灰，交集要显式把缺的补回来**。所有公式集中在 `src/l1/deck_solver_dump.py::_compute_invariants_numpy`，配 `docs/l1/不变量计算公式表.md` 做公式台账逐条记录修正历史，并有回归测试固化。
 
 ### 3.2 大规模数据渲染：内存 / 传输 / 空间索引三件套
 
@@ -425,19 +423,19 @@ flowchart TB
 
 难点与向量化解法见 2.2。这里单独讲**高阶单元中节点的精度坑**，因为它和 3.1 是同源问题：
 
-- 高阶单元（如 C3D20）建渲染面时，最初**只用角节点、丢弃边中节点**，导致边中节点上的应力峰值从未进入渲染，**云图峰值系统性比 Abaqus 偏低 3~4%**（实测 S13 分量 8032 vs Abaqus 8324）。
+- 高阶单元（如 C3D20）建渲染面时，最初**只用角节点、丢弃边中节点**，导致边中节点上的应力峰值从未进入渲染，**云图峰值系统性比 DeckSolver 偏低 3~4%**（实测 S13 分量 8032 vs DeckSolver 8324）。
 - 排查发现：原始积分点数据完全正确，问题纯粹出在"建面和取值都只走角节点"。
 - 解法（方案 A2）：二次三角面（6 节点）细分成 4 个子三角、二次四边面（8 节点）细分成 6 个子三角，把中节点也纳入渲染插值。更精确的方案 A1（合成面心点 + Q8 二次插值）已在文档列为待办。
 
 ```mermaid
 flowchart LR
     A["高阶单元表面<br/>(角节点+边中节点)"] -->|"❌ 只连角节点"| B["粗三角<br/>边中节点峰值被抹平<br/>→ 云图峰值偏低3~4%"]
-    A -->|"✅ 方案A2：中节点细分"| C["6节点面→4子三角<br/>8节点面→6子三角<br/>峰值对齐 Abaqus"]
+    A -->|"✅ 方案A2：中节点细分"| C["6节点面→4子三角<br/>8节点面→6子三角<br/>峰值对齐 DeckSolver"]
 ```
 
-### 3.4 自研 Abaqus INP 解析器
+### 3.4 自研 DeckSolver INP 解析器
 
-**为什么不用现成库**：pyNastran 只认 Nastran BDF，市面上没有输出能跟 ODB 提取结果严格对齐的开源 INP 解析库；而模型修正要在**不启动 Abaqus license** 的情况下解析/改写 INP。INP 文本格式陷阱不少：关键字大小写不敏感、行尾逗号续行、`*INCLUDE` 可递归嵌套要防死循环、同名 Set 多次定义取并集、`*Coupling` 这类约束**根本不是单元**、要靠 `*Kinematic/*Distributing` 子块才能定性再"凭空"展开成几何线段。
+**为什么不用现成库**：bulk_provider 只认 BulkSolver BDF，市面上没有输出能跟 ODB 提取结果严格对齐的开源 INP 解析库；而模型修正要在**不启动 DeckSolver license** 的情况下解析/改写 INP。INP 文本格式陷阱不少：关键字大小写不敏感、行尾逗号续行、`*INCLUDE` 可递归嵌套要防死循环、同名 Set 多次定义取并集、`*Coupling` 这类约束**根本不是单元**、要靠 `*Kinematic/*Distributing` 子块才能定性再"凭空"展开成几何线段。
 
 解法是四层职责严格分离的流水线：
 
@@ -448,14 +446,14 @@ flowchart LR
     P --> R["resolver.py<br/>语义：Set嵌套展开/<br/>Instance旋转→4×4矩阵"]
     R --> E["exporter.py<br/>导出：写成与 ODB 提取<br/>完全一致的 HDF5 schema<br/>(耦合展开成蜘蛛线段)"]
 ```
-核心设计原则是 **"Data Fidelity"**：INP 解析产出必须与 `abaqus_dump.py` 的 ODB 提取产物在 HDF5 schema 上完全一致，L2/L3 才能对两种数据源无感知复用同一套管道。出错不直接抛异常炸掉，而是收集成诊断信息定位到具体文件行。
+核心设计原则是 **"Data Fidelity"**：INP 解析产出必须与 `deck_solver_dump.py` 的 ODB 提取产物在 HDF5 schema 上完全一致，L2/L3 才能对两种数据源无感知复用同一套管道。出错不直接抛异常炸掉，而是收集成诊断信息定位到具体文件行。
 
 ### 3.5 跨数据源一致性与特殊单元
 
 三条路径（ODB / INP / BDF）命名习惯完全不同，两个典型坑：
 
-- **大小写**：Abaqus 生成 ODB 时把所有集合名"烙成"大写且不可逆，INP 保留用户原始大小写，字面比较就对不上（`_PickedSet6` vs `_PICKEDSET6`）。解法是**在名字第一次进入流水线的源头归一化**（INP 侧写库前 `.upper()`，instance 名走 `canon_instance()`），而不是在每个比较点打补丁。
-- **特殊单元 spider 耦合**：耦合/连接器/质量/弹簧这类没有曲面几何的单元，最初因不在白名单被静默丢弃、前端看不见。更妙的是**同一个耦合约束有两种"变身"**——Abaqus 到了 ODB 里被求解器实体化成看不见名字的 `DCOUP3D` 单元，INP 侧却是 `*Coupling` 约束关键字，两条完全不同的起点最终要拼出同一份 `couplings/positions` 数据：
+- **大小写**：DeckSolver 生成 ODB 时把所有集合名"烙成"大写且不可逆，INP 保留用户原始大小写，字面比较就对不上（`_PickedSet6` vs `_PICKEDSET6`）。解法是**在名字第一次进入流水线的源头归一化**（INP 侧写库前 `.upper()`，instance 名走 `canon_instance()`），而不是在每个比较点打补丁。
+- **特殊单元 spider 耦合**：耦合/连接器/质量/弹簧这类没有曲面几何的单元，最初因不在白名单被静默丢弃、前端看不见。更妙的是**同一个耦合约束有两种"变身"**——DeckSolver 到了 ODB 里被求解器实体化成看不见名字的 `DCOUP3D` 单元，INP 侧却是 `*Coupling` 约束关键字，两条完全不同的起点最终要拼出同一份 `couplings/positions` 数据：
 
 ```mermaid
 flowchart TB
@@ -496,11 +494,11 @@ flowchart TB
 
 **① 试验-仿真配准（点云匹配）**：试验传感器坐标系和仿真节点坐标系往往不重合、还有安装误差。用 **ICP（迭代最近点）** 自动做刚体配准（支持"仅平移"和"平移+旋转"两种模式），再用八叉树最近邻把每个测点落到最近的仿真节点，超容差的允许被剔除而不是强行匹配错。
 
-**② 灵敏度矩阵不是"试出来"的**：不用有限差分（改一次参数重算一次），而是生成 Abaqus DSA / Nastran SOL200 专用输入文件，调用求解器自身的**解析灵敏度**能力，精度更高。关键的三级映射链路（也是最容易让人困惑的地方）：
+**② 灵敏度矩阵不是"试出来"的**：不用有限差分（改一次参数重算一次），而是生成 DeckSolver DSA / BulkSolver SOL200 专用输入文件，调用求解器自身的**解析灵敏度**能力，精度更高。关键的三级映射链路（也是最容易让人困惑的地方）：
 
 ```mermaid
 flowchart LR
-    A["Abaqus 求解输出<br/>d_U_1, d_U_2 ... 字段"] -->|"剥出参数序号"| B["序号 1,2,..."]
+    A["DeckSolver 求解输出<br/>d_U_1, d_U_2 ... 字段"] -->|"剥出参数序号"| B["序号 1,2,..."]
     B -->|"参数名映射表"| C["用户认得的参数名<br/>T1=某壳厚"]
     C -->|"INP parameter_mapping"| D["具体作用的 Section/Set"]
     D --> E["归一化灵敏度矩阵 S_norm<br/>S(j,i)=(dRⱼ/dpᵢ)·pᵢ/rⱼ"]
@@ -511,7 +509,6 @@ flowchart LR
 
 ### 4.3 多求解器统一 & 程序组织
 
-主线二一开始围绕 Abaqus 设计，后扩展支持 Nastran（BDF/OP2）和 Ansys（CDB/RST）。做法是**"归一化 model dict + 统一落库函数"**：无论数据来自哪个求解器，材料/壳厚等元数据落到同一批 MySQL 表，下游灵敏度/贝叶斯层完全不用区分来源。
 
 ```
 services/model_update/
@@ -520,7 +517,7 @@ services/model_update/
 │   ├── fem_correlation_service.py— DAC/DSF/MAC 相关性
 │   ├── sensitivity_service.py    — 灵敏度工作台（5775行）
 │   ├── bayesian_service.py       — 贝叶斯迭代主逻辑（5673行）
-│   └── solver_service.py         — Abaqus/Nastran 求解器调度
+│   └── solver_service.py         — DeckSolver/BulkSolver 求解器调度
 ├── importers/       — bdf/unv/op2/cdb/rst 各格式导入 → 统一落库
 └── solver_prep/     — 生成 DSA/adjoint/SOL103/SOL200 求解输入文件
 webapi/routers/      — REST 接口（fem/test_data/matching/sensitivity/optimization/solver）
@@ -574,7 +571,7 @@ flowchart TB
 | L3 服务 | `src/l3/` | Router / Service / Repo 三层，HTTP + L3BE |
 | 前端 | `viewer/` | Vue3 + Three.js |
 | 模型修正 | `services/model_update/`、`webapi/` | 匹配/灵敏度/贝叶斯 + REST |
-| INP 解析器 | `src/inp/` | 两线共用，纯 Python 解析 Abaqus INP |
+| INP 解析器 | `src/inp/` | 两线共用，纯 Python 解析 DeckSolver INP |
 | 后台调度 | `src/job_runner.py` | 独立进程，认领并执行 L1/L2/导入任务 |
 
 ---
@@ -587,7 +584,6 @@ flowchart TB
 
 | 维度 | 达成效果 |
 |---|---|
-| **格式支持** | Abaqus INP/ODB、Nastran BDF/OP2（含/不含嵌入几何）；Ansys CDB/RST（修正主线）；自动识别 + 一致性校验 |
 | **模型规模** | ≤ 1000 万节点、数十个装配实例、数十个分析步、数百帧 |
 | **免许可证** | INP/BDF/OP2 全链路免 license，ODB 仅提取阶段需要 |
 | **免客户端** | 任意现代浏览器直接访问，无需安装插件 |
@@ -595,7 +591,7 @@ flowchart TB
 | **振型动画** | 60 fps（GPU 着色器，与规模无关） |
 | **云图切换** | < 500 ms（百万节点，只传颜色属性） |
 | **并发内存** | 4 worker 共享 ≈ 2 GB（CoW） |
-| **数值精度** | 不变量公式逐位对齐 Abaqus，混合 solid-shell、高阶单元峰值均已对齐 |
+| **数值精度** | 不变量公式逐位对齐 DeckSolver，混合 solid-shell、高阶单元峰值均已对齐 |
 
 ### 6.2 功能清单
 
@@ -603,7 +599,7 @@ flowchart TB
 
 ### 6.3 工程方法论沉淀
 
-除了功能本身，项目最有价值的沉淀是一套**"逐位对齐 + 对照脚本 + 回归测试"的工程方法论**：对每一个"不报错但会悄悄错"的数值口径问题（不变量公式、混合模型交并集、高阶单元峰值、Nastran 坐标系），都通过写独立对照脚本逐值比对 Abaqus/FEMTools、定位后修复、再用回归测试固化，避免同一个坑踩第二次。这是比任何单一功能都更能体现团队真功夫的地方。
+除了功能本身，项目最有价值的沉淀是一套**"逐位对齐 + 对照脚本 + 回归测试"的工程方法论**：对每一个"不报错但会悄悄错"的数值口径问题（不变量公式、混合模型交并集、高阶单元峰值、BulkSolver 坐标系），都通过写独立对照脚本逐值比对 DeckSolver/FEMTools、定位后修复、再用回归测试固化，避免同一个坑踩第二次。这是比任何单一功能都更能体现团队真功夫的地方。
 
 ---
 
@@ -619,7 +615,7 @@ flowchart TB
 | `docs/混合solid-shell模型陷阱与排查.md` | 交集/并集陷阱方法论 |
 | `docs/l2/HighOrder-Midside-Subdivision-Design.md` | 高阶单元中节点细分设计 |
 | `docs/Special-Element-Handling.md` | 特殊单元（耦合/连接器/质量/弹簧）处理约定 |
-| `docs/model_update/` | 模型修正主线全部设计文档（灵敏度/贝叶斯/Nastran 扩展） |
+| `docs/model_update/` | 模型修正主线全部设计文档（灵敏度/贝叶斯/BulkSolver 扩展） |
 | `FEM-Viewer-Primer.md` | FEM 概念、ODB 结构与 Three.js 渲染关系科普 |
 
 ---

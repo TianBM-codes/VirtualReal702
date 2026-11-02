@@ -229,6 +229,6 @@ python -m tools.simright.generate_artifacts
 python -m pytest tools/simright/tests -q
 ```
 
-生成器支持 `--markdown`、`--excel`、`--output`。单独运行客户端只需 requests，不依赖 openpyxl、数巧桌面、Abaqus 或本项目数据库。
+生成器支持 `--markdown`、`--excel`、`--output`。单独运行客户端只需 requests，不依赖 openpyxl、数巧桌面、DeckSolver 或本项目数据库。
 
 测试使用模拟 HTTP/业务响应，覆盖协议差异、失败响应、测点阈值、零件重号和映射、解析及六分量时间轴对齐，以及解析解和坐标旋转验证。未提供实际服务地址和鉴权，本次不声称已完成真实数巧服务联调，也未执行转换、删除或探针创建。

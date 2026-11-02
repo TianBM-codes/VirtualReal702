@@ -12,7 +12,7 @@ ODB Model — 从 L1 HDF5 加载几何/材料/集合数据，返回结构化 mod
             print("  ", etype, eg.elem_labels.shape, eg.conn_labels.shape)
 
 前提: l1_pack.py 已成功完成（l1/ 目录和 manifest.db 已存在）。
-不需要 Abaqus，纯 Python 3 + h5py + numpy。
+不需要 DeckSolver，纯 Python 3 + h5py + numpy。
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ class OdbMaterial:
 class OdbElementGroup:
     """所有同类型单元的数据块。"""
     etype: str                  # e.g. "C3D8R"
-    elem_labels: np.ndarray     # [M] int32  — 单元标签（Abaqus label）
+    elem_labels: np.ndarray     # [M] int32  — 单元标签（DeckSolver label）
     conn_labels: np.ndarray     # [M, nc] int32 — 角节点标签（已转换，非行号）
 
 
@@ -185,7 +185,7 @@ def _load_elements(
             continue
         elem_labels = eg["labels"][:].astype(np.int32)
         conn_rows   = eg["conn"][:].astype(np.int32)   # row indices into node_labels
-        # 转成节点标签（Abaqus label），方便外部代码直接使用
+        # 转成节点标签（DeckSolver label），方便外部代码直接使用
         conn_labels = node_labels[conn_rows]
         groups[etype_safe] = OdbElementGroup(
             etype=etype_safe,
@@ -241,7 +241,7 @@ def _load_node_sets(
     if nsets_grp is None:
         return node_sets
     for sname in nsets_grp:
-        # abaqus_dump.py 写入的是 Abaqus 节点标签，直接使用
+        # deck_solver_dump.py 写入的是 DeckSolver 节点标签，直接使用
         node_sets[sname] = nsets_grp[sname][:].astype(np.int32)
     return node_sets
 
@@ -254,7 +254,7 @@ def _load_element_sets(
     if esets_grp is None:
         return element_sets
     for sname in esets_grp:
-        # abaqus_dump.py 写入的是 Abaqus 单元标签，直接使用
+        # deck_solver_dump.py 写入的是 DeckSolver 单元标签，直接使用
         element_sets[sname] = esets_grp[sname][:].astype(np.int32)
     return element_sets
 
@@ -270,7 +270,7 @@ def load_as_inp_model(workspace: str):
     返回值可直接传给 import_inp_catalog(file_path, project_id, model=...)，
     无需修改 inp_service.py。
 
-    ODB 节点坐标在 abaqus_dump.py 中已是全局坐标，
+    ODB 节点坐标在 deck_solver_dump.py 中已是全局坐标，
     因此 Instance 不设 transform_matrix，_collect_global_nodes 会直接使用坐标原值。
     """
     from src.inp.model import (
@@ -278,7 +278,7 @@ def load_as_inp_model(workspace: str):
         Node, Element, Nset, Elset,
         Section, Material, ElasticData,
     )
-    from src.inp.model import ABAQUS_TO_FACTORY
+    from src.inp.model import DECK_SOLVER_TO_FACTORY
 
     odb = load_odb_model(workspace)
 
@@ -297,13 +297,13 @@ def load_as_inp_model(workspace: str):
         # ── Elements ─────────────────────────────────────────────────────────
         elements: Dict[int, Element] = {}
         for etype_safe, eg in inst.element_groups.items():
-            factory = ABAQUS_TO_FACTORY.get(etype_safe.upper(), "")
+            factory = DECK_SOLVER_TO_FACTORY.get(etype_safe.upper(), "")
             for j in range(len(eg.elem_labels)):
                 lbl   = int(eg.elem_labels[j])
                 nconn = [int(nl) for nl in eg.conn_labels[j] if int(nl) >= 0]
                 elements[lbl] = Element(
                     label=lbl,
-                    abaqus_type=etype_safe,
+                    deck_solver_type=etype_safe,
                     factory_type=factory,
                     node_labels=nconn,
                 )

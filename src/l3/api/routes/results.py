@@ -294,7 +294,7 @@ async def get_frame_scalars(
     mode: smooth (per-vertex NODAL interpolation) | flat (per-element average).
     set: optional user set name; returns only vertices for triangles in that set.
     feature_angle: angle threshold for shell/membrane domain splitting (default 20°).
-    average_threshold: 0.75 = Abaqus default 75% threshold for conditional averaging.
+    average_threshold: 0.75 = DeckSolver default 75% threshold for conditional averaging.
     use_geometry_split: set to false to split only by section, ignoring geometry.
     global_min/global_max: when both provided, skip per-instance range and normalize
                            against the supplied global range (multi-instance mode).

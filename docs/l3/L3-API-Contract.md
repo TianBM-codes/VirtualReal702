@@ -1213,7 +1213,7 @@ GET /api/odb/{odb_id}/query/pick
 
 ### 15.1 设计思路
 
-Abaqus CAE 里有 "Color Code" 功能——按材料、截面类型、单元类型、或 Elset 成员身份给模型染色，直观区分不同区域。本接口在后端完成颜色计算，返回 per-vertex RGB 数组直接写入 Three.js 的 `colorAttribute`，前端零计算。
+DeckSolver CAE 里有 "Color Code" 功能——按材料、截面类型、单元类型、或 Elset 成员身份给模型染色，直观区分不同区域。本接口在后端完成颜色计算，返回 per-vertex RGB 数组直接写入 Three.js 的 `colorAttribute`，前端零计算。
 
 ---
 
@@ -1233,7 +1233,7 @@ GET /api/odb/{odb_id}/color-code/{instance}/schemes
 ```
 
 - `etype`：始终可用（L2 render H5 里有 `source_etype_str`）
-- `material` / `section_type`：仅当 L1 H5 里有对应属性时出现（INP 导出路径会写入；ODB 路径视 Abaqus 版本而定）
+- `material` / `section_type`：仅当 L1 H5 里有对应属性时出现（INP 导出路径会写入；ODB 路径视 DeckSolver 版本而定）
 - `elset`：当 `l1/sets/sets.h5` 里有 element sets 时出现
 
 ---

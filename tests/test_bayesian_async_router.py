@@ -30,13 +30,13 @@ def test_bayesian_run_kwargs_uses_service_config_defaults(monkeypatch):
         target_responses={"R1": 1.0},
     )
     monkeypatch.setattr(optimization, "resolve_project_cal_subdir", lambda project_id, name: "D:/temp/bayesian")
-    monkeypatch.setattr(optimization, "resolve_abaqus_command", lambda value: "C:/SIMULIA/Commands/abaqus.bat")
+    monkeypatch.setattr(optimization, "resolve_deck_solver_command", lambda value: "C:/SIMULIA/Commands/deck_solver.bat")
     monkeypatch.setattr(optimization, "resolve_project_input_file", lambda project_id, explicit_path, file_name, field_name: "D:/demo/model.inp")
 
     kwargs = optimization._bayesian_run_kwargs(body)
 
     assert kwargs["output_dir"] == "D:/temp/bayesian"
-    assert kwargs["abaqus"] == "C:/SIMULIA/Commands/abaqus.bat"
+    assert kwargs["deck_solver"] == "C:/SIMULIA/Commands/deck_solver.bat"
     assert kwargs["write_cloud_result"] is True
     assert kwargs["cloud_step_name"] == "BayesianUpdate"
     assert kwargs["cloud_field_name"] == "PARAMETER_RELATIVE_DELTA_PERCENT"
@@ -53,7 +53,7 @@ def test_bayesian_run_kwargs_accepts_step_name_and_frame_idx_aliases(monkeypatch
         frame_idx=4,
     )
     monkeypatch.setattr(optimization, "resolve_project_cal_subdir", lambda project_id, name: "D:/temp/bayesian")
-    monkeypatch.setattr(optimization, "resolve_abaqus_command", lambda value: "abaqus")
+    monkeypatch.setattr(optimization, "resolve_deck_solver_command", lambda value: "deck_solver")
     monkeypatch.setattr(
         optimization,
         "resolve_project_input_file",

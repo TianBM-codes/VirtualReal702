@@ -1,23 +1,29 @@
 # -*- coding: utf-8 -*-
-"""对照"单元节点 Mises"的两种口径，看哪种和 Abaqus 云图一致、哪种会出负数。
+"""对照"单元节点 Mises"的两种口径，看哪种和 DeckSolver 云图一致、哪种会出负数。
 
-在装 Abaqus 的机器上运行:
-    abaqus python tests/dump_abq_mises_compare.py <odb> [field=S] [step=Step-1] [frame=1]
+在装 DeckSolver 的机器上运行:
+    deck_solver python tests/dump_abq_mises_compare.py <odb> [field=S] [step=Step-1] [frame=1]
 
 对 ELEMENT_NODAL 位置，打印三套 Mises 的全装配 + HEAD-1 的 min/max：
 
   A  scalarfield_en : getScalarField(MISES).getSubset(ELEMENT_NODAL)
                       —— 先在积分点算 Mises 标量、再外推标量(本平台现在存的就是这个)
   B1 block.mises     : 取 S 的 ELEMENT_NODAL 张量 block，直接读 block.mises
-                      —— 先把张量外推到节点、再算 Mises(Abaqus 自带, 恒 ≥0)
+                      —— 先把张量外推到节点、再算 Mises(DeckSolver 自带, 恒 ≥0)
   B2 numpy(EN tensor): 用 EN 张量分量自己按 Voigt 公式算 Mises(应与 B1 一致, 做交叉验证)
 
-若 A 出负数、而 B1/B2 恒 ≥0 且与 Abaqus 云图对得上，则应改用 B 口径。
+若 A 出负数、而 B1/B2 恒 ≥0 且与 DeckSolver 云图对得上，则应改用 B 口径。
 """
+
+import os as _runtime_os
+import sys as _runtime_sys
+_runtime_sys.path.insert(0, _runtime_os.path.abspath(_runtime_os.path.join(
+    _runtime_os.path.dirname(__file__), '..')))
+
 import sys
 import numpy as np
 from odbAccess import openOdb
-from abaqusConstants import ELEMENT_NODAL, MISES
+from result_constants import ELEMENT_NODAL, MISES
 
 
 def _mises_voigt(d):
@@ -93,7 +99,7 @@ def main():
         if b.instance is None:
             continue
         nm = b.instance.name
-        # B1: Abaqus 自带 block.mises
+        # B1: DeckSolver 自带 block.mises
         if b1_ok:
             try:
                 accB1.add(nm, b.mises)
@@ -109,7 +115,7 @@ def main():
         accB1.report("B1 block.mises")
     accB2.report("B2 numpy(EN tensor)")
     print("\n说明: A 若出负值而 B1/B2 恒 ≥0，则负数来自'先算标量再外推'的过冲；"
-          "看你的 Abaqus 云图 Mises 最小值是负还是 ~0，即可判定该用哪种。")
+          "看你的 DeckSolver 云图 Mises 最小值是负还是 ~0，即可判定该用哪种。")
 
     odb.close()
 

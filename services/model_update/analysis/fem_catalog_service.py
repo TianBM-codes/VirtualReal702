@@ -1019,8 +1019,8 @@ def _derive_quantity_code_from_candidate(candidate_code: Optional[str]) -> Optio
     return None
 
 
-def _element_family_from_abaqus_type(abaqus_type: Optional[str]) -> str:
-    token = str(abaqus_type or "").strip().upper()
+def _element_family_from_deck_solver_type(deck_solver_type: Optional[str]) -> str:
+    token = str(deck_solver_type or "").strip().upper()
     if token.startswith(("S", "SC", "M3D")):
         return "SHELL"
     if token.startswith(("CPS", "CPE", "CAX")):
@@ -1080,7 +1080,7 @@ def _build_section_parameter_maps(model, parameter_defs: Dict[str, dict]):
             material = model.materials.get(material_name) if material_name else None
             e_value = _resolve_material_elastic_modulus(material) if material is not None else None
             families = {
-                _element_family_from_abaqus_type(getattr(part.elements.get(int(label)), "abaqus_type", None))
+                _element_family_from_deck_solver_type(getattr(part.elements.get(int(label)), "deck_solver_type", None))
                 for label in labels
                 if int(label) in part.elements
             }
@@ -1167,7 +1167,7 @@ def _extract_quantity_set_capabilities(model) -> List[dict]:
         if part is None:
             continue
         families = {
-            _element_family_from_abaqus_type(getattr(part.elements.get(int(label)), "abaqus_type", None))
+            _element_family_from_deck_solver_type(getattr(part.elements.get(int(label)), "deck_solver_type", None))
             for label in labels
             if int(label) in part.elements
         }
@@ -1783,7 +1783,7 @@ def _model_instance_rows(model) -> List[dict]:
     return rows
 
 
-def get_project_abaqus_instances_and_steps(project_id: int) -> dict:
+def get_project_deck_solver_instances_and_steps(project_id: int) -> dict:
     model, source_inp = _load_project_inp_model(int(project_id))
     instances = _model_instance_rows(model)
     steps = []
@@ -1804,7 +1804,7 @@ def get_project_abaqus_instances_and_steps(project_id: int) -> dict:
     }
 
 
-def resolve_abaqus_instance_context(project_id: int, instance_name: str) -> dict:
+def resolve_deck_solver_instance_context(project_id: int, instance_name: str) -> dict:
     resolved_instance_name = str(instance_name or "").strip()
     if not resolved_instance_name:
         raise ValidationError("instance_name is required", {"instance_name": instance_name})
@@ -1839,8 +1839,8 @@ def resolve_abaqus_instance_context(project_id: int, instance_name: str) -> dict
     }
 
 
-def validate_abaqus_instance_node_label(project_id: int, instance_name: str, node_label: int) -> dict:
-    context = resolve_abaqus_instance_context(int(project_id), instance_name)
+def validate_deck_solver_instance_node_label(project_id: int, instance_name: str, node_label: int) -> dict:
+    context = resolve_deck_solver_instance_context(int(project_id), instance_name)
     model, _source_inp = _load_project_inp_model(int(project_id))
     part = model.parts.get(str(context["part_name"]))
     exists = bool(part is not None and int(node_label) in getattr(part, "nodes", {}))
@@ -1903,7 +1903,7 @@ def _resolve_quantity_set_capability_for_parameter_create(
 ) -> dict:
     # Parameter creation accepts a short "quantity + set" reference from the
     # caller, then resolves it into one concrete capability row. That row is
-    # the shared bridge from Abaqus/Nastran selection semantics to the formal
+    # the shared bridge from DeckSolver/BulkSolver selection semantics to the formal
     # selected-parameter record used by sensitivity/update workflows.
     query = f"""
         SELECT quantity_code, set_name, set_type, set_scope, instance_name, part_name,
@@ -2954,7 +2954,7 @@ def create_design_response_catalog_entry(
     return payload
 
 
-def resolve_abaqus_sensor_node_match(project_id: int, sensor_name: str) -> dict:
+def resolve_deck_solver_sensor_node_match(project_id: int, sensor_name: str) -> dict:
     ensure_tables_exist()
 
     resolved_sensor_name = str(sensor_name or "").strip()

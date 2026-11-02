@@ -1,16 +1,16 @@
 """
-Tests for Abaqus element family matching (suffix stripping).
+Tests for DeckSolver element family matching (suffix stripping).
 
 Covers:
   - src/inp/model.py  map_element_type()
   - src/l2/ingest.py  _resolve_elem_code()
 
-src/l1/abaqus_dump.py is not imported because it requires Abaqus's odbAccess
+src/l1/deck_solver_dump.py is not imported because it requires DeckSolver's odbAccess
 at import time.  Its _resolve_elem_code / _resolve_midnode_indices are
 identical in logic to the L2 versions and are covered by the L2 tests.
 """
 import pytest
-from src.inp.model import map_element_type, ABAQUS_TO_FACTORY
+from src.inp.model import map_element_type, DECK_SOLVER_TO_FACTORY
 from src.l2.ingest import _resolve_elem_code, ELEM_TYPE_CODE
 
 
@@ -78,9 +78,9 @@ class TestMapElementType:
 
     # --- all existing table entries still resolve ---
     def test_all_table_entries_unchanged(self):
-        for abaqus_type, expected in ABAQUS_TO_FACTORY.items():
-            assert map_element_type(abaqus_type) == expected, \
-                f"{abaqus_type} should still map to {expected}"
+        for deck_solver_type, expected in DECK_SOLVER_TO_FACTORY.items():
+            assert map_element_type(deck_solver_type) == expected, \
+                f"{deck_solver_type} should still map to {expected}"
 
 
 # ---------------------------------------------------------------------------

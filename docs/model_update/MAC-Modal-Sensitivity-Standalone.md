@@ -158,7 +158,7 @@ python tools/mac_modal_sensitivity_standalone.py compute-mac-sensitivity --confi
 这个命令是给你现在这个场景准备的：
 
 1. 先用 `build-sol200-bdf` 生成 `SOL200` 的 `BDF`
-2. 手工调用 `Nastran` 求解
+2. 手工调用 `BulkSolver` 求解
 3. 拿求解生成的 `sens.csv` 和 `*.sol200.json`
 4. 导出一个可以直接看云图的 `VTU`
 

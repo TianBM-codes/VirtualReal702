@@ -10,7 +10,7 @@
 L1/L2 的几何流水线本质是把单元三角化成可渲染的**表面**。最初只认壳、实体、
 梁/桁架这些"有形状"的单元，凡是不在白名单里的类型一律 `skip`：
 
-- `src/l1/abaqus_dump.py`（ODB 路径）：`_resolve_elem_code` 查不到 → 打印
+- `src/l1/deck_solver_dump.py`（ODB 路径）：`_resolve_elem_code` 查不到 → 打印
   `WARNING: unknown type X, skipped` 后丢弃。
 - `src/inp/exporter.py`（INP 路径）：`_ELEM_TYPE_CODE.get(...) < 0` → `continue`，
   静默丢弃。
@@ -32,7 +32,7 @@ L1/L2 的几何流水线本质是把单元三角化成可渲染的**表面**。�
 
 ### BDF 路径的弹簧/阻尼（含零长度兜底）
 
-Nastran 卡在 `src/l1/bdf_pack.py` `NASTRAN_TO_ABAQUS` 里映射到上面的 Abaqus 名：
+BulkSolver 卡在 `src/l1/bdf_pack.py` `BULK_SOLVER_TO_DECK_SOLVER` 里映射到上面的 DeckSolver 名：
 CBUSH/CBUSH1D/CELAS1/CELAS2 → `SPRING2`，CDAMP1/CDAMP2 → `DASHPOT2`，
 CONM1/2、CMASS1/2 → `MASS`。
 
@@ -53,7 +53,7 @@ GRID 不足仍跳过（计 `*_no_grid`）。完全没有有效 GRID 的弹簧仍
 
 | 文件 | 运行环境 | 作用 |
 |---|---|---|
-| `src/l1/abaqus_dump.py` | Abaqus Python 2.7 | ODB → npy，决定单元怎么分流 |
+| `src/l1/deck_solver_dump.py` | DeckSolver Python 2.7 | ODB → npy，决定单元怎么分流 |
 | `src/inp/exporter.py` `_ELEM_TYPE_CODE` | Python 3 | INP → 几何 h5 |
 | `src/l2/ingest.py` `ELEM_TYPE_CODE` | Python 3 | 读几何 h5，`collect_lines`/`collect_points` 据码分类 |
 
@@ -75,7 +75,7 @@ couplings/positions = [Nseg*2, 3] float32
   **约束关键字**。`parser._handle_coupling` 解析 ref node + surface →
   `exporter._append_coupling_lines` 展开成线段。**KINEMATIC 和 DISTRIBUTING 都画。**
 - **ODB 路径**：求解器把同一个耦合**内部实体化成 DCOUP3D 单元**（INP 里没有
-  DCOUP3D 这个词）。`abaqus_dump` 对未识别的多节点单元按 `conn[0]=ref,
+  DCOUP3D 这个词）。`deck_solver_dump` 对未识别的多节点单元按 `conn[0]=ref,
   conn[1:]=leaf` 展开成线段。
 
 下游统一：L2 `collect_couplings` 透传 → L3 `GET /geometry/{inst}/couplings`
@@ -83,7 +83,7 @@ couplings/positions = [Nseg*2, 3] float32
 
 ## 数据落点
 
-ODB 路径（`abaqus_dump` → `l1_pack`）在 `geometry/<inst>.h5` 写：
+ODB 路径（`deck_solver_dump` → `l1_pack`）在 `geometry/<inst>.h5` 写：
 
 ```
 /couplings/positions              [Nseg*2, 3] float32   # spider 线段
@@ -111,9 +111,9 @@ INP 路径在同名 `couplings/positions` 数据集写（`exporter._append_coupl
 
 | 关注点 | 位置 |
 |---|---|
-| ODB 单元分流 / spider 展开 / special 归档 | `src/l1/abaqus_dump.py` `dump_geometry` |
+| ODB 单元分流 / spider 展开 / special 归档 | `src/l1/deck_solver_dump.py` `dump_geometry` |
 | 几何 h5 打包（couplings/elements_special） | `src/l1/l1_pack.py` `pack_geometry` |
-| BDF 卡映射 / 弹簧零长度拆分 | `src/l1/bdf_pack.py` `NASTRAN_TO_ABAQUS` / `_split_zero_length_springs` |
+| BDF 卡映射 / 弹簧零长度拆分 | `src/l1/bdf_pack.py` `BULK_SOLVER_TO_DECK_SOLVER` / `_split_zero_length_springs` |
 | INP 线/点/耦合导出 | `src/inp/exporter.py` `_write_geometry_h5` / `_append_coupling_lines` |
 | INP 耦合关键字解析 | `src/inp/parser.py` `_handle_coupling` |
 | L2 收集 | `src/l2/ingest.py` `collect_lines` / `collect_points` / `collect_couplings` |

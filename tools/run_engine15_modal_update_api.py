@@ -74,7 +74,7 @@ def main() -> None:
         ),
         (
             "03_sol103_run_and_store_modal",
-            "/solver/nastran/sol103/run_and_store_modal",
+            "/solver/bulk_solver/sol103/run_and_store_modal",
             {
                 "project_id": args.project_id,
                 "input_bdf": args.bdf,
@@ -133,7 +133,7 @@ def main() -> None:
         ),
         (
             "08_sol200_preview_all_elements_e",
-            "/solver/nastran/sol200/preview",
+            "/solver/bulk_solver/sol200/preview",
             {
                 "project_id": args.project_id,
                 "input_bdf": args.bdf,
@@ -159,7 +159,7 @@ def main() -> None:
         ),
         (
             "09_sol200_run_and_store_all_elements_e",
-            "/solver/nastran/sol200/run_and_store",
+            "/solver/bulk_solver/sol200/run_and_store",
             {
                 "project_id": args.project_id,
                 "batch_no": str(args.project_id),

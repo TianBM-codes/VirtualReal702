@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from services.model_update.analysis import sensitivity_service
-from services.model_update.analysis.abaqusDSAInpGenerator import (
+from services.model_update.analysis.deck_solverDSAInpGenerator import (
     normalize_step_line_to_dsa,
     patch_static_step_to_dsa,
 )
@@ -221,11 +221,11 @@ def test_build_project_dsa_config_preview_explicit_uses_thickness_parameters(mon
             "part_name": "P1",
         }
     ]
-    assert {item["code"] for item in result["warnings"]} == {"RESPONSE_VARIABLES_MAPPED_TO_ABAQUS_BASE"}
+    assert {item["code"] for item in result["warnings"]} == {"RESPONSE_VARIABLES_MAPPED_TO_DECK_SOLVER_BASE"}
 
 
-def test_normalize_abaqus_dsa_response_variables_maps_sensor_style_translations():
-    normalized, mappings = sensitivity_service._normalize_abaqus_dsa_response_variables(
+def test_normalize_deck_solver_dsa_response_variables_maps_sensor_style_translations():
+    normalized, mappings = sensitivity_service._normalize_deck_solver_dsa_response_variables(
         region_type="NODE",
         variables=["UY", "RX", "U2", "UR3"],
     )

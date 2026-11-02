@@ -128,8 +128,8 @@ class Settings:
         _runner_default = "0" if sys.platform == "win32" else "1"
         self.embedded_runner = _get(cfg, "APP_EMBEDDED_RUNNER", _runner_default) == "1"
 
-        # Abaqus executable — override if `abaqus` is not on PATH
-        self.abaqus_cmd = _get(cfg, "APP_ABAQUS_CMD", "abaqus")
+        # DeckSolver executable — override if `deck_solver` is not on PATH
+        self.deck_solver_cmd = _get(cfg, "APP_DECK_SOLVER_CMD", "deck_solver")
 
         # ODB 解析字段白名单（逗号分隔，按基础字段名匹配，支持 * 通配；"all" = 全量）。
         # 与 src/job_runner.py 的 APP_ODB_FIELDS 默认值保持一致。
@@ -157,7 +157,7 @@ def log_startup_config() -> None:
         "=" * 60,
         f"  data_root         : {settings.data_root}",
         f"  registry_db       : {settings.registry_db_path}",
-        f"  abaqus_cmd        : {settings.abaqus_cmd}",
+        f"  deck_solver_cmd        : {settings.deck_solver_cmd}",
         f"  embedded_runner   : {settings.embedded_runner}",
         f"  runner_poll_interval: {settings.runner_poll_interval}s",
         f"  preload_projects  : {settings.preload_projects}   (startup load)",

@@ -1,30 +1,36 @@
 # -*- coding: utf-8 -*-
 """含壳/膜模型上,探测并验证"面内/面外主应力 + Abs 变体"的实现前提。
 
-在装了 Abaqus 的机器上运行(Abaqus Python 2.7 或新版 Python 3):
-    abaqus python tests/dump_abq_inplane_probe.py <odb> [field=S] [step=Step-1] [frame=1]
+在装了 DeckSolver 的机器上运行(DeckSolver Python 2.7 或新版 Python 3):
+    deck_solver python tests/dump_abq_inplane_probe.py <odb> [field=S] [step=Step-1] [frame=1]
 
 它回答 4 件事,作为实现"面内/面外/Abs 主应力"前的体检:
 
-1) validInvariants:这个场在含壳模型里,Abaqus 报哪些有效不变量。
-2) Abs 常量探测:abaqusConstants 里有没有 MAX_PRINCIPAL_ABS 之类、getScalarField 认不认。
+1) validInvariants:这个场在含壳模型里,DeckSolver 报哪些有效不变量。
+2) Abs 常量探测:result_constants 里有没有 MAX_PRINCIPAL_ABS 之类、getScalarField 认不认。
 3) 实体置灰判据:面内不变量标量场(getScalarField)到底"哪些单元类型有数据"
    —— 有=壳/膜(该出值),无=实体(该置灰)。这是生产里最可靠的判据。
 4) 公式对照:在 INTEGRATION_POINT 上,用我们的 numpy 口径算 主应力/面内/面外/Abs,
-   和 Abaqus getScalarField 的值逐块对(按值排序后比,免去顺序问题),报最大误差(应 ~0)。
-   ※ 必须在积分点比:面内主应力非线性,EN 上 Abaqus 走外推标量(方法A)、我们走张量算
+   和 DeckSolver getScalarField 的值逐块对(按值排序后比,免去顺序问题),报最大误差(应 ~0)。
+   ※ 必须在积分点比:面内主应力非线性,EN 上 DeckSolver 走外推标量(方法A)、我们走张量算
      (方法B)本就不等;积分点上两者都直接从张量算,才该一致。
 
 不写任何文件。
 """
+
+import os as _runtime_os
+import sys as _runtime_sys
+_runtime_sys.path.insert(0, _runtime_os.path.abspath(_runtime_os.path.join(
+    _runtime_os.path.dirname(__file__), '..')))
+
 import sys
 import numpy as np
 from odbAccess import openOdb
-import abaqusConstants as AC
-from abaqusConstants import INTEGRATION_POINT
+import result_constants as AC
+from result_constants import INTEGRATION_POINT
 
 
-# ── 我们生产代码里的 numpy 口径(与 abaqus_dump._compute_invariants_numpy 一致) ──
+# ── 我们生产代码里的 numpy 口径(与 deck_solver_dump._compute_invariants_numpy 一致) ──
 def _principals_3d(d):
     d = np.asarray(d, dtype=np.float64)
     n = d.shape[0]
@@ -136,7 +142,7 @@ def main():
 
     # ── 4) 公式对照(积分点, 按值排序比) ──────────────────────────────────────
     print("=" * 72)
-    print("4) numpy 公式 vs Abaqus getScalarField, INTEGRATION_POINT 逐块最大误差:")
+    print("4) numpy 公式 vs DeckSolver getScalarField, INTEGRATION_POINT 逐块最大误差:")
     inv_consts = {
         'MAX_PRINCIPAL': AC.MAX_PRINCIPAL, 'MIN_PRINCIPAL': AC.MIN_PRINCIPAL,
         'MAX_INPLANE_PRINCIPAL': AC.MAX_INPLANE_PRINCIPAL,
@@ -182,7 +188,7 @@ def main():
         tag = "  最差块=%s" % (worst_key,) if worst_key else ""
         extra = ""
         if inv == 'MAX_PRINCIPAL_ABS':
-            extra = ("\n        Abaqus值域=[%.4g, %.4g]  我们(带符号)值域=[%.4g, %.4g]"
+            extra = ("\n        DeckSolver值域=[%.4g, %.4g]  我们(带符号)值域=[%.4g, %.4g]"
                      "\n        候选公式 abs(absmax)[无符号] 最大误差=%.3g"
                      % (abq_lo, abq_hi, our_lo, our_hi, worst_abs))
         print("   %-24s 比了%d块 跳过%d  最大误差=%.3g%s%s"

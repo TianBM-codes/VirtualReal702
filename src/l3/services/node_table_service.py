@@ -33,7 +33,7 @@ def _result_h5_path(workspace: str, step: str, field: str,
     return ManifestRepo(workspace).result_h5_abspath(step, field, result_group)
 
 
-# Invariant suffixes are now extracted via Abaqus getScalarField — all visible.
+# Invariant suffixes are now extracted via DeckSolver getScalarField — all visible.
 _HIDDEN_INV_SUFFIXES = ()
 
 

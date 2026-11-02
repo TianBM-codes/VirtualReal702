@@ -4,7 +4,7 @@
 op2_geom_pack.py — Layer 1 extraction for OP2 files that contain embedded geometry
 (PARAM,POST,-1 style, with GEOM1/GEOM2 tables).
 
-Uses pyNastran read_op2_geom which returns an object with the same .nodes /
+Uses bulk_provider read_op2_geom which returns an object with the same .nodes /
 .elements / .properties / .materials interface as BDF, so it reuses bdf_pack._pack_model.
 
 Usage:
@@ -22,7 +22,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from src.l1.bdf_pack import _pack_model, mkdirs, _fmt_t, safe
-from src.l1.pynastran_op2_compat import read_op2_geom_compat
+from src.l1.bulk_provider_op2_compat import read_op2_geom_compat
 
 
 def pack_op2_geom(op2_path, workspace):

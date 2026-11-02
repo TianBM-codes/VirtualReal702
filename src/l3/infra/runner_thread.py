@@ -34,11 +34,10 @@ from src.l3.infra.manifest_repo import ManifestRepo as _ManifestRepo
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT    = Path(__file__).resolve().parent.parent.parent.parent
-_DUMP_SCRIPT  = _REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
+_DUMP_SCRIPT  = _REPO_ROOT / "src" / "l1" / "deck_solver_dump.py"
 _PACK_SCRIPT  = _REPO_ROOT / "src" / "l1" / "l1_pack.py"
 _INP_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "inp_pack.py"
 _BDF_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "bdf_pack.py"
-_CDB_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "cdb_pack.py"
 _SIPESC_UNV_PACK_SCRIPT = _REPO_ROOT / "src" / "l1" / "sipesc_unv_pack.py"
 _INGEST_SCRIPT = _REPO_ROOT / "src" / "l2" / "ingest.py"
 
@@ -118,13 +117,13 @@ class EmbeddedRunner:
         self,
         registry_db: str,
         data_root: str,
-        abaqus_cmd: str = "abaqus",
+        deck_solver_cmd: str = "deck_solver",
         poll_interval: int = 10,
         odb_fields: str = "U,S,E,LE,NT*,TEMP",
     ):
         self.registry_db   = registry_db
         self.data_root     = data_root
-        self.abaqus_cmd    = abaqus_cmd
+        self.deck_solver_cmd    = deck_solver_cmd
         self.poll_interval = poll_interval
         self.odb_fields    = odb_fields
         self._pid = os.getpid()
@@ -301,7 +300,7 @@ class EmbeddedRunner:
     def _run_streaming(self, cmd: list, odb_id: str, label: str):
         """Run subprocess; stream each line to logger. Returns (returncode, last_50_lines).
 
-        Sets PYTHONUNBUFFERED=1 so Abaqus Python 2.7 flushes print() immediately.
+        Sets PYTHONUNBUFFERED=1 so DeckSolver Python 2.7 flushes print() immediately.
         Also refreshes the runner lock heartbeat every _HB_INTERVAL seconds so the
         lock is not stolen by another worker during long-running L1 jobs.
         """
@@ -356,17 +355,17 @@ class EmbeddedRunner:
     # ── L1 pipeline ───────────────────────────────────────────────────────────
 
     def _run_l1_odb(self, odb_id: str, odb_path: str, workspace: str) -> bool:
-        logger.info("[%s] L1 phase 1: abaqus_dump.py", odb_id)
+        logger.info("[%s] L1 phase 1: deck_solver_dump.py", odb_id)
         rc, tail = self._run_streaming(
-            [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
+            [self.deck_solver_cmd, "python", str(_DUMP_SCRIPT),
              "--odb", odb_path, "--out", workspace,
              "--field-list", self._odb_field_list()],
-            odb_id, "abaqus_dump",
+            odb_id, "deck_solver_dump",
         )
         if rc != 0:
             self._update_status(odb_id, "error",
-                error_msg=f"abaqus_dump failed: {tail}\n"
-                          f"[Check {workspace}/abaqus.log for full output]")
+                error_msg=f"deck_solver_dump failed: {tail}\n"
+                          f"[Check {workspace}/deck_solver.log for full output]")
             return False
 
         logger.info("[%s] L1 phase 2: l1_pack.py", odb_id)
@@ -620,12 +619,12 @@ class EmbeddedRunner:
             self._update_project_geom_status(project_id, "error", msg)
             return False
 
-        logger.info("[%s] Project ODB: abaqus_dump.py", project_id)
-        dump_cmd = [self.abaqus_cmd, "python", str(_DUMP_SCRIPT), "--odb", odb_path, "--out", workspace,
+        logger.info("[%s] Project ODB: deck_solver_dump.py", project_id)
+        dump_cmd = [self.deck_solver_cmd, "python", str(_DUMP_SCRIPT), "--odb", odb_path, "--out", workspace,
                     "--field-list", self._odb_field_list()]
-        rc, tail = self._run_streaming(dump_cmd, project_id, "project_abaqus_dump")
+        rc, tail = self._run_streaming(dump_cmd, project_id, "project_deck_solver_dump")
         if rc != 0:
-            msg = "abaqus_dump failed: " + tail
+            msg = "deck_solver_dump failed: " + tail
             self._update_project_geom_status(project_id, "error", msg)
             return False
 
@@ -698,13 +697,14 @@ class EmbeddedRunner:
 
     def _run_project(self, project_id: str, source_path: str,
                      source_type: str, workspace: str) -> bool:
+        if source_type in ("cdb", "rst"):
+            self._update_project_geom_status(project_id, "error", "Unsupported source format in this edition")
+            return False
         if source_type == "odb":
             return self._run_odb_project(project_id, source_path, workspace)
-        if source_type in ("bdf", "cdb", "sipesc_unv"):
+        if source_type in ("bdf", "sipesc_unv"):
             if source_type == "bdf":
                 script, arg, stage = _BDF_PACK_SCRIPT, "--bdf", "bdf_geometry"
-            elif source_type == "cdb":
-                script, arg, stage = _CDB_PACK_SCRIPT, "--cdb", "cdb_geometry"
             else:
                 script, arg, stage = _SIPESC_UNV_PACK_SCRIPT, "--unv", "sipesc_unv_geometry"
             cmd = [sys.executable, str(script), arg, source_path, "--workspace", workspace]
@@ -819,7 +819,7 @@ class EmbeddedRunner:
         display_name = parse_opts.get("display_name", result_group)
         source_file = os.path.basename(source_path)
 
-        # SIPESC UNV is not an ODB and therefore has no Abaqus check.json.
+        # SIPESC UNV is not an ODB and therefore has no DeckSolver check.json.
         # Its parser performs a non-blocking node-label match against geometry.
         if source_path.lower().endswith(".unv"):
             rc, tail = self._run_streaming(
@@ -838,7 +838,7 @@ class EmbeddedRunner:
         # ── Step 1: preflight consistency check ──────────────────────────────
         logger.info("[%s] preflight (%s)", label, check_mode)
         rc, tail = self._run_streaming(
-            [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
+            [self.deck_solver_cmd, "python", str(_DUMP_SCRIPT),
              "--odb", source_path,
              "--out", workspace,
              "--result-group", result_group,
@@ -863,7 +863,7 @@ class EmbeddedRunner:
 
         # ── Step 2: extract results ───────────────────────────────────────────
         logger.info("[%s] extract", label)
-        extract_cmd = [self.abaqus_cmd, "python", str(_DUMP_SCRIPT),
+        extract_cmd = [self.deck_solver_cmd, "python", str(_DUMP_SCRIPT),
                        "--odb", source_path,
                        "--out", workspace,
                        "--result-group", result_group,
@@ -981,7 +981,7 @@ class EmbeddedRunner:
 def start_embedded_runner(
     registry_db: str,
     data_root: str,
-    abaqus_cmd: str = "abaqus",
+    deck_solver_cmd: str = "deck_solver",
     poll_interval: int = 10,
     odb_fields: str = "U,S,E,LE,NT*,TEMP",
 ) -> bool:
@@ -991,7 +991,7 @@ def start_embedded_runner(
     Returns True  — this worker acquired the lock and started the thread.
     Returns False — another worker already holds the lock (this worker skips).
     """
-    runner = EmbeddedRunner(registry_db, data_root, abaqus_cmd, poll_interval, odb_fields)
+    runner = EmbeddedRunner(registry_db, data_root, deck_solver_cmd, poll_interval, odb_fields)
     if not runner.try_acquire_lock():
         logger.debug(
             "Embedded runner: lock held by another worker (pid=%d), skipping",

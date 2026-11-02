@@ -49,7 +49,7 @@ _COMP_ALIASES: Dict[str, int] = {
     # Displacement / position
     "X": 0, "Y": 1, "Z": 2,
     "U1": 0, "U2": 1, "U3": 2,
-    # Stress / strain components (Abaqus ordering: 11,22,33,12,13,23)
+    # Stress / strain components (DeckSolver ordering: 11,22,33,12,13,23)
     "11": 0, "22": 1, "33": 2, "12": 3, "13": 4, "23": 5,
     "S11": 0, "S22": 1, "S33": 2, "S12": 3, "S13": 4, "S23": 5,
     "E11": 0, "E22": 1, "E33": 2, "E12": 3, "E13": 4, "E23": 5,

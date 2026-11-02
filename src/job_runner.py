@@ -42,14 +42,12 @@ from src.utils.file_fetch import (
     materialize_source_file,
     resolve_runner_source,
 )
-DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "abaqus_dump.py"
+DUMP_SCRIPT     = REPO_ROOT / "src" / "l1" / "deck_solver_dump.py"
 PACK_SCRIPT     = REPO_ROOT / "src" / "l1" / "l1_pack.py"
 INP_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "inp_pack.py"
 BDF_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "bdf_pack.py"
 OP2_GEOM_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "op2_geom_pack.py"
 OP2_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "op2_pack.py"
-CDB_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "cdb_pack.py"
-RST_PACK_SCRIPT      = REPO_ROOT / "src" / "l1" / "rst_pack.py"
 SIPESC_UNV_PACK_SCRIPT = REPO_ROOT / "src" / "l1" / "sipesc_unv_pack.py"
 INGEST_SCRIPT   = REPO_ROOT / "src" / "l2" / "ingest.py"
 
@@ -123,8 +121,8 @@ REGISTRY_DB      = _cfg(_svc_cfg, "APP_REGISTRY_DB_PATH", str(REPO_ROOT / "model
 DATA_ROOT        = _cfg(_svc_cfg, "APP_DATA_ROOT", _DEFAULT_MODEL)
 POLL_INTERVAL    = int(_cfg(_svc_cfg, "JOB_RUNNER_POLL_INTERVAL", "10"))    # seconds
 HEARTBEAT_INTERVAL = 60   # seconds between heartbeat updates
-ABAQUS_CMD       = _cfg(_svc_cfg, "APP_ABAQUS_CMD", "abaqus")  # override if not in PATH
-# "full" -> pass --invariants full to abaqus_dump.py; "none" -> skip (default)
+DECK_SOLVER_CMD       = _cfg(_svc_cfg, "APP_DECK_SOLVER_CMD", "deck_solver")  # override if not in PATH
+# "full" -> pass --invariants full to deck_solver_dump.py; "none" -> skip (default)
 INVARIANTS_MODE  = _cfg(_svc_cfg, "APP_INVARIANTS", "none")
 # ODB 只解析白名单里的字段（按基础字段名匹配，支持 * 通配；"all" = 全量）。
 # U=位移, S=应力, E/LE=应变（小变形/大变形）, NT*/TEMP=节点/单元温度。
@@ -132,7 +130,7 @@ ODB_FIELDS       = _cfg(_svc_cfg, "APP_ODB_FIELDS", "U,S,E,LE,NT*,TEMP")
 
 
 def _odb_field_list(parse_opts: dict = None) -> str:
-    """--field-list value for abaqus_dump.py: parse_options.fields > field_prefix(=all) > config."""
+    """--field-list value for deck_solver_dump.py: parse_options.fields > field_prefix(=all) > config."""
     parse_opts = parse_opts or {}
     fields = parse_opts.get("fields")
     if isinstance(fields, (list, tuple)):
@@ -386,8 +384,8 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
     except FileNotFoundError:
         msg = (
             f"Command not found: {cmd[0]!r}\n"
-            f"Set APP_ABAQUS_CMD in service_config.json to the full path of the Abaqus executable.\n"
-            f"Example: {{\"APP_ABAQUS_CMD\": \"C:\\\\SIMULIA\\\\Commands\\\\abaqus.bat\"}}"
+            f"Set APP_DECK_SOLVER_CMD in service_config.json to the full path of the DeckSolver executable.\n"
+            f"Example: {{\"APP_DECK_SOLVER_CMD\": \"C:\\\\SIMULIA\\\\Commands\\\\deck_solver.bat\"}}"
         )
         logger.error("[%s] %s: %s", odb_id, label, msg)
         _log_job(odb_id, "error", msg, stage=label)
@@ -417,7 +415,7 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
     rc = proc.returncode
     if is_odb_dump and dump_version_error:
         # Keep the upgrade signal even when subsequent launcher output is long.
-        stderr_lines.append('ODB_VERSION_ERROR: source needs Abaqus upgrade')
+        stderr_lines.append('ODB_VERSION_ERROR: source needs DeckSolver upgrade')
         return 2, "\n".join(stderr_lines)
     if is_odb_dump and (dump_failed or dump_memory_error or (rc == 0 and not dump_complete)):
         rc = rc or 1
@@ -436,7 +434,7 @@ def _run_streaming(cmd: list, odb_id: str, label: str, cwd: str = None) -> tuple
 def _is_odb_version_error(rc: int, tail: str) -> bool:
     """
     Detect ODB version mismatch via the explicit marker printed by _open_odb()
-    in abaqus_dump.py.  Reliable and specific - no keyword heuristics that
+    in deck_solver_dump.py.  Reliable and specific - no keyword heuristics that
     could match ODB filenames containing 'upgrade' or 'odb'.
     """
     return "ODB_VERSION_ERROR" in tail
@@ -457,7 +455,7 @@ def _project_used_inp_geom(project_id: str) -> bool:
 def _is_consistency_fail(rc: int, tail: str) -> bool:
     """
     Detect geometry-ODB mismatch via sentinel printed by _consistency_check_inline().
-    Abaqus Python exit codes are not reliably propagated on Windows, so we check
+    DeckSolver Python exit codes are not reliably propagated on Windows, so we check
     output text rather than rc alone.
     """
     return rc != 0 or "ODB_CONSISTENCY_FAIL:" in tail
@@ -465,7 +463,7 @@ def _is_consistency_fail(rc: int, tail: str) -> bool:
 
 def _upgrade_odb(odb_path: str, label: str) -> tuple:
     """
-    Run 'abaqus -upgrade -job <tmp_base> -odb <source.odb>' in the ODB's directory.
+    Run 'deck_solver -upgrade -job <tmp_base> -odb <source.odb>' in the ODB's directory.
     Returns (success: bool, upgraded_path: str, tail: str).
 
     upgraded_path is the path callers should use for the retry:
@@ -485,8 +483,8 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
         except Exception:
             pass
 
-    # Run from odb_dir so Abaqus writes tmp_base.odb there
-    cmd = [ABAQUS_CMD, "-upgrade", "-job", tmp_base, "-odb", odb_abs]
+    # Run from odb_dir so DeckSolver writes tmp_base.odb there
+    cmd = [DECK_SOLVER_CMD, "-upgrade", "-job", tmp_base, "-odb", odb_abs]
     logger.info("[%s] ODB version mismatch - upgrading (cwd=%s): %s",
                 label, odb_dir, " ".join(cmd))
     rc, tail = _run_streaming(cmd, label, "odb_upgrade", cwd=odb_dir)
@@ -494,7 +492,7 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
         logger.error("[%s] ODB upgrade failed (rc=%d)", label, rc)
         return False, odb_abs, tail
 
-    # Abaqus -upgrade may exit 0 even on failure - check output for error markers
+    # DeckSolver -upgrade may exit 0 even on failure - check output for error markers
     if "ODB FILE UPGRADE FAILED" in tail.upper():
         logger.error("[%s] ODB upgrade failed (rc=0 but error in output)", label)
         return False, odb_abs, tail
@@ -520,21 +518,21 @@ def _upgrade_odb(odb_path: str, label: str) -> tuple:
 def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
     """
     ODB pipeline:
-      Phase 1 - abaqus_dump.py  (Abaqus Python 2.7, requires Abaqus license)
+      Phase 1 - deck_solver_dump.py  (DeckSolver Python 2.7, requires DeckSolver license)
       Phase 2 - l1_pack.py      (standard Python 3)
-    If Abaqus reports a version mismatch on first attempt, the ODB is upgraded
-    in-place and abaqus_dump.py is retried once.
+    If DeckSolver reports a version mismatch on first attempt, the ODB is upgraded
+    in-place and deck_solver_dump.py is retried once.
     """
-    logger.info("[%s] L1 phase 1: abaqus_dump.py", odb_id)
+    logger.info("[%s] L1 phase 1: deck_solver_dump.py", odb_id)
     _log_job(odb_id, "step",
-             f"{_kw('L1 阶段 1')}：Abaqus 导出（abaqus_dump.py）启动",
+             f"{_kw('L1 阶段 1')}：DeckSolver 导出（deck_solver_dump.py）启动",
              stage="l1_dump", percent=5)
-    dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
+    dump_cmd = [DECK_SOLVER_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
     dump_cmd += ["--field-list", _odb_field_list()]
     rc1, tail1 = _run_streaming(dump_cmd, odb_id, "l1_dump")
-    logger.info("[%s] abaqus_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
+    logger.info("[%s] deck_solver_dump rc=%d, tail_len=%d", odb_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
         _log_job(odb_id, "warn",
@@ -547,22 +545,22 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
                      f"{_bad('ODB 升级失败')}：" + _esc(upgrade_tail[-500:]),
                      stage="l1_dump")
             return False
-        logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
+        logger.info("[%s] Retrying deck_solver_dump.py after upgrade (odb=%s)",
                     odb_id, upgraded_path)
         _log_job(odb_id, "step",
-                 f"{_good('ODB 升级完成')}，重试 abaqus_dump.py",
+                 f"{_good('ODB 升级完成')}，重试 deck_solver_dump.py",
                  stage="l1_dump", percent=5)
-        retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+        retry_cmd = [DECK_SOLVER_CMD, "python", str(DUMP_SCRIPT),
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
             retry_cmd += ["--invariants", "full"]
         retry_cmd += ["--field-list", _odb_field_list()]
         rc1, tail1 = _run_streaming(retry_cmd, odb_id, "l1_dump")
-        logger.info("[%s] abaqus_dump retry rc=%d", odb_id, rc1)
+        logger.info("[%s] deck_solver_dump retry rc=%d", odb_id, rc1)
 
     if rc1 != 0:
-        log_hint = "\n[Check {}/abaqus.log for full Abaqus output]".format(workspace)
-        err = "abaqus_dump failed: " + tail1 + log_hint
+        log_hint = "\n[Check {}/deck_solver.log for full DeckSolver output]".format(workspace)
+        err = "deck_solver_dump failed: " + tail1 + log_hint
         _update_status(odb_id, "error", error_msg=err)
         _log_job(odb_id, "error",
                  f"{_bad('L1 阶段 1 失败')} (rc={rc1})：" + _esc(tail1[-500:]),
@@ -593,7 +591,7 @@ def _run_l1_odb(odb_id: str, odb_path: str, workspace: str) -> bool:
 def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
     """
     INP pipeline: parse + export to L1-compatible HDF5 in-process.
-    No Abaqus license required.
+    No DeckSolver license required.
     """
     logger.info("[%s] L1 (INP): parsing %s", odb_id, inp_path)
     _log_job(odb_id, "step",
@@ -621,8 +619,8 @@ def _run_l1_inp(odb_id: str, inp_path: str, workspace: str) -> bool:
 def _run_l1(odb_id: str, source_path: str, workspace: str) -> bool:
     """
     Dispatch to the correct L1 pipeline based on file extension.
-      .inp -> INP parser + exporter (no Abaqus needed)
-      *    -> ODB pipeline (abaqus_dump + l1_pack)
+      .inp -> INP parser + exporter (no DeckSolver needed)
+      *    -> ODB pipeline (deck_solver_dump + l1_pack)
     Returns True on success; sets status='error' and returns False on failure.
     """
     if source_path.lower().endswith(".inp"):
@@ -651,7 +649,7 @@ def _run_l1(odb_id: str, source_path: str, workspace: str) -> bool:
 
 def _run_l2(odb_id: str, workspace: str) -> bool:
     """
-    Run ingest.py (pure Python 3, no Abaqus needed).
+    Run ingest.py (pure Python 3, no DeckSolver needed).
     On failure, status is rolled back to l1_done so L1 data is preserved.
     Returns True on success.
     """
@@ -909,16 +907,16 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
         _update_project_geom_status(project_id, "error", msg)
         return False
 
-    logger.info("[%s] Project ODB: abaqus_dump.py", project_id)
+    logger.info("[%s] Project ODB: deck_solver_dump.py", project_id)
     _log_job(project_id, "step",
-             f"{_kw('L1 阶段 1')}：Abaqus 导出（abaqus_dump.py）启动",
+             f"{_kw('L1 阶段 1')}：DeckSolver 导出（deck_solver_dump.py）启动",
              stage="l1_dump", percent=5)
-    dump_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
+    dump_cmd = [DECK_SOLVER_CMD, "python", str(DUMP_SCRIPT), "--odb", odb_path, "--out", workspace]
     if INVARIANTS_MODE == "full":
         dump_cmd += ["--invariants", "full"]
     dump_cmd += ["--field-list", _odb_field_list()]
     rc1, tail1 = _run_streaming(dump_cmd, project_id, "l1_dump")
-    logger.info("[%s] project_abaqus_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
+    logger.info("[%s] project_deck_solver_dump rc=%d, tail_len=%d", project_id, rc1, len(tail1))
 
     if _is_odb_version_error(rc1, tail1):
         _log_job(project_id, "warn",
@@ -931,21 +929,21 @@ def _run_odb_project(project_id: str, odb_path: str, workspace: str) -> bool:
                      f"{_bad('ODB 升级失败')}：{_esc(upgrade_tail[-500:])}",
                      stage="l1_dump")
             return False
-        logger.info("[%s] Retrying abaqus_dump.py after upgrade (odb=%s)",
+        logger.info("[%s] Retrying deck_solver_dump.py after upgrade (odb=%s)",
                     project_id, upgraded_path)
         _log_job(project_id, "step",
-                 f"{_good('ODB 升级完成')}，重试 abaqus_dump.py",
+                 f"{_good('ODB 升级完成')}，重试 deck_solver_dump.py",
                  stage="l1_dump", percent=5)
-        retry_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+        retry_cmd = [DECK_SOLVER_CMD, "python", str(DUMP_SCRIPT),
                      "--odb", upgraded_path, "--out", workspace]
         if INVARIANTS_MODE == "full":
             retry_cmd += ["--invariants", "full"]
         retry_cmd += ["--field-list", _odb_field_list()]
         rc1, tail1 = _run_streaming(retry_cmd, project_id, "l1_dump")
-        logger.info("[%s] project_abaqus_dump retry rc=%d", project_id, rc1)
+        logger.info("[%s] project_deck_solver_dump retry rc=%d", project_id, rc1)
 
     if rc1 != 0:
-        msg = "abaqus_dump failed: " + tail1
+        msg = "deck_solver_dump failed: " + tail1
         _update_project_geom_status(project_id, "error", msg)
         _log_job(project_id, "error",
                  f"{_bad('L1 阶段 1 失败')} (rc={rc1})：{_esc(tail1[-500:])}",
@@ -1314,175 +1312,8 @@ def _run_op2_project(project_id: str, op2_path: str, workspace: str) -> bool:
     return ok
 
 
-def _run_cdb_project(project_id: str, cdb_path: str, workspace: str) -> bool:
-    """Ansys CDB（纯几何）：cdb_pack -> L2 ingest -> model_update 导入。"""
-    if not cdb_path:
-        msg = "No CDB path stored for project {}".format(project_id)
-        logger.error(msg)
-        _update_project_geom_status(project_id, "error", msg)
-        return False
-    if not os.path.exists(cdb_path):
-        msg = "CDB file not found: {}".format(cdb_path)
-        logger.error("[%s] %s", project_id, msg)
-        _update_project_geom_status(project_id, "error", msg)
-        return False
-
-    logger.info("[%s] CDB project: cdb_pack.py", project_id)
-    _log_job(project_id, "step",
-             f"{_kw('L1 解析')}：CDB 几何提取（cdb_pack.py）启动",
-             stage="l1_cdb", percent=5)
-    rc1, tail1 = _run_streaming(
-        [sys.executable, str(CDB_PACK_SCRIPT), "--cdb", cdb_path, "--workspace", workspace],
-        project_id, "l1_cdb",
-    )
-    if rc1 != 0:
-        msg = "cdb_pack failed: " + tail1
-        _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error",
-                 f"{_bad('CDB 解析失败')} (rc={rc1})：{_esc(tail1[-500:])}", stage="l1_cdb")
-        logger.error("[%s] CDB project phase 1 failed (rc=%d)", project_id, rc1)
-        return False
-
-    _log_elem_type_summary(project_id, workspace, "CDB", os.path.basename(cdb_path), "l1_cdb")
-    _log_job(project_id, "step",
-             f"{_kw('CDB 解析完成')}，开始 L2 预处理", stage="l1_done", percent=50)
-
-    logger.info("[%s] CDB project: ingest.py (L2)", project_id)
-    _log_job(project_id, "step",
-             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest", percent=55)
-    rc2, tail2 = _run_streaming(
-        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        project_id, "l2_ingest",
-    )
-    if rc2 != 0:
-        msg = "ingest failed: " + tail2[-2000:]
-        _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error",
-                 f"{_bad('L2 预处理失败')} (rc={rc2})：{_esc(tail2[-500:])}", stage="l2_ingest")
-        logger.error("[%s] CDB project L2 failed (rc=%d)", project_id, rc2)
-        return False
-
-    _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step", _good("CDB 几何解析完成，已就绪"),
-             stage="l2_done", percent=85)
-    logger.info("[%s] CDB project ready", project_id)
-
-    # ── 自动导入 model_update ──────────────────────────────────────────────────
-    _log_job(project_id, "step", f"{_kw('自动导入 CDB')} 到 model_update",
-             stage="mu_import_cdb", percent=90)
-    try:
-        from services.model_update.importers.cdb_service import import_cdb_data
-        import_cdb_data(cdb_path, int(project_id), clear_before_insert=True)
-        _log_job(project_id, "step", _good("CDB 导入 model_update 完成"),
-                 stage="mu_import_cdb", percent=100)
-        logger.info("[%s] model_update CDB import done", project_id)
-    except Exception as exc:
-        _log_job(project_id, "warn",
-                 f"{_ws('model_update CDB 导入失败（非致命）')}：{_esc(str(exc))}",
-                 stage="mu_import_cdb", percent=100)
-        logger.warning("[%s] model_update CDB import failed: %s", project_id, exc)
-
-    return True
 
 
-def _run_rst_project(project_id: str, rst_path: str, workspace: str) -> bool:
-    """Ansys RST（几何+结果，自包含）：rst_pack 一次性提几何与结果 ->
-    L2 ingest -> 注册 default_result（ready）-> model_update 导入。不走叠加流程。"""
-    if not rst_path:
-        msg = "No RST path stored for project {}".format(project_id)
-        logger.error(msg)
-        _update_project_geom_status(project_id, "error", msg)
-        return False
-    if not os.path.exists(rst_path):
-        msg = "RST file not found: {}".format(rst_path)
-        logger.error("[%s] %s", project_id, msg)
-        _update_project_geom_status(project_id, "error", msg)
-        return False
-
-    logger.info("[%s] RST project: rst_pack.py", project_id)
-    _log_job(project_id, "step",
-             f"{_kw('L1 解析')}：RST 几何+结果提取（rst_pack.py）启动",
-             stage="l1_rst", percent=5)
-    rc1, tail1 = _run_streaming(
-        [sys.executable, str(RST_PACK_SCRIPT), "--rst", rst_path,
-         "--workspace", workspace, "--result-group", "default_result",
-         "--display-name", os.path.splitext(os.path.basename(rst_path))[0]],
-        project_id, "l1_rst",
-    )
-    if rc1 != 0:
-        msg = "rst_pack failed: " + tail1
-        _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error",
-                 f"{_bad('RST 解析失败')} (rc={rc1})：{_esc(tail1[-500:])}", stage="l1_rst")
-        logger.error("[%s] RST project phase 1 failed (rc=%d)", project_id, rc1)
-        return False
-
-    _log_elem_type_summary(project_id, workspace, "RST", os.path.basename(rst_path), "l1_rst")
-    _log_job(project_id, "step",
-             f"{_kw('RST 解析完成')}，开始 L2 预处理", stage="l1_done", percent=50)
-
-    logger.info("[%s] RST project: ingest.py (L2)", project_id)
-    _log_job(project_id, "step",
-             f"{_kw('L2 预处理')}（ingest.py）启动：三角面提取、特征边、Octree…",
-             stage="l2_ingest", percent=55)
-    rc2, tail2 = _run_streaming(
-        [sys.executable, str(INGEST_SCRIPT), "--workspace", workspace],
-        project_id, "l2_ingest",
-    )
-    if rc2 != 0:
-        msg = "ingest failed: " + tail2[-2000:]
-        _update_project_geom_status(project_id, "error", msg)
-        _log_job(project_id, "error",
-                 f"{_bad('L2 预处理失败')} (rc={rc2})：{_esc(tail2[-500:])}", stage="l2_ingest")
-        logger.error("[%s] RST project L2 failed (rc=%d)", project_id, rc2)
-        return False
-
-
-    # rst_pack 已把结果写进 manifest（result_group='default_result'），
-    # 这里只需在 registry.db 登记 result_group 行（status='running'）让前端可见。
-    rg_name = "default_result"
-    display_name = os.path.splitext(os.path.basename(rst_path))[0]
-    source_file = os.path.basename(rst_path)
-    try:
-        now = _now_iso()
-        with _connect() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO result_groups"
-                " (project_id, result_group, display_name, source_path, source_file,"
-                "  status, parse_options, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,'running',NULL,?,?)",
-                (project_id, rg_name, display_name, rst_path, source_file, now, now),
-            )
-        with _connect() as conn:
-            conn.execute(
-                "UPDATE result_groups SET status='running', error_message=NULL, updated_at=?"
-                " WHERE project_id=? AND result_group=?", (_now_iso(), project_id, rg_name))
-        logger.info("[%s] Registered result_group='%s' (status=running)", project_id, rg_name)
-    except Exception as exc:
-        raise RuntimeError("RST 默认结果组注册失败：" + str(exc)) from exc
-
-    _update_project_geom_status(project_id, "ready")
-    _log_job(project_id, "step", _good("RST 几何+结果解析完成，已就绪"),
-             stage="l2_done", percent=85)
-    logger.info("[%s] RST project ready", project_id)
-
-    # ── 自动导入 model_update ──────────────────────────────────────────────────
-    _log_job(project_id, "step", f"{_kw('自动导入 RST')} 到 model_update",
-             stage="mu_import_rst", percent=90)
-    try:
-        from services.model_update.importers.rst_service import import_rst_data
-        import_rst_data(rst_path, int(project_id), clear_before_insert=True)
-        _log_job(project_id, "step", _good("RST 导入 model_update 完成"),
-                 stage="mu_import_rst", percent=100)
-        logger.info("[%s] model_update RST import done", project_id)
-    except Exception as exc:
-        _log_job(project_id, "warn",
-                 f"{_ws('model_update RST 导入失败（非致命）')}：{_esc(str(exc))}",
-                 stage="mu_import_rst", percent=100)
-        logger.warning("[%s] model_update RST import failed: %s", project_id, exc)
-
-    return True
 
 
 def _run_sipesc_unv_project(project_id: str, unv_path: str, workspace: str) -> bool:
@@ -1521,16 +1352,15 @@ def _run_sipesc_unv_project(project_id: str, unv_path: str, workspace: str) -> b
 
 
 def _run_project(project_id: str, source_path: str, source_type: str, workspace: str) -> bool:
+    if source_type in ("cdb", "rst"):
+        _update_project_geom_status(project_id, "error", "Unsupported source format in this edition")
+        return False
     if source_type == "odb":
         return _run_odb_project(project_id, source_path, workspace)
     if source_type == "bdf":
         return _run_bdf_project(project_id, source_path, workspace)
     if source_type == "op2":
         return _run_op2_project(project_id, source_path, workspace)
-    if source_type == "cdb":
-        return _run_cdb_project(project_id, source_path, workspace)
-    if source_type == "rst":
-        return _run_rst_project(project_id, source_path, workspace)
     if source_type == "sipesc_unv":
         return _run_sipesc_unv_project(project_id, source_path, workspace)
     return _run_geom_project(project_id, source_path, workspace)
@@ -1696,7 +1526,7 @@ def _run_op2_result_group(project_id: str, result_group: str,
              f"[{_kw(result_group)}] OP2 结果打包启动", stage="rg_op2")
 
     # Locate the companion BDF (geometry source) so op2_pack can rotate nodal
-    # displacements from their CD output frames back to global. Nastran writes
+    # displacements from their CD output frames back to global. BulkSolver writes
     # DISPLACEMENT/eigenvector components in each node's CD frame; without this,
     # nodes with a local CD tear the deformed mesh. Missing BDF → op2_pack falls
     # back to leaving displacements in the CD frame (its default).
@@ -1824,10 +1654,10 @@ def _run_result_group(project_id: str, result_group: str,
     # Step 1: extract results (consistency check is now inline at start of extract)
     logger.info("[%s] extract (check-mode=%s)", label, check_mode)
     _log_job(project_id, "step",
-             f"[{_kw(result_group)}] 结果组解析：一致性校验 + 提取（abaqus_dump extract）",
+             f"[{_kw(result_group)}] 结果组解析：一致性校验 + 提取（deck_solver_dump extract）",
              stage="rg_extract")
     inv_mode = parse_opts.get("invariants", INVARIANTS_MODE)
-    extract_cmd = [ABAQUS_CMD, "python", str(DUMP_SCRIPT),
+    extract_cmd = [DECK_SOLVER_CMD, "python", str(DUMP_SCRIPT),
                    "--odb", source_path, "--out", workspace,
                    "--result-group", result_group,
                    "--mode", "extract",

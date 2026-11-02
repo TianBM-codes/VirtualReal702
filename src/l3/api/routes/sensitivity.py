@@ -40,7 +40,7 @@ def _is_visible_sensitivity_field(*, result_group: str, field_name: str, source:
         return False
     group_kind = _rg_kind(str(result_group or "").strip())
 
-    # Raw Abaqus DSA result groups often contain both the original analysis
+    # Raw DeckSolver DSA result groups often contain both the original analysis
     # fields (U/S/E/...) and the actual sensitivity derivatives (d_*). The
     # sensitivity picker should only expose the derivative fields.
     if group_kind == "raw":

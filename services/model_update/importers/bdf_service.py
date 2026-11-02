@@ -4,7 +4,7 @@ import json
 import numpy as np
 
 from db import get_connection, ensure_tables_exist, clear_fem_tables
-from BDFParserPyNastran import BDFParser
+from BDFParserBulkProvider import BDFParser
 from services.model_update.analysis.fem_capability_bundle_service import (
     split_capability_rows,
     write_capability_detail_h5,

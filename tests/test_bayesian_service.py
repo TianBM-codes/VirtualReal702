@@ -704,7 +704,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_in_memory_optimization_par
     assert result["parameter_columns"][0]["scatter"] == 0.15
 
 
-def test_run_iteration_solver_deletes_abaqus_process_files_after_workspace_build(monkeypatch, tmp_path: Path):
+def test_run_iteration_solver_deletes_deck_solver_process_files_after_workspace_build(monkeypatch, tmp_path: Path):
     inp_path = tmp_path / "model_iter0.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
     odb_path = tmp_path / "demo.odb"
@@ -717,8 +717,8 @@ def test_run_iteration_solver_deletes_abaqus_process_files_after_workspace_build
     monkeypatch.setattr(bayesian_service._solver, "_sanitize_job_name", lambda name: "demo")
     monkeypatch.setattr(
         bayesian_service._solver,
-        "_build_abaqus_command",
-        lambda **kwargs: ["abaqus", "job=demo", "input=model_iter0.inp"],
+        "_build_deck_solver_command",
+        lambda **kwargs: ["deck_solver", "job=demo", "input=model_iter0.inp"],
     )
     monkeypatch.setattr(
         bayesian_service._solver,
@@ -739,7 +739,7 @@ def test_run_iteration_solver_deletes_abaqus_process_files_after_workspace_build
         inp_path=inp_path,
         output_dir=tmp_path,
         iteration=0,
-        abaqus="abaqus",
+        deck_solver="deck_solver",
         job_name="demo",
         cpus=None,
         interactive=True,
@@ -861,7 +861,7 @@ P2=2.0
         solver_calls.append(kwargs)
         return {
             "job_name": "demo",
-            "command_preview": ["abaqus"],
+            "command_preview": ["deck_solver"],
             "solver": {"ok": True, "artifacts": {"odb": str(tmp_path / "job.odb")}},
             "workspace": {"workspace": str(tmp_path / "rerun_ws")},
         }
@@ -1687,7 +1687,7 @@ def test_persist_bayesian_tracking_results_overwrites_same_batch_and_writes_expe
 
 
 def test_sol200_modal_bayesian_prefers_metadata_source_bdf_for_initial_sol103(monkeypatch, tmp_path: Path):
-    from services.model_update.analysis import nastran_sol200_service, project_path_service
+    from services.model_update.analysis import bulk_solver_sol200_service, project_path_service
     from services.model_update.importers import op2_service
 
     source_bdf = tmp_path / "source_model.bdf"
@@ -1812,7 +1812,7 @@ def test_sol200_modal_bayesian_prefers_metadata_source_bdf_for_initial_sol103(mo
     )
     monkeypatch.setattr(bayesian_service, "_clone_jsonable", lambda value: value)
     monkeypatch.setattr(
-        nastran_sol200_service,
+        bulk_solver_sol200_service,
         "run_sol200_and_store_workflow",
         lambda **kwargs: {"generated_files": {}},
     )

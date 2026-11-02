@@ -25,8 +25,8 @@
 2. 如果未配置，直接报错：`请先配置高性能集群计算配置`。
 3. `service_config.json` 只负责 PBS 平台连接信息和接口路径。
 4. `service_config.json` 中所有 PBS 接口路径都要直接完整列出，不再拆成 `api_prefix / service_prefix / storage_prefix / auth_path` 再拼装。
-5. Abaqus / Nastran 的应用平台信息都从工程 `project_config.pbs` 读取。
-6. PBS 的 Nastran 配置中不要 `MEMORY` 这一项。
+5. DeckSolver / BulkSolver 的应用平台信息都从工程 `project_config.pbs` 读取。
+6. PBS 的 BulkSolver 配置中不要 `MEMORY` 这一项。
 
 ## 2. 配置职责划分
 
@@ -45,8 +45,8 @@
 
 这里不再放：
 
-- `applications.Abaqus.*`
-- `applications.Nastran.*`
+- `applications.DeckSolver.*`
+- `applications.BulkSolver.*`
 - `PBS_APPLICATIONS`
 - `api_prefix`
 - `service_prefix`
@@ -67,7 +67,7 @@
 - `HOSTS`
 - `PRECISION`
 
-如果是 Nastran：
+如果是 BulkSolver：
 
 - 仍然使用 `ApplicationId`、`ApplicationName`、`VERSION`、`PLATFORM`、`CORES`
 - 不要配置 `MEMORY`
@@ -82,7 +82,7 @@
   "APP_REGISTRY_DB_PATH": "D:\\WorkSpace\\OtherProjects\\VirtualReal702\\model\\registry.db",
   "APP_ENABLE_GZIP": 1,
   "APP_EMBEDDED_RUNNER": 0,
-  "APP_ABAQUS_CMD": "C:\\Program Files\\SIMULIA\\Commands\\abaqus.bat",
+  "APP_DECK_SOLVER_CMD": "C:\\Program Files\\SIMULIA\\Commands\\deck_solver.bat",
   "APP_BAYESIAN_OUTPUT_DIR": "D:\\WorkSpace\\Temp\\workspace",
   "APP_INVARIANTS": "full",
   "DB_HOST": "127.0.0.1",
@@ -91,7 +91,7 @@
   "DB_PASSWORD": "******",
   "DB_DATABASE": "db_simu_real_test",
   "DB_CHARSET": "utf8mb4",
-  "NASTRAN": "C:\\MSC.Software\\MSC_Nastran\\20180\\bin\\nastran.exe",
+  "BULK_SOLVER": "C:\\MSC.Software\\MSC_BulkSolver\\20180\\bin\\bulk_solver.exe",
   "PBS": {
     "env": "dev",
     "api_paths": {
@@ -137,14 +137,14 @@
 
 ## 4. 工程 `project_config.pbs` 示例
 
-### 4.1 Abaqus 工程配置示例
+### 4.1 DeckSolver 工程配置示例
 
 ```json
 {
   "pbs": {
     "env": "dev",
-    "ApplicationId": "Abaqus",
-    "ApplicationName": "Abaqus",
+    "ApplicationId": "DeckSolver",
+    "ApplicationName": "DeckSolver",
     "VERSION": "2022",
     "PLATFORM": "MultiCore-48c-394G|Free:528|Total:672",
     "CORES": 48,
@@ -156,14 +156,14 @@
 }
 ```
 
-### 4.2 Nastran 工程配置示例
+### 4.2 BulkSolver 工程配置示例
 
 ```json
 {
   "pbs": {
     "env": "dev",
-    "ApplicationId": "Nastran",
-    "ApplicationName": "Nastran",
+    "ApplicationId": "BulkSolver",
+    "ApplicationName": "BulkSolver",
     "VERSION": "2019",
     "PLATFORM": "MultiCore-48c-394G|Free:528|Total:672",
     "CORES": 8,
@@ -177,14 +177,14 @@
 
 - `primary_file_exts` 和 `result_exts` 不传时，代码会使用内置默认值。
 - `ApplicationId`、`ApplicationName`、`VERSION`、`PLATFORM` 缺任何一项都会报“PBS 应用配置不完整”。
-- Nastran 不要配置 `MEMORY`，代码默认也不会在 PBS 提交载荷中生成 `MEMORY`。
+- BulkSolver 不要配置 `MEMORY`，代码默认也不会在 PBS 提交载荷中生成 `MEMORY`。
 
 ## 5. 接口总览
 
 当前 PBS 相关接口共 3 个：
 
-- `POST /solver/pbs/abaqus/run`
-- `POST /solver/pbs/nastran/run`
+- `POST /solver/pbs/deck_solver/run`
+- `POST /solver/pbs/bulk_solver/run`
 - `POST /solver/pbs/job/status`
 
 ### 5.1 统一成功返回包
@@ -219,11 +219,11 @@
 - 当前模型修正接口统一对外只暴露 `200` 和 `500` 两种业务码。
 - 如果底层原始状态码不是 `500`，会放到 `error.details.original_status_code` 中。
 
-## 6. `POST /solver/pbs/abaqus/run`
+## 6. `POST /solver/pbs/deck_solver/run`
 
 ### 6.1 接口含义
 
-把本地 `.inp` 文件提交到 PBS 上运行 Abaqus，可选等待任务结束并下载结果文件。
+把本地 `.inp` 文件提交到 PBS 上运行 DeckSolver，可选等待任务结束并下载结果文件。
 
 ### 6.2 影响数据库
 
@@ -241,7 +241,7 @@
 | --- | --- | --- | --- |
 | `project_id` | `int` | 是 | 项目 ID；用于读取工程 `project_config.pbs` |
 | `env` | `string` | 否 | PBS 环境名；不传则优先取工程 `project_config.pbs.env`，再取 `service_config.json` 的 `PBS.env` |
-| `input_file` | `string` | 是 | 本地 Abaqus 主输入文件路径，当前要求为 `.inp` |
+| `input_file` | `string` | 是 | 本地 DeckSolver 主输入文件路径，当前要求为 `.inp` |
 | `job_name` | `string` | 否 | PBS 作业名；不传则使用输入文件名 |
 | `output_dir` | `string` | 否 | 本地结果下载目录；不传则使用输入文件所在目录 |
 | `wait` | `bool` | 否 | 是否等待远程任务完成，默认 `true` |
@@ -258,9 +258,9 @@
 {
   "project_id": 1001,
   "env": "dev",
-  "input_file": "D:/demo/abaqus/main.inp",
-  "job_name": "abaqus_case_01",
-  "output_dir": "D:/demo/abaqus/output",
+  "input_file": "D:/demo/deck_solver/main.inp",
+  "job_name": "deck_solver_case_01",
+  "output_dir": "D:/demo/deck_solver/output",
   "wait": true,
   "download_results": true,
   "poll_interval_sec": 10.0,
@@ -281,27 +281,27 @@
 {
   "ok": true,
   "code": 200,
-  "message": "PBS Abaqus 求解成功",
+  "message": "PBS DeckSolver 求解成功",
   "data": {
     "env": "dev",
-    "application": "Abaqus",
-    "job_name": "abaqus_case_01",
+    "application": "DeckSolver",
+    "job_name": "deck_solver_case_01",
     "job_id": "123456",
-    "remote_job_dir": "/ssddata/stage/user/Abaqus_abaqus_case_01_20260521_102030",
-    "remote_primary_file": "/ssddata/stage/user/Abaqus_abaqus_case_01_20260521_102030/main.inp",
+    "remote_job_dir": "/ssddata/stage/user/DeckSolver_deck_solver_case_01_20260521_102030",
+    "remote_primary_file": "/ssddata/stage/user/DeckSolver_deck_solver_case_01_20260521_102030/main.inp",
     "stage_root": "/ssddata/stage/user",
     "submit_payload": {
-      "ApplicationId": "Abaqus",
-      "ApplicationName": "Abaqus",
-      "JOB_NAME": "abaqus_case_01",
+      "ApplicationId": "DeckSolver",
+      "ApplicationName": "DeckSolver",
+      "JOB_NAME": "deck_solver_case_01",
       "PLATFORM": "MultiCore-48c-394G|Free:528|Total:672",
       "PRIMARY_FILE": [
         {
-          "value": "/ssddata/stage/user/Abaqus_abaqus_case_01_20260521_102030/main.inp"
+          "value": "/ssddata/stage/user/DeckSolver_deck_solver_case_01_20260521_102030/main.inp"
         }
       ],
       "SUBMISSION_DIRECTORY": {
-        "value": "/ssddata/stage/user/Abaqus_abaqus_case_01_20260521_102030"
+        "value": "/ssddata/stage/user/DeckSolver_deck_solver_case_01_20260521_102030"
       },
       "VERSION": "2022",
       "myapp": "OtherApps",
@@ -316,15 +316,15 @@
     "resolved_job_state": "C",
     "result_files": [],
     "result_file_paths": [
-      "/ssddata/stage/user/Abaqus_abaqus_case_01_20260521_102030/main.odb"
+      "/ssddata/stage/user/DeckSolver_deck_solver_case_01_20260521_102030/main.odb"
     ],
     "downloaded_files": [
-      "D:/demo/abaqus/output/main.odb"
+      "D:/demo/deck_solver/output/main.odb"
     ],
-    "input_file": "D:\\demo\\abaqus\\main.inp",
-    "output_dir": "D:\\demo\\abaqus\\output",
+    "input_file": "D:\\demo\\deck_solver\\main.inp",
+    "output_dir": "D:\\demo\\deck_solver\\output",
     "project_id": 1001,
-    "workflow": "pbs_abaqus_run"
+    "workflow": "pbs_deck_solver_run"
   }
 }
 ```
@@ -334,7 +334,7 @@
 ```json
 {
   "project_id": 1001,
-  "input_file": "D:/demo/abaqus/main.inp",
+  "input_file": "D:/demo/deck_solver/main.inp",
   "async_submit": true
 }
 ```
@@ -345,17 +345,17 @@
 {
   "ok": true,
   "code": 200,
-  "message": "PBS Abaqus 任务已提交",
+  "message": "PBS DeckSolver 任务已提交",
   "data": {
     "task_id": "2d7d30b4-0d7d-4c34-b6b7-3cbce0f1e111",
-    "task_type": "solver.pbs.abaqus.run",
+    "task_type": "solver.pbs.deck_solver.run",
     "status": "submitted",
     "submitted_at": "2026-05-21T10:20:30Z",
     "started_at": null,
     "finished_at": null,
     "request": {
       "project_id": 1001,
-      "input_file": "D:/demo/abaqus/main.inp",
+      "input_file": "D:/demo/deck_solver/main.inp",
       "async_submit": true
     },
     "progress": null,
@@ -379,13 +379,13 @@
 | `result_files` | PBS 文件列表接口返回的原始文件对象列表 |
 | `result_file_paths` | 过滤后的结果文件路径列表 |
 | `downloaded_files` | 本地下载完成的结果文件路径列表 |
-| `workflow` | 当前工作流标识，Abaqus 为 `pbs_abaqus_run` |
+| `workflow` | 当前工作流标识，DeckSolver 为 `pbs_deck_solver_run` |
 
-## 7. `POST /solver/pbs/nastran/run`
+## 7. `POST /solver/pbs/bulk_solver/run`
 
 ### 7.1 接口含义
 
-把本地 `.bdf/.dat/.nas` 文件提交到 PBS 上运行 Nastran，可选等待任务结束并下载结果文件。
+把本地 `.bdf/.dat/.nas` 文件提交到 PBS 上运行 BulkSolver，可选等待任务结束并下载结果文件。
 
 ### 7.2 影响数据库
 
@@ -394,11 +394,11 @@
 
 ### 7.3 请求字段
 
-请求字段与 `POST /solver/pbs/abaqus/run` 基本一致，差异点如下：
+请求字段与 `POST /solver/pbs/deck_solver/run` 基本一致，差异点如下：
 
 - `input_file` 当前要求为 `.bdf`、`.dat`、`.nas`
 - `submit_overrides` 建议主要用于覆盖 `CORES`
-- Nastran 不再配置也不再提交 `MEMORY`
+- BulkSolver 不再配置也不再提交 `MEMORY`
 
 ### 7.4 调用示例
 
@@ -406,9 +406,9 @@
 {
   "project_id": 1002,
   "env": "dev",
-  "input_file": "D:/demo/nastran/main.bdf",
-  "job_name": "nastran_case_01",
-  "output_dir": "D:/demo/nastran/output",
+  "input_file": "D:/demo/bulk_solver/main.bdf",
+  "job_name": "bulk_solver_case_01",
+  "output_dir": "D:/demo/bulk_solver/output",
   "wait": true,
   "download_results": true,
   "submit_overrides": {
@@ -424,27 +424,27 @@
 {
   "ok": true,
   "code": 200,
-  "message": "PBS Nastran 求解成功",
+  "message": "PBS BulkSolver 求解成功",
   "data": {
     "env": "dev",
-    "application": "Nastran",
-    "job_name": "nastran_case_01",
+    "application": "BulkSolver",
+    "job_name": "bulk_solver_case_01",
     "job_id": "654321",
-    "remote_job_dir": "/ssddata/stage/user/Nastran_nastran_case_01_20260521_102030",
-    "remote_primary_file": "/ssddata/stage/user/Nastran_nastran_case_01_20260521_102030/main.bdf",
+    "remote_job_dir": "/ssddata/stage/user/BulkSolver_bulk_solver_case_01_20260521_102030",
+    "remote_primary_file": "/ssddata/stage/user/BulkSolver_bulk_solver_case_01_20260521_102030/main.bdf",
     "stage_root": "/ssddata/stage/user",
     "submit_payload": {
-      "ApplicationId": "Nastran",
-      "ApplicationName": "Nastran",
-      "JOB_NAME": "nastran_case_01",
+      "ApplicationId": "BulkSolver",
+      "ApplicationName": "BulkSolver",
+      "JOB_NAME": "bulk_solver_case_01",
       "PLATFORM": "MultiCore-48c-394G|Free:528|Total:672",
       "PRIMARY_FILE": [
         {
-          "value": "/ssddata/stage/user/Nastran_nastran_case_01_20260521_102030/main.bdf"
+          "value": "/ssddata/stage/user/BulkSolver_bulk_solver_case_01_20260521_102030/main.bdf"
         }
       ],
       "SUBMISSION_DIRECTORY": {
-        "value": "/ssddata/stage/user/Nastran_nastran_case_01_20260521_102030"
+        "value": "/ssddata/stage/user/BulkSolver_bulk_solver_case_01_20260521_102030"
       },
       "VERSION": "2019",
       "myapp": "OtherApps",
@@ -457,17 +457,17 @@
     "resolved_job_state": "C",
     "result_files": [],
     "result_file_paths": [
-      "/ssddata/stage/user/Nastran_nastran_case_01_20260521_102030/main.op2",
-      "/ssddata/stage/user/Nastran_nastran_case_01_20260521_102030/main.f06"
+      "/ssddata/stage/user/BulkSolver_bulk_solver_case_01_20260521_102030/main.op2",
+      "/ssddata/stage/user/BulkSolver_bulk_solver_case_01_20260521_102030/main.f06"
     ],
     "downloaded_files": [
-      "D:/demo/nastran/output/main.op2",
-      "D:/demo/nastran/output/main.f06"
+      "D:/demo/bulk_solver/output/main.op2",
+      "D:/demo/bulk_solver/output/main.f06"
     ],
-    "input_file": "D:\\demo\\nastran\\main.bdf",
-    "output_dir": "D:\\demo\\nastran\\output",
+    "input_file": "D:\\demo\\bulk_solver\\main.bdf",
+    "output_dir": "D:\\demo\\bulk_solver\\output",
     "project_id": 1002,
-    "workflow": "pbs_nastran_run"
+    "workflow": "pbs_bulk_solver_run"
   }
 }
 ```
@@ -575,7 +575,7 @@
     "code": "VALIDATION_ERROR",
     "message": "PBS 应用配置不完整，请先在工程 project_config.pbs 中配置",
     "details": {
-      "application": "Nastran",
+      "application": "BulkSolver",
       "env": "dev",
       "missing_fields": [
         "platform",
@@ -618,7 +618,7 @@
     "code": "VALIDATION_ERROR",
     "message": "pbs primary file extension is not supported for application",
     "details": {
-      "application": "Abaqus",
+      "application": "DeckSolver",
       "input_file": "D:\\demo\\main.bdf",
       "input_ext": ".bdf",
       "allowed_exts": [
@@ -634,8 +634,8 @@
 ### 10.1 已支持
 
 - 单主文件 PBS 提交
-- Abaqus `.inp`
-- Nastran `.bdf/.dat/.nas`
+- DeckSolver `.inp`
+- BulkSolver `.bdf/.dat/.nas`
 - 等待任务完成
 - 根据 `result_exts` 下载结果文件
 - 异步后台提交

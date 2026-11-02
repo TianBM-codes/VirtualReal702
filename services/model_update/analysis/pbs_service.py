@@ -29,14 +29,14 @@ from .solver_service import (
 )
 
 DEFAULT_PBS_APPLICATIONS = {
-    "Abaqus": {
+    "DeckSolver": {
         "cores": 48,
         "hosts": 1,
         "precision": "off",
         "primary_file_exts": [".inp"],
         "result_exts": [".odb", ".dat", ".msg", ".sta", ".log", ".prt"],
     },
-    "Nastran": {
+    "BulkSolver": {
         "cores": 8,
         "primary_file_exts": [".bdf", ".dat", ".nas"],
         "result_exts": [".f06", ".op2", ".pch", ".xdb", ".log", ".out"],
@@ -178,11 +178,11 @@ def _update_simulation_result_status(project_id: Optional[int], status: int) -> 
     )
 
 
-def _build_nastran_modal_parse_options(
+def _build_bulk_solver_modal_parse_options(
         *,
         input_bdf_path: str,
 ) -> Dict[str, Any]:
-    # Keep PBS Nastran aligned with the existing SOL103 run_and_store path:
+    # Keep PBS BulkSolver aligned with the existing SOL103 run_and_store path:
     # once the OP2 result_group is packed, immediately import modal data into
     # the model-update tables before the API returns.
     return {
@@ -769,13 +769,13 @@ class PBSClient:
             "VERSION": config["version"],
             "myapp": "OtherApps",
         }
-        if application == "Abaqus":
+        if application == "DeckSolver":
             payload.update({
                 "CORES": config.get("cores", 48),
                 "HOSTS": config.get("hosts", 1),
                 "PRECISION": config.get("precision", "off"),
             })
-        elif application == "Nastran":
+        elif application == "BulkSolver":
             payload.update({
                 "CORES": config.get("cores", 8),
             })
@@ -1132,7 +1132,7 @@ def run_pbs_solver_job(
         result["workflow"] = f"pbs_{resolved_application.lower()}_run"
         if wait and project_id is not None:
             downloaded_files = list(result.get("downloaded_files") or [])
-            if resolved_application == "Abaqus":
+            if resolved_application == "DeckSolver":
                 odb_path = _pick_downloaded_result_file(downloaded_files, (".odb",))
                 if odb_path:
                     parse_options = {
@@ -1157,7 +1157,7 @@ def run_pbs_solver_job(
                     _update_simulation_result_status(project_id, 1)
                     result["upload"] = upload
                     result["uploaded_result_file"] = odb_path
-            elif resolved_application == "Nastran":
+            elif resolved_application == "BulkSolver":
                 op2_path = _pick_downloaded_result_file(downloaded_files, (".op2",))
                 if op2_path:
                     upload = _submit_generic_project_result_group_and_wait(
@@ -1167,7 +1167,7 @@ def run_pbs_solver_job(
                         result_group=result_group,
                         display_name=display_name,
                         base_url=base_url,
-                        parse_options=_build_nastran_modal_parse_options(
+                        parse_options=_build_bulk_solver_modal_parse_options(
                             input_bdf_path=str(source_path),
                         ),
                         timeout=upload_timeout,
@@ -1196,7 +1196,7 @@ def run_pbs_solver_job(
                 )
         return result
     except Exception as exc:
-        if resolved_application == "Abaqus":
+        if resolved_application == "DeckSolver":
             try:
                 _update_simulation_result_status(project_id, 2)
             except Exception:

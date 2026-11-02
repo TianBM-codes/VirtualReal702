@@ -8,7 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
 import numpy as np
-from pyNastran.bdf.bdf import BDF
+from src.utils.external_runtime import BulkSymbol
+BDF = BulkSymbol('bdf.bdf', 'BDF')
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -2433,7 +2434,7 @@ def build_dsa_normalized_sensitivity_matrix(
         position: Optional[str] = None,
         aggregation: str = "max_abs",
         frame: Optional[int] = None,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -2466,7 +2467,7 @@ def build_dsa_normalized_sensitivity_matrix(
             project_id=None,
             odb_path=odb_abs,
             workspace=resolved_workspace,
-            abaqus=abaqus,
+            deck_solver=deck_solver,
             python3=python3,
             keep_raw=keep_raw,
         )
@@ -3063,7 +3064,7 @@ def _run_iteration_solver(
         inp_path: Path,
         output_dir: Path,
         iteration: int,
-        abaqus: str,
+        deck_solver: str,
         job_name: Optional[str],
         cpus: Optional[int],
         interactive: bool,
@@ -3074,12 +3075,12 @@ def _run_iteration_solver(
 ) -> dict:
     # Each Bayesian iteration solves the current INP first, then converts the new ODB
     # into a queryable workspace for sensitivity/result extraction.
-    # Once the workspace has been built, the Abaqus process files are no longer
+    # Once the workspace has been built, the DeckSolver process files are no longer
     # needed for the Bayesian loop, so they are removed to keep the work
     # directory small across many iterations.
     resolved_job_name = _solver._sanitize_job_name(job_name or inp_path.stem)
-    command = _solver._build_abaqus_command(
-        abaqus=abaqus,
+    command = _solver._build_deck_solver_command(
+        deck_solver=deck_solver,
         inp_path=inp_path,
         job_name=resolved_job_name,
         cpus=cpus,
@@ -3090,12 +3091,12 @@ def _run_iteration_solver(
         command=command,
         workdir=inp_path.parent,
         artifact_stem=resolved_job_name,
-        artifact_suffixes=_solver._ABAQUS_ARTIFACT_SUFFIXES,
+        artifact_suffixes=_solver._DECK_SOLVER_ARTIFACT_SUFFIXES,
         timeout_sec=timeout_sec,
     )
     if not solver_result.get("ok"):
         raise ValidationError(
-            "abaqus sensitivity rerun failed during bayesian update",
+            "deck_solver sensitivity rerun failed during bayesian update",
             {"iteration": iteration, "solver": solver_result},
         )
 
@@ -3111,7 +3112,7 @@ def _run_iteration_solver(
         project_id=None,
         odb_path=odb_path,
         workspace=str(workspace_dir),
-        abaqus=abaqus,
+        deck_solver=deck_solver,
         python3=python3,
         keep_raw=keep_raw,
     )
@@ -4219,7 +4220,7 @@ def run_bayesian_update_workflow(
         step_scale: float = 1.0,
         lower_bound: Any = None,
         upper_bound: Any = None,
-        abaqus: Optional[str] = None,
+        deck_solver: Optional[str] = None,
         python3: Optional[str] = None,
         keep_raw: bool = False,
         timeout: int = 60,
@@ -4340,7 +4341,7 @@ def run_bayesian_update_workflow(
                     inp_path=current_inp,
                     output_dir=root_dir,
                     iteration=iteration_index,
-                    abaqus=abaqus,
+                    deck_solver=deck_solver,
                     job_name=f"{job_name}_iter{iteration_index}" if job_name else None,
                     cpus=cpus,
                     interactive=interactive,
@@ -4374,7 +4375,7 @@ def run_bayesian_update_workflow(
                 position=position,
                 aggregation=aggregation,
                 frame=frame,
-                abaqus=abaqus,
+                deck_solver=deck_solver,
                 python3=python3,
                 keep_raw=keep_raw,
                 timeout=timeout,
@@ -4550,7 +4551,7 @@ def run_bayesian_update_workflow(
                     inp_path=current_inp,
                     output_dir=root_dir,
                     iteration=iteration_index + 1,
-                    abaqus=abaqus,
+                    deck_solver=deck_solver,
                     job_name=f"{job_name}_iter{iteration_index + 1}" if job_name else None,
                     cpus=cpus,
                     interactive=interactive,
@@ -5065,7 +5066,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         max_freq_error_ratio: Optional[float] = 0.2,
         matching_method: str = "greedy",
         settings: Optional[Dict[str, Any]] = None,
-        nastran: Optional[str] = None,
+        bulk_solver: Optional[str] = None,
         timeout_sec: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
         write_cloud_result: bool = True,
@@ -5075,10 +5076,10 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
         cloud_value_mode: str = "relative_delta_percent",
         progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
-    from services.model_update.analysis.nastran_sol200_service import run_sol200_and_store_workflow
+    from services.model_update.analysis.bulk_solver_sol200_service import run_sol200_and_store_workflow
     from services.model_update.analysis.project_path_service import resolve_project_workspace
     from services.model_update.importers.op2_service import _build_op2_parameter_columns_with_mappings
-    from services.model_update.solver_prep.nastran_sol103 import extract_sol103_settings_from_bdf
+    from services.model_update.solver_prep.bulk_solver_sol103 import extract_sol103_settings_from_bdf
 
     resolved_batch_no = _normalize_batch_no(batch_no)
     requested_sensitivity_batch_no = (
@@ -5240,7 +5241,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
             output_bdf=str(root_dir / f"{input_base_stem}_initial_sol103.bdf"),
             project_id=int(project_id),
             settings=sol103_settings,
-            nastran=nastran,
+            bulk_solver=bulk_solver,
             timeout_sec=timeout_sec,
             extra_args=extra_args,
         )
@@ -5363,7 +5364,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                     output_bdf=str(sol103_output_bdf),
                     project_id=int(project_id),
                     settings=sol103_settings,
-                    nastran=nastran,
+                    bulk_solver=bulk_solver,
                     timeout_sec=timeout_sec,
                     extra_args=extra_args,
                 )
@@ -5407,7 +5408,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                 for item in (response_rows or [])
             )
             if has_modal_mac:
-                from services.model_update.analysis.nastran_sol200_service import run_sol200_modal_mac_and_store_workflow
+                from services.model_update.analysis.bulk_solver_sol200_service import run_sol200_modal_mac_and_store_workflow
 
                 rerun_payload = run_sol200_modal_mac_and_store_workflow(
                     project_id=int(project_id),
@@ -5432,7 +5433,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                         for item in (response_rows or [])
                     ],
                     settings=settings_payload,
-                    nastran=nastran,
+                    bulk_solver=bulk_solver,
                     run_solver=True,
                     timeout_sec=timeout_sec,
                     extra_args=list(extra_args or []),
@@ -5448,7 +5449,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                     parameters=_build_sol200_parameter_rows(current_parameter_columns, update_payload["p_new"]),
                     responses=_build_sol200_response_rows(response_rows),
                     settings=settings_payload,
-                    nastran=nastran,
+                    bulk_solver=bulk_solver,
                     run_solver=True,
                     timeout_sec=timeout_sec,
                     extra_args=list(extra_args or []),
@@ -5488,7 +5489,7 @@ def run_sol200_modal_frequency_bayesian_update_workflow(
                     except Exception:
                         rerun_localized_bdf = None
             # Iteration history only needs a stable scope key for parameter-to-
-            # element previews. Nastran-only projects may not have an L3
+            # element previews. BulkSolver-only projects may not have an L3
             # manifest workspace yet, so avoid forcing manifest.db here.
             workspace_path = os.path.abspath(resolve_project_workspace(int(project_id)))
             parameter_mapping_warning = None

@@ -1,19 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-bdf_read.py — 健壮的 BDF 读取封装，解决 pyNastran 在中文 Windows 上的编码崩溃。
+bdf_read.py — 健壮的 BDF 读取封装，解决 bulk_provider 在中文 Windows 上的编码崩溃。
 
 背景
 ----
-pyNastran 的 ``BDF.read_bdf()`` 在真正解析前，会先调用内部的
-``_parse_primary_file_header()`` 扫描文件头里的 ``$ pyNastran: ...`` 提示行。
+bulk_provider 的 ``BDF.read_bdf()`` 在真正解析前，会先调用内部的
+``_parse_primary_file_header()`` 扫描文件头里的 ``$ bulk_provider: ...`` 提示行。
 这个函数用的是 **不带 encoding 参数的** ``open(path, 'r')``：
 
     with open(bdf_filename, 'r') as bdf_file:   # 用系统 locale 编码
 
 在中文 Windows 上 ``open()`` 的默认编码是 **gbk(cp936)**。如果 BDF 文件本身
 是 UTF-8（含中文注释、°/µ 等符号，或带 UTF-8 BOM），gbk 解不出来 → 触发
-UnicodeDecodeError；pyNastran 转入 ``errors='replace'`` 分支，把非法字节替换成
+UnicodeDecodeError；bulk_provider 转入 ``errors='replace'`` 分支，把非法字节替换成
 替换字符 ``\\ufffd``，再把这些行打到日志。日志往 gbk 控制台一写，``\\ufffd``
 又编码不回 gbk，于是抛出用户看到的：
 
@@ -31,7 +31,7 @@ encoding，永远用 locale 默认编码 open。所以必须在我们这一层�
    - 在中文 Windows 上，只要文件能被 gbk 解开也直接成功。
 3. 兜底路径：只有当头部扫描真的因 locale 编码崩溃（UnicodeError）时，才在
    源文件同目录写一个「纯 ASCII 化」的临时副本再读。非 ASCII 字符只会出现在
-   ``$`` 注释里（Nastran 卡片数据是纯数字/ASCII），把它们替换成 '?' 对几何提取
+   ``$`` 注释里（BulkSolver 卡片数据是纯数字/ASCII），把它们替换成 '?' 对几何提取
    毫无影响；放在同目录是为了让 ``INCLUDE`` 相对路径仍能解析。
 
 对外只暴露 ``read_bdf_safe()``，所有 read_bdf 调用点都应改走它。
@@ -223,7 +223,7 @@ def _scan_duplicate_property_cleanup(path, encoding):
         duplicate_pids.add(pid)
         if card in seen_types:
             # Same property card type + same PID is genuinely ambiguous for elements.
-            # Keep the first definition so pyNastran can continue parsing.
+            # Keep the first definition so bulk_provider can continue parsing.
             skip_property_lines.add(entry['lineno'])
             continue
 
@@ -364,7 +364,7 @@ def _write_cleanup_sidecar(path, encoding, cleanup):
 
 
 def _write_duplicate_property_sidecar(path, encoding, cleanup):
-    """Write a temporary BDF with duplicate property IDs made pyNastran-unique."""
+    """Write a temporary BDF with duplicate property IDs made bulk_provider-unique."""
     d, base = os.path.split(os.path.abspath(path))
     root, ext = os.path.splitext(base)
     sidecar = os.path.join(d, root + '.pyn_propids' + (ext or '.bdf'))
@@ -382,10 +382,10 @@ def _is_prod_missing_a_error(exc):
     return bool(_PROD_FIELD_MISSING_A_RE.search(message))
 
 
-# 与几何/坐标提取无关、但已知会让 pyNastran 崩溃或纯属求解器参数的卡片。
-# 默认在读取前禁用（禁用后 pyNastran 把它们当作 reject 卡片存原文，不解析），
+# 与几何/坐标提取无关、但已知会让 bulk_provider 崩溃或纯属求解器参数的卡片。
+# 默认在读取前禁用（禁用后 bulk_provider 把它们当作 reject 卡片存原文，不解析），
 # L1 只要节点/单元/坐标系,这些卡片一律用不到。
-#   MDLPRM: MSC 模型参数卡。pyNastran 1.4.x 的 _add_mdlprm_object 有个必崩的断言
+#   MDLPRM: MSC 模型参数卡。bulk_provider 1.4.x 的 _add_mdlprm_object 有个必崩的断言
 #           (assert self.model.mdlprm is None) —— 只要文件里出现第二张 MDLPRM 且键
 #           重复(如两次 OFFDEF),就抛 AssertionError: MDLPRM OFFDEF LROFF。
 _DEFAULT_DISABLE_CARDS = ('MDLPRM',)
@@ -393,7 +393,7 @@ _DEFAULT_DISABLE_CARDS = ('MDLPRM',)
 
 def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
                   model=None, disable_cards=_DEFAULT_DISABLE_CARDS, **read_kwargs):
-    """构造并读取一个 pyNastran BDF，规避中文 Windows 的 locale 编码崩溃。
+    """构造并读取一个 bulk_provider BDF，规避中文 Windows 的 locale 编码崩溃。
 
     参数
     ----
@@ -409,7 +409,8 @@ def read_bdf_safe(bdf_filename, xref=True, punch=False, debug=False,
     ----
     读取完成的 BDF 实例。
     """
-    from pyNastran.bdf.bdf import BDF
+    from src.utils.external_runtime import load_bulk_module as _load_bulk_module
+    BDF = _load_bulk_module('bdf.bdf').BDF
 
     enc = detect_bdf_encoding(bdf_filename)
 

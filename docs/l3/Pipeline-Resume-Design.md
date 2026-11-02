@@ -9,7 +9,7 @@
 
 | 情况 | 现在的行为 | 代价 |
 |---|---|---|
-| 进程被杀（重启服务、断电、崩溃） | `job_runner._recover_stuck_running_states()` 启动时把 `geom_status='running'` 的项目、`status='running'` 的结果组重置为 `pending`，随后**整条流水线从头重跑**：ODB 项目重新 `abaqus_dump.py` → `l1_pack.py` → catalog → `ingest.py` → 缓存准备 | L1 导出要调 Abaqus，大模型数小时；`ingest.py`（phase all/core）开始时 `shutil.rmtree(<workspace>/l3_cache)`，已算好的缓存全部作废 |
+| 进程被杀（重启服务、断电、崩溃） | `job_runner._recover_stuck_running_states()` 启动时把 `geom_status='running'` 的项目、`status='running'` 的结果组重置为 `pending`，随后**整条流水线从头重跑**：ODB 项目重新 `deck_solver_dump.py` → `l1_pack.py` → catalog → `ingest.py` → 缓存准备 | L1 导出要调 DeckSolver，大模型数小时；`ingest.py`（phase all/core）开始时 `shutil.rmtree(<workspace>/l3_cache)`，已算好的缓存全部作废 |
 | 追加结果组时进程被杀 | 结果组重置为 `pending` 后重新解析；`_cleanup_result_group` 先删该组的 manifest 行，并调用 `cache_store.clear_bucket` 删除 `l3_cache/groups/<result_group>/` | 重新解析 + 该组缓存全部重算 |
 | 缓存准备抛异常（磁盘满、权限、`PreparationError`） | `_update_project_geom_status(..., "error")` / `_update_result_group_status(..., "error")`，项目或结果组标为 error | 没有"只重试缓存准备"的入口；只能重新导入，或调 `rerun-l2`（同样会清空 `l3_cache`） |
 

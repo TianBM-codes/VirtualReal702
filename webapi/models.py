@@ -209,7 +209,7 @@ class CreateOptimizationParameterRequest(BaseModel):
     usage_scope: Optional[List[str]] = None
 
 
-class CreateAbaqusStaticResponseRequest(BaseModel):
+class CreateDeckSolverStaticResponseRequest(BaseModel):
     project_id: int
     region_type: str
     variables: List[str]
@@ -249,20 +249,20 @@ class CreateAbaqusStaticResponseRequest(BaseModel):
         extra = "forbid"
 
 
-CreateDesignResponseRequest = CreateAbaqusStaticResponseRequest
+CreateDesignResponseRequest = CreateDeckSolverStaticResponseRequest
 
 
-class AbaqusStaticResponseCatalogRequest(BaseModel):
+class DeckSolverStaticResponseCatalogRequest(BaseModel):
     project_id: int
 
 
-class AbaqusInstanceNodeValidationRequest(BaseModel):
+class DeckSolverInstanceNodeValidationRequest(BaseModel):
     project_id: int
     instance_name: str
     node_label: int
 
 
-DesignResponseCatalogRequest = AbaqusStaticResponseCatalogRequest
+DesignResponseCatalogRequest = DeckSolverStaticResponseCatalogRequest
 
 
 class Sol200ConfigCatalogRequest(BaseModel):
@@ -402,7 +402,7 @@ class Sol200ModalFrequencyBayesianModelUpdateRequest(BaseModel):
     max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
     matching_method: str = "greedy"
     settings: Optional[Dict[str, Any]] = None
-    nastran: Optional[str] = None
+    bulk_solver: Optional[str] = None
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
     write_cloud_result: bool = True
@@ -619,7 +619,7 @@ class SensitivityBuildWorkspaceRequest(BaseModel):
     project_id: Optional[int] = None
     odb_path: str
     workspace: str
-    abaqus: Optional[str] = None
+    deck_solver: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
 
@@ -673,7 +673,7 @@ class SensitivityExportVtuBaseRequest(BaseModel):
     position: Optional[str] = None
     aggregation: str = "max_abs"
     frame: Optional[int] = None
-    abaqus: Optional[str] = None
+    deck_solver: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
@@ -713,7 +713,7 @@ class SensitivityStoreDsaRequest(BaseModel):
     response_frequency: int = 1
     node_vars: Optional[List[str]] = None
     element_vars: Optional[List[str]] = None
-    abaqus: Optional[str] = None
+    deck_solver: Optional[str] = None
     python3: Optional[str] = None
     keep_raw: bool = False
     timeout: int = 60
@@ -743,7 +743,7 @@ class SensitivityRunAndStoreRequest(BaseModel):
     position: str
     aggregation: str = "max_abs"
     frame: int = 0
-    abaqus: Optional[str] = None
+    deck_solver: Optional[str] = None
     python3: Optional[str] = None
     base_url: Optional[str] = None
     keep_raw: bool = False
@@ -781,7 +781,7 @@ class SensitivityGenerateRunAndStoreRequest(BaseModel):
     position: Optional[str] = None
     aggregation: str = "max_abs"
     frame: Optional[int] = None
-    abaqus: Optional[str] = None
+    deck_solver: Optional[str] = None
     python3: Optional[str] = None
     base_url: Optional[str] = None
     keep_raw: bool = False
@@ -817,7 +817,7 @@ class SensitivityMergeFieldsRequest(BaseModel):
     async_submit: bool = False
 
 
-class AbaqusSensitivityRunRequest(BaseModel):
+class DeckSolverSensitivityRunRequest(BaseModel):
     project_id: Optional[int] = None
     input_inp: Optional[str] = None
     input_inp_name: Optional[str] = None
@@ -828,7 +828,7 @@ class AbaqusSensitivityRunRequest(BaseModel):
     response_frequency: int = 1
     node_vars: Optional[List[str]] = None
     element_vars: Optional[List[str]] = None
-    abaqus: Optional[str] = None
+    deck_solver: Optional[str] = None
     job_name: Optional[str] = None
     cpus: Optional[int] = None
     interactive: bool = True
@@ -837,14 +837,14 @@ class AbaqusSensitivityRunRequest(BaseModel):
     extra_args: List[str] = Field(default_factory=list)
 
 
-class AbaqusAdjointRunRequest(BaseModel):
+class DeckSolverAdjointRunRequest(BaseModel):
     project_id: Optional[int] = None
     input_inp: Optional[str] = None
     input_inp_name: Optional[str] = None
     output_inp: Optional[str] = None
     output_inp_name: Optional[str] = None
     response_nset: Optional[str] = None
-    abaqus: Optional[str] = None
+    deck_solver: Optional[str] = None
     job_name: Optional[str] = None
     cpus: Optional[int] = None
     interactive: bool = True
@@ -853,28 +853,28 @@ class AbaqusAdjointRunRequest(BaseModel):
     extra_args: List[str] = Field(default_factory=list)
 
 
-class NastranSol103RunRequest(BaseModel):
+class BulkSolverSol103RunRequest(BaseModel):
     project_id: Optional[int] = None
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
     output_bdf_name: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
-    nastran: Optional[str] = None
+    bulk_solver: Optional[str] = None
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
     async_submit: bool = False
 
 
-class NastranSol103PreviewRequest(BaseModel):
+class BulkSolverSol103PreviewRequest(BaseModel):
     project_id: Optional[int] = None
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
-class NastranSol103GenerateRequest(BaseModel):
+class BulkSolverSol103GenerateRequest(BaseModel):
     project_id: Optional[int] = None
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
@@ -883,14 +883,14 @@ class NastranSol103GenerateRequest(BaseModel):
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
-class NastranSol103RunAndStoreModalRequest(BaseModel):
+class BulkSolverSol103RunAndStoreModalRequest(BaseModel):
     project_id: int
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
     output_bdf_name: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
-    nastran: Optional[str] = None
+    bulk_solver: Optional[str] = None
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
     overwrite: bool = True
@@ -913,8 +913,8 @@ class SolverRunAndParseRequest(BaseModel):
     output_dir_name: Optional[str] = None
     output_bdf: Optional[str] = None
     output_bdf_name: Optional[str] = None
-    abaqus: Optional[str] = None
-    nastran: Optional[str] = None
+    deck_solver: Optional[str] = None
+    bulk_solver: Optional[str] = None
     cpus: Optional[int] = None
     interactive: bool = True
     timeout_sec: Optional[int] = None
@@ -960,7 +960,7 @@ class PBSJobStatusRequest(BaseModel):
     timeout_sec: int = 60
 
 
-class NastranParameterRequest(BaseModel):
+class BulkSolverParameterRequest(BaseModel):
     name: str
     type: str
     property_id: Optional[int] = None
@@ -971,7 +971,7 @@ class NastranParameterRequest(BaseModel):
     upper: Optional[float] = None
 
 
-class NastranResponseRequest(BaseModel):
+class BulkSolverResponseRequest(BaseModel):
     name: str
     type: str
     mode_number: Optional[int] = None
@@ -980,7 +980,7 @@ class NastranResponseRequest(BaseModel):
     extra_json: Dict[str, Any] = Field(default_factory=dict)
 
 
-class NastranSol200ParameterPresetRequest(BaseModel):
+class BulkSolverSol200ParameterPresetRequest(BaseModel):
     preset: str
     lower_scale: float = 0.8
     upper_scale: float = 1.2
@@ -989,62 +989,62 @@ class NastranSol200ParameterPresetRequest(BaseModel):
     element_ids: Optional[List[int]] = None
 
 
-class NastranSol200PreviewRequest(BaseModel):
+class BulkSolverSol200PreviewRequest(BaseModel):
     project_id: Optional[int] = None
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
-    parameters: List[NastranParameterRequest] = Field(default_factory=list)
-    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
-    responses: List[NastranResponseRequest] = Field(default_factory=list)
+    parameters: List[BulkSolverParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[BulkSolverSol200ParameterPresetRequest] = None
+    responses: List[BulkSolverResponseRequest] = Field(default_factory=list)
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
-class NastranSol200GenerateRequest(BaseModel):
+class BulkSolverSol200GenerateRequest(BaseModel):
     project_id: Optional[int] = None
     batch_no: str = "1"
-    case_name: str = "nastran_sol200"
+    case_name: str = "bulk_solver_sol200"
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
     output_bdf_name: Optional[str] = None
-    parameters: List[NastranParameterRequest] = Field(default_factory=list)
-    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
-    responses: List[NastranResponseRequest] = Field(default_factory=list)
+    parameters: List[BulkSolverParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[BulkSolverSol200ParameterPresetRequest] = None
+    responses: List[BulkSolverResponseRequest] = Field(default_factory=list)
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
-class NastranSol200RunRequest(BaseModel):
+class BulkSolverSol200RunRequest(BaseModel):
     project_id: Optional[int] = None
     batch_no: str = "1"
-    case_name: str = "nastran_sol200"
+    case_name: str = "bulk_solver_sol200"
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
     output_bdf_name: Optional[str] = None
-    parameters: List[NastranParameterRequest] = Field(default_factory=list)
-    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
-    responses: List[NastranResponseRequest] = Field(default_factory=list)
+    parameters: List[BulkSolverParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[BulkSolverSol200ParameterPresetRequest] = None
+    responses: List[BulkSolverResponseRequest] = Field(default_factory=list)
     settings: Dict[str, Any] = Field(default_factory=dict)
-    nastran: Optional[str] = None
+    bulk_solver: Optional[str] = None
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
     async_submit: bool = False
 
 
-class NastranSol200RunAndStoreRequest(BaseModel):
+class BulkSolverSol200RunAndStoreRequest(BaseModel):
     project_id: int
     batch_no: str = "1"
-    case_name: str = "nastran_sol200"
+    case_name: str = "bulk_solver_sol200"
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
     output_bdf_name: Optional[str] = None
-    parameters: List[NastranParameterRequest] = Field(default_factory=list)
-    parameter_preset: Optional[NastranSol200ParameterPresetRequest] = None
-    responses: List[NastranResponseRequest] = Field(default_factory=list)
+    parameters: List[BulkSolverParameterRequest] = Field(default_factory=list)
+    parameter_preset: Optional[BulkSolverSol200ParameterPresetRequest] = None
+    responses: List[BulkSolverResponseRequest] = Field(default_factory=list)
     settings: Dict[str, Any] = Field(default_factory=dict)
-    nastran: Optional[str] = None
+    bulk_solver: Optional[str] = None
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
@@ -1057,10 +1057,10 @@ class NastranSol200RunAndStoreRequest(BaseModel):
     async_submit: bool = False
 
 
-class NastranSol200SyncGenerateRunAndStoreRequest(BaseModel):
+class BulkSolverSol200SyncGenerateRunAndStoreRequest(BaseModel):
     project_id: int
     batch_no: Optional[str] = None
-    case_name: str = "nastran_sol200"
+    case_name: str = "bulk_solver_sol200"
     input_bdf: Optional[str] = None
     input_bdf_name: Optional[str] = None
     output_bdf: Optional[str] = None
@@ -1071,7 +1071,7 @@ class NastranSol200SyncGenerateRunAndStoreRequest(BaseModel):
     max_freq_error_ratio: Optional[float] = Field(default=0.2, ge=0.0)
     matching_method: str = "greedy"
     settings: Dict[str, Any] = Field(default_factory=dict)
-    nastran: Optional[str] = None
+    bulk_solver: Optional[str] = None
     run_solver: bool = True
     timeout_sec: Optional[int] = None
     extra_args: List[str] = Field(default_factory=list)
@@ -1142,7 +1142,7 @@ class Op2SensitivityPreviewRequest(BaseModel):
 class Op2SensitivityStoreRequest(BaseModel):
     project_id: int
     batch_no: str = "1"
-    case_name: str = "nastran_sol200"
+    case_name: str = "bulk_solver_sol200"
     op2_path: Optional[str] = None
     op2_file_name: Optional[str] = None
     matrix_path: Optional[str] = None
@@ -1159,7 +1159,7 @@ class Op2SensitivityStoreRequest(BaseModel):
 class Op2SensitivityStoreCloudRequest(BaseModel):
     project_id: int
     batch_no: str = "1"
-    case_name: str = "nastran_sol200"
+    case_name: str = "bulk_solver_sol200"
     op2_path: Optional[str] = None
     op2_file_name: Optional[str] = None
     matrix_path: Optional[str] = None

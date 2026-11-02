@@ -246,17 +246,17 @@ def _run_sol103_modal_response_values(
         output_bdf: str,
         project_id: Optional[int] = None,
         settings: Optional[Dict[str, any]] = None,
-        nastran: Optional[str] = None,
+        bulk_solver: Optional[str] = None,
         timeout_sec: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
 ) -> Dict[str, any]:
-    from services.model_update.analysis.solver_service import run_nastran_sol103_job
+    from services.model_update.analysis.solver_service import run_bulk_solver_sol103_job
 
-    sol103_payload = run_nastran_sol103_job(
+    sol103_payload = run_bulk_solver_sol103_job(
         input_bdf=input_bdf,
         output_bdf=output_bdf,
         settings=dict(settings or {}),
-        nastran=nastran,
+        bulk_solver=bulk_solver,
         run_solver=True,
         timeout_sec=timeout_sec,
         extra_args=list(extra_args or []),

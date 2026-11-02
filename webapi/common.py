@@ -66,7 +66,7 @@ _EXACT_ERROR_TRANSLATIONS = {
     "inconsistent current response values found while building the normalized sensitivity matrix": "构建归一化灵敏度矩阵时发现当前响应值不一致",
     "conflicting normalized sensitivity values found while building the sensitivity matrix": "构建灵敏度矩阵时发现归一化灵敏度值冲突",
     "normalized sensitivity matrix is incomplete for the resolved response rows": "归一化灵敏度矩阵对已解析响应行不完整",
-    "abaqus sensitivity rerun failed during bayesian update": "Bayesian 修正过程中重新执行 Abaqus 灵敏度分析失败",
+    "deck_solver sensitivity rerun failed during bayesian update": "Bayesian 修正过程中重新执行 DeckSolver 灵敏度分析失败",
     "nodal displacement field 'U' not found in workspace": "workspace 中未找到节点位移场 'U'",
     "some instances are not available in the selected workspace result": "所选 workspace 结果中缺少部分 instance",
     "iterations must be > 0": "iterations 必须大于 0",

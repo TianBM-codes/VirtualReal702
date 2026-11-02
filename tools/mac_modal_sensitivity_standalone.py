@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.model_update.analysis.nastran_sol200_service import generate_sol200_workflow
+from services.model_update.analysis.bulk_solver_sol200_service import generate_sol200_workflow
 from services.model_update.analysis.modal_mac_service import run_modal_mac_sensitivity
 from services.model_update.importers.op2_service import (
     _build_mesh_from_bdf,

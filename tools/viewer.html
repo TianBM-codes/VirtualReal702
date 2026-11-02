@@ -570,7 +570,7 @@ function initThree() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  // Abaqus-style: left=rotate, middle=pan, right=zoom
+  // DeckSolver-style: left=rotate, middle=pan, right=zoom
   controls.mouseButtons = {
     LEFT:   THREE.MOUSE.ROTATE,
     MIDDLE: THREE.MOUSE.PAN,
@@ -661,7 +661,7 @@ function initThree() {
     setTimeout(() => { suppressNextClick = false; }, 300); // reset in case click event was prevented
     console.log('[bbox] drag done, suppressNextClick=true');
 
-    // Screen-space face collection — correct penetrating selection like Abaqus
+    // Screen-space face collection — correct penetrating selection like DeckSolver
     if (!mesh || !currentInstance) return;
     const selectedFaces = collectBboxFaces(sx1, sy1, sx2, sy2);
     if (selectedFaces.length === 0) return;
@@ -1588,7 +1588,7 @@ function highlightFaces(faceIndices) {
 
 // ── BBox Screen-Space Face Collection ────────────────────────────────────────
 // Returns render face indices whose screen-projected vertices fall in the 2D rect.
-// Depth-independent: penetrates the model just like Abaqus box select.
+// Depth-independent: penetrates the model just like DeckSolver box select.
 function collectBboxFaces(sx1, sy1, sx2, sy2) {
   if (!mesh) return [];
   const vRect = renderer.domElement.getBoundingClientRect();
@@ -1766,7 +1766,7 @@ async function fetchSectionMesh() {
     fillGeo.computeVertexNormals();
 
     const fillMat = new THREE.MeshBasicMaterial({
-      color: 0x6080a0,            // medium slate blue-gray (Abaqus-style fill)
+      color: 0x6080a0,            // medium slate blue-gray (DeckSolver-style fill)
       side: THREE.DoubleSide,
       polygonOffset: true,        // push fill slightly behind so edge lines win on top
       polygonOffsetFactor: 1,

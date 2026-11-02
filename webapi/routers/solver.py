@@ -7,19 +7,19 @@ from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 
 from services.model_update.analysis.solver_service import (
-    generate_nastran_sol103_job,
-    preview_nastran_sol103_job,
-    run_abaqus_adjoint_job,
-    run_abaqus_sensitivity_job,
-    run_nastran_sol103_job,
-    run_nastran_sol103_and_store_modal_results,
+    generate_bulk_solver_sol103_job,
+    preview_bulk_solver_sol103_job,
+    run_deck_solver_adjoint_job,
+    run_deck_solver_sensitivity_job,
+    run_bulk_solver_sol103_job,
+    run_bulk_solver_sol103_and_store_modal_results,
     run_solver_and_parse_project_result,
 )
 from services.model_update.analysis.pbs_service import (
     get_pbs_job_status,
     run_pbs_solver_job,
 )
-from services.model_update.analysis.nastran_sol200_service import (
+from services.model_update.analysis.bulk_solver_sol200_service import (
     export_sol200_sensitivity_vtu,
     generate_sol200_workflow,
     preview_sol200_sensitivity,
@@ -54,18 +54,18 @@ from src.l3.infra.registry_repo import RegistryRepo
 from ..background_jobs import get_background_task, submit_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
-    AbaqusAdjointRunRequest,
-    AbaqusSensitivityRunRequest,
-    NastranResponseRequest,
-    NastranSol200GenerateRequest,
-    NastranSol200PreviewRequest,
-    NastranSol200RunAndStoreRequest,
-    NastranSol200RunRequest,
-    NastranSol200SyncGenerateRunAndStoreRequest,
-    NastranSol103GenerateRequest,
-    NastranSol103PreviewRequest,
-    NastranSol103RunAndStoreModalRequest,
-    NastranSol103RunRequest,
+    DeckSolverAdjointRunRequest,
+    DeckSolverSensitivityRunRequest,
+    BulkSolverResponseRequest,
+    BulkSolverSol200GenerateRequest,
+    BulkSolverSol200PreviewRequest,
+    BulkSolverSol200RunAndStoreRequest,
+    BulkSolverSol200RunRequest,
+    BulkSolverSol200SyncGenerateRunAndStoreRequest,
+    BulkSolverSol103GenerateRequest,
+    BulkSolverSol103PreviewRequest,
+    BulkSolverSol103RunAndStoreModalRequest,
+    BulkSolverSol103RunRequest,
     Op2ModalPreviewRequest,
     Op2ModalStoreRequest,
     Op2ModalVtuExportRequest,
@@ -144,7 +144,7 @@ def _auto_modal_batch_no(project_id: int) -> str:
 
 
 def _sol200_modal_mac_run_and_store_kwargs_from_sync_body(
-    body: NastranSol200SyncGenerateRunAndStoreRequest,
+    body: BulkSolverSol200SyncGenerateRunAndStoreRequest,
 ) -> dict:
     input_bdf = _resolve_sol200_input_bdf(
         project_id=body.project_id,
@@ -155,7 +155,7 @@ def _sol200_modal_mac_run_and_store_kwargs_from_sync_body(
         project_id=body.project_id,
         explicit_path=body.output_bdf,
         file_name=body.output_bdf_name,
-        category_parts=("solver", "nastran_sol200"),
+        category_parts=("solver", "bulk_solver_sol200"),
         field_name="output_bdf",
         default_name=f"{Path(input_bdf).stem}_sol200.bdf",
     )
@@ -175,7 +175,7 @@ def _sol200_modal_mac_run_and_store_kwargs_from_sync_body(
         "parameter_preset": None,
         "responses": [],
         "settings": settings,
-        "nastran": body.nastran,
+        "bulk_solver": body.bulk_solver,
         "run_solver": body.run_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
@@ -316,7 +316,7 @@ def _resolve_sol200_input_bdf(
             explicit_path=explicit_path,
             file_name=file_name,
             field_name="input_bdf",
-            fallback_category_parts=("solver", "nastran_sol103"),
+            fallback_category_parts=("solver", "bulk_solver_sol103"),
         )
     except AppError as exc:
         translated = _translate_project_source_input_bdf(
@@ -378,7 +378,7 @@ def _translate_project_source_input_bdf(
             return str(candidate_path)
     return None
 
-def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
+def _sol103_run_kwargs(body: BulkSolverSol103RunRequest) -> dict:
     input_bdf = _resolve_project_local_input(
         project_id=body.project_id,
         explicit_path=body.input_bdf,
@@ -389,7 +389,7 @@ def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
         project_id=body.project_id,
         explicit_path=body.output_bdf,
         file_name=body.output_bdf_name,
-        category_parts=("solver", "nastran_sol103"),
+        category_parts=("solver", "bulk_solver_sol103"),
         field_name="output_bdf",
         default_name=f"{Path(input_bdf).stem}_sol103.bdf" if body.project_id is not None else None,
     )
@@ -397,14 +397,14 @@ def _sol103_run_kwargs(body: NastranSol103RunRequest) -> dict:
         "input_bdf": input_bdf,
         "output_bdf": output_bdf,
         "settings": body.settings,
-        "nastran": body.nastran,
+        "bulk_solver": body.bulk_solver,
         "run_solver": body.run_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
     }
 
 
-def _sol103_run_and_store_modal_kwargs(body: NastranSol103RunAndStoreModalRequest) -> dict:
+def _sol103_run_and_store_modal_kwargs(body: BulkSolverSol103RunAndStoreModalRequest) -> dict:
     input_bdf = _resolve_project_local_input(
         project_id=body.project_id,
         explicit_path=body.input_bdf,
@@ -415,7 +415,7 @@ def _sol103_run_and_store_modal_kwargs(body: NastranSol103RunAndStoreModalReques
         project_id=body.project_id,
         explicit_path=body.output_bdf,
         file_name=body.output_bdf_name,
-        category_parts=("solver", "nastran_sol103"),
+        category_parts=("solver", "bulk_solver_sol103"),
         field_name="output_bdf",
         default_name=f"{Path(input_bdf).stem}_sol103.bdf",
     )
@@ -424,7 +424,7 @@ def _sol103_run_and_store_modal_kwargs(body: NastranSol103RunAndStoreModalReques
         "input_bdf": input_bdf,
         "output_bdf": output_bdf,
         "settings": body.settings,
-        "nastran": body.nastran,
+        "bulk_solver": body.bulk_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
         "overwrite": body.overwrite,
@@ -447,8 +447,8 @@ def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
         "output_dir_name": body.output_dir_name,
         "output_bdf": body.output_bdf,
         "output_bdf_name": body.output_bdf_name,
-        "abaqus": body.abaqus,
-        "nastran": body.nastran,
+        "deck_solver": body.deck_solver,
+        "bulk_solver": body.bulk_solver,
         "cpus": body.cpus,
         "interactive": body.interactive,
         "timeout_sec": body.timeout_sec,
@@ -463,7 +463,7 @@ def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
     }
 
 
-def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
+def _sol200_run_kwargs(body: BulkSolverSol200RunRequest) -> dict:
     input_bdf = _resolve_sol200_input_bdf(
         project_id=body.project_id,
         explicit_path=body.input_bdf,
@@ -473,7 +473,7 @@ def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
         project_id=body.project_id,
         explicit_path=body.output_bdf,
         file_name=body.output_bdf_name,
-        category_parts=("solver", "nastran_sol200"),
+        category_parts=("solver", "bulk_solver_sol200"),
         field_name="output_bdf",
         default_name=f"{Path(input_bdf).stem}_sol200.bdf" if body.project_id is not None else None,
     )
@@ -487,14 +487,14 @@ def _sol200_run_kwargs(body: NastranSol200RunRequest) -> dict:
         "parameter_preset": model_to_dict(body.parameter_preset) if body.parameter_preset else None,
         "responses": [model_to_dict(item) for item in body.responses],
         "settings": body.settings,
-        "nastran": body.nastran,
+        "bulk_solver": body.bulk_solver,
         "run_solver": body.run_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
     }
 
 
-def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
+def _sol200_run_and_store_kwargs(body: BulkSolverSol200RunAndStoreRequest) -> dict:
     input_bdf = _resolve_sol200_input_bdf(
         project_id=body.project_id,
         explicit_path=body.input_bdf,
@@ -504,7 +504,7 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
         project_id=body.project_id,
         explicit_path=body.output_bdf,
         file_name=body.output_bdf_name,
-        category_parts=("solver", "nastran_sol200"),
+        category_parts=("solver", "bulk_solver_sol200"),
         field_name="output_bdf",
         default_name=f"{Path(input_bdf).stem}_sol200.bdf",
     )
@@ -524,7 +524,7 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
         "parameter_preset": parameter_preset,
         "responses": [model_to_dict(item) for item in body.responses],
         "settings": settings,
-        "nastran": body.nastran,
+        "bulk_solver": body.bulk_solver,
         "run_solver": body.run_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
@@ -537,7 +537,7 @@ def _sol200_run_and_store_kwargs(body: NastranSol200RunAndStoreRequest) -> dict:
     }
 
 
-def _sol200_sync_generate_run_and_store_kwargs(body: NastranSol200SyncGenerateRunAndStoreRequest) -> dict:
+def _sol200_sync_generate_run_and_store_kwargs(body: BulkSolverSol200SyncGenerateRunAndStoreRequest) -> dict:
     input_bdf = _resolve_sol200_input_bdf(
         project_id=body.project_id,
         explicit_path=body.input_bdf,
@@ -547,7 +547,7 @@ def _sol200_sync_generate_run_and_store_kwargs(body: NastranSol200SyncGenerateRu
         project_id=body.project_id,
         explicit_path=body.output_bdf,
         file_name=body.output_bdf_name,
-        category_parts=("solver", "nastran_sol200"),
+        category_parts=("solver", "bulk_solver_sol200"),
         field_name="output_bdf",
         default_name=f"{Path(input_bdf).stem}_sol200.bdf",
     )
@@ -570,7 +570,7 @@ def _sol200_sync_generate_run_and_store_kwargs(body: NastranSol200SyncGenerateRu
         "max_freq_error_ratio": body.max_freq_error_ratio,
         "matching_method": body.matching_method,
         "settings": settings,
-        "nastran": body.nastran,
+        "bulk_solver": body.bulk_solver,
         "run_solver": body.run_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
@@ -607,9 +607,9 @@ def _pbs_solver_run_kwargs(body: PBSSolverRunRequest, application: str) -> dict:
     }
 
 
-@router.post("/solver/abaqus/sensitivity")
-async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRunRequest):
-    # Generate the Abaqus sensitivity deck and optionally launch the solver in
+@router.post("/solver/deck_solver/sensitivity")
+async def run_deck_solver_sensitivity_api(request: Request, body: DeckSolverSensitivityRunRequest):
+    # Generate the DeckSolver sensitivity deck and optionally launch the solver in
     # one request so callers can use the same endpoint for prep-only or full run.
     await log_request(request, model_to_dict(body))
     try:
@@ -625,7 +625,7 @@ async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRu
             dir_name=body.output_dir_name,
             category_parts=("sensitivity",),
         )
-        data = run_abaqus_sensitivity_job(
+        data = run_deck_solver_sensitivity_job(
             input_inp=input_inp,
             output_dir=output_dir,
             response_elset=body.response_elset,
@@ -633,7 +633,7 @@ async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRu
             response_frequency=body.response_frequency,
             node_vars=body.node_vars,
             element_vars=body.element_vars,
-            abaqus=body.abaqus,
+            deck_solver=body.deck_solver,
             job_name=body.job_name,
             cpus=body.cpus,
             interactive=body.interactive,
@@ -641,7 +641,7 @@ async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRu
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
         )
-        return success_response(data, "Abaqus 灵敏度流程执行成功")
+        return success_response(data, "DeckSolver 灵敏度流程执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -649,22 +649,22 @@ async def run_abaqus_sensitivity_api(request: Request, body: AbaqusSensitivityRu
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/pbs/abaqus/run")
-async def run_pbs_abaqus_api(request: Request, body: PBSSolverRunRequest):
+@router.post("/solver/pbs/deck_solver/run")
+async def run_pbs_deck_solver_api(request: Request, body: PBSSolverRunRequest):
     await log_request(request, model_to_dict(body))
     try:
-        kwargs = _pbs_solver_run_kwargs(body, "Abaqus")
+        kwargs = _pbs_solver_run_kwargs(body, "DeckSolver")
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.pbs.abaqus.run",
+                task_type="solver.pbs.deck_solver.run",
                 fn=run_pbs_solver_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "PBS Abaqus 任务已提交")
+            return success_response(data, "PBS DeckSolver 任务已提交")
         data = run_pbs_solver_job(**kwargs)
-        return success_response(data, "PBS Abaqus 求解成功")
+        return success_response(data, "PBS DeckSolver 求解成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -672,22 +672,22 @@ async def run_pbs_abaqus_api(request: Request, body: PBSSolverRunRequest):
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/pbs/nastran/run")
-async def run_pbs_nastran_api(request: Request, body: PBSSolverRunRequest):
+@router.post("/solver/pbs/bulk_solver/run")
+async def run_pbs_bulk_solver_api(request: Request, body: PBSSolverRunRequest):
     await log_request(request, model_to_dict(body))
     try:
-        kwargs = _pbs_solver_run_kwargs(body, "Nastran")
+        kwargs = _pbs_solver_run_kwargs(body, "BulkSolver")
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.pbs.nastran.run",
+                task_type="solver.pbs.bulk_solver.run",
                 fn=run_pbs_solver_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "PBS Nastran 任务已提交")
+            return success_response(data, "PBS BulkSolver 任务已提交")
         data = run_pbs_solver_job(**kwargs)
-        return success_response(data, "PBS Nastran 求解成功")
+        return success_response(data, "PBS BulkSolver 求解成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -713,8 +713,8 @@ async def get_pbs_job_status_api(request: Request, body: PBSJobStatusRequest):
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/abaqus/adjoint")
-async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest):
+@router.post("/solver/deck_solver/adjoint")
+async def run_deck_solver_adjoint_api(request: Request, body: DeckSolverAdjointRunRequest):
     # Thin API wrapper around the local adjoint workflow implemented in the
     # service layer; the router only logs, validates, and normalizes responses.
     await log_request(request, model_to_dict(body))
@@ -734,15 +734,15 @@ async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest
             project_id=body.project_id,
             explicit_path=body.output_inp,
             file_name=body.output_inp_name,
-            category_parts=("solver", "abaqus_adjoint"),
+            category_parts=("solver", "deck_solver_adjoint"),
             field_name="output_inp",
             default_name=default_output_name,
         )
-        data = run_abaqus_adjoint_job(
+        data = run_deck_solver_adjoint_job(
             input_inp=input_inp,
             output_inp=output_inp,
             response_nset=body.response_nset,
-            abaqus=body.abaqus,
+            deck_solver=body.deck_solver,
             job_name=body.job_name,
             cpus=body.cpus,
             interactive=body.interactive,
@@ -750,7 +750,7 @@ async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest
             timeout_sec=body.timeout_sec,
             extra_args=body.extra_args,
         )
-        return success_response(data, "Abaqus 伴随流程执行成功")
+        return success_response(data, "DeckSolver 伴随流程执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -758,24 +758,24 @@ async def run_abaqus_adjoint_api(request: Request, body: AbaqusAdjointRunRequest
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol103")
-async def run_nastran_sol103_api(request: Request, body: NastranSol103RunRequest):
-    # Nastran preprocessing and solve are exposed together so downstream code
+@router.post("/solver/bulk_solver/sol103")
+async def run_bulk_solver_sol103_api(request: Request, body: BulkSolverSol103RunRequest):
+    # BulkSolver preprocessing and solve are exposed together so downstream code
     # does not need to know where the converted SOL103 deck is written.
     await log_request(request, model_to_dict(body))
     try:
         kwargs = _sol103_run_kwargs(body)
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.nastran.sol103.run",
-                fn=run_nastran_sol103_job,
+                task_type="solver.bulk_solver.sol103.run",
+                fn=run_bulk_solver_sol103_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "Nastran SOL103 任务已提交")
-        data = run_nastran_sol103_job(**kwargs)
-        return success_response(data, "Nastran SOL103 流程执行成功")
+            return success_response(data, "BulkSolver SOL103 任务已提交")
+        data = run_bulk_solver_sol103_job(**kwargs)
+        return success_response(data, "BulkSolver SOL103 流程执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -783,8 +783,8 @@ async def run_nastran_sol103_api(request: Request, body: NastranSol103RunRequest
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol103/preview")
-async def preview_nastran_sol103_api(request: Request, body: NastranSol103PreviewRequest):
+@router.post("/solver/bulk_solver/sol103/preview")
+async def preview_bulk_solver_sol103_api(request: Request, body: BulkSolverSol103PreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
         input_bdf = _resolve_project_local_input(
@@ -793,11 +793,11 @@ async def preview_nastran_sol103_api(request: Request, body: NastranSol103Previe
             file_name=body.input_bdf_name,
             field_name="input_bdf",
         )
-        data = preview_nastran_sol103_job(
+        data = preview_bulk_solver_sol103_job(
             input_bdf=input_bdf,
             settings=body.settings,
         )
-        return success_response(data, "Nastran SOL103 预览成功")
+        return success_response(data, "BulkSolver SOL103 预览成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -805,8 +805,8 @@ async def preview_nastran_sol103_api(request: Request, body: NastranSol103Previe
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol103/generate")
-async def generate_nastran_sol103_api(request: Request, body: NastranSol103GenerateRequest):
+@router.post("/solver/bulk_solver/sol103/generate")
+async def generate_bulk_solver_sol103_api(request: Request, body: BulkSolverSol103GenerateRequest):
     await log_request(request, model_to_dict(body))
     try:
         input_bdf = _resolve_project_local_input(
@@ -819,16 +819,16 @@ async def generate_nastran_sol103_api(request: Request, body: NastranSol103Gener
             project_id=body.project_id,
             explicit_path=body.output_bdf,
             file_name=body.output_bdf_name,
-            category_parts=("solver", "nastran_sol103"),
+            category_parts=("solver", "bulk_solver_sol103"),
             field_name="output_bdf",
             default_name=f"{Path(input_bdf).stem}_sol103.bdf" if body.project_id is not None else None,
         )
-        data = generate_nastran_sol103_job(
+        data = generate_bulk_solver_sol103_job(
             input_bdf=input_bdf,
             output_bdf=output_bdf,
             settings=body.settings,
         )
-        return success_response(data, "Nastran SOL103 生成成功")
+        return success_response(data, "BulkSolver SOL103 生成成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -836,22 +836,22 @@ async def generate_nastran_sol103_api(request: Request, body: NastranSol103Gener
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol103/run")
-async def run_nastran_sol103_run_api(request: Request, body: NastranSol103RunRequest):
+@router.post("/solver/bulk_solver/sol103/run")
+async def run_bulk_solver_sol103_run_api(request: Request, body: BulkSolverSol103RunRequest):
     await log_request(request, model_to_dict(body))
     try:
         kwargs = _sol103_run_kwargs(body)
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.nastran.sol103.run",
-                fn=run_nastran_sol103_job,
+                task_type="solver.bulk_solver.sol103.run",
+                fn=run_bulk_solver_sol103_job,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "Nastran SOL103 求解任务已提交")
-        data = run_nastran_sol103_job(**kwargs)
-        return success_response(data, "Nastran SOL103 求解成功")
+            return success_response(data, "BulkSolver SOL103 求解任务已提交")
+        data = run_bulk_solver_sol103_job(**kwargs)
+        return success_response(data, "BulkSolver SOL103 求解成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -859,22 +859,22 @@ async def run_nastran_sol103_run_api(request: Request, body: NastranSol103RunReq
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol103/run_and_store_modal")
-async def run_nastran_sol103_run_and_store_modal_api(request: Request, body: NastranSol103RunAndStoreModalRequest):
+@router.post("/solver/bulk_solver/sol103/run_and_store_modal")
+async def run_bulk_solver_sol103_run_and_store_modal_api(request: Request, body: BulkSolverSol103RunAndStoreModalRequest):
     await log_request(request, model_to_dict(body))
     try:
         kwargs = _sol103_run_and_store_modal_kwargs(body)
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.nastran.sol103.run_and_store_modal",
-                fn=run_nastran_sol103_and_store_modal_results,
+                task_type="solver.bulk_solver.sol103.run_and_store_modal",
+                fn=run_bulk_solver_sol103_and_store_modal_results,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "Nastran SOL103 求解并导入模态结果任务已提交")
-        data = run_nastran_sol103_and_store_modal_results(**kwargs)
-        return success_response(data, "Nastran SOL103 求解并导入模态结果成功")
+            return success_response(data, "BulkSolver SOL103 求解并导入模态结果任务已提交")
+        data = run_bulk_solver_sol103_and_store_modal_results(**kwargs)
+        return success_response(data, "BulkSolver SOL103 求解并导入模态结果成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -905,18 +905,18 @@ async def run_solver_and_parse_api(request: Request, body: SolverRunAndParseRequ
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.get("/solver/nastran/tasks")
-async def nastran_task_status(task_id: str):
+@router.get("/solver/bulk_solver/tasks")
+async def bulk_solver_task_status(task_id: str):
     try:
         data = get_background_task(task_id)
         if data is None:
             return error_response(
                 404,
-                f"nastran task '{task_id}' not found",
+                f"bulk_solver task '{task_id}' not found",
                 error_code="NOT_FOUND",
                 details={"task_id": str(task_id)},
             )
-        return success_response(data, "Nastran 任务状态获取成功")
+        return success_response(data, "BulkSolver 任务状态获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -924,8 +924,8 @@ async def nastran_task_status(task_id: str):
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol200/preview")
-async def preview_nastran_sol200_api(request: Request, body: NastranSol200PreviewRequest):
+@router.post("/solver/bulk_solver/sol200/preview")
+async def preview_bulk_solver_sol200_api(request: Request, body: BulkSolverSol200PreviewRequest):
     await log_request(request, model_to_dict(body))
     try:
         input_bdf = _resolve_sol200_input_bdf(
@@ -941,7 +941,7 @@ async def preview_nastran_sol200_api(request: Request, body: NastranSol200Previe
             responses=[model_to_dict(item) for item in body.responses],
             settings=body.settings,
         )
-        return success_response(data, "Nastran SOL200 预览成功")
+        return success_response(data, "BulkSolver SOL200 预览成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -949,8 +949,8 @@ async def preview_nastran_sol200_api(request: Request, body: NastranSol200Previe
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol200/generate")
-async def generate_nastran_sol200_api(request: Request, body: NastranSol200GenerateRequest):
+@router.post("/solver/bulk_solver/sol200/generate")
+async def generate_bulk_solver_sol200_api(request: Request, body: BulkSolverSol200GenerateRequest):
     await log_request(request, model_to_dict(body))
     try:
         input_bdf = _resolve_sol200_input_bdf(
@@ -962,7 +962,7 @@ async def generate_nastran_sol200_api(request: Request, body: NastranSol200Gener
             project_id=body.project_id,
             explicit_path=body.output_bdf,
             file_name=body.output_bdf_name,
-            category_parts=("solver", "nastran_sol200"),
+            category_parts=("solver", "bulk_solver_sol200"),
             field_name="output_bdf",
             default_name=f"{Path(input_bdf).stem}_sol200.bdf" if body.project_id is not None else None,
         )
@@ -977,7 +977,7 @@ async def generate_nastran_sol200_api(request: Request, body: NastranSol200Gener
             responses=[model_to_dict(item) for item in body.responses],
             settings=body.settings,
         )
-        return success_response(data, "Nastran SOL200 生成成功")
+        return success_response(data, "BulkSolver SOL200 生成成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -985,22 +985,22 @@ async def generate_nastran_sol200_api(request: Request, body: NastranSol200Gener
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol200/run")
-async def run_nastran_sol200_api(request: Request, body: NastranSol200RunRequest):
+@router.post("/solver/bulk_solver/sol200/run")
+async def run_bulk_solver_sol200_api(request: Request, body: BulkSolverSol200RunRequest):
     await log_request(request, model_to_dict(body))
     try:
         kwargs = _sol200_run_kwargs(body)
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.nastran.sol200.run",
+                task_type="solver.bulk_solver.sol200.run",
                 fn=run_sol200_workflow,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "Nastran SOL200 求解任务已提交")
+            return success_response(data, "BulkSolver SOL200 求解任务已提交")
         data = run_sol200_workflow(**kwargs)
-        return success_response(data, "Nastran SOL200 求解成功")
+        return success_response(data, "BulkSolver SOL200 求解成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -1008,22 +1008,22 @@ async def run_nastran_sol200_api(request: Request, body: NastranSol200RunRequest
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol200/run_and_store")
-async def run_nastran_sol200_and_store_api(request: Request, body: NastranSol200RunAndStoreRequest):
+@router.post("/solver/bulk_solver/sol200/run_and_store")
+async def run_bulk_solver_sol200_and_store_api(request: Request, body: BulkSolverSol200RunAndStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
         kwargs = _sol200_run_and_store_kwargs(body)
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.nastran.sol200.run_and_store",
+                task_type="solver.bulk_solver.sol200.run_and_store",
                 fn=run_sol200_and_store_workflow,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "Nastran SOL200 求解并入库任务已提交")
+            return success_response(data, "BulkSolver SOL200 求解并入库任务已提交")
         data = run_sol200_and_store_workflow(**kwargs)
-        return success_response(data, "Nastran SOL200 求解并入库成功")
+        return success_response(data, "BulkSolver SOL200 求解并入库成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -1031,22 +1031,22 @@ async def run_nastran_sol200_and_store_api(request: Request, body: NastranSol200
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol200/sync_generate_run_and_store")
-async def sync_generate_run_and_store_nastran_sol200_api(request: Request, body: NastranSol200SyncGenerateRunAndStoreRequest):
+@router.post("/solver/bulk_solver/sol200/sync_generate_run_and_store")
+async def sync_generate_run_and_store_bulk_solver_sol200_api(request: Request, body: BulkSolverSol200SyncGenerateRunAndStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
         kwargs = _sol200_sync_generate_run_and_store_kwargs(body)
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.nastran.sol200.sync_generate_run_and_store",
+                task_type="solver.bulk_solver.sol200.sync_generate_run_and_store",
                 fn=sync_generate_run_and_store_sol200_workflow,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "Nastran SOL200 一键工作流任务已提交")
+            return success_response(data, "BulkSolver SOL200 一键工作流任务已提交")
         data = sync_generate_run_and_store_sol200_workflow(**kwargs)
-        return success_response(data, "Nastran SOL200 一键工作流执行成功")
+        return success_response(data, "BulkSolver SOL200 一键工作流执行成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -1054,8 +1054,8 @@ async def sync_generate_run_and_store_nastran_sol200_api(request: Request, body:
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol200/modal/run_and_store")
-async def dispatch_modal_run_and_store_nastran_sol200_api(request: Request, body: NastranSol200SyncGenerateRunAndStoreRequest):
+@router.post("/solver/bulk_solver/sol200/modal/run_and_store")
+async def dispatch_modal_run_and_store_bulk_solver_sol200_api(request: Request, body: BulkSolverSol200SyncGenerateRunAndStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
         category_counts = _collect_project_modal_response_categories(
@@ -1075,13 +1075,13 @@ async def dispatch_modal_run_and_store_nastran_sol200_api(request: Request, body
             )
         if has_frequency:
             response_category = _MODAL_RESPONSE_CATEGORY_FREQUENCY
-            task_type = "solver.nastran.sol200.modal.run_and_store.frequency"
+            task_type = "solver.bulk_solver.sol200.modal.run_and_store.frequency"
             fn = sync_generate_run_and_store_sol200_workflow
             kwargs = _sol200_sync_generate_run_and_store_kwargs(body)
             kwargs["response_category"] = response_category
         else:
             response_category = _MODAL_RESPONSE_CATEGORY_MAC
-            task_type = "solver.nastran.sol200.modal.run_and_store.modal_mac"
+            task_type = "solver.bulk_solver.sol200.modal.run_and_store.modal_mac"
             fn = sync_run_sol200_modal_mac_and_store_workflow
             kwargs = _sol200_sync_generate_run_and_store_kwargs(body)
 
@@ -1101,7 +1101,7 @@ async def dispatch_modal_run_and_store_nastran_sol200_api(request: Request, body
                     "case_name": kwargs.get("case_name"),
                     "task": task,
                 },
-                "Nastran SOL200 按响应类别分发任务已提交",
+                "BulkSolver SOL200 按响应类别分发任务已提交",
             )
 
         data = fn(**kwargs)
@@ -1113,7 +1113,7 @@ async def dispatch_modal_run_and_store_nastran_sol200_api(request: Request, body
                 "case_name": kwargs.get("case_name"),
                 "workflow": data,
             },
-            "Nastran SOL200 按响应类别分发执行成功",
+            "BulkSolver SOL200 按响应类别分发执行成功",
         )
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
@@ -1122,22 +1122,22 @@ async def dispatch_modal_run_and_store_nastran_sol200_api(request: Request, body
         return error_response(app_exc.status_code, app_exc.message, error_code=app_exc.code, details=app_exc.details)
 
 
-@router.post("/solver/nastran/sol200/modal_mac/run_and_store")
-async def run_nastran_sol200_modal_mac_and_store_api(request: Request, body: NastranSol200RunAndStoreRequest):
+@router.post("/solver/bulk_solver/sol200/modal_mac/run_and_store")
+async def run_bulk_solver_sol200_modal_mac_and_store_api(request: Request, body: BulkSolverSol200RunAndStoreRequest):
     await log_request(request, model_to_dict(body))
     try:
         kwargs = _sol200_run_and_store_kwargs(body)
         if body.async_submit:
             data = submit_background_task(
-                task_type="solver.nastran.sol200.modal_mac.run_and_store",
+                task_type="solver.bulk_solver.sol200.modal_mac.run_and_store",
                 fn=run_sol200_modal_mac_and_store_workflow,
                 kwargs=kwargs,
                 request_payload=model_to_dict(body),
                 task_kind="external_solver",
             )
-            return success_response(data, "Nastran SOL200 MAC 灵敏度求解入库任务已提交")
+            return success_response(data, "BulkSolver SOL200 MAC 灵敏度求解入库任务已提交")
         data = run_sol200_modal_mac_and_store_workflow(**kwargs)
-        return success_response(data, "Nastran SOL200 MAC 灵敏度求解入库成功")
+        return success_response(data, "BulkSolver SOL200 MAC 灵敏度求解入库成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -1156,7 +1156,7 @@ async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
                 explicit_path=body.op2_path,
                 file_name=body.op2_file_name,
                 field_name="op2_path",
-                fallback_category_parts=("solver", "nastran_sol103"),
+                fallback_category_parts=("solver", "bulk_solver_sol103"),
             )
         resolved_bdf_path = (
             _resolve_project_local_input_with_fallback(
@@ -1164,7 +1164,7 @@ async def preview_op2_modal_api(request: Request, body: Op2ModalPreviewRequest):
                 explicit_path=body.bdf_path,
                 file_name=body.bdf_file_name,
                 field_name="bdf_path",
-                fallback_category_parts=("solver", "nastran_sol103"),
+                fallback_category_parts=("solver", "bulk_solver_sol103"),
             )
             if body.project_id is not None and (str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip())
             else body.bdf_path
@@ -1243,7 +1243,7 @@ async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
                 explicit_path=body.op2_path,
                 file_name=body.op2_file_name,
                 field_name="op2_path",
-                fallback_category_parts=("solver", "nastran_sol103"),
+                fallback_category_parts=("solver", "bulk_solver_sol103"),
             )
         else:
             resolved_op2_path = _resolve_modal_op2_path(body.op2_path, body.project_id)
@@ -1253,7 +1253,7 @@ async def store_op2_modal_api(request: Request, body: Op2ModalStoreRequest):
                 explicit_path=body.bdf_path,
                 file_name=body.bdf_file_name,
                 field_name="bdf_path",
-                fallback_category_parts=("solver", "nastran_sol103"),
+                fallback_category_parts=("solver", "bulk_solver_sol103"),
             )
             if str(body.bdf_path or "").strip() or str(body.bdf_file_name or "").strip()
             else None
@@ -1294,14 +1294,14 @@ async def export_op2_modal_vtu_api(request: Request, body: Op2ModalVtuExportRequ
             explicit_path=body.op2_path,
             file_name=body.op2_file_name,
             field_name="op2_path",
-            fallback_category_parts=("solver", "nastran_sol103"),
+            fallback_category_parts=("solver", "bulk_solver_sol103"),
         )
         bdf_path = _resolve_project_local_input_with_fallback(
             project_id=body.project_id,
             explicit_path=body.bdf_path,
             file_name=body.bdf_file_name,
             field_name="bdf_path",
-            fallback_category_parts=("solver", "nastran_sol103"),
+            fallback_category_parts=("solver", "bulk_solver_sol103"),
         )
         output_vtu = _resolve_project_local_output_file(
             project_id=body.project_id,

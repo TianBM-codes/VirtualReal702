@@ -86,9 +86,9 @@ def _install_stubs() -> None:
     sensitivity_service._rebuild_selected_parameters_from_inp = (
         lambda **kwargs: {"selected_parameter_count": 2, "cleared_count": 0}
     )
-    sensitivity_service.delete_abaqus_process_files = lambda workdir, job_name: []
+    sensitivity_service.delete_deck_solver_process_files = lambda workdir, job_name: []
     sensitivity_service.build_workspace_from_odb = lambda **kwargs: {"workspace": kwargs["workspace"]}
-    sensitivity_service.run_abaqus_job = (
+    sensitivity_service.run_deck_solver_job = (
         lambda **kwargs: {
             "job_name": "demo_job",
             "generated_files": {"analysis_inp": str(INPUT_INP)},

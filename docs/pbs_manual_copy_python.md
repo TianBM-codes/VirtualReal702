@@ -41,14 +41,14 @@ from .project_log_service import log_project_error, log_project_info, log_projec
 
 
 DEFAULT_PBS_APPLICATIONS = {
-    "Abaqus": {
+    "DeckSolver": {
         "cores": 48,
         "hosts": 1,
         "precision": "off",
         "primary_file_exts": [".inp"],
         "result_exts": [".odb", ".dat", ".msg", ".sta", ".log", ".prt"],
     },
-    "Nastran": {
+    "BulkSolver": {
         "cores": 8,
         "primary_file_exts": [".bdf", ".dat", ".nas"],
         "result_exts": [".f06", ".op2", ".pch", ".xdb", ".log", ".out"],
@@ -160,7 +160,7 @@ def _normalize_project_application_settings(application: str, pbs_settings: Dict
 注意：
 
 - `MEMORY` 映射不要了
-- 支持 `pbs.applications.Abaqus` 这种嵌套配置
+- 支持 `pbs.applications.DeckSolver` 这种嵌套配置
 
 ### 2.5 替换 `load_pbs_environment_config`
 
@@ -347,12 +347,12 @@ def get_application_config(self, application: str) -> Dict[str, Any]:
     return config
 ```
 
-### 2.10 `build_submit_payload` 里删掉 Nastran 的 `MEMORY`
+### 2.10 `build_submit_payload` 里删掉 BulkSolver 的 `MEMORY`
 
-Nastran 分支应改成：
+BulkSolver 分支应改成：
 
 ```python
-elif application == "Nastran":
+elif application == "BulkSolver":
     payload.update({
         "CORES": config.get("cores", 8),
     })
@@ -522,7 +522,7 @@ def get_pbs_job_status(*, project_id: int, job_id: str, env: Optional[str] = Non
 
 ### 3.1 新增 `SolverRunAndParseRequest`
 
-插到 `AbaqusInpRunAndUploadResultRequest` 后面即可：
+插到 `DeckSolverInpRunAndUploadResultRequest` 后面即可：
 
 ```python
 class SolverRunAndParseRequest(BaseModel):
@@ -534,8 +534,8 @@ class SolverRunAndParseRequest(BaseModel):
     base_url: Optional[str] = None
     output_dir: Optional[str] = None
     output_bdf: Optional[str] = None
-    abaqus: Optional[str] = None
-    nastran: Optional[str] = None
+    deck_solver: Optional[str] = None
+    bulk_solver: Optional[str] = None
     cpus: Optional[int] = None
     interactive: bool = True
     timeout_sec: Optional[int] = None
@@ -609,8 +609,8 @@ def _solver_run_and_parse_kwargs(body: SolverRunAndParseRequest) -> dict:
         "base_url": body.base_url,
         "output_dir": body.output_dir,
         "output_bdf": body.output_bdf,
-        "abaqus": body.abaqus,
-        "nastran": body.nastran,
+        "deck_solver": body.deck_solver,
+        "bulk_solver": body.bulk_solver,
         "cpus": body.cpus,
         "interactive": body.interactive,
         "timeout_sec": body.timeout_sec,
@@ -686,4 +686,4 @@ async def run_solver_and_parse_api(request: Request, body: SolverRunAndParseRequ
 1. `PBSSolverRunRequest.project_id` 必须是必填
 2. `get_pbs_job_status()` 必须接收 `project_id`
 3. `PBSClient` 必须改成 `api_paths` 方案
-4. Nastran 提交载荷里不能再带 `MEMORY`
+4. BulkSolver 提交载荷里不能再带 `MEMORY`

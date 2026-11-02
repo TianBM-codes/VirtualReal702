@@ -1,7 +1,7 @@
 # sensitivity run_and_store 接口逻辑速查
 
 > 文件对应源码：`services/model_update/analysis/sensitivity_service.py`
-> 路由入口：`webapi/routers/sensitivity.py` → `POST /sensitivity/abaqus/run_and_store`
+> 路由入口：`webapi/routers/sensitivity.py` → `POST /sensitivity/deck_solver/run_and_store`
 > 兼容旧路径：`POST /sensitivity/run_and_store`
 
 ---
@@ -10,15 +10,15 @@
 
 | 函数 | 路由 | 说明 |
 |---|---|---|
-| `run_sensitivity_inp_and_store` | `POST /sensitivity/abaqus/run_and_store` | 主入口：跑 Abaqus、解析结果、入库、（可选）合并场 |
-| `generate_sensitivity_inp_and_store` | `POST /sensitivity/abaqus/generate_run_and_store` | 先从 DB 生成 INP，再调用 `run_sensitivity_inp_and_store` |
-| `store_dsa_sensitivity_results` | `POST /sensitivity/abaqus/calculate_and_store` | 另一条路：支持传已有 ODB/workspace，直接解析入库（无 merge） |
+| `run_sensitivity_inp_and_store` | `POST /sensitivity/deck_solver/run_and_store` | 主入口：跑 DeckSolver、解析结果、入库、（可选）合并场 |
+| `generate_sensitivity_inp_and_store` | `POST /sensitivity/deck_solver/generate_run_and_store` | 先从 DB 生成 INP，再调用 `run_sensitivity_inp_and_store` |
+| `store_dsa_sensitivity_results` | `POST /sensitivity/deck_solver/calculate_and_store` | 另一条路：支持传已有 ODB/workspace，直接解析入库（无 merge） |
 
 `generate_sensitivity_inp_and_store` 透传所有参数给 `run_sensitivity_inp_and_store`，只多了 INP 生成一步，行为完全一致。
 
 补充：
 
-- `POST /sensitivity/abaqus/generate_run_and_store` 现在支持极简请求。
+- `POST /sensitivity/deck_solver/generate_run_and_store` 现在支持极简请求。
 - 当项目里已经定义好正式参数和正式响应后，`step / instances / response_component / position` 可以不显式传入，由后端在结果解析阶段自动补全。
 - 项目内源 `inp` 建议通过 `input_inp_name` 传文件名或相对路径。
 
@@ -30,7 +30,7 @@
 输入 INP + output_dir
         │
         ▼
- ① run_abaqus_job()          ← 跑 Abaqus 求解，得到 ODB
+ ① run_deck_solver_job()          ← 跑 DeckSolver 求解，得到 ODB
         │
         ├─ parse_via_project_results=True (默认)
         │         │
@@ -122,7 +122,7 @@ return _normalize_result_group_name(raw)
 
 ### cleanup_process_files
 
-`True`（默认）时，Abaqus 生成的过程文件（`.msg`, `.dat`, `.sta` 等）在解析完后删除。**不删 workspace 和 ODB。**
+`True`（默认）时，DeckSolver 生成的过程文件（`.msg`, `.dat`, `.sta` 等）在解析完后删除。**不删 workspace 和 ODB。**
 
 ---
 
@@ -163,7 +163,7 @@ return _normalize_result_group_name(raw)
 
 ## 六、`store_dsa_sensitivity_results` 的区别
 
-- 接受已有 `workspace` 或 `odb_path`（不一定重新跑 Abaqus）。
+- 接受已有 `workspace` 或 `odb_path`（不一定重新跑 DeckSolver）。
 - `odb_path` 存在时，在 `build_dsa_normalized_sensitivity_matrix` 内部自动建 workspace（路径：`workspace_root/<odb_stem>_workspace`，`workspace_root` 对应 `output_dir`）。
 - **没有** `merge_fields` 参数，不触发合并。需要合并另调 `POST /sensitivity/merge_fields`。
 
@@ -238,7 +238,7 @@ return result
 
 - `src/inp/parser.py`：正确解析 `part=PART-1` → `Instance.part_name="PART-1"` ✅
 - `src/inp/exporter.py`：写 manifest `instances` 表时 `part_name="PART-1"` ✅
-- `src/l1/abaqus_dump.py`：读 ODB `instance.partName` → `"PART-1"` ✅
+- `src/l1/deck_solver_dump.py`：读 ODB `instance.partName` → `"PART-1"` ✅
 - `get_instances_by_part_name("PART-1")` → `["PART-1-1"]` ✅
 
 整条解析链路正确，唯一 bug 在 `_resolve_element_labels` 未利用已有的 `part_name`。

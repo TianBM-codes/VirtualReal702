@@ -15,13 +15,13 @@
 
 1. `POST /import/unv`
 2. `POST /import/bdf`
-3. `POST /solver/nastran/sol103/run_and_store_modal`
+3. `POST /solver/bulk_solver/sol103/run_and_store_modal`
 4. `POST /match/nodes`
 5. `POST /match/dofs`
 6. `POST /correlation/modal/compute`
 7. `POST /optimization/response/modal_frequency/create_from_match`
-8. `POST /solver/nastran/sol200/preview`
-9. `POST /solver/nastran/sol200/run_and_store`
+8. `POST /solver/bulk_solver/sol200/preview`
+9. `POST /solver/bulk_solver/sol200/run_and_store`
 10. `POST /optimization/bayesian/sol200/modal_frequency/run`
 
 已额外保存一个可重复执行的脚本：
@@ -54,11 +54,11 @@
 
 ## 本次修复
 
-为让这类纯 Nastran/BDF 的频率修正算例能跑通，我修了两个后端问题：
+为让这类纯 BulkSolver/BDF 的频率修正算例能跑通，我修了两个后端问题：
 
 1. `services/model_update/importers/op2_service.py`
    - 当项目目录下没有 `manifest.db` 时，不再让参数映射直接失败。
-   - 对 Nastran-only 场景回退为单实例 `BDF_MODEL` 映射。
+   - 对 BulkSolver-only 场景回退为单实例 `BDF_MODEL` 映射。
 
 2. `services/model_update/analysis/bayesian_service.py`
    - `SOL200` 模态频率 Bayesian 迭代保存历史时，不再强制要求 `manifest.db`。

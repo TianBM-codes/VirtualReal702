@@ -2,13 +2,13 @@
 接触输出场（CPRESS / CSHEAR / COPEN / CSLIP）支持的单元测试。
 
 覆盖：
-  - src/l1/abaqus_dump_parallel.py  group_fields_for_workers()
+  - src/l1/deck_solver_dump_parallel.py  group_fields_for_workers()
     （字段名带接触对后缀时按基名分组，保证同组不跨 worker）
   - src/l3/services/query_service.py  _read_pick_result() 的 NODAL 稀疏分支
     （结果 HDF5 带 /NODAL/<inst>/labels 时按 label 对齐，而不是按几何行号直索引）
 
-src/l1/abaqus_dump.py 的 split_region_field 不在此 import（约定：该模块
-import 需要 odbAccess）；abaqus_dump_parallel 里的分组逻辑与其保持一致，
+src/l1/deck_solver_dump.py 的 split_region_field 不在此 import（约定：该模块
+import 需要 odbAccess）；deck_solver_dump_parallel 里的分组逻辑与其保持一致，
 由本文件覆盖。
 
 设计文档：docs/Contact-Field-Support.md
@@ -17,7 +17,7 @@ import h5py
 import numpy as np
 import pytest
 
-from src.l1.abaqus_dump_parallel import group_fields_for_workers
+from src.l1.deck_solver_dump_parallel import group_fields_for_workers
 from src.l3.services.query_service import _read_pick_result
 from src.l3.services.result_service import _mask_partial_nan_triangles_soup
 

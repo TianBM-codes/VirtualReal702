@@ -88,7 +88,7 @@ async def submit_job(body: SubmitJobRequest):
         if settings.embedded_runner:
             warning = (
                 "Job queued but the embedded runner does not appear to be running. "
-                "Check the server console for startup errors (e.g. missing Abaqus). "
+                "Check the server console for startup errors (e.g. missing DeckSolver). "
                 "You can also start the runner manually: python src/job_runner.py"
             )
         else:

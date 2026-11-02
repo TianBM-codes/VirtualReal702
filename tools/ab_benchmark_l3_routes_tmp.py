@@ -57,7 +57,7 @@ def main() -> int:
     ap.add_argument("--repeat", type=int, default=4)
     ap.add_argument("--odb-id", default="bench")
     ap.add_argument("--instance", default="CHANGE")
-    ap.add_argument("--step", default="Nastran")
+    ap.add_argument("--step", default="BulkSolver")
     ap.add_argument("--frame", type=int, default=0)
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--n-frames", type=int, default=20)

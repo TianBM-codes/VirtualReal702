@@ -257,7 +257,7 @@ def _reuse_or_hardlink(src_abs: str, dest: str):
 
 def _ascii_alias_no_copy(src_abs: str, workspace: str, alias_name: str = None) -> str:
     """给一个「本地、名字含非 ASCII」的文件生成一个 ASCII 路径，供只认 ASCII 路径的
-    子进程工具（Abaqus / pyNastran）使用，且**绝不移动/改名用户原文件**。
+    子进程工具（DeckSolver / bulk_provider）使用，且**绝不移动/改名用户原文件**。
 
     优先在 ASCII 的 workspace 目录里挂一个 ASCII 名的硬链接（零复制、零额外磁盘，
     同时解决「文件名中文」和「目录名中文」）。仅当跨盘等无法硬链接时才退化为复制。
@@ -283,7 +283,7 @@ def _ascii_alias_no_copy(src_abs: str, workspace: str, alias_name: str = None) -
 
 
 def resolve_runner_source(source_path: str, workspace: str, source_file: str = None) -> str:
-    """返回一个 runner 能安全交给 Abaqus/pyNastran 的「本地 + ASCII」路径。
+    """返回一个 runner 能安全交给 DeckSolver/bulk_provider 的「本地 + ASCII」路径。
 
     - HTTP URL         → 下载到 workspace（文件名用 source_file）。
     - 本地 + ASCII 路径 → 原样返回（零复制）。

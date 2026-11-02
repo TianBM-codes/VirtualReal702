@@ -131,7 +131,7 @@
 
 ### 8. 运行 MODAL_MAC 灵敏度入口
 
-`POST /solver/nastran/sol200/modal_mac/run_and_store`
+`POST /solver/bulk_solver/sol200/modal_mac/run_and_store`
 
 ```json
 {

@@ -51,7 +51,7 @@ def test_assembly_elsets_written_to_sets_h5(tmp_path):
         names = set(f["element_sets/PARTA-1"].keys())
 
     # Part-level internal set (always was written) plus both assembly-level sets.
-    # Set names are uppercased on export to match the ODB side (Abaqus stores set
+    # Set names are uppercased on export to match the ODB side (DeckSolver stores set
     # names uppercase), so '_PickedSet1' → '_PICKEDSET1', 'UserBC' → 'USERBC', etc.
     assert "_PICKEDSET1" in names
     assert "USERBC" in names      # user-named assembly set — previously dropped

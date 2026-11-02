@@ -265,7 +265,7 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
 
     monkeypatch.setattr(
         sensitivity_service,
-        "run_abaqus_job",
+        "run_deck_solver_job",
         lambda **kwargs: {
             "job_name": "job_a",
             "generated_files": {"analysis_inp": str(output_dir / inp_path.name)},
@@ -283,7 +283,7 @@ def test_run_sensitivity_inp_and_store_runs_solver_builds_workspace_and_cleans_f
     monkeypatch.setattr(sensitivity_service, "build_workspace_from_odb", fake_build_workspace)
     monkeypatch.setattr(
         sensitivity_service,
-        "delete_abaqus_process_files",
+        "delete_deck_solver_process_files",
         lambda workdir, job_name: [str(Path(workdir) / f"{job_name}.com")],
     )
     monkeypatch.setattr(
@@ -355,7 +355,7 @@ def test_run_sensitivity_inp_and_store_resets_project_status_on_failure(monkeypa
     )
     monkeypatch.setattr(
         sensitivity_service,
-        "run_abaqus_job",
+        "run_deck_solver_job",
         lambda **kwargs: {
             "job_name": "job_a",
             "generated_files": {"analysis_inp": str(output_dir / inp_path.name)},
@@ -439,7 +439,7 @@ def test_run_sensitivity_inp_and_store_writes_cloud_result_metadata(monkeypatch,
 
     monkeypatch.setattr(
         sensitivity_service,
-        "run_abaqus_job",
+        "run_deck_solver_job",
         lambda **kwargs: {
             "job_name": "job_a",
             "generated_files": {"analysis_inp": str(output_dir / inp_path.name)},
@@ -456,7 +456,7 @@ def test_run_sensitivity_inp_and_store_writes_cloud_result_metadata(monkeypatch,
     )
     monkeypatch.setattr(
         sensitivity_service,
-        "delete_abaqus_process_files",
+        "delete_deck_solver_process_files",
         lambda workdir, job_name: [str(Path(workdir) / f"{job_name}.com")],
     )
     monkeypatch.setattr(
@@ -551,7 +551,7 @@ def test_run_sensitivity_inp_and_store_uses_project_result_group_when_enabled(mo
 
     monkeypatch.setattr(
         sensitivity_service,
-        "run_abaqus_job",
+        "run_deck_solver_job",
         lambda **kwargs: {
             "job_name": "job_a",
             "generated_files": {"analysis_inp": str(output_dir / inp_path.name)},
@@ -574,7 +574,7 @@ def test_run_sensitivity_inp_and_store_uses_project_result_group_when_enabled(mo
     )
     monkeypatch.setattr(
         sensitivity_service,
-        "delete_abaqus_process_files",
+        "delete_deck_solver_process_files",
         lambda workdir, job_name: [str(Path(workdir) / f"{job_name}.com")],
     )
     monkeypatch.setattr(

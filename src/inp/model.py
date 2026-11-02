@@ -1,10 +1,10 @@
 """
-Data model for a parsed Abaqus INP file.
+Data model for a parsed DeckSolver INP file.
 
 Key design decisions (per INP-Parser-Design.md):
 - Original node/element labels are preserved (not renumbered)
 - Instance coordinates stay in local (Part) space; transforms stored separately
-- Element keeps both factory_type (for visualization) and abaqus_type (for analysis)
+- Element keeps both factory_type (for visualization) and deck_solver_type (for analysis)
 - Sets at Part level and Assembly level are stored separately (different scopes)
 - Diagnostics are collected on InpModel, not raised
 """
@@ -14,13 +14,13 @@ from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Element type mapping  (Abaqus type string → canonical geometry name)
+# Element type mapping  (DeckSolver type string → canonical geometry name)
 # The colleague should map these strings to their MeshElementFactory enum.
 # Variants like C3D8R / C3D8I / C3D8H all share the same geometry ("HEX8")
-# but differ in integration / formulation — abaqus_type preserves that info.
+# but differ in integration / formulation — deck_solver_type preserves that info.
 # ---------------------------------------------------------------------------
 
-ABAQUS_TO_FACTORY: Dict[str, str] = {
+DECK_SOLVER_TO_FACTORY: Dict[str, str] = {
     # ---- solid: tetrahedra ----
     "C3D4":    "TET4",
     "C3D4H":   "TET4",
@@ -109,21 +109,21 @@ ABAQUS_TO_FACTORY: Dict[str, str] = {
 
 # Ordered longest-first so multi-char suffixes (OS, RH, MH, RT, R5) are
 # matched before their single-char components.
-_ABAQUS_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
+_DECK_SOLVER_VARIANT_SUFFIXES = ('OS', 'RH', 'MH', 'R5', 'R', 'H', 'I', 'M', 'T', '5')
 
 
-def map_element_type(abaqus_type: str) -> Optional[str]:
+def map_element_type(deck_solver_type: str) -> Optional[str]:
     """Return canonical geometry name, or None if unknown.
 
-    Strips Abaqus variant suffixes (R, H, I, T, M, OS, RH, …) one at a time
+    Strips DeckSolver variant suffixes (R, H, I, T, M, OS, RH, …) one at a time
     until a known base type is found, so e.g. S8RT → S8R → QUAD8.
     """
-    s = abaqus_type.upper()
+    s = deck_solver_type.upper()
     while True:
-        result = ABAQUS_TO_FACTORY.get(s)
+        result = DECK_SOLVER_TO_FACTORY.get(s)
         if result is not None:
             return result
-        for suf in _ABAQUS_VARIANT_SUFFIXES:
+        for suf in _DECK_SOLVER_VARIANT_SUFFIXES:
             if s.endswith(suf) and len(s) > len(suf):
                 s = s[:-len(suf)]
                 break
@@ -146,7 +146,7 @@ class Node:
 @dataclass
 class Element:
     label: int
-    abaqus_type: str   # original string, e.g. "C3D8R" — for analysis use
+    deck_solver_type: str   # original string, e.g. "C3D8R" — for analysis use
     factory_type: str  # canonical geometry, e.g. "HEX8" — for visualization
     node_labels: List[int] = field(default_factory=list)
 
@@ -161,7 +161,7 @@ class Nset:
     name: str
     node_labels: List[int] = field(default_factory=list)
     set_refs: List[str] = field(default_factory=list)   # names of other nsets to include
-    internal: bool = False   # Abaqus-generated (_PickedSetNN) — kept for section/surface resolution, hidden from user set list
+    internal: bool = False   # DeckSolver-generated (_PickedSetNN) — kept for section/surface resolution, hidden from user set list
 
 
 @dataclass
@@ -170,7 +170,7 @@ class Elset:
     name: str
     elem_labels: List[int] = field(default_factory=list)
     set_refs: List[str] = field(default_factory=list)   # names of other elsets to include
-    internal: bool = False   # Abaqus-generated (_PickedSetNN) — kept for section resolution, hidden from user set list
+    internal: bool = False   # DeckSolver-generated (_PickedSetNN) — kept for section resolution, hidden from user set list
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +228,9 @@ class Part:
 @dataclass
 class Rotation:
     """
-    Rotation from Abaqus Instance transform.
+    Rotation from DeckSolver Instance transform.
 
-    Abaqus stores the rotation axis as two points on the axis line:
+    DeckSolver stores the rotation axis as two points on the axis line:
     - center: first point
     - axis:   second point on the same axis line
     """
@@ -277,7 +277,7 @@ class Assembly:
     ties:      List[TieConstraint]          = field(default_factory=list)
     couplings: List[CouplingConstraint]     = field(default_factory=list)
     # Section assignments written inside the *Assembly block (referencing
-    # instance-scoped elsets). Native Abaqus/CAE puts sections inside *Part,
+    # instance-scoped elsets). Native DeckSolver/CAE puts sections inside *Part,
     # but flattened / third-party INPs (Hypermesh, ANSA) often place them here.
     sections:  List["Section"]              = field(default_factory=list)
 

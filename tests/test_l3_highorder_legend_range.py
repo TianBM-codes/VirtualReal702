@@ -2,7 +2,7 @@
 
 _compute_en_global_range 计算云图 legend 的全模型范围。修复前它只取角节点
 （conn[:, :n_corner]），高阶单元落在边中节点上的峰值/谷值会被漏掉，legend
-封顶在角节点值上、与 Abaqus 对不上。修复后改用全连接（conn_full，含中节点），
+封顶在角节点值上、与 DeckSolver 对不上。修复后改用全连接（conn_full，含中节点），
 中节点极值进入 legend。
 
 参见 docs/l2/HighOrder-Midside-Subdivision-Design.md。

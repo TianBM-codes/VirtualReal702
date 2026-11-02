@@ -2,22 +2,22 @@
 
 > 状态:设计(未实现)
 > 更新时间:2026-06-27
-> 关联代码:`src/l3/services/result_service.py`、`src/l3/api/routes/results.py`、`src/l1/abaqus_dump.py`、`src/l1/l1_pack.py`
-> 参考:`docs/Selecting section point data by category.md`(Abaqus CAE 原文档)
+> 关联代码:`src/l3/services/result_service.py`、`src/l3/api/routes/results.py`、`src/l1/deck_solver_dump.py`、`src/l1/l1_pack.py`
+> 参考:`docs/Selecting section point data by category.md`(DeckSolver CAE 原文档)
 
-本文说明如何让壳/梁等单元在渲染时支持切换"截面点(section point)",对齐 Abaqus CAE 的 **Result → Section Points** 行为。当前实现永远只显示底面(Bottom),本方案给出从数据到接口的完整落地路径。
+本文说明如何让壳/梁等单元在渲染时支持切换"截面点(section point)",对齐 DeckSolver CAE 的 **Result → Section Points** 行为。当前实现永远只显示底面(Bottom),本方案给出从数据到接口的完整落地路径。
 
 ---
 
 ## 一、背景科普:section point 是什么
 
-壳(shell)、梁(beam)这类单元在"厚度方向"上有内部结构。一块 1mm 厚的壳,弯曲时上表面受拉、下表面受压,中间为 0。Abaqus 不会只存一个值,而是沿厚度方向布若干个**积分点(integration point)/ 截面点(section point)**,每个点各存一份应力应变。
+壳(shell)、梁(beam)这类单元在"厚度方向"上有内部结构。一块 1mm 厚的壳,弯曲时上表面受拉、下表面受压,中间为 0。DeckSolver 不会只存一个值,而是沿厚度方向布若干个**积分点(integration point)/ 截面点(section point)**,每个点各存一份应力应变。
 
 - 默认壳(Simpson 积分,N 个点):**编号最小的点 = 底面 = SNEG = Bottom**,**编号最大的点 = 顶面 = SPOS = Top**,中间编号 = 中面。
 - 复合材料层合板:每一层(ply)算一个或多个 section point,各有名字。
 - 实体单元(solid)没有厚度方向 section point 的概念,只有体内积分点。
 
-Abaqus CAE 提供两种选法(见参考文档):
+DeckSolver CAE 提供两种选法(见参考文档):
 
 1. **Categories(按类别 + 位置)**:选 Bottom / Top(三维壳可同时上下两面),再在该类别可用截面点里挑一个具体点。Bottom/Top 默认对应 SNEG/SPOS。
 2. **Envelope(包络 / 临界值)**:不挑固定点,而是在每个单元的所有截面点里取 **绝对值最大 / 最大 / 最小**,生成 envelope plot。
@@ -35,12 +35,12 @@ Abaqus CAE 提供两种选法(见参考文档):
 ```
 /{position}/{instance}/{etype}/sp{n}/data        ← position = ELEMENT_NODAL 或 INTEGRATION_POINT
                               /sp{n}/labels
-                              /sp{n}/sp_labels    ← 该块的 Abaqus 截面点编号
+                              /sp{n}/sp_labels    ← 该块的 DeckSolver 截面点编号
                               /sp{n}/ip_labels    ← INTEGRATION_POINT 才有
 实体单元:  /{position}/{instance}/{etype}/data   ← 没有 sp 层,data 直接挂在 etype 组下
 ```
 
-`sp{n}` 里的 `n` 就是 Abaqus 的 `sectionPoint.number`(`src/l1/abaqus_dump.py:550-551` 抓取)。`manifest.db` 的 `result_blocks` 表还存了 `n_sp`(该单元有几个截面点)。
+`sp{n}` 里的 `n` 就是 DeckSolver 的 `sectionPoint.number`(`src/l1/deck_solver_dump.py:550-551` 抓取)。`manifest.db` 的 `result_blocks` 表还存了 `n_sp`(该单元有几个截面点)。
 
 > 边角布局:`l1_pack.py:791-807` 还存在一种 `[frames, N, n_sp, n_ip, ncomp]` 的"n_sp 合一维"老布局。实际数据现在走 `sp{n}` 子组布局,这条主要作防御性处理(见 4.2 的坑)。
 
@@ -55,7 +55,7 @@ Abaqus CAE 提供两种选法(见参考文档):
 | `result_service.py:1151-1155` | `_en_per_vertex_averaged` | ELEMENT_NODAL 75% 条件平均 |
 | `result_service.py:1320-1323` | `_compute_en_global_range` | 计算图例 min/max |
 
-> NODAL 位置是节点平均结果、没有 section point 层,因此本方案只涉及 **ELEMENT_NODAL** 与 **INTEGRATION_POINT**。`frame_colors` 会先尝试 NODAL —— 对有 NODAL 输出的壳,NODAL 没有逐截面点数据,section point 选择对它不生效(这与 Abaqus 用 ELEMENT_NODAL/IP 做截面点云图一致)。
+> NODAL 位置是节点平均结果、没有 section point 层,因此本方案只涉及 **ELEMENT_NODAL** 与 **INTEGRATION_POINT**。`frame_colors` 会先尝试 NODAL —— 对有 NODAL 输出的壳,NODAL 没有逐截面点数据,section point 选择对它不生效(这与 DeckSolver 用 ELEMENT_NODAL/IP 做截面点云图一致)。
 
 ---
 
@@ -76,7 +76,7 @@ Abaqus CAE 提供两种选法(见参考文档):
 | `bottom`(默认) | 底面 = SNEG | 取 `sp{n}` 中编号**最小**的 |
 | `top` | 顶面 = SPOS | 取编号**最大**的 |
 | `middle` | 中面 | 取编号**居中**的 |
-| `sp:<num>` | 指定 Abaqus 截面点号 | 按号精确匹配子组 |
+| `sp:<num>` | 指定 DeckSolver 截面点号 | 按号精确匹配子组 |
 | `max` / `min` / `absmax` | 包络 | 读**全部** `sp{n}`,逐元素求 max / min / abs-max |
 
 按"编号最小/最大/居中"推断 bottom/top/middle,对任意截面点编号方案都稳健(不依赖固定点数)。默认 `bottom` 保证行为与现状完全一致。
@@ -133,9 +133,9 @@ section_point: str = Query("bottom", description="bottom|top|middle|sp:<n>|max|m
 
 ### 4.5 可选增强:更友好的标签(需小改 L1)
 
-现在 L1 只存截面点**编号**(`sp_obj.number`),没存 Abaqus 的描述串(SPOS/SNEG / ply 名 / 相对位置分数)。若想下拉框显示"Bottom (SNEG)""Ply-3 Top"这种人话:
+现在 L1 只存截面点**编号**(`sp_obj.number`),没存 DeckSolver 的描述串(SPOS/SNEG / ply 名 / 相对位置分数)。若想下拉框显示"Bottom (SNEG)""Ply-3 Top"这种人话:
 
-1. 在 `src/l1/abaqus_dump.py` 的 `reshape_ip_block` / `_block_sp_num` 里顺手抓 `sp_obj.description`;
+1. 在 `src/l1/deck_solver_dump.py` 的 `reshape_ip_block` / `_block_sp_num` 里顺手抓 `sp_obj.description`;
 2. 在 `src/l1/l1_pack.py` 写进 `sp{n}` 子组的 attr;
 3. L3 发现接口透出。
 
@@ -161,4 +161,4 @@ P1 落地后"切换 Top / 指定截面点"即可用;P2 补 envelope;P3 让 UI �
 - **着色与图例一致**:frame-colors / frame-scalars / frame-scalar-range 三者必须用同一 `section_point`。
 - **实体单元免疫**:solid(无 sp 层)忽略该参数,行为不变。
 - **越界/缺失**:请求的 `sp:<n>` 不存在时回退到 bottom 或返回明确错误(实现时确定其一并在 API 文档注明)。
-- **NODAL 不参与**:对走 NODAL 的壳,section point 选择不生效,符合 Abaqus 语义。
+- **NODAL 不参与**:对走 NODAL 的壳,section point 选择不生效,符合 DeckSolver 语义。

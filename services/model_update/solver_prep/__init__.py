@@ -1,2 +1,2 @@
-"""Input preparation helpers for Abaqus and Nastran workflows."""
+"""Input preparation helpers for DeckSolver and BulkSolver workflows."""
 

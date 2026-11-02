@@ -1,4 +1,4 @@
-"""导出"我们这边" L1 HDF5 里某个场的原始值到 CSV，用于和 Abaqus 对比。
+"""导出"我们这边" L1 HDF5 里某个场的原始值到 CSV，用于和 DeckSolver 对比。
 
 同时导出两种位置(都是"未平均"的原始数据)：
   - INTEGRATION_POINT：积分点原值              -> ours_<field>_ip.csv
@@ -13,7 +13,7 @@
 说明:
 - 第 2 个参数是"场名"(field)，不是 step。默认 S。
 - 第 3 个参数是帧号(0 起算)，默认 1，对应前端 URL 里的 frame=1。
-- 导出的都是未平均的原始值，跨全部 instance，便于和 Abaqus 在
+- 导出的都是未平均的原始值，跨全部 instance，便于和 DeckSolver 在
   Integration Point / Unaveraged 口径下逐单元对照。
 """
 import sys

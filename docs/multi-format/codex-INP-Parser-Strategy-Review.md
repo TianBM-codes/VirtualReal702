@@ -53,7 +53,7 @@ INP Source
 - 后续 BDF / CDB 解析输出
 - L2 ingest 的统一输入
 
-换句话说，**不要让 INP parser 直接绑定 Abaqus 现有代码细节，而要绑定一个格式无关的中间标准模型。**
+换句话说，**不要让 INP parser 直接绑定 DeckSolver 现有代码细节，而要绑定一个格式无关的中间标准模型。**
 
 ---
 

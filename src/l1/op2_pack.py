@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-op2_pack.py — Layer 1 extraction for Nastran OP2 result files.
+op2_pack.py — Layer 1 extraction for BulkSolver OP2 result files.
 
 Usage:
     python src/l1/op2_pack.py --op2 /path/to/result.op2 \\
@@ -34,12 +34,12 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from src.l1.manifest_schema import MANIFEST_SCHEMA
-from src.l1.pynastran_op2_compat import make_op2
+from src.l1.bulk_provider_op2_compat import make_op2
 
 
 # ─── SOL → procedure mapping ──────────────────────────────────────────────────
 
-# analysis_code values reported by pyNastran on result objects
+# analysis_code values reported by bulk_provider on result objects
 _ANALYSIS_CODE_TO_PROC = {
     1: 'STATIC',     # statics
     2: 'FREQUENCY',  # normal modes (SOL 103)
@@ -104,7 +104,7 @@ def _get_instance_info(db_conn, workspace):
     rows = db_conn.execute("SELECT instance_name, geom_path FROM instances").fetchall()
     if not rows:
         raise RuntimeError("manifest.db has no instances — run bdf_pack.py first")
-    # For Nastran BDF there is always exactly one instance
+    # For BulkSolver BDF there is always exactly one instance
     inst_name = rows[0]['instance_name']
     geom_path = rows[0]['geom_path']
     return inst_name, geom_path
@@ -118,7 +118,7 @@ def _load_bdf_node_labels(workspace, geom_path):
 
 
 def _infer_procedure(result_obj):
-    """Return 'STATIC' / 'FREQUENCY' / 'DYNAMIC' / 'BUCKLE' from pyNastran result."""
+    """Return 'STATIC' / 'FREQUENCY' / 'DYNAMIC' / 'BUCKLE' from bulk_provider result."""
     ac = getattr(result_obj, 'analysis_code', None)
     if ac is not None:
         return _ANALYSIS_CODE_TO_PROC.get(int(ac), 'STATIC')
@@ -224,13 +224,13 @@ def _build_coord_context(bdf_path):
     Build the data needed to rotate nodal results from each node's output (CD)
     coordinate system back to the global frame.
 
-    Nastran writes DISPLACEMENT / eigenvector components in each node's CD frame
+    BulkSolver writes DISPLACEMENT / eigenvector components in each node's CD frame
     (GRID field 7, or a GRDSET default). When any node has CD≠0, applying the raw
     components as if they were global tears the deformed mesh. We read the companion
     BDF to learn every node's CD and each coordinate system's definition.
 
     Returns (coords, cd_of, xyz_of) or None if no BDF / no local CD is present.
-      coords : dict{cid: pyNastran Coord}   — passed straight to pyNastran's rotator
+      coords : dict{cid: bulk_provider Coord}   — passed straight to bulk_provider's rotator
       cd_of  : dict{nid: cd}
       xyz_of : dict{nid: (x, y, z)} in global — only needed for cylindrical CD
     """
@@ -273,10 +273,11 @@ def _transform_result_to_global(result_obj, sc_id, coord_ctx, log):
 
     Indices are matched by NODE ID against this result's own node ordering, so it
     stays correct even if the result covers a subset of nodes or a different order
-    than BDF.point_ids (pyNastran's built-in transform indexes positionally and
+    than BDF.point_ids (bulk_provider's built-in transform indexes positionally and
     only works when *all* nodes are present in the same order).
     """
-    from pyNastran.op2.op2 import transform_displacement_to_global
+    from src.utils.external_runtime import load_bulk_module as _load_bulk_module
+    transform_displacement_to_global = _load_bulk_module('op2.op2').transform_displacement_to_global
 
     coords, cd_of, xyz_of = coord_ctx
 
@@ -581,7 +582,7 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
     print('  Reading OP2 ...')
     t0 = time.time()
     op2 = make_op2(debug=False)
-    # post=-2 OP2 files hit a benign EOF condition that pyNastran 1.4 treats as
+    # post=-2 OP2 files hit a benign EOF condition that bulk_provider 1.4 treats as
     # FatalError; disabling stop_on_unclosed_file lets reading complete normally.
     op2.stop_on_unclosed_file = False
     op2.read_op2(op2_path)
@@ -612,7 +613,7 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
 
     # ── 4b. Rotate displacements from nodal CD frames back to global ──────────
     # Must run BEFORE _align_data / column slicing, while results still hold the
-    # full 6-DOF data pyNastran's rotator expects.
+    # full 6-DOF data bulk_provider's rotator expects.
     #
     # BDF source priority: explicit --bdf first, then the path bdf_pack recorded
     # in manifest.db. The manifest fallback makes the transform self-sufficient —
@@ -753,7 +754,7 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
              components_json, json.dumps([]),   # invariants = []
              positions_json,
              0,                                  # has_section
-             val_min, val_max, 'nastran'),
+             val_min, val_max, 'bulk_solver'),
         )
 
         # result_blocks (one row per step+field+inst+position)
@@ -782,7 +783,7 @@ def pack(op2_path, workspace, result_group, bdf_path=None):
                 (result_group, step_name, 'S', stress_h5_rel,
                  json.dumps(_STRESS_COMPONENTS), json.dumps([]),
                  json.dumps(['NODAL']),
-                 0, stress_min, stress_max, 'nastran'),
+                 0, stress_min, stress_max, 'bulk_solver'),
             )
             for etype, h5_grp_path, n_entities in stress_blocks:
                 db_conn.execute(

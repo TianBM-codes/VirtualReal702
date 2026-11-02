@@ -22,14 +22,14 @@ from .resolver import resolve
 from .model    import (
     InpModel, Part, Assembly, Instance, Element, Node,
     Nset, Elset, Surface, Section, Material, Amplitude,
-    StepDeclaration, ABAQUS_TO_FACTORY,
+    StepDeclaration, DECK_SOLVER_TO_FACTORY,
 )
 from .diagnostics import Diagnostic
 
 
 def parse_inp(filepath: str, resolve_refs: bool = True) -> InpModel:
     """
-    Parse an Abaqus INP file and return a fully-resolved InpModel.
+    Parse an DeckSolver INP file and return a fully-resolved InpModel.
 
     Args:
         filepath:     Path to the .inp file.
@@ -52,5 +52,5 @@ __all__ = [
     "parse_inp",
     "InpModel", "Part", "Assembly", "Instance", "Element", "Node",
     "Nset", "Elset", "Surface", "Section", "Material", "Amplitude",
-    "StepDeclaration", "Diagnostic", "ABAQUS_TO_FACTORY",
+    "StepDeclaration", "Diagnostic", "DECK_SOLVER_TO_FACTORY",
 ]

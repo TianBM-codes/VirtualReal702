@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Local scratch inspection snippet, not an application module.
+src/l1/check.py export-ignore

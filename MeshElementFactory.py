@@ -20,106 +20,26 @@ def QuaFace2Triangles(nodes, id_order):
 
 class MeshElementFactory:
     """
-    Reference:
-    1. https://abaqus-docs.mit.edu/2017/English/SIMACAEELMRefMap/simaelm-c-shellelem.htm
+    Element topology factory for supported input formats.
     """
 
     @staticmethod
     def CreateElement(e_type, e_id=-1, opt=None, use_low_order=False,
                       except_ele_type=None,
                       except_ele_id=None,
-                      fem_software="ANSYS"):
+                      fem_software="DECK_SOLVER"):
         """
         静态函数, 用于返回
-        @param e_type: 单元类型，这里包含了Abaqus、Nastran和Ansys的
+        @param e_type: 单元类型，支持关键字输入和批量数据输入
         @param e_id: 初始化单元需要单元ID
-        @param opt: 附加参数, 比如181可能是3节点壳也可能是4节点壳, solid45可能是8节点也可能是4节点
+        @param opt: 附加拓扑参数
         @param use_low_order: 是否直接使用低阶单元，而不用高阶单元
         @param except_ele_type:
         @param except_ele_id:
         @param fem_software:
         :return: 单元和节点个数
         """
-        if fem_software == "ANSYS":
-            if except_ele_id is None:
-                except_ele_id = []
-            if except_ele_type is None:
-                except_ele_type = []
-
-            if e_type in except_ele_type:
-                return None, None
-            if e_id in except_ele_id:
-                return None, None
-
-            if e_type in [185, 45]:
-                if opt == 8:
-                    return MeshC3D8(e_id), True
-                elif opt == 6:
-                    return MeshC3D6(e_id), True
-                elif opt == 4:
-                    return MeshTetra(e_id), True
-                elif opt == 5:
-                    return MeshC3D5(e_id), True
-                else:
-                    raise NoImplSuchElement(e_type, e_id)
-            elif e_type in [40600, 40800]:
-                return MeshTetra(e_id), True
-            elif e_type in [40500]:
-                return MeshCQUAD4(e_id), True
-            elif e_type in [20100, 188, 10, 4, 39, 14, 180]:
-                return MeshTruss(e_id), False
-            elif e_type in [30500, "triangle"]:
-                return MeshTRIA3(e_id), True
-            elif e_type in [181, 131, 63]:
-                if opt == 4:
-                    return MeshCQUAD4(e_id), True
-                elif opt == 3:
-                    return MeshTRIA3(e_id), True
-                else:
-                    raise KeyError("shell 181 or 63 don't support {}".format(e_type))
-            elif e_type in [10000]:
-                return None, False
-            elif e_type in [100600, 187]:
-                if use_low_order:
-                    return MeshTetra(e_id), True
-                else:
-                    return MeshC3D10(e_id), True
-            elif e_type in [150600]:
-                if use_low_order:
-                    return MeshC3D6(e_id), True
-                else:
-                    return MeshC3D15(e_id), True
-            elif e_type in [200600, 186, 80600]:
-                if opt == 15:
-                    if use_low_order:
-                        return MeshC3D6(e_id), True
-                    else:
-                        return MeshC3D15(e_id), True
-                elif opt == 13:
-                    if use_low_order:
-                        return MeshC3D5(e_id), True
-                    else:
-                        return MeshC3D13(e_id), True
-                elif opt == 20:
-                    if use_low_order:
-                        return MeshC3D8(e_id), True
-                    else:
-                        return MeshC3D20(e_id), True
-                elif opt is None:
-                    return MeshC3D8(e_id), True
-                else:
-                    raise NoImplSuchElement(e_type, opt)
-            elif e_type in [130600]:
-                if use_low_order:
-                    return MeshC3D5(e_id), True
-                else:
-                    return MeshC3D13(e_id), True
-            elif e_type in [174, 170, 21]:
-                return None, None
-            else:
-                raise NoImplSuchElement(e_type, e_id)
-
-        elif fem_software == "ABAQUS":
+        if fem_software == "DECK_SOLVER":
             if "S3" in e_type:
                 return MeshTRIA3(e_id), True, 3
             elif "S4" in e_type:
@@ -166,7 +86,7 @@ class MeshElementFactory:
             else:
                 raise NoImplSuchElement(e_type, e_id)
 
-        elif fem_software == "NASTRAN":
+        elif fem_software == "BULK_SOLVER":
             if e_type in ["CBAR", "CBEAM", "CROD"]:
                 return MeshTruss(e_id), True
             elif "CQUAD4" in e_type:
@@ -695,7 +615,7 @@ class MeshC3D8(MeshElement):
 
 class MeshC3D10(MeshElement):
     """
-    ABAQUS十节点四面体, triangles是为了web端显示做的全部小面片
+    DECK_SOLVER十节点四面体, triangles是为了web端显示做的全部小面片
     """
 
     def __init__(self, _id):

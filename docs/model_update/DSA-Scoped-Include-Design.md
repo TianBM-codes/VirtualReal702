@@ -1,6 +1,6 @@
 # DSA Scoped Include 设计说明
 
-这次 DSA `inp` 生成器不再把所有内容都塞进一个总 `include.inp`，而是按 Abaqus 关键字允许出现的层级拆开。
+这次 DSA `inp` 生成器不再把所有内容都塞进一个总 `include.inp`，而是按 DeckSolver 关键字允许出现的层级拆开。
 
 ## 为什么要拆
 
@@ -73,7 +73,7 @@
 
 程序会先把它解析回对应 `part`，并给出 warning：这类 section 变更会影响所有复用该 `part` 的 instance。
 
-这不是程序偷懒，而是 Abaqus `section` 本身就是偏模板定义的。
+这不是程序偷懒，而是 DeckSolver `section` 本身就是偏模板定义的。
 
 如果以后要做到“同一个 part 的不同 instance 使用不同厚度/材料”，就需要进一步设计：
 

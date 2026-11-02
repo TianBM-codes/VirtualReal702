@@ -12,7 +12,7 @@ from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.registry_repo import RegistryRepo
 
 from ..importers.op2_service import build_modal_import_payload
-from .model_update_meta_service import resolve_abaqus_command, resolve_nastran_command
+from .model_update_meta_service import resolve_deck_solver_command, resolve_bulk_solver_command
 from .l3_local_bridge_service import (
     project_workspace_path as _local_project_workspace_path,
     submit_project_result_group_and_wait as _submit_local_project_result_group_and_wait,
@@ -28,21 +28,21 @@ from .project_file_service import (
     resolve_project_output_dir,
     resolve_project_output_file,
 )
-from ..solver_prep.abaqus_adjoint import generate_adjoint_shell_thickness_inp
-from ..solver_prep.nastran_sol103 import (
+from ..solver_prep.deck_solver_adjoint import generate_adjoint_shell_thickness_inp
+from ..solver_prep.bulk_solver_sol103 import (
     build_sol103_controls,
     convert_to_sol103,
     filter_bulk_lines,
     read_lines,
     split_bdf,
 )
-from ..solver_prep.nastran_sol200 import convert_to_sol200, build_sol200_lines
-from ..solver_prep.abaqus_sensitivity import generate_sensitivity_inp
+from ..solver_prep.bulk_solver_sol200 import convert_to_sol200, build_sol200_lines
+from ..solver_prep.deck_solver_sensitivity import generate_sensitivity_inp
 
 # This module stays at the "local solver orchestration" layer:
 # it validates file paths, generates derived analysis decks when needed,
 # launches the external solver process, and collects the generated artifacts.
-_ABAQUS_ARTIFACT_SUFFIXES = (
+_DECK_SOLVER_ARTIFACT_SUFFIXES = (
     ".inp",
     ".odb",
     ".dat",
@@ -54,7 +54,7 @@ _ABAQUS_ARTIFACT_SUFFIXES = (
     ".log",
 )
 
-_ABAQUS_PROCESS_FILE_SUFFIXES = (
+_DECK_SOLVER_PROCESS_FILE_SUFFIXES = (
     ".com",
     ".prt",
     ".pmg",
@@ -66,7 +66,7 @@ _ABAQUS_PROCESS_FILE_SUFFIXES = (
     ".lck",
 )
 
-_NASTRAN_ARTIFACT_SUFFIXES = (
+_BULK_SOLVER_ARTIFACT_SUFFIXES = (
     ".bdf",
     ".f06",
     ".op2",
@@ -78,7 +78,7 @@ _NASTRAN_ARTIFACT_SUFFIXES = (
     ".csv",
 )
 
-_NASTRAN_EXTRA_GLOB_PATTERNS = (
+_BULK_SOLVER_EXTRA_GLOB_PATTERNS = (
     "*.op2",
     "*.f06",
     "*.xdb",
@@ -93,7 +93,7 @@ _NASTRAN_EXTRA_GLOB_PATTERNS = (
     "*.f??",
 )
 
-_NASTRAN_BINARY_SUFFIXES = {
+_BULK_SOLVER_BINARY_SUFFIXES = {
     ".op2",
     ".xdb",
     ".h5",
@@ -103,10 +103,8 @@ _NASTRAN_BINARY_SUFFIXES = {
 }
 
 _DSA_RESPONSE_TOKEN_RE = re.compile(r"^d_([A-Z0-9_]+?)(?:_[A-Z]+)?_?$", re.IGNORECASE)
-_ABAQUS_ERROR_MARKERS = (
-    "abaqus error:",
-    "abaqus/analysis exited with error",
-    "abaqus/analysis exited with errors",
+_DECK_SOLVER_ERROR_MARKERS = (
+    "/analysis exited with error",
     "analysis input file processor exited with an error",
 )
 
@@ -410,9 +408,9 @@ def _collect_artifacts(workdir: Path, stem: str, suffixes) -> Dict[str, str]:
     return artifacts
 
 
-def _collect_nastran_extra_artifacts(workdir: Path, artifacts: Dict[str, str]) -> Dict[str, str]:
+def _collect_bulk_solver_extra_artifacts(workdir: Path, artifacts: Dict[str, str]) -> Dict[str, str]:
     resolved = dict(artifacts)
-    for pattern in _NASTRAN_EXTRA_GLOB_PATTERNS:
+    for pattern in _BULK_SOLVER_EXTRA_GLOB_PATTERNS:
         for path in workdir.glob(pattern):
             if not path.is_file():
                 continue
@@ -488,7 +486,7 @@ def _cleanup_sol200_intermediate_artifacts(
             if str(value) not in deleted_set
         }
         solver_payload["artifacts"] = artifacts
-        solver_payload["artifacts_summary"] = _summarize_nastran_artifacts(artifacts)
+        solver_payload["artifacts_summary"] = _summarize_bulk_solver_artifacts(artifacts)
     return deleted
 
 
@@ -515,7 +513,7 @@ def _ensure_sol200_include_dependencies(*, workdir: Path, generated_files: Dict[
     return copied
 
 
-def _summarize_nastran_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
+def _summarize_bulk_solver_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "has_f06": False,
         "has_op2": False,
@@ -535,16 +533,16 @@ def _summarize_nastran_artifacts(artifacts: Dict[str, str]) -> Dict[str, Any]:
         if suffix == ".op2":
             summary["has_op2"] = True
             summary["op2_files"].append(str(path))
-        if suffix in _NASTRAN_BINARY_SUFFIXES:
+        if suffix in _BULK_SOLVER_BINARY_SUFFIXES:
             summary["binary_result_files"].append(str(path))
         if not suffix and ("unit11" in name or name.endswith("11")):
             summary["unit11_candidates"].append(str(path))
     return summary
 
 
-def delete_abaqus_process_files(workdir: Path, job_name: str) -> List[str]:
+def delete_deck_solver_process_files(workdir: Path, job_name: str) -> List[str]:
     deleted: List[str] = []
-    for suffix in _ABAQUS_PROCESS_FILE_SUFFIXES:
+    for suffix in _DECK_SOLVER_PROCESS_FILE_SUFFIXES:
         path = (workdir / f"{job_name}{suffix}").resolve()
         if not path.exists() or not path.is_file():
             continue
@@ -553,15 +551,15 @@ def delete_abaqus_process_files(workdir: Path, job_name: str) -> List[str]:
     return deleted
 
 
-def _cleanup_stale_abaqus_job_files(workdir: Path, job_name: str) -> List[str]:
+def _cleanup_stale_deck_solver_job_files(workdir: Path, job_name: str) -> List[str]:
     """
-    Remove stale Abaqus process-side artifacts before launching a fresh job.
+    Remove stale DeckSolver process-side artifacts before launching a fresh job.
 
-    In repeated local debugging runs, Abaqus may leave behind a `.lck` after a
+    In repeated local debugging runs, DeckSolver may leave behind a `.lck` after a
     forced stop, which blocks the next submission even though no solver process
     is still writing to the ODB.
     """
-    return delete_abaqus_process_files(workdir, job_name)
+    return delete_deck_solver_process_files(workdir, job_name)
 
 
 def _run_local_solver(
@@ -613,27 +611,33 @@ def _run_local_solver(
         "stderr_tail": _tail_text(result.stderr),
         "artifacts": _collect_artifacts(workdir, artifact_stem, artifact_suffixes),
     }
-    if _looks_like_abaqus_command(command) and _abaqus_output_has_error_markers(
+    if (artifact_suffixes is _DECK_SOLVER_ARTIFACT_SUFFIXES
+            or _looks_like_deck_solver_command(command)) and _deck_solver_output_has_error_markers(
         result.stdout,
         result.stderr,
     ):
         payload["ok"] = False
-    if artifact_suffixes is _NASTRAN_ARTIFACT_SUFFIXES:
-        payload["artifacts"] = _collect_nastran_extra_artifacts(workdir, payload["artifacts"])
-        payload["artifacts_summary"] = _summarize_nastran_artifacts(payload["artifacts"])
+    if artifact_suffixes is _BULK_SOLVER_ARTIFACT_SUFFIXES:
+        payload["artifacts"] = _collect_bulk_solver_extra_artifacts(workdir, payload["artifacts"])
+        payload["artifacts_summary"] = _summarize_bulk_solver_artifacts(payload["artifacts"])
     return payload
 
 
-def _looks_like_abaqus_command(command: List[str]) -> bool:
+def _looks_like_deck_solver_command(command: List[str]) -> bool:
     if not command:
         return False
     token = Path(str(command[0])).name.strip().lower()
-    return "abaqus" in token or token.startswith("abq")
+    configured = Path(resolve_deck_solver_command()).name.strip().lower()
+    return token == configured or (
+        any(str(arg).startswith("job=") for arg in command[1:])
+        and any(str(arg).startswith("input=") for arg in command[1:])
+    )
 
 
-def _abaqus_output_has_error_markers(stdout_text: Optional[str], stderr_text: Optional[str]) -> bool:
+def _deck_solver_output_has_error_markers(stdout_text: Optional[str], stderr_text: Optional[str]) -> bool:
     haystack = f"{stdout_text or ''}\n{stderr_text or ''}".lower()
-    return any(marker in haystack for marker in _ABAQUS_ERROR_MARKERS)
+    return (any(marker in haystack for marker in _DECK_SOLVER_ERROR_MARKERS)
+            or re.search(r"(?m)^\s*\S+\s+error:", haystack) is not None)
 
 
 def _copy_missing_relative_includes(*, source_inp: Path, generated_inp: Path, target_dir: Path) -> List[str]:
@@ -659,17 +663,17 @@ def _copy_missing_relative_includes(*, source_inp: Path, generated_inp: Path, ta
     return copied
 
 
-def _build_abaqus_command(
-    abaqus: Optional[str],
+def _build_deck_solver_command(
+    deck_solver: Optional[str],
     inp_path: Path,
     job_name: str,
     cpus: Optional[int] = None,
     interactive: bool = True,
     extra_args: Optional[List[str]] = None,
 ) -> List[str]:
-    # Abaqus is invoked in the directory that contains the generated input deck,
+    # DeckSolver is invoked in the directory that contains the generated input deck,
     # so the command only needs the file name, not the full absolute path.
-    command = [resolve_abaqus_command(abaqus), f"job={job_name}", f"input={inp_path.name}"]
+    command = [resolve_deck_solver_command(deck_solver), f"job={job_name}", f"input={inp_path.name}"]
     if interactive:
         command.append("interactive")
     if cpus is not None:
@@ -680,17 +684,17 @@ def _build_abaqus_command(
     return command
 
 
-def _build_nastran_command(
-    nastran: Optional[str],
+def _build_bulk_solver_command(
+    bulk_solver: Optional[str],
     bdf_path: Path,
     extra_args: Optional[List[str]] = None,
 ) -> List[str]:
-    command = [resolve_nastran_command(nastran), bdf_path.name]
+    command = [resolve_bulk_solver_command(bulk_solver), bdf_path.name]
     command.extend(_normalize_extra_args(extra_args))
     return command
 
 
-def preview_nastran_sol103_job(
+def preview_bulk_solver_sol103_job(
     input_bdf: str,
     settings: Optional[Dict[str, Any]] = None,
 ) -> dict:
@@ -701,7 +705,7 @@ def preview_nastran_sol103_job(
     filtered_bulk = filter_bulk_lines(bulk_lines, has_bailout)
 
     return {
-        "workflow": "nastran_sol103_preview",
+        "workflow": "bulk_solver_sol103_preview",
         "input_bdf": str(input_path),
         "control_lines_preview": controls,
         "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
@@ -715,7 +719,7 @@ def preview_nastran_sol103_job(
     }
 
 
-def generate_nastran_sol103_job(
+def generate_bulk_solver_sol103_job(
     input_bdf: str,
     output_bdf: Optional[str] = None,
     settings: Optional[Dict[str, Any]] = None,
@@ -733,7 +737,7 @@ def generate_nastran_sol103_job(
     )
 
     return {
-        "workflow": "nastran_sol103_generate",
+        "workflow": "bulk_solver_sol103_generate",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
         "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
@@ -744,7 +748,7 @@ def generate_nastran_sol103_job(
     }
 
 
-def preview_nastran_sol200_job(
+def preview_bulk_solver_sol200_job(
     input_bdf: str,
     parameters: List[Dict[str, Any]],
     responses: List[Dict[str, Any]],
@@ -760,7 +764,7 @@ def preview_nastran_sol200_job(
         output_design_bdf=str(input_path.with_name("design_model.bdf")),
     )
     return {
-        "workflow": "nastran_sol200_preview",
+        "workflow": "bulk_solver_sol200_preview",
         "input_bdf": str(input_path),
         "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
         "deck_mode": payload.get("deck_mode", "inline"),
@@ -774,7 +778,7 @@ def preview_nastran_sol200_job(
     }
 
 
-def generate_nastran_sol200_job(
+def generate_bulk_solver_sol200_job(
     input_bdf: str,
     output_bdf: Optional[str] = None,
     parameters: Optional[List[Dict[str, Any]]] = None,
@@ -807,7 +811,7 @@ def generate_nastran_sol200_job(
     }
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     result = {
-        "workflow": "nastran_sol200_generate",
+        "workflow": "bulk_solver_sol200_generate",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
         "result_target": str((settings or {}).get("result.target", "OP2")).upper(),
@@ -838,18 +842,18 @@ def generate_nastran_sol200_job(
     return result
 
 
-def run_nastran_sol200_job(
+def run_bulk_solver_sol200_job(
     input_bdf: str,
     output_bdf: Optional[str] = None,
     parameters: Optional[List[Dict[str, Any]]] = None,
     responses: Optional[List[Dict[str, Any]]] = None,
     settings: Optional[Dict[str, Any]] = None,
-    nastran: Optional[str] = None,
+    bulk_solver: Optional[str] = None,
     run_solver: bool = True,
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
 ) -> dict:
-    generated = generate_nastran_sol200_job(
+    generated = generate_bulk_solver_sol200_job(
         input_bdf=input_bdf,
         output_bdf=output_bdf,
         parameters=parameters,
@@ -857,13 +861,13 @@ def run_nastran_sol200_job(
         settings=settings,
     )
     output_path = Path(generated["output_bdf"]).resolve()
-    command = _build_nastran_command(
-        nastran=nastran,
+    command = _build_bulk_solver_command(
+        bulk_solver=bulk_solver,
         bdf_path=output_path,
         extra_args=extra_args,
     )
     payload = {
-        "workflow": "nastran_sol200_run",
+        "workflow": "bulk_solver_sol200_run",
         "input_bdf": generated["input_bdf"],
         "output_bdf": generated["output_bdf"],
         "generated_files": generated.get("generated_files") or {},
@@ -884,7 +888,7 @@ def run_nastran_sol200_job(
             command=command,
             workdir=output_path.parent,
             artifact_stem=output_path.stem,
-            artifact_suffixes=_NASTRAN_ARTIFACT_SUFFIXES,
+            artifact_suffixes=_BULK_SOLVER_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
         _materialize_requested_sensitivity_csv(
@@ -900,13 +904,13 @@ def run_nastran_sol200_job(
         summary = payload["solver"].get("artifacts_summary") or {}
         if not summary.get("has_op2"):
             payload["warnings"].append({
-                "code": "NASTRAN_OP2_NOT_FOUND",
+                "code": "BULK_SOLVER_OP2_NOT_FOUND",
                 "message": "solve completed without an OP2 file; inspect result.target/post settings and produced binary files",
             })
     return payload
 
 
-def run_abaqus_sensitivity_job(
+def run_deck_solver_sensitivity_job(
     input_inp: str,
     output_dir: Optional[str] = None,
     response_elset: Optional[str] = None,
@@ -914,7 +918,7 @@ def run_abaqus_sensitivity_job(
     response_frequency: int = 1,
     node_vars: Optional[List[str]] = None,
     element_vars: Optional[List[str]] = None,
-    abaqus: Optional[str] = None,
+    deck_solver: Optional[str] = None,
     job_name: Optional[str] = None,
     cpus: Optional[int] = None,
     interactive: bool = True,
@@ -924,7 +928,7 @@ def run_abaqus_sensitivity_job(
 ) -> dict:
     # This workflow has two phases:
     # 1. generate the sensitivity-ready INP files
-    # 2. optionally execute Abaqus on the generated analysis input
+    # 2. optionally execute DeckSolver on the generated analysis input
     input_path = _abs_file(input_inp, "input_inp")
     target_dir = _abs_dir(output_dir, input_path.parent)
 
@@ -944,8 +948,8 @@ def run_abaqus_sensitivity_job(
         target_dir=target_dir,
     )
     resolved_job_name = _sanitize_job_name(job_name or generated_inp.stem)
-    command = _build_abaqus_command(
-        abaqus=abaqus,
+    command = _build_deck_solver_command(
+        deck_solver=deck_solver,
         inp_path=generated_inp,
         job_name=resolved_job_name,
         cpus=cpus,
@@ -954,7 +958,7 @@ def run_abaqus_sensitivity_job(
     )
 
     payload = {
-        "workflow": "abaqus_sensitivity",
+        "workflow": "deck_solver_sensitivity",
         "input_inp": str(input_path),
         "output_dir": str(target_dir),
         "job_name": resolved_job_name,
@@ -968,7 +972,7 @@ def run_abaqus_sensitivity_job(
     if copied_include_files:
         payload["generated_files"]["copied_include_files"] = copied_include_files
     if run_solver:
-        payload["stale_process_files_deleted"] = _cleanup_stale_abaqus_job_files(
+        payload["stale_process_files_deleted"] = _cleanup_stale_deck_solver_job_files(
             target_dir,
             resolved_job_name,
         )
@@ -978,16 +982,16 @@ def run_abaqus_sensitivity_job(
             command=command,
             workdir=target_dir,
             artifact_stem=resolved_job_name,
-            artifact_suffixes=_ABAQUS_ARTIFACT_SUFFIXES,
+            artifact_suffixes=_DECK_SOLVER_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
     return payload
 
 
-def run_abaqus_job(
+def run_deck_solver_job(
     input_inp: str,
     output_dir: Optional[str] = None,
-    abaqus: Optional[str] = None,
+    deck_solver: Optional[str] = None,
     job_name: Optional[str] = None,
     project_id: Optional[int] = None,
     cpus: Optional[int] = None,
@@ -1006,8 +1010,8 @@ def run_abaqus_job(
         copied_input = True
 
     resolved_job_name = _sanitize_job_name(job_name or staged_inp.stem)
-    command = _build_abaqus_command(
-        abaqus=abaqus,
+    command = _build_deck_solver_command(
+        deck_solver=deck_solver,
         inp_path=staged_inp,
         job_name=resolved_job_name,
         cpus=cpus,
@@ -1016,7 +1020,7 @@ def run_abaqus_job(
     )
 
     payload = {
-        "workflow": "abaqus_inp",
+        "workflow": "deck_solver_inp",
         "input_inp": str(input_path),
         "output_dir": str(target_dir),
         "job_name": resolved_job_name,
@@ -1028,7 +1032,7 @@ def run_abaqus_job(
         "solver": None,
     }
     if run_solver:
-        payload["stale_process_files_deleted"] = _cleanup_stale_abaqus_job_files(
+        payload["stale_process_files_deleted"] = _cleanup_stale_deck_solver_job_files(
             target_dir,
             resolved_job_name,
         )
@@ -1036,7 +1040,7 @@ def run_abaqus_job(
             command=command,
             workdir=target_dir,
             artifact_stem=resolved_job_name,
-            artifact_suffixes=_ABAQUS_ARTIFACT_SUFFIXES,
+            artifact_suffixes=_DECK_SOLVER_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
         if not bool((payload.get("solver") or {}).get("ok")):
@@ -1044,11 +1048,11 @@ def run_abaqus_job(
     return payload
 
 
-def run_abaqus_adjoint_job(
+def run_deck_solver_adjoint_job(
     input_inp: str,
     output_inp: Optional[str] = None,
     response_nset: Optional[str] = None,
-    abaqus: Optional[str] = None,
+    deck_solver: Optional[str] = None,
     job_name: Optional[str] = None,
     cpus: Optional[int] = None,
     interactive: bool = True,
@@ -1074,8 +1078,8 @@ def run_abaqus_adjoint_job(
     ).resolve()
 
     resolved_job_name = _sanitize_job_name(job_name or generated_path.stem)
-    command = _build_abaqus_command(
-        abaqus=abaqus,
+    command = _build_deck_solver_command(
+        deck_solver=deck_solver,
         inp_path=generated_path,
         job_name=resolved_job_name,
         cpus=cpus,
@@ -1084,7 +1088,7 @@ def run_abaqus_adjoint_job(
     )
 
     payload = {
-        "workflow": "abaqus_adjoint_shell",
+        "workflow": "deck_solver_adjoint_shell",
         "input_inp": str(input_path),
         "output_inp": str(generated_path),
         "job_name": resolved_job_name,
@@ -1099,22 +1103,22 @@ def run_abaqus_adjoint_job(
             command=command,
             workdir=generated_path.parent,
             artifact_stem=resolved_job_name,
-            artifact_suffixes=_ABAQUS_ARTIFACT_SUFFIXES,
+            artifact_suffixes=_DECK_SOLVER_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
     return payload
 
 
-def run_nastran_sol103_job(
+def run_bulk_solver_sol103_job(
     input_bdf: str,
     output_bdf: Optional[str] = None,
     settings: Optional[Dict[str, Any]] = None,
-    nastran: Optional[str] = None,
+    bulk_solver: Optional[str] = None,
     run_solver: bool = True,
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
 ) -> dict:
-    # Nastran differs from the Abaqus helpers: the preprocessing step converts
+    # BulkSolver differs from the DeckSolver helpers: the preprocessing step converts
     # an existing BDF into a SOL103 deck before the optional solve.
     input_path = _abs_file(input_bdf, "input_bdf")
     output_path = Path(output_bdf).expanduser().resolve() if output_bdf else input_path.with_name(
@@ -1128,14 +1132,14 @@ def run_nastran_sol103_job(
         settings=dict(settings or {}),
     )
 
-    command = _build_nastran_command(
-        nastran=nastran,
+    command = _build_bulk_solver_command(
+        bulk_solver=bulk_solver,
         bdf_path=output_path,
         extra_args=extra_args,
     )
 
     payload = {
-        "workflow": "nastran_sol103_run",
+        "workflow": "bulk_solver_sol103_run",
         "input_bdf": str(input_path),
         "output_bdf": str(output_path),
         "command_preview": command,
@@ -1147,25 +1151,25 @@ def run_nastran_sol103_job(
             command=command,
             workdir=output_path.parent,
             artifact_stem=output_path.stem,
-            artifact_suffixes=_NASTRAN_ARTIFACT_SUFFIXES,
+            artifact_suffixes=_BULK_SOLVER_ARTIFACT_SUFFIXES,
             timeout_sec=timeout_sec,
         )
         summary = payload["solver"].get("artifacts_summary") or {}
         if not summary.get("has_op2"):
             payload["warnings"].append({
-                "code": "NASTRAN_OP2_NOT_FOUND",
+                "code": "BULK_SOLVER_OP2_NOT_FOUND",
                 "message": "solve completed without an OP2 file; inspect result.target/post settings and produced binary files",
             })
     return payload
 
 
-def run_nastran_sol103_and_store_modal_results(
+def run_bulk_solver_sol103_and_store_modal_results(
     *,
     project_id: int,
     input_bdf: str,
     output_bdf: Optional[str] = None,
     settings: Optional[Dict[str, Any]] = None,
-    nastran: Optional[str] = None,
+    bulk_solver: Optional[str] = None,
     timeout_sec: Optional[int] = None,
     extra_args: Optional[List[str]] = None,
     overwrite: bool = True,
@@ -1178,11 +1182,11 @@ def run_nastran_sol103_and_store_modal_results(
     # inp_service -> sensitivity_service -> solver_service -> inp_service.
     from .inp_service import import_fe_modal_results
 
-    solver_payload = run_nastran_sol103_job(
+    solver_payload = run_bulk_solver_sol103_job(
         input_bdf=input_bdf,
         output_bdf=output_bdf,
         settings=settings,
-        nastran=nastran,
+        bulk_solver=bulk_solver,
         run_solver=True,
         timeout_sec=timeout_sec,
         extra_args=extra_args,
@@ -1190,7 +1194,7 @@ def run_nastran_sol103_and_store_modal_results(
     solver = solver_payload.get("solver") or {}
     if not solver.get("ok", False):
         raise ValidationError(
-            "nastran SOL103 solve failed; modal results were not stored",
+            "bulk_solver SOL103 solve failed; modal results were not stored",
             {
                 "project_id": int(project_id),
                 "solver": solver,
@@ -1224,7 +1228,7 @@ def run_nastran_sol103_and_store_modal_results(
     )
     stored["warnings"] = payload.get("warnings") or []
     return {
-        "workflow": "nastran_sol103_run_and_store_modal",
+        "workflow": "bulk_solver_sol103_run_and_store_modal",
         "project_id": int(project_id),
         "input_bdf": solver_payload.get("input_bdf"),
         "output_bdf": solver_payload.get("output_bdf"),
@@ -1247,8 +1251,8 @@ def run_solver_and_parse_project_result(
     output_dir_name: Optional[str] = None,
     output_bdf: Optional[str] = None,
     output_bdf_name: Optional[str] = None,
-    abaqus: Optional[str] = None,
-    nastran: Optional[str] = None,
+    deck_solver: Optional[str] = None,
+    bulk_solver: Optional[str] = None,
     cpus: Optional[int] = None,
     interactive: bool = True,
     timeout_sec: Optional[int] = None,
@@ -1282,7 +1286,7 @@ def run_solver_and_parse_project_result(
             output_dir = str(
                 resolve_project_output_dir(
                     int(project_id),
-                    category_parts=("solver", "abaqus"),
+                    category_parts=("solver", "deck_solver"),
                     explicit_dir=resolved_output_dir or None,
                 )
             )
@@ -1293,7 +1297,7 @@ def run_solver_and_parse_project_result(
             output_bdf = str(
                 resolve_project_output_file(
                     int(project_id),
-                    category_parts=("solver", "nastran_sol103"),
+                    category_parts=("solver", "bulk_solver_sol103"),
                     explicit_path=resolved_output_bdf or None,
                     default_name=f"{input_path.stem}_sol103.bdf",
                     field_name="output_bdf",
@@ -1329,11 +1333,11 @@ def run_solver_and_parse_project_result(
         )
 
         if source_type == "inp":
-            log_project_step(int(project_id), "开始执行 Abaqus 求解", stage="solver_started", percent=15)
-            solver_payload = run_abaqus_job(
+            log_project_step(int(project_id), "开始执行 DeckSolver 求解", stage="solver_started", percent=15)
+            solver_payload = run_deck_solver_job(
                 input_inp=str(input_path),
                 output_dir=output_dir,
-                abaqus=abaqus,
+                deck_solver=deck_solver,
                 job_name=job_name,
                 project_id=int(project_id),
                 cpus=cpus,
@@ -1345,13 +1349,13 @@ def run_solver_and_parse_project_result(
             solver = solver_payload.get("solver") or {}
             if not solver.get("ok", False):
                 raise ValidationError(
-                    "abaqus solve failed; project result upload was not started",
+                    "deck_solver solve failed; project result upload was not started",
                     {"project_id": int(project_id), "solver": solver},
                 )
             result_file = solver.get("artifacts", {}).get("odb")
             if not result_file:
                 raise NotFoundError(
-                    "odb file not found after Abaqus solve",
+                    "odb file not found after DeckSolver solve",
                     {
                         "project_id": int(project_id),
                         "artifacts": solver.get("artifacts") or {},
@@ -1360,7 +1364,7 @@ def run_solver_and_parse_project_result(
             resolved_job_name = str(solver_payload.get("job_name") or job_name or input_path.stem)
             log_project_step(
                 int(project_id),
-                f"Abaqus 求解完成，开始上传 ODB 结果组: {Path(result_file).name}",
+                f"DeckSolver 求解完成，开始上传 ODB 结果组: {Path(result_file).name}",
                 stage="result_upload_started",
                 percent=70,
             )
@@ -1388,7 +1392,7 @@ def run_solver_and_parse_project_result(
                 "workflow": "run_and_parse",
                 "project_id": int(project_id),
                 "source_type": "inp",
-                "solver_type": "abaqus",
+                "solver_type": "deck_solver",
                 "project_status": "not_checked",
                 "job_name": resolved_job_name,
                 "result_group": upload["result_group"],
@@ -1402,12 +1406,12 @@ def run_solver_and_parse_project_result(
             }
 
         if source_type == "bdf":
-            log_project_step(int(project_id), "开始执行 Nastran SOL103 求解", stage="solver_started", percent=15)
-            solver_payload = run_nastran_sol103_job(
+            log_project_step(int(project_id), "开始执行 BulkSolver SOL103 求解", stage="solver_started", percent=15)
+            solver_payload = run_bulk_solver_sol103_job(
                 input_bdf=str(input_path),
                 output_bdf=output_bdf,
                 settings=dict(settings or {}),
-                nastran=nastran,
+                bulk_solver=bulk_solver,
                 run_solver=True,
                 timeout_sec=timeout_sec,
                 extra_args=extra_args,
@@ -1415,7 +1419,7 @@ def run_solver_and_parse_project_result(
             solver = solver_payload.get("solver") or {}
             if not solver.get("ok", False):
                 raise ValidationError(
-                    "nastran SOL103 solve failed; project result upload was not started",
+                    "bulk_solver SOL103 solve failed; project result upload was not started",
                     {"project_id": int(project_id), "solver": solver},
                 )
             summary = solver.get("artifacts_summary") or {}
@@ -1432,7 +1436,7 @@ def run_solver_and_parse_project_result(
             resolved_job_name = str(job_name or Path(solver_payload.get("output_bdf") or input_path).stem)
             log_project_step(
                 int(project_id),
-                f"Nastran 求解完成，开始上传 OP2 结果组: {Path(result_file).name}",
+                f"BulkSolver 求解完成，开始上传 OP2 结果组: {Path(result_file).name}",
                 stage="result_upload_started",
                 percent=70,
             )
@@ -1458,7 +1462,7 @@ def run_solver_and_parse_project_result(
                 "workflow": "run_and_parse",
                 "project_id": int(project_id),
                 "source_type": "bdf",
-                "solver_type": "nastran",
+                "solver_type": "bulk_solver",
                 "project_status": "not_checked",
                 "job_name": resolved_job_name,
                 "result_group": upload["result_group"],

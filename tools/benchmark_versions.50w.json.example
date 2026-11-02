@@ -18,8 +18,8 @@
     }
   ],
   "sources": {
-    "bdf_path": "D:/WorkSpace/FEM/Nastran/50w-cylinder/50w-nodes-cylinder.bdf",
-    "op2_path": "D:/WorkSpace/FEM/Nastran/50w-cylinder/50w-nodes-cylinder.op2"
+    "bdf_path": "D:/WorkSpace/FEM/BulkSolver/50w-cylinder/50w-nodes-cylinder.bdf",
+    "op2_path": "D:/WorkSpace/FEM/BulkSolver/50w-cylinder/50w-nodes-cylinder.op2"
   },
   "benchmark": {
     "include_op2": true,

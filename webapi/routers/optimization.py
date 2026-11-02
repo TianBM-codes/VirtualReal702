@@ -9,7 +9,7 @@ from services.model_update.analysis.bayesian_service import (
     run_bayesian_update_from_text,
     run_bayesian_update_workflow,
 )
-from services.model_update.analysis.model_update_meta_service import resolve_abaqus_command
+from services.model_update.analysis.model_update_meta_service import resolve_deck_solver_command
 from services.model_update.analysis import sensitivity_service as _sens
 from services.model_update.analysis.project_file_service import resolve_project_input_file
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
@@ -20,19 +20,19 @@ from services.model_update.analysis.inp_service import (
     create_modal_frequency_response_catalog_from_match,
     create_design_response_catalog_entry,
     create_optimization_parameter,
-    get_project_abaqus_instances_and_steps,
+    get_project_deck_solver_instances_and_steps,
     get_fe_response_catalog,
     get_modal_frequency_response_options,
     list_optimization_parameters,
     list_design_response_catalog_entries,
     remove_optimization_parameters_from_update,
-    resolve_abaqus_instance_context,
-    resolve_abaqus_sensor_node_match,
+    resolve_deck_solver_instance_context,
+    resolve_deck_solver_sensor_node_match,
     select_optimization_parameters_for_update,
     update_optimization_parameter_usage,
-    validate_abaqus_instance_node_label,
+    validate_deck_solver_instance_node_label,
 )
-from services.model_update.analysis.nastran_sol200_service import (
+from services.model_update.analysis.bulk_solver_sol200_service import (
     clear_sol200_parameter_config_entries,
     clear_sol200_response_config_entries,
     create_sol200_parameter_config_entry,
@@ -47,11 +47,11 @@ from src.l3.core.errors import AppError, ValidationError
 from ..background_jobs import get_background_task, submit_background_task, update_background_task
 from ..common import error_response, server_error, success_response
 from ..models import (
-    AbaqusInstanceNodeValidationRequest,
-    AbaqusStaticResponseCatalogRequest,
+    DeckSolverInstanceNodeValidationRequest,
+    DeckSolverStaticResponseCatalogRequest,
     BayesianModelUpdateRequest,
     BayesianTextCheckRequest,
-    CreateAbaqusStaticResponseRequest,
+    CreateDeckSolverStaticResponseRequest,
     CreateDesignResponseRequest,
     CreateModalFrequencyResponseCatalogRequest,
     CreateOptimizationParameterRequest,
@@ -180,16 +180,16 @@ def _normalize_node_labels(raw_value) -> list[int]:
     return result
 
 
-def _resolve_abaqus_static_response_step_name(project_id: int, step_name: Optional[str]) -> str:
+def _resolve_deck_solver_static_response_step_name(project_id: int, step_name: Optional[str]) -> str:
     resolved_step_name = str(step_name or "").strip()
     if resolved_step_name:
         return resolved_step_name
 
-    project_steps = get_project_abaqus_instances_and_steps(int(project_id))
+    project_steps = get_project_deck_solver_instances_and_steps(int(project_id))
     steps = list(project_steps.get("steps") or [])
     if not steps:
         raise ValidationError(
-            "no Abaqus step found for current project",
+            "no DeckSolver step found for current project",
             {"project_id": int(project_id)},
         )
 
@@ -197,17 +197,17 @@ def _resolve_abaqus_static_response_step_name(project_id: int, step_name: Option
     resolved_step_name = str(last_step.get("step_name") or "").strip()
     if not resolved_step_name:
         raise ValidationError(
-            "unable to resolve default Abaqus step name",
+            "unable to resolve default DeckSolver step name",
             {"project_id": int(project_id)},
         )
     return resolved_step_name
 
 
-def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseRequest):
+def _create_deck_solver_static_response_catalog(body: CreateDeckSolverStaticResponseRequest):
     node_labels = _normalize_node_labels(body.node_labels)
     element_labels = _normalize_element_labels(body.element_labels)
     resolved_sensor_names = [str(item or "").strip() for item in (body.sensor_name or []) if str(item or "").strip()]
-    resolved_step_name = _resolve_abaqus_static_response_step_name(body.project_id, body.step_name)
+    resolved_step_name = _resolve_deck_solver_static_response_step_name(body.project_id, body.step_name)
 
     if resolved_sensor_names:
         if str(body.region_type or "").strip().upper() != "NODE":
@@ -235,7 +235,7 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
             )
 
         sensor_matches = [
-            resolve_abaqus_sensor_node_match(body.project_id, sensor_name)
+            resolve_deck_solver_sensor_node_match(body.project_id, sensor_name)
             for sensor_name in resolved_sensor_names
         ]
         instance_names = {str(item["instance_name"]) for item in sensor_matches}
@@ -249,7 +249,7 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
             )
 
         sensor_match = sensor_matches[0]
-        context = resolve_abaqus_instance_context(body.project_id, sensor_match["instance_name"])
+        context = resolve_deck_solver_instance_context(body.project_id, sensor_match["instance_name"])
         payload = create_design_response_catalog_entry(
             project_id=body.project_id,
             region_type="NODE",
@@ -271,7 +271,7 @@ def _create_abaqus_static_response_catalog(body: CreateAbaqusStaticResponseReque
     resolved_set_scope = None
     resolved_part_name = None
     if body.instance_name:
-        context = resolve_abaqus_instance_context(body.project_id, body.instance_name)
+        context = resolve_deck_solver_instance_context(body.project_id, body.instance_name)
         resolved_set_scope = context["set_scope"]
         resolved_part_name = context["part_name"]
     return create_design_response_catalog_entry(
@@ -393,7 +393,7 @@ def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
         "step_scale": body.step_scale,
         "lower_bound": body.lower_bound,
         "upper_bound": body.upper_bound,
-        "abaqus": resolve_abaqus_command(None),
+        "deck_solver": resolve_deck_solver_command(None),
         "keep_raw": body.keep_raw,
         "timeout": body.timeout,
         "job_name": body.job_name,
@@ -519,7 +519,7 @@ def _sol200_modal_bayesian_run_kwargs(body: Sol200ModalFrequencyBayesianModelUpd
         "max_freq_error_ratio": body.max_freq_error_ratio,
         "matching_method": body.matching_method,
         "settings": settings,
-        "nastran": body.nastran,
+        "bulk_solver": body.bulk_solver,
         "timeout_sec": body.timeout_sec,
         "extra_args": body.extra_args,
         "write_cloud_result": body.write_cloud_result,
@@ -674,14 +674,14 @@ async def create_optimization_parameter_api(request: Request, body: CreateOptimi
 
 
 @router.post(
-    "/optimization/abaqus/static_response/meta",
-    summary="获取当前项目的 Abaqus 实例和分析步",
+    "/optimization/deck_solver/static_response/meta",
+    summary="获取当前项目的 DeckSolver 实例和分析步",
 )
-async def get_abaqus_static_response_meta_api(request: Request, body: AbaqusStaticResponseCatalogRequest):
+async def get_deck_solver_static_response_meta_api(request: Request, body: DeckSolverStaticResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = get_project_abaqus_instances_and_steps(body.project_id)
-        return success_response(data, "Abaqus 实例和分析步获取成功")
+        data = get_project_deck_solver_instances_and_steps(body.project_id)
+        return success_response(data, "DeckSolver 实例和分析步获取成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -690,18 +690,18 @@ async def get_abaqus_static_response_meta_api(request: Request, body: AbaqusStat
 
 
 @router.post(
-    "/optimization/abaqus/static_response/node/validate",
-    summary="校验节点是否属于指定 Abaqus 实例",
+    "/optimization/deck_solver/static_response/node/validate",
+    summary="校验节点是否属于指定 DeckSolver 实例",
 )
-async def validate_abaqus_static_response_node_api(request: Request, body: AbaqusInstanceNodeValidationRequest):
+async def validate_deck_solver_static_response_node_api(request: Request, body: DeckSolverInstanceNodeValidationRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = validate_abaqus_instance_node_label(
+        data = validate_deck_solver_instance_node_label(
             project_id=body.project_id,
             instance_name=body.instance_name,
             node_label=body.node_label,
         )
-        return success_response(data, "Abaqus 实例节点校验成功")
+        return success_response(data, "DeckSolver 实例节点校验成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -710,14 +710,14 @@ async def validate_abaqus_static_response_node_api(request: Request, body: Abaqu
 
 
 @router.post(
-    "/optimization/abaqus/static_response/create",
-    summary="创建 Abaqus 静力响应目录",
+    "/optimization/deck_solver/static_response/create",
+    summary="创建 DeckSolver 静力响应目录",
 )
-async def create_abaqus_static_response_api(request: Request, body: CreateAbaqusStaticResponseRequest):
+async def create_deck_solver_static_response_api(request: Request, body: CreateDeckSolverStaticResponseRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = _create_abaqus_static_response_catalog(body)
-        return success_response(data, "Abaqus 静力响应目录创建成功")
+        data = _create_deck_solver_static_response_catalog(body)
+        return success_response(data, "DeckSolver 静力响应目录创建成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -728,12 +728,12 @@ async def create_abaqus_static_response_api(request: Request, body: CreateAbaqus
 @router.post(
     "/optimization/response/create",
     deprecated=True,
-    summary="创建设计响应目录（旧接口，建议改用 /optimization/abaqus/static_response/create）",
+    summary="创建设计响应目录（旧接口，建议改用 /optimization/deck_solver/static_response/create）",
 )
 async def create_design_response_api(request: Request, body: CreateDesignResponseRequest):
     await log_request(request, model_to_dict(body))
     try:
-        data = _create_abaqus_static_response_catalog(body)
+        data = _create_deck_solver_static_response_catalog(body)
         return success_response(data, "设计响应创建成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
@@ -743,14 +743,14 @@ async def create_design_response_api(request: Request, body: CreateDesignRespons
 
 
 @router.post(
-    "/optimization/nastran/modal_frequency_response/create",
-    summary="创建 Nastran 模态频率响应目录（无需试验匹配）",
+    "/optimization/bulk_solver/modal_frequency_response/create",
+    summary="创建 BulkSolver 模态频率响应目录（无需试验匹配）",
 )
 async def create_modal_frequency_response_api(request: Request, body: CreateModalFrequencyResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
         data = _create_modal_frequency_response_catalog(body)
-        return success_response(data, "Nastran 模态频率响应目录创建成功")
+        return success_response(data, "BulkSolver 模态频率响应目录创建成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -775,10 +775,10 @@ async def create_modal_frequency_response_legacy_prefix_api(request: Request, bo
 
 
 @router.post(
-    "/optimization/nastran/modal_frequency_response/create_from_match",
-    summary="从模态匹配结果创建 Nastran 模态频率响应目录",
+    "/optimization/bulk_solver/modal_frequency_response/create_from_match",
+    summary="从模态匹配结果创建 BulkSolver 模态频率响应目录",
 )
-async def create_nastran_modal_frequency_response_from_match_api(request: Request, body: ModalFrequencyResponseFromMatchRequest):
+async def create_bulk_solver_modal_frequency_response_from_match_api(request: Request, body: ModalFrequencyResponseFromMatchRequest):
     await log_request(request, model_to_dict(body))
     try:
         data = create_modal_frequency_response_catalog_from_match(
@@ -790,7 +790,7 @@ async def create_nastran_modal_frequency_response_from_match_api(request: Reques
             matching_method=body.matching_method,
             scatter=body.scatter,
         )
-        return success_response(data, "Nastran 模态频率响应目录创建成功")
+        return success_response(data, "BulkSolver 模态频率响应目录创建成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -885,14 +885,14 @@ async def remove_optimization_parameter_from_update_api(request: Request, body: 
 
 
 @router.post(
-    "/optimization/abaqus/static_response",
-    summary="加载 Abaqus 静力响应目录",
+    "/optimization/deck_solver/static_response",
+    summary="加载 DeckSolver 静力响应目录",
 )
-async def list_abaqus_static_response_api(request: Request, body: AbaqusStaticResponseCatalogRequest):
+async def list_deck_solver_static_response_api(request: Request, body: DeckSolverStaticResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
         data = list_design_response_catalog_entries(body.project_id)
-        return success_response(data, "Abaqus 静力响应目录加载成功")
+        return success_response(data, "DeckSolver 静力响应目录加载成功")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -903,7 +903,7 @@ async def list_abaqus_static_response_api(request: Request, body: AbaqusStaticRe
 @router.post(
     "/optimization/response",
     deprecated=True,
-    summary="加载设计响应目录（旧接口，建议改用 /optimization/abaqus/static_response）",
+    summary="加载设计响应目录（旧接口，建议改用 /optimization/deck_solver/static_response）",
 )
 async def list_design_response_api(request: Request, body: DesignResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
@@ -980,14 +980,14 @@ async def compute_modal_mac_sensitivity_api(request: Request, body: ModalMacSens
 
 
 @router.post(
-    "/optimization/abaqus/static_response/clear",
-    summary="清空 Abaqus 静力响应目录",
+    "/optimization/deck_solver/static_response/clear",
+    summary="清空 DeckSolver 静力响应目录",
 )
-async def clear_abaqus_static_response_api(request: Request, body: AbaqusStaticResponseCatalogRequest):
+async def clear_deck_solver_static_response_api(request: Request, body: DeckSolverStaticResponseCatalogRequest):
     await log_request(request, model_to_dict(body))
     try:
         data = clear_design_response_catalog_entries(body.project_id)
-        return success_response(data, "Abaqus 静力响应目录已清空")
+        return success_response(data, "DeckSolver 静力响应目录已清空")
     except AppError as exc:
         return error_response(exc.status_code, exc.message, error_code=exc.code, details=exc.details)
     except Exception as exc:
@@ -998,7 +998,7 @@ async def clear_abaqus_static_response_api(request: Request, body: AbaqusStaticR
 @router.post(
     "/optimization/response/clear",
     deprecated=True,
-    summary="清空设计响应目录（旧接口，建议改用 /optimization/abaqus/static_response/clear）",
+    summary="清空设计响应目录（旧接口，建议改用 /optimization/deck_solver/static_response/clear）",
 )
 async def clear_design_response_api(request: Request, body: DesignResponseCatalogRequest):
     await log_request(request, model_to_dict(body))

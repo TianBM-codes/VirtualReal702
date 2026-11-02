@@ -1,7 +1,7 @@
 # 节点结果 CSV 提取
 
 `tools/extract_node_results.py` 使用普通 Python 3 和标准库读取
-`tools/odb_node_history.py` 导出的长表 CSV，无需安装 Abaqus、pandas 或启动服务。
+`tools/odb_node_history.py` 导出的长表 CSV，无需安装 DeckSolver、pandas 或启动服务。
 默认输入是脚本旁的 `tools/result.csv`。
 
 先查看文件包含哪些节点：

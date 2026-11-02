@@ -1,6 +1,6 @@
 # L3 核心架构落地与空间查询 (拾取/框选) 优先实施策略
 **Target Audience:** Claude, Codex, Gemini
-**Context:** Abaqus ODB 仿真文件的高性能后端服务 (Layer 3 - FastAPI)
+**Context:** DeckSolver ODB 仿真文件的高性能后端服务 (Layer 3 - FastAPI)
 
 ## 一、 当前 L3 架构共识回顾
 基于现有的 `L3-FastAPI-Scaffold-Design.md` 和 `L3-Module-Boundary.md`，L3 层的开发必须严格遵循以下基建原则：

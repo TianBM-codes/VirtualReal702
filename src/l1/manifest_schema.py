@@ -8,16 +8,16 @@ l1_pack.py 和 inp/exporter.py 都 import 这里，保证两条路径建出来�
 def canon_instance(name):
     """Instance 名规范化：统一大写。
 
-    Abaqus 的 instance / set / elset 名都是大小写无关的，但不同来源写法不一：
+    DeckSolver 的 instance / set / elset 名都是大小写无关的，但不同来源写法不一：
     INP 文件保留用户原始大小写（常见小写），ODB 默认全大写。两侧名字若按字面
-    比较就会 mismatch（典型症状：abaqus_dump 报 "instance list mismatch"，
+    比较就会 mismatch（典型症状：deck_solver_dump 报 "instance list mismatch"，
     或 L2 按 manifest 名字去 assembly.h5 查 transform 时 KeyError）。
 
     约定：凡是 instance 名进入流水线（写 manifest / 写 assembly.h5 group /
     建 result_block key）的源头，都过这个函数归一化为大写，下游一路带着大写走，
     保证 manifest.instance_name 与 assembly.h5/sets.h5 的 group 名逐字一致。
 
-    Python 2/3 通用（abaqus_dump.py 在 Abaqus Python 2.7 下另有本地副本 _canon_inst）。
+    Python 2/3 通用（deck_solver_dump.py 在 DeckSolver Python 2.7 下另有本地副本 _canon_inst）。
     """
     if name is None:
         return name
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS element_sets (
     instance_name TEXT,
     h5_path       TEXT,
     elem_count    INTEGER,
-    is_internal   INTEGER NOT NULL DEFAULT 0,  -- 1 = Abaqus-generated (_PickedSetNN); 0 = user-named
+    is_internal   INTEGER NOT NULL DEFAULT 0,  -- 1 = DeckSolver-generated (_PickedSetNN); 0 = user-named
     PRIMARY KEY (set_name, instance_name)
 );
 CREATE TABLE IF NOT EXISTS result_group_meta (
