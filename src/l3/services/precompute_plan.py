@@ -9,8 +9,8 @@
   - U 场：每帧顶点位移向量（vertex-displacements / deformed-* / modal-* 共用）、
     deform-suggest-scale 统计，以及每帧 deformed-positions 最终响应包（scale = 该帧
     deform-suggest-scale，与前端变形面板自动填入的值一致，2026-10-26 领导确认）；
-    FREQUENCY 步另预算每阶 modal-animation 最终响应包
-    （scale = 该阶 deform-suggest-scale，n_frames = 20，与前端预计算模式的默认请求一致）。
+    FREQUENCY 步保留每阶位移向量，动画坐标由前端 GPU 实时计算，
+    不再生成每阶多帧完整动画坐标。
 无表面三角形的实例（纯梁/质量点）跳过云图类，只准备位移与变形坐标（梁/点/耦合线也随变形）。合法的全 NaN 结果
 （NotFoundError，接口同样返回空 payload）记为跳过；其他异常在 strict 模式下直接失败。
 
@@ -38,7 +38,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from ..core.errors import NotFoundError
 from ..infra.manifest_repo import ManifestRepo
 from .result_service import (
-    cached_deformed_positions, cached_modal_animation, compute_scalar_range, deform_scale_stats,
+    cached_deformed_positions, compute_scalar_range, deform_scale_stats,
     frame_scalars, frame_vertex_displacements, suggest_deform_scale,
 )
 
@@ -48,10 +48,10 @@ logger = logging.getLogger(__name__)
 PLAN_VERSION = 3          # 2: FREQUENCY 步加 modal-animation 响应包
 #                           （之后去掉 frame-colors 属于缩小范围，旧标记仍有效，不加版本）
 #                           3: U 场每帧加 deformed-positions 响应包（建议 scale）
+#                           2026-11-05: 移除 modal-animation 预热，范围缩小不提升版本。
 
 RENDER_MODES = ("smooth", "flat")
 MODAL_PROCEDURES = ("FREQUENCY",)
-MODAL_ANIMATION_FRAMES = 20   # 前端预计算模式默认帧数
 _PROGRESS_INTERVAL_S = 30.0
 
 
@@ -200,8 +200,6 @@ def count_calls(idx, targets: List[Target]) -> int:
             per_frame = per_frame_surface if _has_surface(idx, inst) else 0
             if t.field == "U":
                 per_frame += 2          # 位移向量 + deformed-positions
-            if t.modal and _has_surface(idx, inst):
-                per_frame += 1
             total += per_frame * len(t.frames)
         if t.field == "U":
             total += len(t.frames)
@@ -275,9 +273,6 @@ def run_plan(reg, odb_id: str, idx, targets: List[Target], *, strict: bool,
                           t.step, frame, result_group=rg)
                     _call("deformed", f"{ctx} 变形坐标", _deformed_positions, reg, odb_id,
                           instance, t.step, frame, rg)
-                if t.modal and surface:
-                    _call("modal_animation", f"{ctx} 模态动画", _modal_animation, reg, odb_id,
-                          instance, t.step, frame, rg)
         if t.field == "U":
             for frame in t.frames:
                 _call("deform_stats", f"{t.context} 第 {frame} 帧 变形比例", deform_scale_stats,
@@ -293,12 +288,6 @@ def _deformed_positions(reg, odb_id: str, instance: str, step: str, frame: int, 
     scale = float(suggest_deform_scale(reg, odb_id, step, frame, rg))
     cached_deformed_positions(reg, odb_id, instance, step, frame, scale=scale, result_group=rg)
 
-
-def _modal_animation(reg, odb_id: str, instance: str, step: str, frame: int, rg) -> None:
-    """前端预计算模式的默认请求：scale 取该阶建议值（与 deform-suggest-scale 接口返回值相同）。"""
-    scale = float(suggest_deform_scale(reg, odb_id, step, frame, rg))
-    cached_modal_animation(reg, odb_id, instance, step, frame, scale=scale,
-                           n_frames=MODAL_ANIMATION_FRAMES, result_group=rg)
 
 
 # ── 多进程执行 ─────────────────────────────────────────────────────────────────
