@@ -105,24 +105,26 @@ def test_no_data_is_skipped_but_other_failures_are_strict(manifest, monkeypatch)
     assert relaxed["failed"] > 0
 
 
-def test_frequency_step_adds_modal_animation_with_suggested_scale(manifest, monkeypatch):
+def test_frequency_step_prepares_displacement_without_animation_frames(manifest, monkeypatch):
     with sqlite3.connect(manifest.workspace + "/manifest.db") as conn:
         conn.execute("CREATE TABLE steps (result_group TEXT, step_name TEXT, procedure TEXT)")
         conn.execute("INSERT INTO steps VALUES ('g', 'S1', 'FREQUENCY')")
     calls = []
     for name in ("compute_scalar_range", "frame_scalars", "frame_vertex_displacements",
                  "cached_deformed_positions", "deform_scale_stats"):
-        monkeypatch.setattr(plan, name, lambda *a, **kw: None)
+        monkeypatch.setattr(plan, name, lambda *a, _name=name, **kw: calls.append((_name, a, kw)))
     monkeypatch.setattr(plan, "suggest_deform_scale", lambda reg, odb, step, frame, rg: 10.0 + frame)
-    monkeypatch.setattr(plan, "cached_modal_animation",
-                        lambda reg, odb, inst, step, frame, **kw: calls.append((inst, frame, kw)))
+    # 旧多帧接口保留按需兼容，但 ready 预热流程不得生成完整动画帧。
+    from src.l3.services import result_service
+    def reject_animation(*args, **kwargs):
+        raise AssertionError("GPU 动画不应预计算多帧坐标")
+    monkeypatch.setattr(result_service, "cached_modal_animation", reject_animation)
     idx = SimpleNamespace(render_source_elem_row={"SOLID": np.array([0]),
                                                   "BEAM": np.array([], dtype=np.int64)})
     targets = plan.list_targets(manifest, result_group="g", group_only=True)
     assert {t.field: t.modal for t in targets} == {"U": True, "S_MISES": False}
     stats = plan.run_plan(None, "odb", idx, targets, strict=True)
-
-    assert stats["done"] == stats["total"] == plan.count_calls(idx, targets)
-    # 只给有表面的实例、每阶一包；scale 取该阶建议值，n_frames 取前端默认 20
-    assert calls == [("SOLID", f, {"scale": 10.0 + f, "n_frames": 20, "result_group": "g"})
-                     for f in (0, 3, 7)]
+    assert stats["done"] == stats["total"] == plan.count_calls(idx, targets) == len(calls)
+    displacements = {(a[2], a[4]) for name, a, kw in calls if name == "frame_vertex_displacements"}
+    assert displacements == {(inst, f) for inst in ("BEAM", "SOLID") for f in (0, 3, 7)}
+    assert "modal_animation" not in stats.get("by_kind", {})
