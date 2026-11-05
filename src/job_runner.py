@@ -1841,6 +1841,26 @@ def _run_result_group(project_id: str, result_group: str,
     extract_cmd += ["--field-list", _odb_field_list(parse_opts)]
     _append_extract_filters(extract_cmd, parse_opts)
     rc, tail = _run_streaming(extract_cmd, project_id, "rg_extract")
+    if _is_odb_version_error(rc, tail):
+        _log_job(project_id, "warn",
+                 f"[{_kw(result_group)}] ODB 版本不匹配，正在升级 ODB 文件…",
+                 stage="rg_extract")
+        ok, upgraded_path, upgrade_tail = _upgrade_odb(source_path, project_id)
+        if not ok:
+            msg = "ODB upgrade failed: " + upgrade_tail
+            _update_result_group_status(project_id, result_group, "error", msg)
+            _log_job(project_id, "error",
+                     f"[{_kw(result_group)}] {_bad('ODB 升级失败')}：{_esc(upgrade_tail[-500:])}",
+                     stage="rg_extract")
+            return False
+        _log_job(project_id, "step",
+                 f"[{_kw(result_group)}] {_good('ODB 升级完成')}，重试结果提取",
+                 stage="rg_extract")
+        # Preserve every extraction option; replacement may fail on Windows,
+        # in which case the upgrade helper returns the temporary ODB path.
+        retry_cmd = list(extract_cmd)
+        retry_cmd[retry_cmd.index("--odb") + 1] = upgraded_path
+        rc, tail = _run_streaming(retry_cmd, project_id, "rg_extract")
     if "ODB_CONSISTENCY_FAIL:" in tail:
         msg = "consistency check failed: " + tail[-500:]
         _update_result_group_status(project_id, result_group, "error", msg)

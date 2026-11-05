@@ -137,6 +137,94 @@ def test_non_odb_subprocess_does_not_need_dump_marker():
     assert runner['_run_streaming'](['python', 'l1_pack.py'], '589', 'l1_pack')[0] == 0
 
 
+def _result_group_runner(tmp_path, outputs, upgrade_ok=True, use_temp=True):
+    source = tmp_path / 'source.odb'
+    source.touch()
+    upgraded = tmp_path / 'source_upgraded_tmp.odb' if use_temp else source
+    launches, statuses, upgrades = [], [], []
+    outputs = iter(outputs)
+
+    def run(cmd, project_id, stage):
+        launches.append((list(cmd), stage))
+        return next(outputs)
+
+    def upgrade(path, project_id):
+        upgrades.append((path, project_id))
+        return upgrade_ok, str(upgraded), 'upgrade diagnostic'
+
+    namespace = {
+        'os': os, 'sys': sys, 'json': json, 'logger': logging.getLogger(__name__),
+        'ABAQUS_CMD': 'abaqus', 'DUMP_SCRIPT': ROOT / 'src/l1/abaqus_dump.py',
+        'PACK_SCRIPT': ROOT / 'src/l1/l1_pack.py', 'INVARIANTS_MODE': 'none',
+        'ODB_FIELDS': 'U,S', '_run_streaming': run, '_upgrade_odb': upgrade,
+        '_project_used_inp_geom': lambda _: True,
+        '_update_result_group_status': lambda *args: statuses.append(args),
+        '_log_job': lambda *args, **kwargs: None,
+        **{name: (lambda text: text) for name in ('_kw', '_bad', '_good', '_esc')},
+    }
+    _load_functions('src/job_runner.py', {
+        '_run_result_group', '_is_odb_version_error', '_odb_field_list',
+        '_append_extract_filters',
+    }, namespace)
+    return namespace, source, upgraded, launches, statuses, upgrades
+
+
+@pytest.mark.parametrize('use_temp', [False, True])
+def test_result_group_upgrades_once_and_preserves_extract_options(tmp_path, use_temp):
+    runner, source, upgraded, launches, statuses, upgrades = _result_group_runner(
+        tmp_path, [(2, 'ODB_VERSION_ERROR: previous release'), (0, ''), (0, '')],
+        use_temp=use_temp)
+    options = json.dumps({'consistency_check': 'strict', 'invariants': 'full',
+                          'fields': ['U', 'S'], 'steps': ['Step-1'], 'frames': [0, 2],
+                          'field_prefix': 'DSA_', 'display_name': 'Result'})
+    assert runner['_run_result_group']('589', 'stress', str(source), options, str(tmp_path))
+    assert upgrades == [(str(source), '589')]
+    assert [stage for _, stage in launches] == ['rg_extract', 'rg_extract', 'rg_l1_pack']
+    original, retry = launches[0][0], launches[1][0]
+    expected = list(original)
+    expected[expected.index('--odb') + 1] = str(upgraded)
+    assert retry == expected
+    for flag, value in {'--geom-source': 'inp', '--invariants': 'full',
+                        '--field-list': 'U,S', '--steps': 'Step-1', '--frames': '0,2',
+                        '--field-prefix': 'DSA_', '--result-group': 'stress',
+                        '--check-mode': 'strict', '--mode': 'extract'}.items():
+        assert retry[retry.index(flag) + 1] == value
+    pack = launches[2][0]
+    assert pack[pack.index('--source-file') + 1] == 'source.odb'
+    assert statuses == [('589', 'stress', 'ready')]
+
+
+@pytest.mark.parametrize('upgrade_ok,retry_output,error', [
+    (False, None, 'ODB upgrade failed: upgrade diagnostic'),
+    (True, (2, 'ODB_VERSION_ERROR: still old'), 'extract failed:'),
+    (True, (1, 'MemoryError: failed'), 'extract failed:'),
+    (True, (0, 'ODB_CONSISTENCY_FAIL: mismatch'), 'consistency check failed:'),
+])
+def test_result_group_upgrade_failures_never_pack(tmp_path, upgrade_ok, retry_output, error):
+    outputs = [(2, 'ODB_VERSION_ERROR: previous release')]
+    if retry_output is not None:
+        outputs.append(retry_output)
+    runner, source, _, launches, statuses, upgrades = _result_group_runner(
+        tmp_path, outputs, upgrade_ok=upgrade_ok)
+    assert not runner['_run_result_group']('589', 'stress', str(source), None, str(tmp_path))
+    assert len(upgrades) == 1
+    assert len(launches) == (2 if upgrade_ok else 1)
+    assert all(stage == 'rg_extract' for _, stage in launches)
+    assert len(statuses) == 1
+    assert statuses[0][:3] == ('589', 'stress', 'error')
+    assert statuses[0][3].startswith(error)
+
+
+@pytest.mark.parametrize('output,success', [((0, ''), True), ((1, 'unrelated failure'), False)])
+def test_result_group_without_version_error_does_not_upgrade(tmp_path, output, success):
+    runner, source, _, launches, statuses, upgrades = _result_group_runner(
+        tmp_path, [output, (0, '')])
+    assert runner['_run_result_group']('589', 'stress', str(source), None, str(tmp_path)) is success
+    assert upgrades == []
+    assert len(launches) == (2 if success else 1)
+    assert statuses[0][2] == ('ready' if success else 'error')
+
+
 def test_memory_failure_reaches_project_response_without_manifest(tmp_path):
     """A failed extraction has no manifest, but polling must still expose why."""
     runner, launches, _, _ = _runner([
