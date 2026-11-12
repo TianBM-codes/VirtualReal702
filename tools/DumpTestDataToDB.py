@@ -100,7 +100,7 @@ def _parse_gauge_line(line: str) -> Tuple[int, str, List[float]]:
     num_count = (len(line) - 34) // 9
     raw_values = [line[19:34]]
     raw_values += [
-        line[34 + j * 9:43 + j * 9] for j in range(num_count)
+        line[34 + j * 9:42 + j * 9] for j in range(num_count)
     ]
     try:
         gauge_values = [float(value.strip()) for value in raw_values]

@@ -461,7 +461,7 @@ def _scoped_target_node_labels_for_instance(
         text = str(item)
         if "::" in text:
             scope_name, label_text = text.split("::", 1)
-            if str(scope_name) != str(instance_name):
+            if str(scope_name).casefold() != str(instance_name).casefold():
                 continue
         else:
             label_text = text
@@ -2616,6 +2616,7 @@ def build_dsa_normalized_sensitivity_matrix(
                     else spec.get("component_index")
                 )
                 _, response_targets = _sens._design_response_target_labels(dsa_model, spec)
+                response_targets = _sens._align_scoped_labels_to_instance(response_targets, instance_name)
                 response_target_set = {str(item) for item in response_targets}
                 response_target_node_labels = _scoped_target_node_labels_for_instance(
                     response_targets,

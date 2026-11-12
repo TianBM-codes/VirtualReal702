@@ -293,7 +293,8 @@ def test_load_project_static_target_response_values_reads_test_static_rows(monke
     assert resolved == {"PART-1-1|U|U2|NODAL|PART-1-1::4": -0.35}
 
 
-def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_values(monkeypatch, tmp_path: Path):
+@pytest.mark.parametrize("response_instance", ["INST", "inst"])
+def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_values(monkeypatch, tmp_path: Path, response_instance):
     inp_path = tmp_path / "fake.inp"
     inp_path.write_text("*Heading\n", encoding="utf-8")
     workspace = tmp_path / "workspace"
@@ -362,7 +363,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
     monkeypatch.setattr(
         bayesian_service._sens,
         "_design_response_target_labels",
-        lambda model, spec: ("point", ["INST::10", "INST::20"]),
+        lambda model, spec: ("point", [f"{response_instance}::10", f"{response_instance}::20", "OTHER::10"]),
     )
 
     def fake_label_map(workspace, *, step, field, instance, position, frame, aggregation, component=None, component_index=None, result_group=None):

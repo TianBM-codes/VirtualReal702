@@ -4379,6 +4379,19 @@ def _scoped_labels(scope_name: Optional[str], labels: Iterable[int]) -> List[obj
     return [int(label) for label in labels]
 
 
+def _align_scoped_labels_to_instance(labels: Iterable[object], instance_name: str) -> List[object]:
+    """Use the ODB instance spelling when an INP scope differs only in case."""
+    aligned = []
+    for label in labels:
+        text = str(label)
+        if "::" in text:
+            scope, entity_label = text.split("::", 1)
+            if scope.casefold() == str(instance_name).casefold():
+                label = f"{instance_name}::{entity_label}"
+        aligned.append(label)
+    return aligned
+
+
 def _parameter_target_labels(model, parameter_row: dict) -> tuple[str, List[object]]:
     set_name = str(parameter_row.get("set_name") or "")
     set_type = str(parameter_row.get("set_type") or "").upper()
@@ -5481,6 +5494,7 @@ def _export_sensitivity_vtu(
 
                         candidate_response_label_map = response_value_cache[response_cache_key]
                         _, response_targets = _design_response_target_labels(dsa_model, spec)
+                        response_targets = _align_scoped_labels_to_instance(response_targets, instance_name)
                         response_target_set = {str(item) for item in response_targets}
                         candidate_response_label_map = {
                             str(label): value

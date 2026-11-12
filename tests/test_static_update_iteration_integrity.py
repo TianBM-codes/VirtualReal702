@@ -1,6 +1,14 @@
 from services.model_update.analysis import bayesian_service as service
 
 
+def test_response_instance_case_alignment_preserves_other_instances():
+    targets = ["zd-1::4", "OTHER::4", 8]
+    aligned = service._sens._align_scoped_labels_to_instance(targets, "ZD-1")
+    assert aligned == ["ZD-1::4", "OTHER::4", 8]
+    assert targets == ["zd-1::4", "OTHER::4", 8]
+    assert service._scoped_target_node_labels_for_instance(targets, instance_name="ZD-1") == [4, 8]
+
+
 def test_iteration_parameter_includes_are_independent(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
