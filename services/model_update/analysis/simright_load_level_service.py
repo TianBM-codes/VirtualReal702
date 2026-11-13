@@ -9,6 +9,9 @@ from tools.simright import SimRightClient, SimRightError, project_stress, projec
 from .test_load_level_service import load_test_data
 from .project_config_service import get_project_config
 from db import get_connection
+import numpy as np
+import sys
+import requests
 
 
 def _series(label, axis, values):
@@ -149,7 +152,7 @@ def _example_result(project_id, sensors, steps, axis_label):
     step_row = next(row for row in payload["table"] if row["key"] == "simright_step")
     count = len(payload["record_indices"])
     selected = _selected_steps(steps, count, step_row["selectOptions"])
-    step_row["value"] = selected
+    step_row["value"] = [0,1,2,3]
     rows = {row["key"]: row for row in payload["table"]}
     names = [sensor["name"] for sensor in sensors]
     curves = []
@@ -158,7 +161,7 @@ def _example_result(project_id, sensors, steps, axis_label):
         test, simulation = rows.get("test:" + name), rows.get("simulation:" + name)
         if test is None or simulation is None:
             raise ValidationError("示例文件中不存在指定测点", {"sensor": name})
-        values = [None if value is None else simulation["value"][indices[str(value)]] for value in selected]
+        values = [15 if value is None else simulation["value"][indices[str(value)]] for value in selected]
         curves.extend([_series(name + "-试验", axis_row["value"], test["value"]),
                        _series(name + "-仿真", axis_row["value"], values)])
     payload.update(project_id=project_id, is_example=True, data_source="example", axis_label=axis_row["label"],
@@ -167,64 +170,371 @@ def _example_result(project_id, sensors, steps, axis_label):
     return payload
 
 
+def get_result_path(work_condition_id):
+    sql = f"SELECT id FROM `t_simulation_file` WHERE work_condition_id = {work_condition_id} AND result_name is not NULL AND is_use='1';"
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        path = cursor.fetchone()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+    return str(path[0])+"-0"
+
+
+def check_wheather_sensor_paired(sensor_id, work_condition_id):
+    sql = f"SELECT measuring_point_name, node FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        res = cursor.fetchone()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+
+    return res==None
+
+
+def get_node_id_by_sensor_name(sensor_id, work_condition_id):
+    # sensor_id = 78888888888
+    sql = f"SELECT measuring_point_name, node FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        res = cursor.fetchone()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+    print(f"get_node_id_by_sensor_name:{res}")
+    if res:
+        sensor_name, pair_node = res
+    else:
+        sensor_name, pair_node = None, None
+    print(f"sensor_name:{sensor_name}, pair_node:{pair_node}")
+    return sensor_name, pair_node
+
+
+def get_load_cases(res_path):
+    url = "http://192.168.1.7:5000/sq/applications/3dlite/api/v1/query"
+    payload = {
+        "name": "loadcases",
+        "args": {
+            "filename": res_path
+        }
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=100)
+        res.raise_for_status()
+        result = res.json()
+        # print(len(result['data'][0]['data']))
+        load_cases = result['data']['value']
+        print(f"loadcase count:{len(load_cases)}")
+        odb_load_cases = []
+        for load_case in load_cases:
+            print(f"    load_case:{load_case['name']}")
+            odb_load_cases.append(load_case['name'])
+    except requests.exceptions.RequestException as err:
+        print(f"loadcases exception:{err}")
+    return odb_load_cases
+
+
+def get_second_pk_stress_projection(sensor_id, node_id, res_path, load_case_name, measure_id, selected_steps, sensor_name, work_condition_id):
+    """
+    """
+    print("enter get_second_pk_stress_projection function")
+    # step 1: 先看是否已经存储了结果
+    # sql = f"SELECT extra_json FROM `t_measuring_point_info` WHERE id = {sensor_id}"
+    sql = f"SELECT extra_json FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        step_res = cursor.fetchone()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+
+    print(f"step result map:{step_res}")
+    if step_res[0] is not None:
+        step_res_json = json.loads(step_res[0])
+        if step_res_json:
+            print(f"step_res_json:{step_res_json}")
+            vals = []
+            for selecte_step in selected_steps:
+                if selecte_step:
+                    val = step_res_json[selecte_step]
+                else:
+                    val = None
+                vals.append(val)
+            print(f"selected vals:{vals}")
+            return vals, None
+
+    # step 2: 遍历所有 loadcase，然后提取最后一个结果
+    # 测试使用不同的 load_case_name 得到的结果都一样，应该是数巧的问题，所以都使用 load_case_name
+    url = "http://192.168.1.7:5000/sq/applications/3dlite/api/v1/query"
+    var_list = ["S.EL.11", "S.EL.12", "S.EL.13", "S.EL.22", "S.EL.23", "S.EL.33"]
+
+    payload = {
+        "name": "XYCurveData1",
+        "args": {
+            "filename": res_path,
+            "nodeIds": [
+                node_id
+            ],
+            "loadcaseName": load_case_name,
+            "xVarName": "var_time",
+            "yVarName": "S.EL.12",
+            "coordSystemType": 1,
+            "stateIds": []
+        }
+    }
+    # print(f"payload:\n{payload}")
+
+    pks = []
+    for ii in range(len(load_case_name)):
+        pks.append(np.zeros((3,3), dtype=float))
+
+    stress = {"S.EL.11":{}, "S.EL.12":{}, "S.EL.13":{}, "S.EL.22":{}, "S.EL.23":{}, "S.EL.33":{}}
+
+    for iter_idx_load_case in range(len(load_case_name)):
+        for iter_var_idx in range(len(var_list)):
+            payload['args']['yVarName'] = var_list[iter_var_idx]
+            payload['args']['loadcaseName'] = load_case_name[iter_idx_load_case]
+            # print(f"{var_list[iter_var_idx]} payload:\n{payload}")
+            res = requests.post(url, json=payload, timeout=1000)
+            res.raise_for_status()
+            result = res.json()
+            last_res = result['data'][0]['data'][-1][1]
+            # sys.exit(100)
+            stress[var_list[iter_var_idx]][iter_idx_load_case] = last_res
+
+    print(f"collection stress: \n{stress}")
+
+    # step 3: 将应力结果分配给各个 pk 应力
+    for idx in range(len(load_case_name)):
+        pks[idx][0,0] = stress["S.EL.11"][idx]
+        pks[idx][0,1] = stress["S.EL.12"][idx]
+        pks[idx][0,2] = stress["S.EL.13"][idx]
+        pks[idx][1,0] = stress["S.EL.12"][idx]
+        pks[idx][1,1] = stress["S.EL.22"][idx]
+        pks[idx][1,2] = stress["S.EL.23"][idx]
+        pks[idx][2,0] = stress["S.EL.13"][idx]
+        pks[idx][2,1] = stress["S.EL.23"][idx]
+        pks[idx][2,2] = stress["S.EL.33"][idx]
+
+    print(f"pks: \n{pks}")
+
+    # step 4: 提取传感器测量方向
+    sql = f"SELECT x_angle,y_angle,z_angle FROM t_measuring_point_info WHERE measuring_point_name = '{sensor_name}' and is_from_test_data=0;"
+    print(sql)
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        res = cursor.fetchone()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+
+    step_result_map = {}
+    x_angle, y_angle, z_angle = res
+    sensor_vector = np.asarray([x_angle, y_angle, z_angle], dtype=float)
+    print(f"sesor_vector:{sensor_vector}")
+
+    # step 5: 投影到制定方向
+    for idx in range(len(pks)):
+        iter_pk = pks[idx]
+        cal_val = sensor_vector@iter_pk@sensor_vector.T
+        step_result_map[load_case_name[idx]] = cal_val
+        # print(f"calculate value:{cal_val}")
+        # save result
+        # result_dict[step_name] = cal_val
+    vals = []
+    for selecte_step in selected_steps:
+        if selecte_step:
+            val = step_result_map[selecte_step]
+        else:
+            val = None
+        vals.append(val)
+    return vals, step_result_map
+
+
+def save_calculate_result_to_db(result, sensor_id):
+    """
+    """
+    connection = get_connection()
+    cursor = connection.cursor(dictionary=True)
+    res_map = json.dumps(result)
+    try:
+        sql = f"UPDATE t_measuring_point_info SET extra_json = %s WHERE id=%s;"
+        cursor.execute(sql,(res_map, sensor_id))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_test_curve(sensor_id, measure_id, sensor_name):
+    sql = f"SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id};"
+    print(sql)
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        sensor_name = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+
+    # print(f"sensor_name:{sensor_name}")
+    wrapper_sensor_name = "'" + str(sensor_name) + "'"
+    sql = f"SELECT load_level, reading_value FROM `db_test_simu_real_test`.`t_mt_py_test_load_level_data` where project_id={measure_id} and sensor={wrapper_sensor_name};"
+    print(sql)
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        lines = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+    lines = np.asarray(lines, dtype=float)
+    # print(lines)
+
+    res = {}
+    step = lines[:,0].tolist()
+    sensor_value = lines[:,1].tolist()
+    res['curves'] = []
+    xaxis = [str(ii) for ii in step]
+    points = [[xaxis[ii], sensor_value[ii]] for ii in range(len(xaxis))]
+    res['curves'].append({"label":sensor_name,"xaxis":xaxis,"data":points})
+
+    print("===========curves===========")
+    print(res)
+    return res
+
+
+def get_table_content(odb_load_case,measure_id):
+    sql = f"SELECT sensor,count(*) FROM `t_mt_py_test_load_level_data` where project_id={measure_id} GROUP BY sensor limit 1;"
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        res = cursor.fetchone()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+
+    sensor_name, step_count = res
+
+    sql = f"SELECT extra_json FROM `t_mt_py_project_config` where pid={measure_id};"
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        extra_json = cursor.fetchone()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+    json_data = json.loads(extra_json[0])
+    axis_rows = json_data["test_load_level_import"]["axis_rows"]
+    wrapper_sensor_name = "'" + str(sensor_name) + "'"
+    sql = f"SELECT load_level, reading_value FROM `db_test_simu_real_test`.`t_mt_py_test_load_level_data` where project_id={measure_id} and sensor={wrapper_sensor_name};"
+    print(sql)
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        lines = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(e)
+    lines = np.asarray(lines, dtype=float)
+    res = {}
+    step = lines[:,0].tolist()
+    sensor_value = lines[:,1].tolist()
+    content = [{"label":odb_load_case[ii], "value":ii} for ii in range(len(odb_load_case))]
+    select_index = []
+    for ii in range(len(step)):
+        if ii < len(content):
+            select_index.append(ii)
+        else:
+            select_index.append(None)
+    axis_rows.append({"label":"odb-step", "type":"select", "selectOptions":content, "value":select_index})
+    res['table'] = axis_rows
+    print(res)
+    return res
+
+
 def get_simright_test_load_level_comparison(project_id, simright_base_url=None,
         profile="markdown", axis_label=None, sensors=None, steps=None, shell_layer="bottom", import_sha256=None,
-        example_mode=True, work_condition_id=None, measurement_id=None):
+        example_mode=False, work_condition_id=None, measurement_id=None):
+    example_mode = False
     sensors = sensors or []
     if len({sensor["name"] for sensor in sensors}) != len(sensors):
         raise ValidationError("测点名称不能重复")
+
+    print(f"work_condition_id:{work_condition_id}, measurement_id:{measurement_id}, project_id:{project_id}")
     if example_mode:
         return _example_result(project_id, sensors, steps, axis_label)
-    config = get_project_config(project_id).get("extra_json", {}).get("simright", {})
-    filename = config.get("filename")
-    simright_base_url = simright_base_url or config.get("base_url")
-    if not simright_base_url or not filename:
-        raise ValidationError("请在项目 extra_json.simright 中配置 filename 和 base_url，地址也可通过 simright_base_url 传入")
-    metadata, readings = load_test_data(project_id, work_condition_id=work_condition_id, measurement_id=measurement_id)
-    if import_sha256 is not None and import_sha256 != metadata["sha256"]:
-        raise ConflictError("试验 TXT 已更新，请刷新表格后重新选择仿真 step")
-    count = metadata["sample_count"]
-    axis_label = axis_label or metadata["axis_label"]
-    axis = next((row["value"] for row in metadata["axis_rows"] if row["label"] == axis_label), None)
-    if axis is None:
-        raise ValidationError("文件中不存在所选横轴", {"axis_label": axis_label})
-    for binding in sensors:
-        if binding["name"] not in readings:
-            raise ValidationError("TXT 中不存在指定测点", {"sensor": binding["name"]})
-    if steps is not None and len(steps) != count:
-        raise ValidationError("steps 长度必须与试验有效记录数一致", {"sample_count": count})
-    simulated = {item["name"]: [None] * count for item in sensors}
-    selected, resolved, issues = [None] * count, [], []
-    try:
-        with SimRightClient(str(simright_base_url), profile=profile) as client:
-            options = _loadcases(client, filename)
-            selected = _selected_steps(steps, count, options)
-            by_id = {str(step["value"]): step for step in options}
-            bindings = _resolve_bindings(project_id, sensors, config) if sensors and any(value is not None for value in selected) else []
-            cache = {}
-            for index, value in enumerate(selected):
-                if value is None:
-                    continue
-                step = by_id[str(value)]
-                for binding in bindings:
-                    try:
-                        value, identity = _simulation_value(client, filename, binding, step, {}, shell_layer, cache)
-                        simulated[binding["name"]][index] = value
-                        resolved.append({"sensor": binding["name"], "sample_index": index,
-                                         "loadcase_id": step["value"], "part_id": identity[0], "state_id": identity[1]})
-                    except (SimRightError, ValueError, TypeError) as exc:
-                        issues.append({"sensor": binding["name"], "sample_index": index, "message": str(exc)})
-    except SimRightError as exc:
-        raise AppError("数巧接口请求失败", code="SIMRIGHT_ERROR", status_code=502,
-                       details={"reason": str(exc)}) from exc
-    table = [{"key": "axis:%s" % index, "label": row["label"], "value": row["value"]}
-             for index, row in enumerate(metadata["axis_rows"])]
-    names = [item["name"] for item in sensors]
-    table.append({"key": "simright_step", "label": "仿真step", "type": "select",
-                  "selectOptions": [{"label": s["label"], "value": s["value"]} for s in options], "value": selected})
-    curves = [_series(name + "-试验", axis, readings[name]) for name in names]
-    curves.extend(_series(name + "-仿真", axis, values) for name, values in simulated.items())
-    return {"project_id": project_id, "axis_label": axis_label, "unit": metadata.get("unit"),
-            "import_sha256": metadata["sha256"], "record_indices": list(range(count)),
-            "table": table, "curves": curves, "resolved_states": resolved, "issues": issues,
-            "summary": {"sample_count": count, "sensor_count": len(names), "curve_count": len(curves)}}
+
+    print("sensors:", sensors)
+    if len(sensors) != 0:
+        measure_id = measurement_id
+        res = {}
+        for sensor in sensors:
+            sensor_id = int(sensor['name'])
+            sensor_name, pair_node = get_node_id_by_sensor_name(sensor_id, work_condition_id)
+            sensor_iter_res = get_test_curve(sensor_id, measure_id, sensor_name)
+            if sensor_iter_res is None:
+                continue
+            if len(res) == 0:
+                res = sensor_iter_res
+            else:
+                res['curves'].extend(sensor_iter_res['curves'])
+            if pair_node is not None:
+                odb_path = get_result_path(work_condition_id)
+                odb_load_case = get_load_cases(odb_path)
+                # selected_steps = [odb_load_case[step] for step in steps]
+                selected_steps = []
+                for step in steps:
+                    if step is None:
+                        selected_steps.append(None)
+                    else:
+                        selected_steps.append(odb_load_case[step])
+                result, step_result_map = get_second_pk_stress_projection(sensor_id, pair_node, odb_path, odb_load_case, measure_id, selected_steps, sensor_name, work_condition_id)
+                if step_result_map:
+                    save_calculate_result_to_db(step_result_map, sensor_id)
+                    print(f"saved extra_json: {step_result_map}")
+                test_curve = sensor_iter_res['curves'][0]
+                test_curve_xaxis = test_curve["xaxis"]
+                cal_points = [[test_curve_xaxis[ii],result[ii]] for ii in range(len(test_curve_xaxis))]
+                cal_curve = {"label":sensor_name+" cal", "xaxis":test_curve["xaxis"], "data":cal_points}
+                res['curves'].append(cal_curve)
+    else:
+        print("get content 111")
+        measure_id = measurement_id
+        odb_path = get_result_path(work_condition_id)
+        odb_load_case = get_load_cases(odb_path)
+        res = get_table_content(odb_load_case, measure_id)
+
+    print(f"load level curves:{res}")
+    return res
+
+
