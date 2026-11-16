@@ -129,7 +129,7 @@ def test_copy_iteration_input_copies_relative_include_files(tmp_path: Path):
     )
 
     assert copied.exists()
-    assert (tmp_path / "out" / "include.inp").read_text(encoding="utf-8") == "*PARAMETER\nT_SET_149=0.001\n"
+    assert (copied.parent / "include.inp").read_text(encoding="utf-8") == "*PARAMETER\nT_SET_149=0.001\n"
 
 
 def test_update_parameter_section_values_updates_relative_include_parameter_file(tmp_path: Path):
@@ -900,6 +900,10 @@ P2=2.0
 
     monkeypatch.setattr(bayesian_service, "build_dsa_normalized_sensitivity_matrix", fake_build_matrix)
     monkeypatch.setattr(bayesian_service, "_run_iteration_solver", fake_run_iteration_solver)
+    monkeypatch.setattr(
+        bayesian_service, "_publish_static_iteration_results",
+        lambda **kwargs: {"source_result_group": f"iteration_{kwargs['iteration']}"},
+    )
     monkeypatch.setattr(bayesian_service, "bayesian_update_normalized", fake_bayesian_update)
     monkeypatch.setattr(bayesian_service, "_persist_bayesian_tracking_results", fake_persist)
 
@@ -950,7 +954,8 @@ P2=2.0
     assert "Bayesian Optimization History" in overview_html.read_text(encoding="utf-8")
 
 
-def test_run_bayesian_update_workflow_uses_default_scatter_values(monkeypatch, tmp_path: Path):
+@pytest.mark.parametrize("response_sign", [1, -1])
+def test_run_bayesian_update_workflow_uses_default_scatter_values(monkeypatch, tmp_path: Path, response_sign):
     inp_path = tmp_path / "model.inp"
     inp_path.write_text(
         """*Heading
@@ -969,7 +974,7 @@ P1=1.0
         "workspace_built": False,
         "odb_id": None,
         "matrix": [[1.0]],
-        "response_values": [10.0],
+        "response_values": [10.0 * response_sign],
         "parameter_values": [1.0],
         "parameter_columns": [
             {"field": "d_UR_P1", "parameter_name": "P1", "parameter_token": "P1", "parameter_value": 1.0}
@@ -985,6 +990,7 @@ P1=1.0
     def fake_bayesian_update(**kwargs):
         captured["p_scatter"] = kwargs["p_scatter"]
         captured["r_scatter"] = kwargs["r_scatter"]
+        np.testing.assert_array_equal(kwargs["S_norm"], [[response_sign]])
         return {
             "delta_r": np.array([[1.0]]),
             "y": np.array([[10.0]]),
@@ -1010,7 +1016,7 @@ P1=1.0
         project_id=1,
         input_inp=str(inp_path),
         workspace=str(tmp_path / "initial_ws"),
-        target_responses=[8.0],
+        target_responses=[8.0 * response_sign],
         output_dir=str(tmp_path / "out"),
         iterations=1,
         run_solver=False,

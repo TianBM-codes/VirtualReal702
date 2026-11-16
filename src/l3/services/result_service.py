@@ -243,30 +243,22 @@ def _scalar_nodal_by_idx(f, instance: str, frame_idx: int,
     return _extract_component(frame_data, component_idx, stored_magnitude_col(f)), num_frames
 
 
-def _expand_sparse_nodal_to_geometry_rows(
+def _remap_nodal_to_geometry_rows(
     *,
     f,
     instance: str,
-    scalar_node: np.ndarray,
+    values: np.ndarray,
     workspace: str,
+    fill_value: float = np.nan,
 ) -> np.ndarray:
-    """
-    Expand sparse NODAL datasets that store explicit node labels instead of a
-    dense geometry-row-aligned array.
-
-    Sensitivity files may only contain values for a handful of response nodes
-    and accompany `/NODAL/<instance>/data` with `/NODAL/<instance>/labels`.
-    Rendering code indexes by geometry node row, so remap those labels back
-    onto the full geometry node label array and fill all other rows with NaN.
-    """
+    """Align ODB nodal values by label, ignoring solver-generated nodes."""
     labels_path = f"/NODAL/{instance}/labels"
     if labels_path not in f:
-        return scalar_node
+        return values
 
     result_labels = np.asarray(f[labels_path][:], dtype=np.int32).reshape(-1)
-    scalar_arr = np.asarray(scalar_node, dtype=np.float32).reshape(-1)
-    if result_labels.size == 0 or scalar_arr.size == 0:
-        return scalar_arr
+    if result_labels.size == 0 or values.size == 0:
+        return values
 
     try:
         manifest = ManifestRepo(workspace)
@@ -276,12 +268,12 @@ def _expand_sparse_nodal_to_geometry_rows(
     if not geom_h5_path:
         geom_h5_path = os.path.join(workspace, "l1", "geometry", f"{canon_instance(instance)}.h5")
     if not geom_h5_path or not os.path.exists(geom_h5_path):
-        return scalar_arr
+        return values
 
     try:
         with h5py.File(geom_h5_path, "r") as geom_f:
             if "nodes/labels" not in geom_f:
-                return scalar_arr
+                return values
             geom_labels = np.asarray(geom_f["nodes/labels"][:], dtype=np.int32).reshape(-1)
     except Exception:
         logger.exception(
@@ -289,18 +281,16 @@ def _expand_sparse_nodal_to_geometry_rows(
             workspace,
             instance,
         )
-        return scalar_arr
+        return values
 
-    expanded = np.full(len(geom_labels), np.nan, dtype=np.float32)
+    if np.array_equal(geom_labels, result_labels):
+        return values
+
+    expanded = np.full((len(geom_labels), *values.shape[1:]), fill_value, dtype=values.dtype)
     rows = np.searchsorted(geom_labels, result_labels)
-    valid = (
-        (rows >= 0)
-        & (rows < len(geom_labels))
-        & (geom_labels[rows] == result_labels)
-    )
-    if not np.any(valid):
-        return scalar_arr
-    expanded[rows[valid]] = scalar_arr[valid]
+    source_rows = np.flatnonzero(rows < len(geom_labels))
+    source_rows = source_rows[geom_labels[rows[source_rows]] == result_labels[source_rows]]
+    expanded[rows[source_rows]] = values[source_rows]
     return expanded
 
 
@@ -700,10 +690,10 @@ def _frame_colors_scalars(h5_path, idx, instance, frame_idx, component,
             # 稀疏 NODAL 场（接触输出等）：data 行号 ≠ 几何节点行号，必须按
             # /NODAL/<inst>/labels 映射回几何节点行（缺数据的节点补 NaN），
             # 否则值会张冠李戴。稠密场 labels 与几何一致，恒等映射。
-            scalar_node = _expand_sparse_nodal_to_geometry_rows(
+            scalar_node = _remap_nodal_to_geometry_rows(
                 f=f,
                 instance=instance,
-                scalar_node=scalar_node,
+                values=scalar_node,
                 workspace=idx.workspace,
             )
             n_result_nodes = len(scalar_node)
@@ -1196,10 +1186,10 @@ def frame_scalars(
             result = _scalar_nodal_by_idx(f, instance, frame_idx, component_idx)
             if result is not None:
                 scalar_node, num_frames = result
-                scalar_node = _expand_sparse_nodal_to_geometry_rows(
+                scalar_node = _remap_nodal_to_geometry_rows(
                     f=f,
                     instance=instance,
-                    scalar_node=scalar_node,
+                    values=scalar_node,
                     workspace=idx.workspace,
                 )
                 result_position = "NODAL"
@@ -2052,6 +2042,9 @@ def _read_raw_node_displacements(
                 {"frame_idx": frame_idx},
             )
         disp_node = ds[frame_idx, :, :3].astype(np.float32)
+        disp_node = _remap_nodal_to_geometry_rows(
+            f=f, instance=instance, values=disp_node, workspace=idx.workspace, fill_value=0.0,
+        )
 
     if disp_node.ndim == 1:
         raise ValidationError(

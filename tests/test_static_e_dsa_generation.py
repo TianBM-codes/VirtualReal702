@@ -41,3 +41,46 @@ def test_e_rejects_temperature_dependent_material():
     tasks = [{"parameter": "E@S", "quantity_code": "E", "source_groups": [{"material": "M"}]}]
     with pytest.raises(ValueError, match="single constant"):
         service._build_dsa_elastic_materials(lines, tasks)
+
+
+def test_flat_inp_resolves_catalog_part_parameters_in_root():
+    lines = [
+        "*Element, type=S4", "1,1,2,3,4", "2,2,3,4,5",
+        "** Flat assembly", "*Elset, elset=S", "1,2",
+        "*Shell Section, elset=S, material=M, controls=EC-1", "4.4, 7",
+    ]
+    config = {
+        "element_sets": [
+            {"set_name": "DSA_E", "parameter": "E@S1", "elements": [1],
+             "set_scope": "PART", "part_name": "PART-1-1", "value": 210000},
+            {"set_name": "DSA_T", "parameter": "T@S2", "elements": [2],
+             "set_scope": "PART", "part_name": "PART-1-1", "value": 4.4},
+        ],
+        "node_sets": [],
+        "responses": [{"type": "node", "set": "RESP", "nodes": [1], "instance_name": "PART-1-1"}],
+    }
+    parsed = parse_main_inp(lines)
+    tasks, remainders, _ = analyze_element_set_tasks_scoped(config["element_sets"], parsed)
+    tasks[0]["quantity_code"] = "E"
+    tasks[1]["quantity_code"] = "T"
+    layout = build_dsa_include_layout(config, tasks, parsed, remainders, include_file="include.inp")
+
+    assert layout["scope_include_refs"] == {}
+    root_text = layout["files"]["include.inp"]
+    assert "MATERIAL=DSA_E_S1_M, controls=EC-1\n4.4, 7" in root_text
+    assert "MATERIAL=M, controls=EC-1\n<T_S2>, 7" in root_text
+    assert "*NSET, NSET=RESP\n1" in root_text
+
+
+
+def test_generated_fields_map_to_parameters_by_name():
+    rows = [
+        {"parameter_name": "E@PART-1-1_P30006"},
+        {"parameter_name": "T@PART-1-1_P30002"},
+    ]
+    fields = ["d_U_T_PART_1_1_P30002", "d_U_E_PART_1_1_P30006"]
+
+    assert service._build_dsa_parameter_row_map(rows, "d_U_", fields) == {
+        fields[0]: rows[1],
+        fields[1]: rows[0],
+    }

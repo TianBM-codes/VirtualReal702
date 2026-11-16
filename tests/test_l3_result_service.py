@@ -2,7 +2,7 @@ import numpy as np
 
 from src.l3.core.errors import NotFoundError, ValidationError
 from src.l3.infra.colormap import apply_jet
-from src.l3.services.result_service import frame_colors, frame_scalars
+from src.l3.services.result_service import _read_raw_node_displacements, frame_colors, frame_scalars
 
 
 def test_frame_colors_smooth_and_flat_respect_multi_etype_groups(
@@ -158,6 +158,7 @@ def test_frame_scalars_maps_sparse_nodal_labels_back_to_geometry_rows(
         element_defs={"S4R": {"labels": [10], "conn": [[0, 1, 2, 3]]}},
     )
     idx.source_node_rows[instance] = np.array([[0, 1, 3]], dtype=np.int32)
+    idx.vtx_node_row[instance] = np.array([0, 1, 3], dtype=np.int32)
 
     path = workspace / "l1" / "results" / "Step-1__d_U_T_SET_149.h5"
     import h5py
@@ -181,3 +182,29 @@ def test_frame_scalars_maps_sparse_nodal_labels_back_to_geometry_rows(
     assert legend.tolist() == [-7.0, -7.0]
     assert np.isnan(u[0]) and np.isnan(u[1])
     assert np.isfinite(u[2])
+
+
+
+def test_displacements_remap_order_and_ignore_solver_generated_nodes(
+    workspace, make_registry, write_geometry_file,
+):
+    import h5py
+
+    instance = "PART-1-1"
+    idx = make_registry(workspace, instance=instance).get("odb")
+    write_geometry_file(
+        workspace,
+        instance,
+        node_labels=np.array([1, 2, 3, 4], dtype=np.int32),
+        element_defs={"S4R": {"labels": [10], "conn": [[0, 1, 2, 3]]}},
+    )
+    path = workspace / "l1" / "results" / "Step-1__U.h5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group(f"NODAL/{instance}")
+        group.create_dataset("labels", data=[4, 9, 1])
+        group.create_dataset("data", data=[[[4, 5, 6], [9, 9, 9], [1, 2, 3]]])
+
+    np.testing.assert_array_equal(
+        _read_raw_node_displacements(idx, instance, "Step-1", 0),
+        [[1, 2, 3], [0, 0, 0], [0, 0, 0], [4, 5, 6]],
+    )

@@ -30,6 +30,7 @@ from .abaqusDSAInpGenerator import (
     COMMENT_EMPTY_SECTION,
     DEFAULT_INCLUDE_FILE,
     UPDATED_MAIN_INP,
+    _build_parameter_alias_map,
     analyze_element_set_tasks_scoped,
     build_dsa_include_layout,
     parse_main_inp,
@@ -46,6 +47,7 @@ from .l3_local_bridge_service import (
 from .model_update_meta_service import resolve_abaqus_command
 from .project_path_service import resolve_project_cal_subdir, resolve_project_workspace
 from .project_source_service import resolve_project_source_inp_path
+from .project_status_service import update_work_condition_project_status
 from .solver_service import delete_abaqus_process_files, run_abaqus_job, run_abaqus_sensitivity_job
 
 _POSITION_PRIORITY = ("NODAL", "ELEMENT_NODAL", "INTEGRATION_POINT")
@@ -84,24 +86,7 @@ def _active_sensitivity_projects() -> set:
 
 
 def _update_project_sensitivity_status(project_id: int, status: int) -> None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            UPDATE t_mt_work_condition_project
-            SET sensitivity_status = %s
-            WHERE project_id = %s
-            """,
-            (int(status), int(project_id)),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        cursor.close()
-        conn.close()
+    update_work_condition_project_status(project_id, sensitivity_status=int(status))
 
 
 def _run_with_project_sensitivity_status(project_id: int, fn):
@@ -109,8 +94,8 @@ def _run_with_project_sensitivity_status(project_id: int, fn):
     if int(project_id) in active:
         return fn()
 
-    active.add(int(project_id))
     _update_project_sensitivity_status(project_id, _SENSITIVITY_STATUS_RUNNING)
+    active.add(int(project_id))
     try:
         result = fn()
     except Exception as exc:
@@ -1623,8 +1608,6 @@ def _serialize_mother_set_remainders(
 
 def _build_dsa_elastic_materials(main_lines: List[str], tasks: List[dict]) -> List[str]:
     """Clone each selected material so unselected elements keep their original E."""
-    from .abaqusDSAInpGenerator import _build_parameter_alias_map
-
     aliases = _build_parameter_alias_map(tasks)
     material_blocks = {}
     starts = [i for i, line in enumerate(main_lines) if re.match(r"^\s*\*MATERIAL\b", line, re.I)]
@@ -3981,6 +3964,12 @@ def _extract_dsa_field_token(field_prefix: str, source_field_name: str) -> str:
     return str(suffix or source_name)
 
 
+def _dsa_parameter_rows_by_alias(parameter_rows: List[dict]) -> Dict[str, dict]:
+    rows_by_name = {str(row.get("parameter_name") or ""): row for row in parameter_rows}
+    aliases = _build_parameter_alias_map([{"parameter": name} for name in rows_by_name])
+    return {alias: rows_by_name[name] for name, alias in aliases.items()}
+
+
 def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, source_field_names: List[str]) -> Dict[str, dict]:
     if not parameter_rows:
         raise ValidationError("no optimization parameters found for DSA VTU export", {"field_prefix": field_prefix})
@@ -4013,7 +4002,15 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
             },
         )
 
-    field_map: Dict[str, dict] = {}
+    # Generated fields carry sanitized parameter names, which can end in
+    # element-set numbers and sort differently from catalog rows.
+    rows_by_alias = _dsa_parameter_rows_by_alias(parameter_rows)
+    field_map = {
+        name: rows_by_alias[field_tokens[name].upper()]
+        for name in ordered_fields
+        if field_tokens[name].upper() in rows_by_alias
+    }
+    remaining_fields = [name for name in ordered_fields if name not in field_map]
     all_indices = [field_indices[name] for name in ordered_fields]
     direct_indices = [idx for idx in all_indices if idx is not None]
     direct_indices_valid = (
@@ -4024,11 +4021,13 @@ def _build_dsa_parameter_row_map(parameter_rows: List[dict], field_prefix: str, 
 
     if direct_indices_valid and direct_indices_unique:
         for field_name, parameter_index in zip(ordered_fields, direct_indices):
-            field_map[field_name] = parameter_rows[int(parameter_index) - 1]
+            field_map.setdefault(field_name, parameter_rows[int(parameter_index) - 1])
         return field_map
 
-    for offset, field_name in enumerate(ordered_fields):
-        field_map[field_name] = parameter_rows[offset]
+    matched_rows = {id(row) for row in field_map.values()}
+    remaining_rows = (row for row in parameter_rows if id(row) not in matched_rows)
+    for field_name, row in zip(remaining_fields, remaining_rows):
+        field_map[field_name] = row
     return field_map
 
 
@@ -5320,6 +5319,7 @@ def _export_sensitivity_vtu(
         if selector["kind"] == "prefix" and dsa_parameter_rows
         else {}
     )
+    alias_parameter_rows = _dsa_parameter_rows_by_alias(dsa_parameter_rows)
     export_field_name = selector["field_prefix"] if selector["kind"] == "prefix" else None
     response_value_cache: Dict[Tuple[str, str, str, str, Optional[str], Optional[int], int, str], object] = {}
     for instance_name in discovery["instances"]:
@@ -5378,8 +5378,9 @@ def _export_sensitivity_vtu(
                     direct_target_rows = list(dsa_direct_target_map.get(mapped_parameter_name, []))
                 target_rows = direct_target_rows
                 mapping_mode = "inp_parameter"
-                if not target_rows:
-                    parameter_row = _resolve_dsa_parameter_row(dsa_parameter_map, source_field_name)
+                parameter_row = alias_parameter_rows.get(parameter_token.upper())
+                if parameter_row is not None or not target_rows:
+                    parameter_row = parameter_row or _resolve_dsa_parameter_row(dsa_parameter_map, source_field_name)
                     target_rows = [parameter_row]
                     mapped_parameter_name = str(parameter_row.get("parameter_name") or parameter_token)
                     mapping_mode = "optimization_parameter"

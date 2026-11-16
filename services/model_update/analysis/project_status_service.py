@@ -13,6 +13,11 @@ def _work_condition_project_columns() -> frozenset[str]:
     try:
         cursor.execute("SHOW COLUMNS FROM t_mt_work_condition_project")
         return frozenset(str(row[0]) for row in cursor.fetchall() if row and row[0])
+    except Exception as exc:
+        if getattr(exc, "errno", None) != 1146:
+            raise
+        # The standalone frontend does not provision the legacy platform table.
+        return frozenset()
     finally:
         cursor.close()
         conn.close()

@@ -13,6 +13,7 @@ from services.model_update.analysis.model_update_meta_service import resolve_aba
 from services.model_update.analysis import sensitivity_service as _sens
 from services.model_update.analysis.project_file_service import resolve_project_input_file
 from services.model_update.analysis.project_path_service import resolve_project_cal_subdir
+from services.model_update.analysis.project_source_service import resolve_project_source_inp_path
 from services.model_update.analysis.inp_service import (
     clear_design_response_catalog_entries,
     create_modal_frequency_response_catalog_from_fem,
@@ -359,14 +360,16 @@ def _compact_modal_bayesian_run_response(payload: dict) -> dict:
 
 
 def _bayesian_run_kwargs(body: BayesianModelUpdateRequest) -> dict:
-    input_inp = str(
-        resolve_project_input_file(
-            int(body.project_id),
+    project_id = int(body.project_id)
+    if body.input_inp or body.input_inp_name:
+        input_inp = str(resolve_project_input_file(
+            project_id,
             explicit_path=body.input_inp,
             file_name=body.input_inp_name,
             field_name="input_inp",
-        )
-    )
+        ))
+    else:
+        input_inp = resolve_project_source_inp_path(project_id)
     return {
         "project_id": body.project_id,
         "batch_no": body.batch_no,

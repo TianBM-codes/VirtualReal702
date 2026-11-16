@@ -2534,6 +2534,7 @@ def build_dsa_normalized_sensitivity_matrix(
         if dsa_parameter_rows
         else {}
     )
+    alias_parameter_rows = _sens._dsa_parameter_rows_by_alias(dsa_parameter_rows)
     dsa_direct_target_map = build_parameter_target_map(dsa_model)
     dsa_design_parameter_name_map = _sens._build_dsa_design_parameter_name_map(dsa_model)
     dsa_response_specs = _sens._resolve_dsa_response_spec(dsa_model, step_name=discovery["step"]) or []
@@ -2581,13 +2582,14 @@ def build_dsa_normalized_sensitivity_matrix(
 
             target_rows = direct_target_rows
             mapping_mode = "inp_parameter"
-            if not target_rows:
-                if not dsa_parameter_map:
+            parameter_row = alias_parameter_rows.get(parameter_token.upper())
+            if parameter_row is not None or not target_rows:
+                if parameter_row is None and not dsa_parameter_map:
                     raise ValidationError(
                         "unable to map DSA field to a model-update parameter",
                         {"field": source_field_name, "field_prefix": field_prefix},
                     )
-                parameter_row = _sens._resolve_dsa_parameter_row(dsa_parameter_map, source_field_name)
+                parameter_row = parameter_row or _sens._resolve_dsa_parameter_row(dsa_parameter_map, source_field_name)
                 target_rows = [parameter_row]
                 mapped_parameter_name = str(parameter_row.get("parameter_name") or parameter_token)
                 mapping_mode = "optimization_parameter"
@@ -4465,11 +4467,13 @@ def run_bayesian_update_workflow(
                 exit_diff_percent=exit_diff_percent,
             )
             effective_step_scale = 0.0 if exit_check and bool(exit_check.get("converged")) else float(step_scale)
+            # Stored DSA rows use signed U, while the Bayesian residual uses |U|.
+            # Align their scales so negative displacements update in the right direction.
             update_payload = bayesian_update_normalized(
                 p_current=p_current,
                 r_model=r_model,
                 r_target=r_target,
-                S_norm=S_norm,
+                S_norm=S_norm * np.where(r_model < 0, -1.0, 1.0)[:, None],
                 p_scatter=p_scatter,
                 r_scatter=r_scatter,
                 damping=damping,

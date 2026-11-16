@@ -72,3 +72,28 @@ def test_update_work_condition_project_status_returns_when_all_columns_unknown(m
     assert executed == [("SHOW COLUMNS FROM t_mt_work_condition_project", None)]
     assert fake_conn.committed is False
     assert fake_conn.closed is True
+
+
+def test_update_status_skips_missing_legacy_project_table(monkeypatch):
+    class MissingTableError(Exception):
+        errno = 1146
+
+    fake_conn = _FakeConnection([])
+
+    def show_columns(sql):
+        assert sql == "SHOW COLUMNS FROM t_mt_work_condition_project"
+        raise MissingTableError()
+
+    columns = project_status_service._work_condition_project_columns
+    columns.cache_clear()
+    monkeypatch.setattr(fake_conn.cursor_obj, "execute", show_columns)
+    monkeypatch.setattr(project_status_service, "get_connection", lambda: fake_conn)
+
+    try:
+        project_status_service.update_work_condition_project_status(22, sensitivity_status=1)
+    finally:
+        columns.cache_clear()
+
+    assert fake_conn.cursor_obj.closed
+    assert fake_conn.closed
+    assert not fake_conn.committed

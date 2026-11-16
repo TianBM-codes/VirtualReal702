@@ -1113,6 +1113,9 @@ def analyze_element_set_tasks_scoped(
             part_name = inferred_part_name
             requested_scope = PART_SCOPE_TYPE
 
+        # Flat CAE exports have a synthetic catalog part but root-level sections.
+        if not parsed.get("part_blocks") and not parsed.get("assembly_blocks"):
+            part_name = ""
         target_scope_key = make_scope_key(PART_SCOPE_TYPE if part_name else ROOT_SCOPE_TYPE, part_name or ROOT_SCOPE_NAME)
         source_mother_sets: Dict[Tuple[str, str, str], List[int]] = defaultdict(list)
 
@@ -1164,6 +1167,7 @@ def analyze_element_set_tasks_scoped(
                     "material": material,
                     "section_header": blk["header"],
                     "original_thickness": original_thickness,
+                    "section_data_lines": blk["data_lines"],
                     "group_set_name": group_set_name,
                     "scope_type": blk["scope_type"],
                     "scope_name": blk["scope_name"],
@@ -1289,10 +1293,19 @@ def _build_scope_structure_lines(
             elastic_parameter = task.get("quantity_code") == "E"
             material_name = (f"DSA_{parameter_alias}_{group['material']}"
                              if elastic_parameter else group['material'])
-            lines.append(
-                f"{group['section_keyword']}, ELSET={group['group_set_name']}, MATERIAL={material_name}"
-            )
-            lines.append(str(group['original_thickness']) if elastic_parameter else f"<{parameter_alias}>")
+            header = re.sub(r"(?i)(\bELSET\s*=\s*)[^,]+",
+                            lambda match: match[1].upper() + group["group_set_name"], group["section_header"])
+            header = re.sub(r"(?i)(\bMATERIAL\s*=\s*)[^,]+",
+                            lambda match: match[1].upper() + material_name, header)
+            lines.append(header)
+            data_lines = list(group["section_data_lines"])
+            if not elastic_parameter:
+                for index, line in enumerate(data_lines):
+                    if line.strip() and not line.lstrip().startswith("**"):
+                        _, comma, remainder = line.partition(",")
+                        data_lines[index] = f"<{parameter_alias}>" + comma + remainder
+                        break
+            lines.extend(data_lines)
         lines.append(
             f"** {AUTO_COMMENT_PREFIX}_TASK_END index={idx} parameter={parameter_name} alias={parameter_alias} set={task['set_name']}"
         )
