@@ -465,7 +465,7 @@ def _collect_project_result_static_rows(
         step_rows = [
             dict(row)
             for row in conn.execute(
-                f"SELECT step_name, step_number FROM steps WHERE {rg_clause} ORDER BY step_number, step_name",
+                f"SELECT step_name, step_number, procedure FROM steps WHERE {rg_clause} ORDER BY step_number, step_name",
                 rg_params,
             ).fetchall()
         ]
@@ -481,14 +481,53 @@ def _collect_project_result_static_rows(
             )
         if chosen_step not in {str(row.get("step_name")) for row in step_rows}:
             available = [str(row.get("step_name")) for row in step_rows if row.get("step_name") is not None]
-            raise NotFoundError(
-                f"step '{chosen_step}' not found under result_group '{result_group}'",
-                {
-                    "project_id": int(project_id),
-                    "result_group": str(result_group),
-                    "step": chosen_step,
-                    "available_steps": available,
-                },
+            requested_step = chosen_step
+            case_matches = [name for name in available if name.casefold() == chosen_step.casefold()]
+            if len(case_matches) == 1:
+                chosen_step = case_matches[0]
+            elif chosen_step.casefold() == "step-1":
+                # Older Java clients always submit Step-1. Only substitute it
+                # when the result group has one unambiguous static U response.
+                displacement_steps = {
+                    str(row["step_name"])
+                    for row in conn.execute(
+                        f"""
+                        SELECT DISTINCT step_name FROM result_blocks
+                        WHERE field_name = 'U' AND position = 'NODAL' AND {rg_clause}
+                        """,
+                        rg_params,
+                    ).fetchall()
+                }
+                candidates = [
+                    str(row["step_name"]) for row in step_rows
+                    if str(row.get("procedure") or "").upper() == "STATIC"
+                    and str(row["step_name"]) in displacement_steps
+                ]
+                if len(candidates) == 1:
+                    chosen_step = candidates[0]
+                elif len(candidates) > 1:
+                    raise ValidationError(
+                        "Step-1 不存在，且有多个静力位移分析步，请明确指定 step",
+                        {
+                            "project_id": int(project_id), "result_group": str(result_group),
+                            "step": requested_step, "available_steps": available,
+                            "candidate_static_steps": candidates,
+                        },
+                    )
+            if chosen_step not in available:
+                raise NotFoundError(
+                    f"step '{chosen_step}' not found under result_group '{result_group}'",
+                    {
+                        "project_id": int(project_id),
+                        "result_group": str(result_group),
+                        "step": chosen_step,
+                        "available_steps": available,
+                    },
+                )
+            log_project_info(
+                int(project_id),
+                f"静力结果入库分析步已兼容解析：{requested_step} -> {chosen_step}，结果组 {result_group}",
+                stage="project_result_step_resolved",
             )
 
         frame_rows = [
