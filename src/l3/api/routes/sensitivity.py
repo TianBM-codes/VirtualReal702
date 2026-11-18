@@ -176,6 +176,19 @@ def _make_frame_alias(field_name: str, frame_idx: int) -> str:
     return f"{str(field_name)}__FRAME_{int(frame_idx):04d}"
 
 
+def _legacy_frame_metadata(manifest: ManifestRepo, result_group: str, step_name: str) -> dict:
+    frames = manifest.get_frames(step_name, result_group=result_group) or []
+    if not frames:
+        # Legacy single-frame result groups may have no frames table entries.
+        return {"frame_idx": 0, "frame_value": None, "frame_description": None}
+    frame = max(frames, key=lambda item: int(item["frame_idx"]))
+    return {
+        "frame_idx": int(frame["frame_idx"]),
+        "frame_value": frame["frame_value"],
+        "frame_description": frame["description"],
+    }
+
+
 def _expand_external_sensitivity_fields(manifest: ManifestRepo, result_group: str, step_name: str, field_name: str) -> list[dict]:
     frames = manifest.get_frames(step_name, result_group=result_group) or []
     if not frames:
@@ -184,9 +197,7 @@ def _expand_external_sensitivity_fields(manifest: ManifestRepo, result_group: st
             "field_name": field_name,
             "source_field_name": field_name,
             "step": step_name,
-            "frame_idx": None,
-            "frame_value": None,
-            "frame_description": None,
+            **_legacy_frame_metadata(manifest, result_group, step_name),
             **parsed,
         }]
 
@@ -313,9 +324,7 @@ async def list_sensitivity_fields(
             "field_name": field_name,
             "source_field_name": field_name,
             "step": step_name,
-            "frame_idx": None,
-            "frame_value": None,
-            "frame_description": None,
+            **_legacy_frame_metadata(manifest, result_group, step_name),
             **parsed,
         })
 

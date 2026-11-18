@@ -219,7 +219,7 @@ def test_sensitivity_fields_filter_raw_groups_to_derivative_fields(monkeypatch, 
             "field_name": "d_4_U1_T",
             "source_field_name": "d_4_U1_T",
             "step": "Step-1",
-            "frame_idx": None,
+            "frame_idx": 0,
             "frame_value": None,
             "frame_description": None,
             "response_node_label": 4,
@@ -247,7 +247,7 @@ def test_sensitivity_fields_keep_external_fields_for_merge_groups(monkeypatch, t
             "field_name": "E",
             "source_field_name": "E",
             "step": "Step-1",
-            "frame_idx": None,
+            "frame_idx": 0,
             "frame_value": None,
             "frame_description": None,
             "response_node_label": None,
@@ -275,7 +275,7 @@ def test_sensitivity_fields_keep_external_fields_for_non_prefixed_external_sensi
             "field_name": "E",
             "source_field_name": "E",
             "step": "Sensitivity",
-            "frame_idx": None,
+            "frame_idx": 0,
             "frame_value": None,
             "frame_description": None,
             "response_node_label": None,
@@ -285,10 +285,33 @@ def test_sensitivity_fields_keep_external_fields_for_non_prefixed_external_sensi
             "field_name": "THICKNESS",
             "source_field_name": "THICKNESS",
             "step": "Sensitivity",
-            "frame_idx": None,
+            "frame_idx": 0,
             "frame_value": None,
             "frame_description": None,
             "response_node_label": None,
             "component": None,
         },
     ]
+
+
+
+def test_legacy_sensitivity_field_uses_last_frame_in_its_result_group(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    app = _make_sensitivity_app(monkeypatch, tmp_path)
+    with sqlite3.connect(tmp_path / "workspace" / "manifest.db") as conn:
+        conn.executemany(
+            "INSERT INTO frames VALUES (?, ?, ?, ?, ?)",
+            [
+                ("sensitivity_batch_5_demo_123", "Step-1", 0, 0.0, "Initial"),
+                ("sensitivity_batch_5_demo_123", "Step-1", 20, 1.0, "Final"),
+                ("plain_result", "Step-1", 99, 9.0, "Other group"),
+            ],
+        )
+    field = TestClient(app).get(
+        "/api/odb/demo/sensitivity/fields",
+        params={"result_group": "sensitivity_batch_5_demo_123"},
+    ).json()["data"]["fields"][0]
+    assert field["frame_idx"] == 20
+    assert field["frame_value"] == 1.0
+    assert field["frame_description"] == "Final"
