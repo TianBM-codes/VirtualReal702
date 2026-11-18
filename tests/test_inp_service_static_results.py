@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from services.model_update.analysis import inp_service
 from services.model_update.analysis import fem_result_service
 
@@ -109,6 +111,91 @@ def _write_project_result_manifest(workspace, *, result_group="rg_static"):
     )
     conn.commit()
     conn.close()
+
+
+@pytest.fixture
+def static_step_workspace(monkeypatch, tmp_path):
+    _write_project_result_manifest(tmp_path)
+    monkeypatch.setattr(fem_result_service, "_registry_repo", lambda: _FakeRegistryRepo(str(tmp_path)))
+    monkeypatch.setattr(fem_result_service, "log_project_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        fem_result_service._sens, "_workspace_result_label_map",
+        lambda workspace, **kwargs: {f"{kwargs['instance']}::1001": 0.1},
+    )
+    return tmp_path
+
+
+def _rename_result_step(workspace, old_name, new_name, result_group="rg_static"):
+    with sqlite3.connect(workspace / "manifest.db") as conn:
+        for table in ("steps", "frames", "result_files", "result_blocks"):
+            conn.execute(
+                f"UPDATE {table} SET step_name = ? WHERE step_name = ? AND result_group = ?",
+                (new_name, old_name, result_group),
+            )
+
+
+def _collect_static_step(step):
+    return fem_result_service._collect_project_result_static_rows(
+        project_id=101, result_group="rg_static", step=step, frame=None, instances=None,
+    )
+
+
+def test_static_import_resolves_step_name_case(static_step_workspace):
+    _rename_result_step(static_step_workspace, "Step-1", "step-1")
+    result = _collect_static_step("Step-1")
+    assert result["step_name"] == "step-1"
+    assert result["frame_idx"] == 1
+
+
+def test_static_import_legacy_step_selects_only_static_displacement_step(static_step_workspace):
+    _rename_result_step(static_step_workspace, "Step-1", "LoadTest")
+    with sqlite3.connect(static_step_workspace / "manifest.db") as conn:
+        # A frequency step also contains U, but must never be the fallback.
+        conn.execute("UPDATE steps SET procedure = 'FREQUENCY' WHERE step_name = 'Step-2'")
+    result = _collect_static_step("Step-1")
+    assert result["step_name"] == "LoadTest"
+    assert result["frame_idx"] == 1
+    assert result["instances"] == ["PART-1-1"]
+
+
+def test_static_import_legacy_step_rejects_multiple_candidates(static_step_workspace):
+    _rename_result_step(static_step_workspace, "Step-1", "LoadTest")
+    with pytest.raises(fem_result_service.ValidationError) as exc:
+        _collect_static_step("Step-1")
+    assert exc.value.details["candidate_static_steps"] == ["LoadTest", "Step-2"]
+
+
+def test_static_import_legacy_step_requires_nodal_displacement(static_step_workspace):
+    _rename_result_step(static_step_workspace, "Step-1", "LoadTest")
+    with sqlite3.connect(static_step_workspace / "manifest.db") as conn:
+        conn.execute("DELETE FROM result_blocks WHERE result_group = 'rg_static' AND step_name = 'Step-2'")
+    assert _collect_static_step("Step-1")["step_name"] == "LoadTest"
+
+
+def test_static_import_legacy_step_never_uses_other_group(static_step_workspace):
+    _rename_result_step(static_step_workspace, "Step-1", "LoadTest")
+    with sqlite3.connect(static_step_workspace / "manifest.db") as conn:
+        conn.execute("DELETE FROM result_blocks WHERE result_group = 'rg_static'")
+    with pytest.raises(fem_result_service.NotFoundError):
+        _collect_static_step("Step-1")
+
+
+def test_static_import_legacy_step_never_selects_frequency_response(static_step_workspace):
+    _rename_result_step(static_step_workspace, "Step-1", "Modes")
+    with sqlite3.connect(static_step_workspace / "manifest.db") as conn:
+        conn.execute("UPDATE steps SET procedure = 'FREQUENCY' WHERE result_group = 'rg_static'")
+    with pytest.raises(fem_result_service.NotFoundError):
+        _collect_static_step("Step-1")
+
+
+def test_static_import_does_not_replace_explicit_unknown_step(static_step_workspace):
+    with pytest.raises(fem_result_service.NotFoundError) as exc:
+        _collect_static_step("MisspelledLoad")
+    assert exc.value.details["step"] == "MisspelledLoad"
+
+
+def test_static_import_preserves_explicit_step_selection(static_step_workspace):
+    assert _collect_static_step("Step-2")["step_name"] == "Step-2"
 
 
 def test_load_static_result_rows_from_txt_skips_first_three_lines(tmp_path):
