@@ -815,6 +815,11 @@ class EmbeddedRunner:
             except Exception:
                 pass
 
+        if parse_opts.get("extractor") == "abaqus_sensitivity":
+            from src import job_runner
+            return job_runner._run_result_group(
+                project_id, result_group, source_path, parse_options_json, workspace)
+
         check_mode = parse_opts.get("consistency_check", "count-only")
         display_name = parse_opts.get("display_name", result_group)
         source_file = os.path.basename(source_path)

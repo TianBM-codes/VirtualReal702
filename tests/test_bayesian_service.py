@@ -328,7 +328,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_normalized_component_value
     monkeypatch.setattr(
         bayesian_service._sens,
         "_resolve_workspace_step_frame",
-        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+        lambda workspace, *, step, requested_frame, result_group=None: 0 if requested_frame is None else int(requested_frame),
     )
     monkeypatch.setattr(
         bayesian_service._sens,
@@ -423,7 +423,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_explicit_response_componen
     monkeypatch.setattr(
         bayesian_service._sens,
         "_resolve_workspace_step_frame",
-        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+        lambda workspace, *, step, requested_frame, result_group=None: 0 if requested_frame is None else int(requested_frame),
     )
     monkeypatch.setattr(
         bayesian_service._sens,
@@ -529,7 +529,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_node_mises_from_element_no
     monkeypatch.setattr(
         bayesian_service._sens,
         "_resolve_workspace_step_frame",
-        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+        lambda workspace, *, step, requested_frame, result_group=None: 0 if requested_frame is None else int(requested_frame),
     )
     monkeypatch.setattr(
         bayesian_service._sens,
@@ -624,7 +624,7 @@ def test_build_dsa_normalized_sensitivity_matrix_uses_in_memory_optimization_par
     monkeypatch.setattr(
         bayesian_service._sens,
         "_resolve_workspace_step_frame",
-        lambda workspace, *, step, requested_frame: 0 if requested_frame is None else int(requested_frame),
+        lambda workspace, *, step, requested_frame, result_group=None: 0 if requested_frame is None else int(requested_frame),
     )
     monkeypatch.setattr(
         bayesian_service._sens,

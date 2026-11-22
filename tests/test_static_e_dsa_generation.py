@@ -84,3 +84,60 @@ def test_generated_fields_map_to_parameters_by_name():
         fields[0]: rows[1],
         fields[1]: rows[0],
     }
+
+
+def test_overlapping_elastic_and_thickness_parameters_share_one_section():
+    lines = ["*Element, type=S4", "1,1,2,3,4", "2,2,3,4,5",
+             "*Elset, elset=S", "1,2", "*Shell Section, elset=S, material=M", "0.2, 5"]
+    config = {"element_sets": [
+        {"set_name": "DSA_E", "parameter": "E@S", "elements": [1, 2], "value": 210000},
+        {"set_name": "DSA_T", "parameter": "T@S", "elements": [2], "value": 0.2},
+    ], "node_sets": [], "responses": []}
+    parsed = parse_main_inp(lines)
+    tasks, remainders, _ = analyze_element_set_tasks_scoped(config["element_sets"], parsed)
+    tasks[0]["quantity_code"] = "E"
+    tasks[1]["quantity_code"] = "T"
+    layout = build_dsa_include_layout(config, tasks, parsed, remainders, include_file="include.inp")
+    text = layout["files"]["include.inp"]
+    sections = [i for i, line in enumerate(text.splitlines()) if line.lower().startswith("*shell section")]
+    assert len(sections) == 2
+    assert text.count("MATERIAL=DSA_E_S_M") == 2
+    assert "<T_S>, 5" in text
+    assert "0.2, 5" in text
+
+
+def test_static_dsa_extracts_only_response_and_derivatives_at_last_frame():
+    options = service._build_project_result_parse_options(step="LC1", frame=None, field_prefix="d_U_")
+    assert options["frames"] == "last"
+    assert options["fields"] == ["U", "d_U_*"]
+    assert options["steps"] == ["LC1"]
+    assert "field_prefix" not in options
+    assert service._build_project_result_parse_options(
+        step="LC1", frame=7, field_prefix="d_U_")["frames"] == [7]
+
+
+
+def test_dsa_response_targets_selected_step_in_multi_step_model():
+    from services.model_update.analysis.abaqusDSAInpGenerator import patch_static_step_to_dsa
+    lines = ["*STEP, NAME=LC1", "*STATIC", "*END STEP",
+             "*STEP, NAME=LC2", "*STATIC", "*END STEP"]
+    result = patch_static_step_to_dsa(lines, {"responses": [
+        {"type": "node", "set": "N", "variables": ["U"], "step_name": "LC1"}]})
+    text = "\n".join(result)
+    assert "*STEP,NAME=LC1,DSA" in text
+    assert "*STEP, NAME=LC2" in text
+    assert text.index("*DESIGN RESPONSE") < text.index("*STEP, NAME=LC2")
+
+
+def test_solid_elastic_parameter_preserves_solid_section_data():
+    lines = ["*Element, type=C3D8", "1,1,2,3,4,5,6,7,8",
+             "*Elset, elset=S", "1", "*Solid Section, elset=S, material=M", ","]
+    config = {"element_sets": [
+        {"set_name": "DSA_E", "parameter": "E@S", "elements": [1],
+         "quantity_code": "E", "value": 34500},
+    ], "node_sets": [], "responses": []}
+    parsed = parse_main_inp(lines)
+    tasks, remainders, _ = analyze_element_set_tasks_scoped(config["element_sets"], parsed)
+    tasks[0]["quantity_code"] = "E"
+    layout = build_dsa_include_layout(config, tasks, parsed, remainders, include_file="include.inp")
+    assert "*Solid Section, ELSET=DSA_E, MATERIAL=DSA_E_S_M\n," in layout["files"]["include.inp"]

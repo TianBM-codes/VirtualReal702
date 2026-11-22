@@ -29,6 +29,7 @@ AUTO_COMMENT_PREFIX = "DSA_AUTO"
 SECTION_KEYWORDS = (
     "*SHELL SECTION",
     "*SHELL GENERAL SECTION",
+    "*SOLID SECTION",
 )
 
 # 输出 set 时，每行最多几个离散编号
@@ -1150,7 +1151,11 @@ def analyze_element_set_tasks_scoped(
                     f"Header: {blk['header']}"
                 )
             original_thickness = extract_shell_section_thickness(blk["data_lines"])
-            if original_thickness is None:
+            solid_elastic = (
+                task.get("quantity_code") == "E"
+                and infer_section_keyword_from_header(blk["header"]) == "*SOLID SECTION"
+            )
+            if original_thickness is None and not solid_elastic:
                 raise ValueError(
                     f"Cannot infer original shell thickness from section of mother elset '{mother_set[2]}'. "
                     f"Header: {blk['header']}"
@@ -1283,32 +1288,62 @@ def _build_scope_structure_lines(
         )
         if make_scope_key(task["target_scope_key"][0], task["target_scope_key"][1]) == scope_key:
             lines.extend(build_set_block("*ELSET", task["set_name"], task["elements"]))
-        for group in groups:
-            if group["group_set_name"] != task["set_name"]:
-                lines.append("**")
-                lines.append(
-                    f"** Auto section subset from mother set {group['mother_set'][2]}: {group['group_set_name']}"
-                )
-                lines.extend(build_set_block("*ELSET", group["group_set_name"], group["elements"]))
-            elastic_parameter = task.get("quantity_code") == "E"
-            material_name = (f"DSA_{parameter_alias}_{group['material']}"
-                             if elastic_parameter else group['material'])
-            header = re.sub(r"(?i)(\bELSET\s*=\s*)[^,]+",
-                            lambda match: match[1].upper() + group["group_set_name"], group["section_header"])
-            header = re.sub(r"(?i)(\bMATERIAL\s*=\s*)[^,]+",
-                            lambda match: match[1].upper() + material_name, header)
-            lines.append(header)
-            data_lines = list(group["section_data_lines"])
-            if not elastic_parameter:
-                for index, line in enumerate(data_lines):
-                    if line.strip() and not line.lstrip().startswith("**"):
-                        _, comma, remainder = line.partition(",")
-                        data_lines[index] = f"<{parameter_alias}>" + comma + remainder
-                        break
-            lines.extend(data_lines)
         lines.append(
             f"** {AUTO_COMMENT_PREFIX}_TASK_END index={idx} parameter={parameter_name} alias={parameter_alias} set={task['set_name']}"
         )
+
+    # Partition overlapping E/T selections so each element has one section
+    # carrying both its elastic material and its thickness parameter.
+    assignments = {}
+    originals = {}
+    for task in enriched_tasks:
+        quantity = task.get("quantity_code", "T")
+        for group in task["source_groups"]:
+            if make_scope_key(group["scope_type"], group["scope_name"]) != scope_key:
+                continue
+            mother = group["mother_set"]
+            originals[mother] = group
+            for label in group["elements"]:
+                selected = assignments.setdefault((mother, label), {})
+                previous = selected.get(quantity)
+                if previous is not None and previous["parameter"] != task["parameter"]:
+                    raise ValueError(f"Element {label} has overlapping {quantity} parameters.")
+                selected[quantity] = task
+
+    partitions = {}
+    for (mother, label), selected in assignments.items():
+        elastic = selected.get("E")
+        thickness = selected.get("T")
+        key = (mother, elastic["parameter"] if elastic else None,
+               thickness["parameter"] if thickness else None)
+        partitions.setdefault(key, []).append(label)
+
+    for index, ((mother, elastic, thickness), labels) in enumerate(partitions.items(), 1):
+        group = originals[mother]
+        selected = assignments[(mother, labels[0])]
+        primary = selected.get("E") or selected["T"]
+        source = next(item for item in primary["source_groups"] if item["mother_set"] == mother)
+        section_set = source["group_set_name"]
+        if set(labels) != set(source["elements"]):
+            section_set = f"{section_set}_COMBINED_{index}"
+        if section_set != primary["set_name"]:
+            lines.extend(build_set_block("*ELSET", section_set, labels))
+        material_name = group["material"]
+        if elastic:
+            material_name = f"DSA_{parameter_alias_map[elastic]}_{material_name}"
+        header = re.sub(r"(?i)(\bELSET\s*=\s*)[^,]+",
+                        lambda match: match[1].upper() + section_set, group["section_header"])
+        header = re.sub(r"(?i)(\bMATERIAL\s*=\s*)[^,]+",
+                        lambda match: match[1].upper() + material_name, header)
+        lines.append(header)
+        data_lines = list(group["section_data_lines"])
+        if thickness:
+            for row, line in enumerate(data_lines):
+                if line.strip() and not line.lstrip().startswith("**"):
+                    _, comma, remainder = line.partition(",")
+                    data_lines[row] = f"<{parameter_alias_map[thickness]}>" + comma + remainder
+                    break
+        lines.extend(data_lines)
 
     local_remainder_found = False
     for mother_set, remainder_name in sorted(mother_set_to_remainder_name.items()):
@@ -1859,41 +1894,26 @@ def patch_static_step_to_dsa(lines: List[str], config: Dict[str, Any]) -> List[s
     if not static_step_blocks:
         raise ValueError("No static *STEP block was found in the main inp.")
 
-    first_step_idx = static_step_blocks[0]["start"]
-    last_step = static_step_blocks[-1]
-    last_step_idx = last_step["start"]
-    last_end_step_idx = last_step["end_step_idx"]
-
-    # 3) 插入固定 TOTAL 的 DSA CONTROLS 到第一个分析步之前
-    dsa_controls_line = f"*DSA CONTROLS, FORMULATION={formulation}"
-    out.insert(first_step_idx, dsa_controls_line)
-
-    # 4) 重新找 step blocks（因为索引变了）
+    out.insert(static_step_blocks[0]["start"], f"*DSA CONTROLS, FORMULATION={formulation}")
     static_step_blocks = find_static_step_blocks(out)
-    if not static_step_blocks:
-        raise ValueError("No static *STEP block was found in the main inp after DSA insertion.")
+    by_name = {
+        str(parse_param_value(out[block["start"]], "NAME") or "").casefold(): block
+        for block in static_step_blocks
+    }
+    responses_by_step = {}
+    for response in config["responses"]:
+        name = str(response.get("step_name") or config.get("step_name") or "").strip()
+        block = by_name.get(name.casefold()) if name else static_step_blocks[-1]
+        if block is None:
+            raise ValueError(f"Design response references missing static step '{name}'.")
+        responses_by_step.setdefault(block["start"], (block, []))[1].append(response)
 
-    last_step = static_step_blocks[-1]
-    last_step_idx = last_step["start"]
-    last_end_step_idx = last_step["end_step_idx"]
-
-    # 5) 将最后一个分析步改成 *STEP,DSA
-    step_line = out[last_step_idx].strip()
-    if step_line.upper().startswith("*STEP"):
-        out[last_step_idx] = normalize_step_line_to_dsa(step_line)
-
-    # 6) 删除最后一个分析步里已有的 *DESIGN RESPONSE 块
-    static_step_blocks = find_static_step_blocks(out)
-
-    # 7) 再次定位最后一个分析步
-    last_step = static_step_blocks[-1]
-    last_end_step_idx = last_step["end_step_idx"]
-
-    # 8) 在最后一个分析步 *END STEP 之前插入响应块
-    response_block = build_design_response_block(config)
-    response_block.insert(0, "**")
-    response_block.insert(1, "** Auto-generated design responses")
-    out[last_end_step_idx:last_end_step_idx] = response_block
+    for start, (block, responses) in sorted(responses_by_step.items(), reverse=True):
+        out[start] = normalize_step_line_to_dsa(out[start].strip())
+        response_block = build_design_response_block({**config, "responses": responses})
+        out[block["end_step_idx"]:block["end_step_idx"]] = [
+            "** Auto-generated design responses", *response_block,
+        ]
 
     return out
 

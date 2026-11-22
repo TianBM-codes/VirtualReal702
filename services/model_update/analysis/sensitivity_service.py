@@ -1530,6 +1530,8 @@ def build_project_dsa_config_preview(*, project_id: int, value_mode: str = "inhe
             "set": set_name,
             "variables": variables,
         }
+        if row.get("step_name"):
+            response_item["step_name"] = str(row["step_name"])
         set_scope = str(row.get("set_scope") or "").strip().upper()
         part_name = str(row.get("part_name") or "").strip()
         instance_name = str(row.get("instance_name") or "").strip()
@@ -1866,11 +1868,19 @@ def _build_project_result_parse_options(
     parse_options = {
         "consistency_check": "count-only",
         "steps": [str(step)] if step else None,
-        "frames": [int(frame)] if (step and frame is not None) else "all",
+        "frames": [int(frame)] if (step and frame is not None) else "last",
         "invariants": "none",
-        # DSA 结果要 d_U_* 等灵敏度字段，不受 APP_ODB_FIELDS 白名单限制
         "fields": "all",
     }
+    response_field = _field_prefix_response_token(field_prefix) if field_prefix else None
+    if response_field:
+        parse_options["fields"] = [response_field, f"{field_prefix}*"]
+    if response_field in {"U", "UR", "RF", "RM"}:
+        parse_options.update({
+            "extractor": "abaqus_sensitivity",
+            "sensitivity_prefix": field_prefix,
+            "response_field": response_field,
+        })
 
     # DSA normalization needs both the sensitivity fields (for example d_U_T1)
     # and the base response field they are normalized against (for example U).
@@ -4097,6 +4107,11 @@ def _build_src_merge_parameter_rows(
         return list(parameter_rows or [])
 
     field_map = _build_dsa_parameter_row_map(parameter_rows, field_prefix, matching_field_names)
+    aliases = _dsa_parameter_rows_by_alias(parameter_rows)
+    if all(_extract_dsa_field_token(field_prefix, name).upper() in aliases
+           for name in matching_field_names):
+        return [{**field_map[name], "source_field_name": name}
+                for name in sorted(matching_field_names)]
     field_indices = {
         str(field_name): _extract_dsa_field_index(field_prefix, str(field_name))
         for field_name in matching_field_names

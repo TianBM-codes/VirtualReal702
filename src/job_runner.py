@@ -1817,6 +1817,22 @@ def _run_result_group(project_id: str, result_group: str,
         except Exception:
             pass
 
+    if parse_opts.get("extractor") == "abaqus_sensitivity":
+        from src.l3.services.abaqus_sensitivity_import_service import import_abaqus_sensitivity
+        try:
+            stats = import_abaqus_sensitivity(
+                odb_path=source_path, workspace=workspace, result_group=result_group,
+                options=parse_opts, abaqus=ABAQUS_CMD,
+                run_command=lambda command: _run_streaming(command, project_id, "sensitivity_extract"),
+            )
+            logger.info("[%s] Dedicated sensitivity import: %s", label, stats)
+            _update_result_group_status(project_id, result_group, "ready")
+            return True
+        except Exception as exc:
+            logger.exception("[%s] Dedicated sensitivity import failed", label)
+            _update_result_group_status(project_id, result_group, "error", str(exc))
+            return False
+
     check_mode = parse_opts.get("consistency_check", "count-only")
     display_name = parse_opts.get("display_name", result_group)
     source_file = os.path.basename(source_path)

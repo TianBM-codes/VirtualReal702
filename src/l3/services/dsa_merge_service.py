@@ -223,10 +223,16 @@ def merge_dsa_fields(
     finally:
         conn.close()
 
+    explicit_rows = {
+        str(row["source_field_name"]): index
+        for index, row in enumerate(parameter_rows)
+        if row.get("source_field_name")
+    }
     dsa_field_names = []
     for row in field_rows:
         field_name = str(row["field_name"])
-        field_index = _field_param_index(field_prefix, field_name)
+        field_index = (explicit_rows[field_name] + 1 if field_name in explicit_rows
+                       else _field_param_index(field_prefix, field_name))
         if field_index is not None:
             dsa_field_names.append((field_index, field_name))
     if not dsa_field_names:

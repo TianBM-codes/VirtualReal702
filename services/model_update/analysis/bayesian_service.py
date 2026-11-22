@@ -2517,6 +2517,7 @@ def build_dsa_normalized_sensitivity_matrix(
             resolved_workspace,
             step=str(discovery["step"]),
             requested_frame=frame,
+            result_group=result_group,
         )
     else:
         resolved_frame = int(frame) if frame is not None else 0
@@ -3037,7 +3038,7 @@ def _publish_static_iteration_results(*, project_id: int, batch_no: int, iterati
                                       solver_payload: dict, matrix_payload: dict, field_prefix: str) -> dict:
     from .l3_local_bridge_service import submit_project_result_group_and_wait
 
-    source = submit_project_result_group_and_wait(
+    source = solver_payload.get("project_result_parse") or submit_project_result_group_and_wait(
         project_id=project_id,
         source_path=solver_payload["solver"]["artifacts"]["odb"],
         result_group=f"sensitivity_batch_update_{batch_no}_iter{iteration}",
@@ -3074,6 +3075,11 @@ def _run_iteration_solver(
         extra_args: Optional[List[str]],
         python3: Optional[str],
         keep_raw: bool,
+        project_id: Optional[int] = None,
+        step: Optional[str] = None,
+        frame: Optional[int] = None,
+        field_prefix: str = "d_U_",
+        result_group: Optional[str] = None,
 ) -> dict:
     # Each Bayesian iteration solves the current INP first, then converts the new ODB
     # into a queryable workspace for sensitivity/result extraction.
@@ -3109,15 +3115,25 @@ def _run_iteration_solver(
             {"iteration": iteration, "solver": solver_result},
         )
 
-    workspace_dir = (output_dir / f"workspace_iter{iteration}").resolve()
-    workspace_info = _sens.build_workspace_from_odb(
-        project_id=None,
-        odb_path=odb_path,
-        workspace=str(workspace_dir),
-        abaqus=abaqus,
-        python3=python3,
-        keep_raw=keep_raw,
-    )
+    project_result_parse = None
+    if project_id is not None and _sens._field_prefix_response_token(field_prefix) in {"U", "UR", "RF", "RM"}:
+        project_result_parse = _sens._submit_project_result_group_and_wait(
+            project_id=project_id, odb_path=odb_path, batch_no=f"update_iter{iteration}",
+            job_name=resolved_job_name, step=step, frame=frame, field_prefix=field_prefix,
+            base_url=None, timeout=60, result_group=result_group,
+            display_name=f"Model update evaluated iteration {iteration + 1}",
+        )
+        workspace_info = project_result_parse
+    else:
+        workspace_dir = (output_dir / f"workspace_iter{iteration}").resolve()
+        workspace_info = _sens.build_workspace_from_odb(
+            project_id=None,
+            odb_path=odb_path,
+            workspace=str(workspace_dir),
+            abaqus=abaqus,
+            python3=python3,
+            keep_raw=keep_raw,
+        )
     deleted_process_files = _cleanup_iteration_solver_files(inp_path.parent, resolved_job_name)
     solver_result["deleted_process_files"] = deleted_process_files
     return {
@@ -3125,6 +3141,7 @@ def _run_iteration_solver(
         "command_preview": command,
         "solver": solver_result,
         "workspace": workspace_info,
+        "project_result_parse": project_result_parse,
     }
 
 
@@ -4350,13 +4367,16 @@ def run_bayesian_update_workflow(
                     timeout_sec=timeout_sec,
                     extra_args=extra_args,
                     python3=python3,
-                    keep_raw=keep_raw,
+                    keep_raw=keep_raw, project_id=int(project_id),
+                    step=step, frame=frame, field_prefix=field_prefix,
+                    result_group=f"sensitivity_batch_update_{resolved_batch_no}_iter{iteration_index}",
                 )
                 next_source = {
                     "workspace": solver_payload["workspace"]["workspace"],
                     "odb_path": None,
                     "odb_id": None,
                     "base_url": None,
+                    "result_group": (solver_payload.get("project_result_parse") or {}).get("result_group"),
                 }
                 active_solver_payload = solver_payload
             else:
@@ -4376,11 +4396,12 @@ def run_bayesian_update_workflow(
                 response_component=response_component,
                 position=position,
                 aggregation=aggregation,
-                frame=frame,
+                frame=0 if next_source.get("result_group") else frame,
                 abaqus=abaqus,
                 python3=python3,
                 keep_raw=keep_raw,
                 timeout=timeout,
+                result_group=next_source.get("result_group"),
             )
             last_resolved_workspace = str(matrix_payload.get("workspace") or "") or last_resolved_workspace
             cloud_export_odb_id = (
@@ -4562,11 +4583,14 @@ def run_bayesian_update_workflow(
                     timeout_sec=timeout_sec,
                     extra_args=extra_args,
                     python3=python3,
-                    keep_raw=keep_raw,
+                    keep_raw=keep_raw, project_id=int(project_id),
+                    step=step, frame=frame, field_prefix=field_prefix,
+                    result_group=f"sensitivity_batch_update_{resolved_batch_no}_iter{iteration_index + 1}",
                 )
                 if save_results:
                     iteration_result["next_iteration_solver"] = rerun_payload
                 next_source["workspace"] = rerun_payload["workspace"]["workspace"]
+                next_source["result_group"] = (rerun_payload.get("project_result_parse") or {}).get("result_group")
                 active_solver_payload = rerun_payload
 
             if save_results:

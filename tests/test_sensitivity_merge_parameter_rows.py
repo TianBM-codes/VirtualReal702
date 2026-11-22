@@ -40,3 +40,15 @@ def test_build_src_merge_parameter_rows_keeps_direct_index_mapping():
     assert len(rows) == 2
     assert rows[0]["parameter_name"] == "T1"
     assert rows[1]["parameter_name"] == "T2"
+
+
+def test_named_elastic_and_thickness_fields_with_same_s4_suffix_stay_distinct():
+    rows = [{"parameter_name": f"{quantity}@M{material}_S4", "quantity_code": quantity,
+             "set_name": f"M{material}_S4"}
+            for quantity in ["E", "T"] for material in [2, 3, 4, 5]]
+    names = [f"d_U_{row['parameter_name'].replace('@', '_')}" for row in rows]
+    result = sensitivity_service._build_src_merge_parameter_rows(
+        parameter_rows=rows, field_prefix="d_U_", source_field_names=names)
+    assert len(result) == 8
+    assert {row["source_field_name"]: row["parameter_name"] for row in result} == {
+        name: row["parameter_name"] for name, row in zip(names, rows)}

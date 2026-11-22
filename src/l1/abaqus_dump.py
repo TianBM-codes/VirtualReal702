@@ -328,7 +328,7 @@ def parse_args():
                    help='Comma-separated step names to extract (extract mode only)')
     p.add_argument('--frames', default=None,
                    help=('Frame filter for extract mode: "all" (default), '
-                         '"first_last", or comma-separated 0-based indices'))
+                         '"last", "first_last", or comma-separated 0-based indices'))
     p.add_argument('--field-prefix', default=None,
                    help='Only extract fields whose names start with this prefix (extract mode only)')
     p.add_argument('--field-list', default=None,
@@ -610,7 +610,7 @@ def _parse_frame_spec(text):
     spec = text.strip()
     if not spec or spec == 'all':
         return None
-    if spec == 'first_last':
+    if spec in ('first_last', 'last'):
         return spec
 
     frames = []
@@ -1920,7 +1920,7 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
       Steps/fields absent from field_filter are silently skipped.
       If None, all fields in all steps are dumped (original behaviour).
 
-    frame_filter: optional dict {step_name: None | 'first_last' | [orig_frame_idx, ...]}.
+    frame_filter: optional dict {step_name: None | 'last' | 'first_last' | [orig_frame_idx, ...]}.
       Selected frames are re-indexed densely from 0 within the extracted output.
 
     field_prefix: optional string. If provided, only fields starting with this prefix
@@ -1948,7 +1948,9 @@ def dump_results(odb, raw_dir, meta, field_filter=None, frame_filter=None,
         selected_frames = list(enumerate(step.frames))
         if frame_filter is not None and step_name in frame_filter:
             spec = frame_filter[step_name]
-            if spec == 'first_last':
+            if spec == 'last':
+                selected_frames = [(len(step.frames) - 1, step.frames[-1])] if len(step.frames) else []
+            elif spec == 'first_last':
                 if len(step.frames) == 0:
                     selected_frames = []
                 elif len(step.frames) == 1:
