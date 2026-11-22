@@ -315,3 +315,26 @@ def test_legacy_sensitivity_field_uses_last_frame_in_its_result_group(monkeypatc
     assert field["frame_idx"] == 20
     assert field["frame_value"] == 1.0
     assert field["frame_description"] == "Final"
+
+
+
+def test_cloud_picker_prefers_merged_groups_even_when_raw_contains_external_fields():
+    from src.l3.api.routes.sensitivity import _collect_visible_sensitivity_groups
+
+    raw = "sensitivity_batch_1_demo"
+    merged = "sensitivity_1_U_10_U3"
+    assert _collect_visible_sensitivity_groups(
+        all_groups=[raw, merged],
+        external_sensitivity_groups={raw, merged},
+        merge_only=True,
+    ) == [merged]
+    assert _collect_visible_sensitivity_groups(
+        all_groups=[raw, merged],
+        external_sensitivity_groups={raw, merged},
+        merge_only=False,
+    ) == [raw, merged]
+    assert _collect_visible_sensitivity_groups(
+        all_groups=[raw],
+        external_sensitivity_groups={raw},
+        merge_only=True,
+    ) == [raw]

@@ -120,8 +120,10 @@ def _collect_visible_sensitivity_groups(
         if (
             merge_only
             and is_legacy_sensitivity
-            and _rg_kind(rg_text) != "merge"
-            and not is_external_sensitivity
+            and (
+                _rg_kind(rg_text) == "raw"
+                or (_rg_kind(rg_text) != "merge" and not is_external_sensitivity)
+            )
         ):
             continue
         groups.append(rg_text)
