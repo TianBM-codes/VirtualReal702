@@ -185,7 +185,7 @@ def get_result_path(work_condition_id):
 
 
 def check_wheather_sensor_paired(sensor_id, work_condition_id):
-    sql = f"SELECT measuring_point_name, node FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
+    sql = f"SELECT measuring_point_name, node FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data ='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -201,7 +201,7 @@ def check_wheather_sensor_paired(sensor_id, work_condition_id):
 
 def get_node_id_by_sensor_name(sensor_id, work_condition_id):
     # sensor_id = 78888888888
-    sql = f"SELECT measuring_point_name, node FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
+    sql = f"SELECT measuring_point_name, node FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data ='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -250,7 +250,7 @@ def get_second_pk_stress_projection(sensor_id, node_id, res_path, load_case_name
     print("enter get_second_pk_stress_projection function")
     # step 1: 先看是否已经存储了结果
     # sql = f"SELECT extra_json FROM `t_measuring_point_info` WHERE id = {sensor_id}"
-    sql = f"SELECT extra_json FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
+    sql = f"SELECT extra_json FROM `db_test_simu_real_test`.`t_measuring_point_info` where test_work_condition_id={work_condition_id} and is_from_test_data ='0' and measuring_point_name = (SELECT measuring_point_name FROM `db_test_simu_real_test`.`t_measuring_point_info` where id={sensor_id});"
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -399,7 +399,7 @@ def get_test_curve(sensor_id, measure_id, sensor_name):
         print(e)
 
     # print(f"sensor_name:{sensor_name}")
-    wrapper_sensor_name = "'" + str(sensor_name) + "'"
+    wrapper_sensor_name = '"' + str(sensor_name) + '"'
     sql = f"SELECT load_level, reading_value FROM `db_test_simu_real_test`.`t_mt_py_test_load_level_data` where project_id={measure_id} and sensor={wrapper_sensor_name};"
     print(sql)
     try:
@@ -453,7 +453,7 @@ def get_table_content(odb_load_case,measure_id):
         print(e)
     json_data = json.loads(extra_json[0])
     axis_rows = json_data["test_load_level_import"]["axis_rows"]
-    wrapper_sensor_name = "'" + str(sensor_name) + "'"
+    wrapper_sensor_name = '"' + str(sensor_name) + '"'
     sql = f"SELECT load_level, reading_value FROM `db_test_simu_real_test`.`t_mt_py_test_load_level_data` where project_id={measure_id} and sensor={wrapper_sensor_name};"
     print(sql)
     try:

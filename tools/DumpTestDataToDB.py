@@ -114,8 +114,7 @@ def _parse_gauge_line(line: str) -> Tuple[int, str, List[float]]:
 def parse_table(part: bytes, test_data: TestData) -> None:
     """解析一页数据，并合并到 TestData 中。"""
     table = part.decode("gb18030")
-    table_lines = table.replace("\r\n", "\n").split("\n")
-    table_lines = [line for line in table_lines if line != ""]
+    table_lines = table.split("\r\n")
 
     if not table_lines:
         return
@@ -171,10 +170,16 @@ def parse_txt(file_path: str | Path) -> TestData:
     test_data = TestData()
     data = Path(file_path).read_bytes()
     parts = data.split(b"\x0c")
-    for part in parts:
-        part = part.strip(b"\r\n")
-        if part:
-            parse_table(part, test_data)
+    for iter_part in parts:
+        if iter_part.endswith(b'\r\n'):
+            iter_part = iter_part[:-2]
+        if len(iter_part) < 3:
+            return test_data
+        if iter_part.startswith(b'\r\n'):
+            iter_part = iter_part[2:]
+        if len(iter_part) != 0:
+            parse_table(iter_part, test_data)
+
     if not test_data.table_count:
         raise ValueError("文件中未找到试验数据页")
     return test_data
