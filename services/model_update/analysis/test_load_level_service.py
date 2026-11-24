@@ -22,6 +22,7 @@ def decode_json(value):
 
 
 def prepare_import(local_path, source, axis_label=None, unit=None, ignore_last_reading=True):
+    ignore_last_reading = False
     try:
         parsed = parse_txt(local_path)
     except (ValueError, UnicodeError) as exc:
